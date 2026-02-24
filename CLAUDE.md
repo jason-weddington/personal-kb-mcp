@@ -21,6 +21,19 @@
 - MCP tools in `src/personal_kb/tools/` (one file per tool)
 - Tests mirror source structure under `tests/`
 
+## Commit Convention
+
+This repo uses **conventional commits** enforced by a `commit-msg` hook.
+
+Format: `type(optional-scope): description`
+
+- `feat:` — new feature (bumps minor)
+- `fix:` — bug fix (bumps patch)
+- `chore:` — maintenance, deps, config (no bump)
+- `docs:` — documentation only (no bump)
+- `refactor:` — restructuring (no bump)
+- `feat!:` or `fix!:` — breaking change (bumps major)
+
 ## Environment Variables
 
 | Variable | Default | Description |
