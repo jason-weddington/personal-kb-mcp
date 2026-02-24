@@ -1,0 +1,122 @@
+"""DDL and migrations for the knowledge database."""
+
+import aiosqlite
+
+SCHEMA_VERSION = 1
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_entries (
+    id TEXT PRIMARY KEY,
+    project_ref TEXT,
+    short_title TEXT NOT NULL,
+    long_title TEXT NOT NULL,
+    knowledge_details TEXT NOT NULL,
+    entry_type TEXT NOT NULL,
+    source_context TEXT,
+    confidence_level REAL NOT NULL DEFAULT 0.9,
+    tags TEXT NOT NULL DEFAULT '[]',
+    hints TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    superseded_by TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    has_embedding INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_entries_project ON knowledge_entries(project_ref);
+CREATE INDEX IF NOT EXISTS idx_entries_type ON knowledge_entries(entry_type);
+CREATE INDEX IF NOT EXISTS idx_entries_active ON knowledge_entries(is_active);
+
+CREATE TABLE IF NOT EXISTS entry_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id TEXT NOT NULL REFERENCES knowledge_entries(id),
+    version_number INTEGER NOT NULL,
+    knowledge_details TEXT NOT NULL,
+    change_reason TEXT,
+    confidence_level REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(entry_id, version_number)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+    short_title,
+    long_title,
+    knowledge_details,
+    tags,
+    content='knowledge_entries',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+-- Triggers to keep FTS in sync with the content table
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_ai AFTER INSERT ON knowledge_entries BEGIN
+    INSERT INTO knowledge_fts(rowid, short_title, long_title, knowledge_details, tags)
+    VALUES (new.rowid, new.short_title, new.long_title, new.knowledge_details, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_ad AFTER DELETE ON knowledge_entries
+BEGIN
+    INSERT INTO knowledge_fts(
+        knowledge_fts, rowid, short_title, long_title, knowledge_details, tags
+    ) VALUES (
+        'delete', old.rowid, old.short_title, old.long_title,
+        old.knowledge_details, old.tags
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_au AFTER UPDATE ON knowledge_entries
+BEGIN
+    INSERT INTO knowledge_fts(
+        knowledge_fts, rowid, short_title, long_title, knowledge_details, tags
+    ) VALUES (
+        'delete', old.rowid, old.short_title, old.long_title,
+        old.knowledge_details, old.tags
+    );
+    INSERT INTO knowledge_fts(rowid, short_title, long_title, knowledge_details, tags)
+    VALUES (new.rowid, new.short_title, new.long_title, new.knowledge_details, new.tags);
+END;
+
+CREATE TABLE IF NOT EXISTS entry_id_seq (
+    next_id INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+
+def _vec_table_sql(dim: int) -> str:
+    return f"""
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vec USING vec0(
+    entry_id TEXT PRIMARY KEY,
+    embedding FLOAT[{dim}]
+);
+"""
+
+
+INIT_SEQ_SQL = """
+INSERT INTO entry_id_seq (next_id)
+SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM entry_id_seq);
+"""
+
+
+async def apply_schema(db: aiosqlite.Connection) -> None:
+    """Apply the database schema."""
+    await db.executescript(SCHEMA_SQL)
+    await db.execute(INIT_SEQ_SQL)
+
+    # Check schema version
+    cursor = await db.execute("SELECT version FROM schema_version")
+    row = await cursor.fetchone()
+    if row is None:
+        await db.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+
+    await db.commit()
+
+
+async def apply_vec_schema(db: aiosqlite.Connection, dim: int = 1024) -> None:
+    """Create the vec0 virtual table. Requires sqlite-vec extension loaded."""
+    await db.executescript(_vec_table_sql(dim))
+    await db.commit()

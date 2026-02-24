@@ -1,0 +1,1 @@
+"""Personal Knowledge MCP Server."""
