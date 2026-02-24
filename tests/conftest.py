@@ -5,6 +5,7 @@ import struct
 import pytest_asyncio
 
 from personal_kb.db.connection import create_connection
+from personal_kb.graph.builder import GraphBuilder
 from personal_kb.store.knowledge_store import KnowledgeStore
 
 
@@ -77,6 +78,12 @@ class FakeEmbedder:
 
     async def close(self):
         pass
+
+
+@pytest_asyncio.fixture
+async def graph_builder(db):
+    """Graph builder backed by in-memory DB."""
+    return GraphBuilder(db)
 
 
 @pytest_asyncio.fixture

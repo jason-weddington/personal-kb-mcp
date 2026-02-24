@@ -7,6 +7,7 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
+from personal_kb.graph.builder import GraphBuilder
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
@@ -87,6 +88,7 @@ def register_kb_store(mcp: FastMCP) -> None:
         lifespan = ctx.lifespan_context
         store: KnowledgeStore = lifespan["store"]
         embedder: EmbeddingClient = lifespan["embedder"]
+        graph_builder: GraphBuilder = lifespan["graph_builder"]
 
         if update_entry_id:
             entry = await store.update_entry(
@@ -100,6 +102,7 @@ def register_kb_store(mcp: FastMCP) -> None:
             # Re-embed updated entry
             if embedder:
                 await _embed_entry(embedder, store, entry)
+            await _build_graph(graph_builder, entry)
             entry = await store.get_entry(entry.id) or entry
             return format_store_result(entry, is_update=True)
 
@@ -118,9 +121,18 @@ def register_kb_store(mcp: FastMCP) -> None:
         # Embed new entry
         if embedder:
             await _embed_entry(embedder, store, entry)
+        await _build_graph(graph_builder, entry)
         entry = await store.get_entry(entry.id) or entry
 
         return format_store_result(entry, is_update=False)
+
+
+async def _build_graph(graph_builder: GraphBuilder, entry: KnowledgeEntry) -> None:
+    """Build graph edges for an entry, logging failures without raising."""
+    try:
+        await graph_builder.build_for_entry(entry)
+    except Exception:
+        logger.warning("Failed to build graph for entry %s", entry.id, exc_info=True)
 
 
 async def _embed_entry(

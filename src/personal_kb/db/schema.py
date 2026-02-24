@@ -120,3 +120,33 @@ async def apply_vec_schema(db: aiosqlite.Connection, dim: int = 1024) -> None:
     """Create the vec0 virtual table. Requires sqlite-vec extension loaded."""
     await db.executescript(_vec_table_sql(dim))
     await db.commit()
+
+
+GRAPH_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    node_id TEXT PRIMARY KEY,
+    node_type TEXT NOT NULL,
+    properties TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nodes_type ON graph_nodes(node_type);
+
+CREATE TABLE IF NOT EXISTS graph_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL REFERENCES graph_nodes(node_id),
+    target TEXT NOT NULL REFERENCES graph_nodes(node_id),
+    edge_type TEXT NOT NULL,
+    properties TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(source, target, edge_type)
+);
+CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target);
+CREATE INDEX IF NOT EXISTS idx_edges_type ON graph_edges(edge_type);
+"""
+
+
+async def apply_graph_schema(db: aiosqlite.Connection) -> None:
+    """Create graph_nodes and graph_edges tables."""
+    await db.executescript(GRAPH_SCHEMA_SQL)
+    await db.commit()
