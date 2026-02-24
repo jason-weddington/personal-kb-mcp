@@ -1,6 +1,6 @@
 [project]
 name = "personal-kb"
-version = "0.1.0"
+version = "0.2.0"
 description = "Personal Knowledge MCP Server — structured retrieval, knowledge graph, and multi-granularity summaries"
 requires-python = ">=3.13"
 dependencies = [
@@ -81,6 +81,9 @@ version_toml = ["pyproject.toml:project.version"]
 commit_parser = "conventional"
 changelog_file = "CHANGELOG.md"
 build_command = "uv build"
+allow_zero_version = true
+major_on_zero = false
+commit_message = "chore(release): v{version}"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_kb"]
