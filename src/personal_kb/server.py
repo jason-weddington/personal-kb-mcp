@@ -13,6 +13,7 @@ from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
+from personal_kb.tools.kb_ask import register_kb_ask
 from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
 
@@ -98,5 +99,6 @@ def create_server() -> FastMCP:
 
     register_kb_store(mcp)
     register_kb_search(mcp)
+    register_kb_ask(mcp)
 
     return mcp
