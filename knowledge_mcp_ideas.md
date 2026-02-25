@@ -1,7 +1,7 @@
 # Personal Knowledge MCP Server — Design Ideas
 
 **Captured**: 2026-02-24
-**Status**: Brainstorming complete, entering planning phase
+**Status**: Initial scope complete (v0.3.0)
 
 ---
 
@@ -182,3 +182,9 @@ Claude Code instances
 - **NetworkX** for in-memory graph manipulation
 - **asyncio** throughout (FastMCP is async-native)
 - **LLM provider abstraction** for flexibility (Ollama, Bedrock, Anthropic, OpenAI)
+
+## Roadmap
+
+1. **Amazon Bedrock LLM provider** — Add a BedrockLLMClient implementing LLMProvider Protocol, enabling graph enrichment and query planning via AWS-hosted models
+2. **Remote storage option** — Support a remote backend (e.g., PostgreSQL, Turso) as an alternative to local SQLite for cross-machine access and cloud deployment
+3. **Team support** — Add contributor metadata to entries (who stored it, which agent/session), enabling multi-user knowledge bases with attribution and provenance tracking

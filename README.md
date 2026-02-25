@@ -66,6 +66,24 @@ Answer questions by traversing the knowledge graph. Supports 5 strategies:
 
 Answer a question with a synthesized natural language response. Retrieves relevant entries via the auto strategy, then uses Claude Haiku to produce a coherent answer with `[kb-XXXXX]` citations. Falls back to raw search results when the LLM is unavailable.
 
+### `kb_ingest`
+
+Ingest files from disk into the knowledge base (only available when `KB_MANAGER=TRUE`). Reads files, runs safety checks, and uses Claude Haiku to summarize and extract structured knowledge entries.
+
+```
+kb_ingest(file_path="/path/to/notes", project_ref="my-project", dry_run=True)
+```
+
+**Pipeline:** deny-list check → extension filter → size limit → SHA-256 dedup → secret detection → PII redaction → LLM summarize → LLM extract → store entries → build graph
+
+- Supports single files or entire directories (recursive by default)
+- Files become `note:` nodes in the graph, with `extracted_from` edges linking entries to sources
+- Re-ingestion detects content changes via hash and replaces old entries
+- `dry_run=True` previews extraction without storing anything
+- Supports `.md`, `.txt`, `.py`, `.js`, `.ts`, `.yaml`, `.json`, `.toml`, and many more text formats
+- Skips binaries, images, archives, keys, `.env` files, and other sensitive formats
+- Optional safety libraries: `uv sync --extra safety` installs `detect-secrets` and `scrubadub`
+
 ### `kb_maintain`
 
 Administrative operations (only available when `KB_MANAGER=TRUE`):
@@ -85,7 +103,8 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | **Core** | | |
 | `KB_DB_PATH` | `~/.local/share/personal_kb/knowledge.db` | SQLite database file path |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `KB_MANAGER` | _(unset)_ | Set to `TRUE` to enable `kb_maintain` tool |
+| `KB_MANAGER` | _(unset)_ | Set to `TRUE` to enable `kb_maintain` and `kb_ingest` tools |
+| `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
 | **Anthropic (cloud LLM)** | | |
 | `ANTHROPIC_API_KEY` | _(unset)_ | API key — required for Anthropic provider |
 | `KB_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Model for graph enrichment, query planning, and synthesis |
