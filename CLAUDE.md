@@ -45,7 +45,7 @@ Format: `type(optional-scope): description`
 | `KB_OLLAMA_TIMEOUT` | `10.0` | Ollama timeout (seconds) |
 | `KB_LLM_MODEL` | `qwen3:4b` | LLM model for Ollama generation |
 | `KB_LLM_TIMEOUT` | `120.0` | Ollama LLM timeout (seconds) |
-| `ANTHROPIC_API_KEY` | (unset) | Anthropic API key for query planning |
+| `ANTHROPIC_API_KEY` | (unset) | Anthropic API key (enrichment, planning, synthesis) |
 | `KB_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Anthropic model for planning/synthesis |
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Anthropic timeout (seconds) |
 | `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic` or `ollama`) |
