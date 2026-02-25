@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Test dry-run ingestion of a real file to evaluate extraction quality.
+
+Usage:
+    uv run python scripts/test_dry_run.py [FILE_PATH]
+
+Requires ANTHROPIC_API_KEY to be set.
+"""
+
+import asyncio
+import sys
+from pathlib import Path
+
+from personal_kb.db.connection import create_connection
+from personal_kb.graph.builder import GraphBuilder
+from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.ingest.ingester import FileIngester
+from personal_kb.llm.anthropic import AnthropicLLMClient
+from personal_kb.search.embeddings import EmbeddingClient
+from personal_kb.store.knowledge_store import KnowledgeStore
+
+
+async def main() -> None:
+    """Run dry-run ingestion on a file and print extraction results."""
+    default_path = "/Users/jason/Documents/my_notes/Cleanr Project Notes.md"
+    file_path = Path(sys.argv[1] if len(sys.argv) > 1 else default_path)
+
+    if not file_path.exists():
+        print(f"File not found: {file_path}")
+        sys.exit(1)
+
+    print(f"File: {file_path}")
+    print(f"Size: {file_path.stat().st_size:,} bytes")
+    print()
+
+    # Set up in-memory DB + Haiku LLM
+    db = await create_connection(":memory:")
+    store = KnowledgeStore(db)
+    embedder = EmbeddingClient(db)
+    graph_builder = GraphBuilder(db)
+
+    llm = AnthropicLLMClient()
+    if not await llm.is_available():
+        print("ERROR: Anthropic API not available. Set ANTHROPIC_API_KEY.")
+        await db.close()
+        sys.exit(1)
+
+    enricher = GraphEnricher(db, llm)
+    ingester = FileIngester(
+        db=db,
+        store=store,
+        embedder=embedder,
+        graph_builder=graph_builder,
+        graph_enricher=enricher,
+        llm=llm,
+    )
+
+    print("Running dry-run ingestion (2 Haiku calls)...")
+    print("=" * 70)
+
+    result = await ingester.ingest_file(
+        file_path,
+        base_dir=file_path.parent,
+        dry_run=True,
+        project_ref=None,
+    )
+
+    print(f"\nAction: {result.action}")
+    if result.reason:
+        print(f"Reason: {result.reason}")
+
+    print(f"\n{'─' * 70}")
+    print("SUMMARY")
+    print(f"{'─' * 70}")
+    print(result.summary or "(no summary)")
+
+    print(f"\n{'─' * 70}")
+    print(f"EXTRACTED ENTRIES ({result.entry_count})")
+    print(f"{'─' * 70}")
+
+    # Dry run doesn't store entries, so we need to re-run extraction
+    # to see the actual entry content. Let's do it directly.
+    from personal_kb.ingest.extractor import extract_entries
+
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    rel_path = file_path.name
+    entries = await extract_entries(llm, rel_path, content)
+
+    for i, entry in enumerate(entries, 1):
+        print(f"\n  [{i}] {entry.short_title}")
+        print(f"      Title: {entry.long_title}")
+        print(f"      Type:  {entry.entry_type}")
+        print(f"      Tags:  {', '.join(entry.tags)}")
+        print("      Content:")
+        # Wrap long content
+        for line in entry.knowledge_details.splitlines():
+            print(f"        {line}")
+
+    print(f"\n{'=' * 70}")
+    print(f"Total: {len(entries)} entries extracted")
+
+    await llm.close()
+    await embedder.close()
+    await db.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

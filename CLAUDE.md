@@ -50,5 +50,6 @@ Format: `type(optional-scope): description`
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Anthropic timeout (seconds) |
 | `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic` or `ollama`) |
 | `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning/synthesis (`anthropic` or `ollama`) |
-| `KB_MANAGER` | (unset) | Set `TRUE` for maintenance tools |
+| `KB_MANAGER` | (unset) | Set `TRUE` for maintenance + ingestion tools |
+| `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |

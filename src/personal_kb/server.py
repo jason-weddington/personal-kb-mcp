@@ -25,6 +25,7 @@ from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.kb_ask import register_kb_ask
+from personal_kb.tools.kb_ingest import register_kb_ingest
 from personal_kb.tools.kb_maintain import register_kb_maintain
 from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
@@ -167,5 +168,6 @@ def create_server() -> FastMCP:
 
     if is_manager_mode():
         register_kb_maintain(mcp)
+        register_kb_ingest(mcp)
 
     return mcp
