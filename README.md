@@ -8,21 +8,63 @@ A persistent knowledge base for AI coding agents, exposed as an [MCP](https://mo
 - **Knowledge graph** — Automatically built from entries (deterministic edges for tags/projects + LLM-extracted entities like tools, concepts, people)
 - **Graph-aware queries** — 5 traversal strategies (auto, decision_trace, timeline, related, connection) with LLM query planning
 - **Synthesized answers** — `kb_summarize` retrieves relevant entries and uses Claude Haiku to produce cited prose answers
+- **File ingestion** — Bulk-import existing notes, code, and docs from disk with LLM-powered extraction
 - **Graceful degradation** — Every optional component (Ollama, Anthropic, vector search) fails gracefully; core storage and FTS always work
 
-## Installation
+## Prerequisites
 
-Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
+- **Python 3.13+** and **[uv](https://docs.astral.sh/uv/)** (Python package manager)
+- **[Ollama](https://ollama.com/)** — for local vector embeddings (optional but recommended)
+- **Anthropic API key** — for graph enrichment, query planning, and answer synthesis (optional but recommended)
+
+### What works without each dependency
+
+| Component | Without Ollama | Without Anthropic |
+|---|---|---|
+| Store entries | Works | Works |
+| Full-text search (FTS5) | Works | Works |
+| Vector similarity search | Disabled | Works (needs Ollama) |
+| Graph building (deterministic) | Works | Works |
+| Graph enrichment (LLM entities) | Disabled (or use Ollama LLM) | Disabled (or use Ollama LLM) |
+| Query planning (`kb_ask` auto) | Disabled (or use Ollama LLM) | Disabled (or use Ollama LLM) |
+| Answer synthesis (`kb_summarize`) | Disabled (or use Ollama LLM) | Disabled (or use Ollama LLM) |
+| File ingestion (`kb_ingest`) | Disabled (or use Ollama LLM) | Disabled (or use Ollama LLM) |
+
+At minimum, you get a fully functional knowledge store with full-text search and a deterministic knowledge graph. Add Ollama for vector search; add an Anthropic API key (or Ollama LLM models) for the smart features.
+
+## Quick Start
 
 ```bash
-git clone <repo-url>
+# 1. Clone and install
+git clone https://github.com/jdkern11/personal_kb.git
 cd personal_kb
 uv sync
+
+# 2. Install Ollama and pull the embedding model
+# See https://ollama.com/download for Ollama installation
+ollama pull qwen3-embedding:0.6b
+
+# 3. (Optional) Pull an Ollama LLM for fully-local operation
+ollama pull qwen3:4b
+
+# 4. Run the setup script to verify everything works
+./setup.sh
+```
+
+Or run the setup script directly — it handles steps 2-4 and checks your environment:
+
+```bash
+git clone https://github.com/jdkern11/personal_kb.git
+cd personal_kb
+uv sync
+./setup.sh
 ```
 
 ## MCP Client Configuration
 
-Add the server to your MCP client config (e.g. `.mcp.json` for Claude Code, `claude_desktop_config.json` for Claude Desktop):
+Add the server to your MCP client config.
+
+**Claude Code** (`.mcp.json` in your project root or `~/.claude/mcp.json` globally):
 
 ```json
 {
@@ -32,7 +74,6 @@ Add the server to your MCP client config (e.g. `.mcp.json` for Claude Code, `cla
       "command": "uv",
       "args": ["run", "--directory", "/path/to/personal_kb", "personal-kb"],
       "env": {
-        "KB_DB_PATH": "~/.local/share/personal_kb/knowledge.db",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     }
@@ -40,7 +81,45 @@ Add the server to your MCP client config (e.g. `.mcp.json` for Claude Code, `cla
 }
 ```
 
-At minimum, set `ANTHROPIC_API_KEY` to enable graph enrichment, query planning, and answer synthesis. Everything else has sensible defaults.
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "personal-kb": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/personal_kb", "personal-kb"],
+      "env": {
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+Replace `/path/to/personal_kb` with the actual path where you cloned the repo. The `ANTHROPIC_API_KEY` is optional — omit it to run without Anthropic features.
+
+### Fully local setup (no API keys)
+
+To use Ollama for all LLM features instead of Anthropic:
+
+```json
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/personal_kb", "personal-kb"],
+      "env": {
+        "KB_EXTRACTION_PROVIDER": "ollama",
+        "KB_QUERY_PROVIDER": "ollama"
+      }
+    }
+  }
+}
+```
+
+This requires `ollama pull qwen3:4b` (or whichever model you set in `KB_LLM_MODEL`).
 
 ## Tools
 
@@ -68,7 +147,7 @@ Answer a question with a synthesized natural language response. Retrieves releva
 
 ### `kb_ingest`
 
-Ingest files from disk into the knowledge base (only available when `KB_MANAGER=TRUE`). Reads files, runs safety checks, and uses Claude Haiku to summarize and extract structured knowledge entries.
+Ingest files from disk into the knowledge base (only available when `KB_MANAGER=TRUE`). Reads files, runs safety checks, and uses an LLM to summarize and extract structured knowledge entries.
 
 ```
 kb_ingest(file_path="/path/to/notes", project_ref="my-project", dry_run=True)
@@ -128,23 +207,12 @@ The server uses two independent LLM slots, each configurable to use either Anthr
 - **Extraction LLM** (`KB_EXTRACTION_PROVIDER`) — Enriches the knowledge graph by extracting entities and relationships from stored entries.
 - **Query LLM** (`KB_QUERY_PROVIDER`) — Plans graph queries from natural language questions and synthesizes answers in `kb_summarize`.
 
-Both default to `anthropic`. To run fully local (requires Ollama with appropriate models pulled):
-
-```json
-{
-  "env": {
-    "KB_EXTRACTION_PROVIDER": "ollama",
-    "KB_QUERY_PROVIDER": "ollama"
-  }
-}
-```
-
-Vector embeddings always use Ollama (local) and are independent of the provider settings above.
+Both default to `anthropic`. Vector embeddings always use Ollama and are independent of the provider settings.
 
 ## Development
 
 ```bash
-uv run pytest              # run tests
-uv run ruff check src/ tests/   # lint
-uv run personal-kb         # run server directly
+uv run pytest                    # run tests
+uv run ruff check src/ tests/    # lint
+uv run personal-kb               # run server directly
 ```
