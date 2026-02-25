@@ -68,3 +68,8 @@ def get_query_provider() -> str:
 def get_log_level() -> str:
     """Return the logging level from KB_LOG_LEVEL."""
     return os.environ.get("KB_LOG_LEVEL", "WARNING")
+
+
+def get_ingest_max_file_size() -> int:
+    """Return max file size in bytes for ingestion from KB_INGEST_MAX_FILE_SIZE."""
+    return int(os.environ.get("KB_INGEST_MAX_FILE_SIZE", str(500 * 1024)))

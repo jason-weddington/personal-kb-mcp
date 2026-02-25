@@ -15,6 +15,12 @@ dependencies = [
 [project.scripts]
 personal-kb = "personal_kb.__main__:main"
 
+[project.optional-dependencies]
+safety = [
+    "detect-secrets>=1.4",
+    "scrubadub>=2.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
@@ -73,6 +79,14 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["detect_secrets", "detect_secrets.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["scrubadub", "scrubadub.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

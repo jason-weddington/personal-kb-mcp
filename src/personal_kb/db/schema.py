@@ -150,3 +150,28 @@ async def apply_graph_schema(db: aiosqlite.Connection) -> None:
     """Create graph_nodes and graph_edges tables."""
     await db.executescript(GRAPH_SCHEMA_SQL)
     await db.commit()
+
+
+INGEST_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS ingested_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    relative_path TEXT NOT NULL UNIQUE,
+    content_hash TEXT NOT NULL,
+    note_node_id TEXT NOT NULL,
+    entry_ids TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    file_extension TEXT NOT NULL,
+    project_ref TEXT,
+    redactions TEXT NOT NULL DEFAULT '[]',
+    ingested_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+
+async def apply_ingest_schema(db: aiosqlite.Connection) -> None:
+    """Create ingested_files table."""
+    await db.executescript(INGEST_SCHEMA_SQL)
+    await db.commit()

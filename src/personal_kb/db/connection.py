@@ -6,7 +6,12 @@ from pathlib import Path
 import aiosqlite
 import sqlite_vec
 
-from personal_kb.db.schema import apply_graph_schema, apply_schema, apply_vec_schema
+from personal_kb.db.schema import (
+    apply_graph_schema,
+    apply_ingest_schema,
+    apply_schema,
+    apply_vec_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,9 @@ async def create_connection(
 
     # Apply graph schema (nodes + edges)
     await apply_graph_schema(db)
+
+    # Apply ingest schema (ingested_files)
+    await apply_ingest_schema(db)
 
     # Apply vec schema if extension loaded
     if vec_available:
