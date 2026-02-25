@@ -9,6 +9,7 @@ dependencies = [
     "aiosqlite>=0.21",
     "sqlite-vec>=0.1.6",
     "httpx>=0.28",
+    "anthropic>=0.40",
 ]
 
 [project.scripts]
@@ -68,6 +69,10 @@ disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
 module = ["sqlite_vec", "sqlite_vec.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["anthropic", "anthropic.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

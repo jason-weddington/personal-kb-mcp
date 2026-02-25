@@ -283,6 +283,40 @@ async def supersedes_chain(
     return chain_ordered
 
 
+async def get_graph_vocabulary(
+    db: aiosqlite.Connection,
+    max_nodes: int = 200,
+) -> dict[str, list[str]]:
+    """Return non-entry node IDs grouped by type, ordered by connection count.
+
+    Returns a dict like {"tag": ["python", "sqlite"], "tool": ["aiosqlite"], ...}
+    with node names stripped of their type prefix. Capped at max_nodes total.
+    """
+    # Count connections per non-entry node, ordered by most connected first
+    query = (
+        "SELECT n.node_id, n.node_type, "
+        "(SELECT COUNT(*) FROM graph_edges WHERE source = n.node_id"
+        " OR target = n.node_id) AS conn_count "
+        "FROM graph_nodes n "
+        "WHERE n.node_type != 'entry' "
+        "ORDER BY conn_count DESC "
+        "LIMIT ?"
+    )
+    cursor = await db.execute(query, (max_nodes,))
+    rows = await cursor.fetchall()
+
+    vocab: dict[str, list[str]] = {}
+    for row in rows:
+        node_id: str = row[0]
+        node_type: str = row[1]
+        # Strip type prefix (e.g., "tag:python" -> "python")
+        prefix = node_type + ":"
+        name = node_id[len(prefix) :] if node_id.startswith(prefix) else node_id
+        vocab.setdefault(node_type, []).append(name)
+
+    return vocab
+
+
 async def _sort_entries(
     db: aiosqlite.Connection,
     entry_ids: list[str],

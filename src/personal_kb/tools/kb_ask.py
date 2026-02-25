@@ -11,6 +11,7 @@ from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence, staleness_warning
 from personal_kb.db.queries import get_entry
+from personal_kb.graph.planner import QueryPlanner
 from personal_kb.graph.queries import (
     bfs_entries,
     entries_for_scope,
@@ -74,9 +75,18 @@ def register_kb_ask(mcp: FastMCP) -> None:
         lifespan = ctx.lifespan_context
         db = lifespan["db"]
         embedder = lifespan["embedder"]
+        query_llm = lifespan.get("query_llm")
 
         if strategy == "auto":
-            return await _strategy_auto(db, embedder, question, scope, include_graph_context, limit)
+            return await _strategy_auto_with_planner(
+                db,
+                embedder,
+                query_llm,
+                question,
+                scope,
+                include_graph_context,
+                limit,
+            )
         elif strategy == "decision_trace":
             return await _strategy_decision_trace(db, question, scope, limit)
         elif strategy == "timeline":
@@ -87,6 +97,62 @@ def register_kb_ask(mcp: FastMCP) -> None:
             return await _strategy_connection(db, scope, target)
 
         return "Strategy not implemented."
+
+
+async def _strategy_auto_with_planner(
+    db: aiosqlite.Connection,
+    embedder: EmbeddingClient | None,
+    query_llm: object | None,
+    question: str,
+    scope: str | None,
+    include_graph_context: bool,
+    limit: int,
+) -> str:
+    """Auto strategy with optional LLM query planner."""
+    from personal_kb.llm.provider import LLMProvider
+
+    plan = None
+    if query_llm is not None and isinstance(query_llm, LLMProvider):
+        planner = QueryPlanner(db, query_llm)
+        plan = await planner.plan(question)
+        logger.debug("Query plan: %s", plan)
+
+    if plan is not None and plan.strategy != "auto":
+        # Dispatch to the planned strategy
+        header = f"[Planned: {plan.strategy}]"
+        if plan.reasoning:
+            header += f" {plan.reasoning}"
+        header += "\n\n"
+
+        if plan.strategy == "decision_trace":
+            result = await _strategy_decision_trace(
+                db,
+                plan.search_query or question,
+                plan.scope or scope,
+                limit,
+            )
+        elif plan.strategy == "timeline":
+            result = await _strategy_timeline(db, plan.scope or scope, limit)
+        elif plan.strategy == "related":
+            result = await _strategy_related(db, plan.scope or scope, limit)
+        elif plan.strategy == "connection":
+            result = await _strategy_connection(db, plan.scope or scope, plan.target)
+        else:
+            result = await _strategy_auto(
+                db,
+                embedder,
+                plan.search_query or question,
+                scope,
+                include_graph_context,
+                limit,
+            )
+        return header + result
+
+    # Fall through: use auto strategy, optionally with refined search query
+    search_query = question
+    if plan is not None and plan.search_query:
+        search_query = plan.search_query
+    return await _strategy_auto(db, embedder, search_query, scope, include_graph_context, limit)
 
 
 async def _strategy_auto(

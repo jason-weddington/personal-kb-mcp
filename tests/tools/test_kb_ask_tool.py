@@ -1,5 +1,6 @@
 """Tests for the kb_ask MCP tool formatting and strategies."""
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -7,10 +8,12 @@ import pytest
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.kb_ask import (
     _format_entries,
+    _strategy_auto_with_planner,
     _strategy_connection,
     _strategy_related,
     _strategy_timeline,
 )
+from tests.conftest import FakeLLM
 
 
 def _make_entry(
@@ -195,3 +198,103 @@ async def test_connection_finds_path(db, graph_builder):
     assert "Connection" in result
     assert "Path:" in result
     assert "has_tag" in result
+
+
+# --- _strategy_auto_with_planner ---
+
+
+@pytest.mark.asyncio
+async def test_auto_with_planner_dispatches_related(db, store, graph_builder, fake_embedder):
+    """Planner choosing 'related' should dispatch to related strategy."""
+    e1 = await store.create_entry(
+        short_title="Python tips",
+        long_title="Python tips",
+        knowledge_details="Use list comprehensions",
+        entry_type=EntryType.LESSON_LEARNED,
+        tags=["python"],
+    )
+    await graph_builder.build_for_entry(e1)
+    e2 = await store.create_entry(
+        short_title="More Python",
+        long_title="More Python tips",
+        knowledge_details="Use generators",
+        entry_type=EntryType.LESSON_LEARNED,
+        tags=["python"],
+    )
+    await graph_builder.build_for_entry(e2)
+
+    plan_response = json.dumps(
+        {
+            "strategy": "related",
+            "scope": e1.id,
+            "reasoning": "Looking for related entries",
+        }
+    )
+    llm = FakeLLM(response=plan_response)
+
+    result = await _strategy_auto_with_planner(
+        db,
+        fake_embedder,
+        llm,
+        "What relates to python tips?",
+        scope=None,
+        include_graph_context=True,
+        limit=20,
+    )
+    assert "[Planned: related]" in result
+    assert e2.id in result
+
+
+@pytest.mark.asyncio
+async def test_auto_with_planner_fallback_when_unavailable(db, fake_embedder, store):
+    """When planner LLM is unavailable, should fall back to auto search."""
+    await store.create_entry(
+        short_title="Test entry",
+        long_title="A test entry",
+        knowledge_details="Some unique content for searching",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    result = await _strategy_auto_with_planner(
+        db,
+        fake_embedder,
+        None,
+        "test entry",
+        scope=None,
+        include_graph_context=True,
+        limit=20,
+    )
+    # Should not crash, should use plain auto strategy
+    assert "[Planned:" not in result
+
+
+@pytest.mark.asyncio
+async def test_auto_with_planner_uses_refined_search_query(db, fake_embedder, store):
+    """When planner returns auto with refined search_query, it should be used."""
+    await store.create_entry(
+        short_title="SQLite WAL",
+        long_title="SQLite WAL mode",
+        knowledge_details="WAL mode improves concurrency",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    plan_response = json.dumps(
+        {
+            "strategy": "auto",
+            "search_query": "sqlite WAL",
+            "reasoning": "Refined search terms",
+        }
+    )
+    llm = FakeLLM(response=plan_response)
+
+    result = await _strategy_auto_with_planner(
+        db,
+        fake_embedder,
+        llm,
+        "how do I make sqlite faster with write ahead logging?",
+        scope=None,
+        include_graph_context=True,
+        limit=20,
+    )
+    # Should use the refined query, not the verbose original
+    assert "Auto search: sqlite WAL" in result

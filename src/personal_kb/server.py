@@ -8,17 +8,38 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from personal_kb.config import get_db_path, get_embedding_dim, get_log_level, is_manager_mode
+from personal_kb.config import (
+    get_db_path,
+    get_embedding_dim,
+    get_extraction_provider,
+    get_log_level,
+    get_query_provider,
+    is_manager_mode,
+)
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.llm import AnthropicLLMClient
 from personal_kb.llm.ollama import OllamaLLMClient
+from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.kb_ask import register_kb_ask
 from personal_kb.tools.kb_maintain import register_kb_maintain
 from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
+from personal_kb.tools.kb_summarize import register_kb_summarize
+
+
+def _create_llm(provider: str) -> LLMProvider | None:
+    """Create an LLM client for the given provider name."""
+    if provider == "anthropic":
+        if AnthropicLLMClient is not None:
+            return AnthropicLLMClient()
+        return None
+    if provider == "ollama":
+        return OllamaLLMClient()
+    return None
 
 
 @asynccontextmanager
@@ -39,8 +60,17 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     store = KnowledgeStore(db)
     embedder = EmbeddingClient(db)
     graph_builder = GraphBuilder(db)
-    llm_client = OllamaLLMClient()
-    graph_enricher = GraphEnricher(db, llm_client)
+
+    # Create LLM clients based on provider config
+    extraction_provider = get_extraction_provider()
+    query_provider = get_query_provider()
+
+    extraction_llm = _create_llm(extraction_provider)
+    query_llm = _create_llm(query_provider)
+
+    graph_enricher: GraphEnricher | None = None
+    if extraction_llm is not None:
+        graph_enricher = GraphEnricher(db, extraction_llm)
 
     # Pre-check Ollama availability (non-blocking, just logs)
     ollama_ok = await embedder.is_available()
@@ -49,11 +79,17 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     else:
         logger.warning("Ollama unavailable — vector search disabled, FTS-only mode")
 
-    llm_ok = await llm_client.is_available()
-    if llm_ok:
-        logger.info("LLM available — graph enrichment enabled")
+    if extraction_llm is not None:
+        logger.info("Extraction LLM: %s", extraction_provider)
     else:
-        logger.warning("LLM unavailable — graph enrichment disabled")
+        logger.warning(
+            "Extraction LLM not available (%s) — graph enrichment disabled", extraction_provider
+        )
+
+    if query_llm is not None:
+        logger.info("Query LLM: %s", query_provider)
+    else:
+        logger.warning("Query LLM not available (%s) — query planning disabled", query_provider)
 
     try:
         yield {
@@ -61,11 +97,15 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             "store": store,
             "embedder": embedder,
             "graph_builder": graph_builder,
-            "llm_client": llm_client,
+            "llm_client": extraction_llm,
             "graph_enricher": graph_enricher,
+            "query_llm": query_llm,
         }
     finally:
-        await llm_client.close()
+        if query_llm is not None:
+            await query_llm.close()
+        if extraction_llm is not None:
+            await extraction_llm.close()
         await embedder.close()
         await db.close()
         logger.info("Database connection closed")
@@ -105,6 +145,10 @@ Use hints to build the knowledge graph:
 - {"supersedes": "kb-00042"} when replacing prior knowledge
 - {"person": "jason"}, {"tool": "sqlite"} to link entities
 - {"related_entities": [{"id": "kb-00003", "edge_type": "depends_on"}]}
+
+Use kb_summarize for synthesized natural language answers with citations.
+Use kb_ask for structured graph queries when you need raw data.
+Use kb_search for keyword/semantic search.
 """
 
 
@@ -119,6 +163,7 @@ def create_server() -> FastMCP:
     register_kb_store(mcp)
     register_kb_search(mcp)
     register_kb_ask(mcp)
+    register_kb_summarize(mcp)
 
     if is_manager_mode():
         register_kb_maintain(mcp)

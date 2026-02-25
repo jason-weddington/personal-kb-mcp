@@ -6,6 +6,7 @@ from personal_kb.graph.queries import (
     bfs_entries,
     entries_for_scope,
     find_path,
+    get_graph_vocabulary,
     get_neighbors,
     supersedes_chain,
 )
@@ -326,3 +327,58 @@ async def test_supersedes_chain_from_end(db, graph_builder):
 
     chain = await supersedes_chain(db, "kb-00002")
     assert chain == ["kb-00001", "kb-00002"]
+
+
+# --- get_graph_vocabulary ---
+
+
+@pytest.mark.asyncio
+async def test_get_graph_vocabulary_basic(db, graph_builder):
+    """Should return non-entry nodes grouped by type."""
+    e1 = _make_entry(entry_id="kb-00001", tags=["python", "sqlite"], project_ref="myproj")
+    await graph_builder.build_for_entry(e1)
+
+    vocab = await get_graph_vocabulary(db)
+    assert "tag" in vocab
+    assert "python" in vocab["tag"]
+    assert "sqlite" in vocab["tag"]
+    assert "project" in vocab
+    assert "myproj" in vocab["project"]
+    # Entry nodes should not appear
+    assert "entry" not in vocab
+
+
+@pytest.mark.asyncio
+async def test_get_graph_vocabulary_ordered_by_connections(db, graph_builder):
+    """Nodes with more connections should appear first."""
+    e1 = _make_entry(entry_id="kb-00001", tags=["popular", "rare"])
+    e2 = _make_entry(entry_id="kb-00002", tags=["popular"])
+    e3 = _make_entry(entry_id="kb-00003", tags=["popular"])
+    await graph_builder.build_for_entry(e1)
+    await graph_builder.build_for_entry(e2)
+    await graph_builder.build_for_entry(e3)
+
+    vocab = await get_graph_vocabulary(db)
+    tags = vocab["tag"]
+    # "popular" has 3 connections, "rare" has 1
+    assert tags.index("popular") < tags.index("rare")
+
+
+@pytest.mark.asyncio
+async def test_get_graph_vocabulary_empty(db):
+    """Should return empty dict when no nodes exist."""
+    vocab = await get_graph_vocabulary(db)
+    assert vocab == {}
+
+
+@pytest.mark.asyncio
+async def test_get_graph_vocabulary_max_nodes(db, graph_builder):
+    """Should respect max_nodes limit."""
+    # Create entries with unique tags to generate many tag nodes
+    for i in range(10):
+        e = _make_entry(entry_id=f"kb-{i:05d}", tags=[f"tag{i}"])
+        await graph_builder.build_for_entry(e)
+
+    vocab = await get_graph_vocabulary(db, max_nodes=3)
+    total = sum(len(v) for v in vocab.values())
+    assert total <= 3

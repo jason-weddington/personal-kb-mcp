@@ -45,6 +45,26 @@ def get_llm_timeout() -> float:
     return float(os.environ.get("KB_LLM_TIMEOUT", "120.0"))
 
 
+def get_anthropic_model() -> str:
+    """Return the Anthropic model name from KB_ANTHROPIC_MODEL."""
+    return os.environ.get("KB_ANTHROPIC_MODEL", "claude-haiku-4-5")
+
+
+def get_anthropic_timeout() -> float:
+    """Return the Anthropic timeout in seconds from KB_ANTHROPIC_TIMEOUT."""
+    return float(os.environ.get("KB_ANTHROPIC_TIMEOUT", "30.0"))
+
+
+def get_extraction_provider() -> str:
+    """Return the LLM provider for graph extraction from KB_EXTRACTION_PROVIDER."""
+    return os.environ.get("KB_EXTRACTION_PROVIDER", "anthropic")
+
+
+def get_query_provider() -> str:
+    """Return the LLM provider for query planning from KB_QUERY_PROVIDER."""
+    return os.environ.get("KB_QUERY_PROVIDER", "anthropic")
+
+
 def get_log_level() -> str:
     """Return the logging level from KB_LOG_LEVEL."""
     return os.environ.get("KB_LOG_LEVEL", "WARNING")
