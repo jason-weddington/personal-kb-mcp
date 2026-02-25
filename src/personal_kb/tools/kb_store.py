@@ -38,13 +38,15 @@ def register_kb_store(mcp: FastMCP) -> None:
 
     @mcp.tool()
     async def kb_store(
-        short_title: Annotated[str, Field(description="Brief identifier for the entry")],
-        long_title: Annotated[str, Field(description="Descriptive title")],
-        knowledge_details: Annotated[str, Field(description="Full content of the knowledge entry")],
+        short_title: Annotated[str, Field(description="Brief identifier for the entry")] = "",
+        long_title: Annotated[str, Field(description="Descriptive title")] = "",
+        knowledge_details: Annotated[
+            str, Field(description="Full content of the knowledge entry")
+        ] = "",
         entry_type: Annotated[
             EntryType,
             Field(description="factual_reference, decision, pattern_convention, lesson_learned"),
-        ],
+        ] = EntryType.FACTUAL_REFERENCE,
         project_ref: Annotated[
             str | None, Field(description="Project tag/category for filtering")
         ] = None,
@@ -76,8 +78,18 @@ def register_kb_store(mcp: FastMCP) -> None:
             str | None,
             Field(description="ID of existing entry to update (e.g. kb-00042)"),
         ] = None,
+        deactivate_entry_id: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "ID of entry to deactivate (soft-delete). "
+                    "Removes from search results and graph. Reversible via kb_maintain."
+                ),
+            ),
+        ] = None,
         change_reason: Annotated[
-            str | None, Field(description="Reason for update (required when updating)")
+            str | None,
+            Field(description="Reason for update or deactivation"),
         ] = None,
         ctx: Context | None = None,
     ) -> str:
@@ -86,6 +98,8 @@ def register_kb_store(mcp: FastMCP) -> None:
         Creates a new entry or updates an existing one. Every update creates a version
         record preserving the full history. Entries are automatically indexed for
         full-text search and (when Ollama is available) vector search.
+
+        Use deactivate_entry_id to soft-delete incorrect or obsolete entries.
 
         Use entry_type to classify the knowledge:
         - factual_reference: version numbers, API endpoints, config values
@@ -99,10 +113,29 @@ def register_kb_store(mcp: FastMCP) -> None:
         store: KnowledgeStore = lifespan["store"]
         embedder: EmbeddingClient = lifespan["embedder"]
         graph_builder: GraphBuilder = lifespan["graph_builder"]
+        db = lifespan["db"]
 
         graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
 
+        # --- Deactivate path ---
+        if deactivate_entry_id:
+            try:
+                entry = await store.deactivate_entry(deactivate_entry_id)
+            except ValueError as e:
+                return f"Error: {e}"
+            # Remove outgoing graph edges
+            await db.execute(
+                "DELETE FROM graph_edges WHERE source = ?",
+                (deactivate_entry_id,),
+            )
+            await db.commit()
+            reason = f" ({change_reason})" if change_reason else ""
+            return f"Deactivated entry {entry.id}: {entry.short_title}{reason}"
+
+        # --- Update path ---
         if update_entry_id:
+            if not knowledge_details:
+                return "Error: knowledge_details is required when updating."
             entry = await store.update_entry(
                 entry_id=update_entry_id,
                 knowledge_details=knowledge_details,
@@ -118,6 +151,13 @@ def register_kb_store(mcp: FastMCP) -> None:
             await _enrich_graph(graph_enricher, entry)
             entry = await store.get_entry(entry.id) or entry
             return format_store_result(entry, is_update=True)
+
+        # --- Create path ---
+        if not short_title or not long_title or not knowledge_details:
+            return (
+                "Error: short_title, long_title, and knowledge_details "
+                "are required when creating a new entry."
+            )
 
         entry = await store.create_entry(
             short_title=short_title,
