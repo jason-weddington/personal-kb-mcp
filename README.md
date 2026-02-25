@@ -2,6 +2,10 @@
 
 A persistent knowledge base for AI coding agents, exposed as an [MCP](https://modelcontextprotocol.io/) server. Agents store technical decisions, debugging insights, patterns, and facts — the server builds a knowledge graph automatically and answers natural language queries with cited, synthesized responses.
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/jason-weddington/personal-kb-mcp/main/install.sh | bash
+```
+
 ## Features
 
 - **Hybrid search** — BM25 full-text search + vector similarity (via Ollama embeddings), fused with Reciprocal Rank Fusion
