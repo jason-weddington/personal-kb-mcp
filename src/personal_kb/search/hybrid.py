@@ -67,10 +67,10 @@ async def hybrid_search(
         if entry is None:
             continue
 
-        # Apply confidence decay
-        created = entry.created_at or now
+        # Apply confidence decay (reset clock on updates)
+        anchor = entry.updated_at or entry.created_at or now
         eff_conf = compute_effective_confidence(
-            entry.confidence_level, entry.entry_type, created, now
+            entry.confidence_level, entry.entry_type, anchor, now
         )
 
         # Filter stale unless requested

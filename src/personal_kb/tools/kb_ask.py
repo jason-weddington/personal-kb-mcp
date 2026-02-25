@@ -373,7 +373,7 @@ async def _strategy_connection(
                 eff = compute_effective_confidence(
                     entry.confidence_level,
                     entry.entry_type,
-                    entry.created_at or now,
+                    entry.updated_at or entry.created_at or now,
                     now,
                 )
                 lines.append(
@@ -392,8 +392,8 @@ def _format_entries(
     lines = [f"{header}\n", f"Found {len(entries_with_context)} result(s):\n"]
 
     for entry, ctx_str in entries_with_context:
-        created = entry.created_at or now
-        eff = compute_effective_confidence(entry.confidence_level, entry.entry_type, created, now)
+        anchor = entry.updated_at or entry.created_at or now
+        eff = compute_effective_confidence(entry.confidence_level, entry.entry_type, anchor, now)
         warning = staleness_warning(eff, entry.entry_type)
 
         lines.append(f"[{entry.id}] {entry.entry_type.value}: {entry.short_title} ({eff:.0%})")

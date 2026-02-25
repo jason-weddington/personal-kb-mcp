@@ -54,7 +54,16 @@ def register_kb_store(mcp: FastMCP) -> None:
         ] = None,
         confidence_level: Annotated[
             float,
-            Field(description="Initial confidence score (0.0-1.0)", ge=0.0, le=1.0),
+            Field(
+                description=(
+                    "Initial confidence score (0.0-1.0). "
+                    "Decays over time based on entry_type half-life: "
+                    "factual_reference 90d, decision 1y, pattern_convention 2y, lesson_learned 5y. "
+                    "Lower for uncertain info, higher for verified facts. Default 0.9"
+                ),
+                ge=0.0,
+                le=1.0,
+            ),
         ] = 0.9,
         tags: Annotated[
             list[str] | None, Field(description="Freeform tags for categorization")
