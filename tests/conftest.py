@@ -6,6 +6,7 @@ import pytest_asyncio
 
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
+from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.store.knowledge_store import KnowledgeStore
 
 
@@ -80,10 +81,47 @@ class FakeEmbedder:
         pass
 
 
+class FakeLLM:
+    """Controllable fake LLM for testing."""
+
+    def __init__(self, response: str | None = "[]", available: bool = True):
+        self.response = response
+        self._available = available
+        self.last_prompt: str | None = None
+        self.last_system: str | None = None
+        self.generate_count = 0
+
+    async def is_available(self) -> bool:
+        return self._available
+
+    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+        self.last_prompt = prompt
+        self.last_system = system
+        self.generate_count += 1
+        if not self._available:
+            return None
+        return self.response
+
+    async def close(self) -> None:
+        pass
+
+
 @pytest_asyncio.fixture
 async def graph_builder(db):
     """Graph builder backed by in-memory DB."""
     return GraphBuilder(db)
+
+
+@pytest_asyncio.fixture
+async def fake_llm():
+    """Controllable fake LLM client."""
+    return FakeLLM()
+
+
+@pytest_asyncio.fixture
+async def graph_enricher(db, fake_llm):
+    """Graph enricher backed by in-memory DB and fake LLM."""
+    return GraphEnricher(db, fake_llm)
 
 
 @pytest_asyncio.fixture

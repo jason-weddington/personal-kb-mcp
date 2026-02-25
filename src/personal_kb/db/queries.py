@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 import aiosqlite
 
@@ -125,6 +126,102 @@ async def insert_version(db: aiosqlite.Connection, version: EntryVersion) -> Non
         ),
     )
     await db.commit()
+
+
+async def deactivate_entry_db(db: aiosqlite.Connection, entry_id: str) -> None:
+    """Set is_active=0 and update timestamp."""
+    await db.execute(
+        "UPDATE knowledge_entries SET is_active = 0, updated_at = ? WHERE id = ?",
+        (_now_iso(), entry_id),
+    )
+    await db.commit()
+
+
+async def reactivate_entry_db(db: aiosqlite.Connection, entry_id: str) -> None:
+    """Set is_active=1 and update timestamp."""
+    await db.execute(
+        "UPDATE knowledge_entries SET is_active = 1, updated_at = ? WHERE id = ?",
+        (_now_iso(), entry_id),
+    )
+    await db.commit()
+
+
+async def delete_entry_cascade(db: aiosqlite.Connection, entry_id: str) -> None:
+    """Hard-delete an entry and all related data."""
+    await db.execute("DELETE FROM knowledge_vec WHERE entry_id = ?", (entry_id,))
+    await db.execute("DELETE FROM entry_versions WHERE entry_id = ?", (entry_id,))
+    await db.execute("DELETE FROM graph_edges WHERE source = ? OR target = ?", (entry_id, entry_id))
+    await db.execute("DELETE FROM graph_nodes WHERE node_id = ?", (entry_id,))
+    await db.execute("DELETE FROM knowledge_entries WHERE id = ?", (entry_id,))
+    await db.commit()
+
+
+async def get_all_active_entry_ids(db: aiosqlite.Connection) -> list[str]:
+    """Get all active entry IDs."""
+    cursor = await db.execute("SELECT id FROM knowledge_entries WHERE is_active = 1 ORDER BY id")
+    rows = await cursor.fetchall()
+    return [row["id"] for row in rows]
+
+
+async def get_db_stats(db: aiosqlite.Connection) -> dict[str, Any]:
+    """Return database statistics: entry counts, graph counts, embedding counts."""
+    stats: dict[str, Any] = {}
+
+    # Entry counts
+    cursor = await db.execute(
+        "SELECT COUNT(*) as total,"
+        " SUM(is_active) as active,"
+        " COUNT(*) - SUM(is_active) as inactive"
+        " FROM knowledge_entries"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RuntimeError("COUNT query returned no rows")
+    stats["total_entries"] = row["total"]
+    stats["active_entries"] = row["active"] or 0
+    stats["inactive_entries"] = row["inactive"] or 0
+
+    # By type
+    cursor = await db.execute(
+        "SELECT entry_type, COUNT(*) as cnt"
+        " FROM knowledge_entries WHERE is_active = 1"
+        " GROUP BY entry_type ORDER BY entry_type"
+    )
+    stats["by_type"] = {row["entry_type"]: row["cnt"] for row in await cursor.fetchall()}
+
+    # By project
+    cursor = await db.execute(
+        "SELECT COALESCE(project_ref, '(none)') as proj, COUNT(*) as cnt"
+        " FROM knowledge_entries WHERE is_active = 1"
+        " GROUP BY project_ref ORDER BY cnt DESC"
+    )
+    stats["by_project"] = {row["proj"]: row["cnt"] for row in await cursor.fetchall()}
+
+    # Embeddings
+    cursor = await db.execute(
+        "SELECT SUM(has_embedding) as with_emb,"
+        " COUNT(*) - SUM(has_embedding) as without_emb"
+        " FROM knowledge_entries WHERE is_active = 1"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RuntimeError("COUNT query returned no rows")
+    stats["with_embeddings"] = row["with_emb"] or 0
+    stats["without_embeddings"] = row["without_emb"] or 0
+
+    # Graph nodes by type
+    cursor = await db.execute(
+        "SELECT node_type, COUNT(*) as cnt FROM graph_nodes GROUP BY node_type ORDER BY node_type"
+    )
+    stats["graph_nodes_by_type"] = {row["node_type"]: row["cnt"] for row in await cursor.fetchall()}
+
+    # Graph edges by type
+    cursor = await db.execute(
+        "SELECT edge_type, COUNT(*) as cnt FROM graph_edges GROUP BY edge_type ORDER BY edge_type"
+    )
+    stats["graph_edges_by_type"] = {row["edge_type"]: row["cnt"] for row in await cursor.fetchall()}
+
+    return stats
 
 
 def _parse_tags(raw: str) -> list[str]:

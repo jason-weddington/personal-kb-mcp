@@ -43,5 +43,7 @@ Format: `type(optional-scope): description`
 | `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Embedding model |
 | `KB_EMBEDDING_DIM` | `1024` | Embedding vector dimensions |
 | `KB_OLLAMA_TIMEOUT` | `10.0` | Ollama timeout (seconds) |
+| `KB_LLM_MODEL` | `qwen3:4b` | LLM model for graph enrichment |
+| `KB_LLM_TIMEOUT` | `120.0` | LLM generation timeout (seconds) |
 | `KB_MANAGER` | (unset) | Set `TRUE` for maintenance tools |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |

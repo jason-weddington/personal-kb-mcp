@@ -8,12 +8,15 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from personal_kb.config import get_db_path, get_embedding_dim, get_log_level
+from personal_kb.config import get_db_path, get_embedding_dim, get_log_level, is_manager_mode
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
+from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.llm.ollama import OllamaLLMClient
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.kb_ask import register_kb_ask
+from personal_kb.tools.kb_maintain import register_kb_maintain
 from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
 
@@ -36,6 +39,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     store = KnowledgeStore(db)
     embedder = EmbeddingClient(db)
     graph_builder = GraphBuilder(db)
+    llm_client = OllamaLLMClient()
+    graph_enricher = GraphEnricher(db, llm_client)
 
     # Pre-check Ollama availability (non-blocking, just logs)
     ollama_ok = await embedder.is_available()
@@ -44,9 +49,23 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     else:
         logger.warning("Ollama unavailable — vector search disabled, FTS-only mode")
 
+    llm_ok = await llm_client.is_available()
+    if llm_ok:
+        logger.info("LLM available — graph enrichment enabled")
+    else:
+        logger.warning("LLM unavailable — graph enrichment disabled")
+
     try:
-        yield {"db": db, "store": store, "embedder": embedder, "graph_builder": graph_builder}
+        yield {
+            "db": db,
+            "store": store,
+            "embedder": embedder,
+            "graph_builder": graph_builder,
+            "llm_client": llm_client,
+            "graph_enricher": graph_enricher,
+        }
     finally:
+        await llm_client.close()
         await embedder.close()
         await db.close()
         logger.info("Database connection closed")
@@ -100,5 +119,8 @@ def create_server() -> FastMCP:
     register_kb_store(mcp)
     register_kb_search(mcp)
     register_kb_ask(mcp)
+
+    if is_manager_mode():
+        register_kb_maintain(mcp)
 
     return mcp

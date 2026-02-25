@@ -34,3 +34,8 @@ class KnowledgeEntry(BaseModel):
     is_active: bool = True
     has_embedding: bool = False
     version: int = 1
+
+    @property
+    def embedding_text(self) -> str:
+        """Text used for generating embeddings."""
+        return f"{self.short_title} {self.long_title} {self.knowledge_details}"

@@ -124,6 +124,53 @@ async def test_get_nonexistent_entry(store):
 
 
 @pytest.mark.asyncio
+async def test_deactivate_entry(store):
+    entry = await store.create_entry(
+        short_title="To deactivate",
+        long_title="Entry to deactivate",
+        knowledge_details="Will be deactivated",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    deactivated = await store.deactivate_entry(entry.id)
+    assert deactivated.is_active is False
+
+    fetched = await store.get_entry(entry.id)
+    assert fetched is not None
+    assert fetched.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_deactivate_nonexistent_raises(store):
+    with pytest.raises(ValueError, match="not found"):
+        await store.deactivate_entry("kb-99999")
+
+
+@pytest.mark.asyncio
+async def test_reactivate_entry(store):
+    entry = await store.create_entry(
+        short_title="To reactivate",
+        long_title="Entry to reactivate",
+        knowledge_details="Will be reactivated",
+        entry_type=EntryType.DECISION,
+    )
+    await store.deactivate_entry(entry.id)
+    reactivated = await store.reactivate_entry(entry.id)
+    assert reactivated.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_reactivate_active_entry_raises(store):
+    entry = await store.create_entry(
+        short_title="Already active",
+        long_title="Already active entry",
+        knowledge_details="Already active",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    with pytest.raises(ValueError, match="already active"):
+        await store.reactivate_entry(entry.id)
+
+
+@pytest.mark.asyncio
 async def test_has_embedding_flag(store):
     entry = await store.create_entry(
         short_title="Embed test",

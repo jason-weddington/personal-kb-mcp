@@ -8,6 +8,7 @@ from fastmcp.server.context import Context
 from pydantic import Field
 
 from personal_kb.graph.builder import GraphBuilder
+from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
@@ -90,6 +91,8 @@ def register_kb_store(mcp: FastMCP) -> None:
         embedder: EmbeddingClient = lifespan["embedder"]
         graph_builder: GraphBuilder = lifespan["graph_builder"]
 
+        graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
+
         if update_entry_id:
             entry = await store.update_entry(
                 entry_id=update_entry_id,
@@ -103,6 +106,7 @@ def register_kb_store(mcp: FastMCP) -> None:
             if embedder:
                 await _embed_entry(embedder, store, entry)
             await _build_graph(graph_builder, entry)
+            await _enrich_graph(graph_enricher, entry)
             entry = await store.get_entry(entry.id) or entry
             return format_store_result(entry, is_update=True)
 
@@ -122,6 +126,7 @@ def register_kb_store(mcp: FastMCP) -> None:
         if embedder:
             await _embed_entry(embedder, store, entry)
         await _build_graph(graph_builder, entry)
+        await _enrich_graph(graph_enricher, entry)
         entry = await store.get_entry(entry.id) or entry
 
         return format_store_result(entry, is_update=False)
@@ -135,13 +140,22 @@ async def _build_graph(graph_builder: GraphBuilder, entry: KnowledgeEntry) -> No
         logger.warning("Failed to build graph for entry %s", entry.id, exc_info=True)
 
 
+async def _enrich_graph(enricher: GraphEnricher | None, entry: KnowledgeEntry) -> None:
+    """Attempt to enrich graph via LLM, logging failures without raising."""
+    if enricher is None:
+        return
+    try:
+        await enricher.enrich_entry(entry)
+    except Exception:
+        logger.warning("Failed to enrich graph for entry %s", entry.id, exc_info=True)
+
+
 async def _embed_entry(
     embedder: EmbeddingClient, store: KnowledgeStore, entry: KnowledgeEntry
 ) -> None:
     """Attempt to embed an entry, logging failures without raising."""
     try:
-        text = f"{entry.short_title} {entry.long_title} {entry.knowledge_details}"
-        embedding = await embedder.embed(text)
+        embedding = await embedder.embed(entry.embedding_text)
         if embedding is not None:
             await embedder.store_embedding(entry.id, embedding)
             await store.mark_embedding(entry.id, True)

@@ -35,6 +35,16 @@ def get_embedding_dim() -> int:
     return int(os.environ.get("KB_EMBEDDING_DIM", "1024"))
 
 
+def get_llm_model() -> str:
+    """Return the LLM model name from KB_LLM_MODEL."""
+    return os.environ.get("KB_LLM_MODEL", "qwen3:4b")
+
+
+def get_llm_timeout() -> float:
+    """Return the LLM timeout in seconds from KB_LLM_TIMEOUT."""
+    return float(os.environ.get("KB_LLM_TIMEOUT", "120.0"))
+
+
 def get_log_level() -> str:
     """Return the logging level from KB_LOG_LEVEL."""
     return os.environ.get("KB_LOG_LEVEL", "WARNING")

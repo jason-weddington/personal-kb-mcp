@@ -6,10 +6,12 @@ from datetime import UTC, datetime
 import aiosqlite
 
 from personal_kb.db.queries import (
+    deactivate_entry_db,
     get_entry,
     insert_entry,
     insert_version,
     next_entry_id,
+    reactivate_entry_db,
     update_entry,
 )
 from personal_kb.models.entry import EntryType, KnowledgeEntry
@@ -137,6 +139,32 @@ class KnowledgeStore:
             (int(has_embedding), entry_id),
         )
         await self.db.commit()
+
+    async def deactivate_entry(self, entry_id: str) -> KnowledgeEntry:
+        """Deactivate an entry (soft-delete). Entry must exist and be active."""
+        existing = await get_entry(self.db, entry_id)
+        if existing is None:
+            raise ValueError(f"Entry {entry_id} not found")
+        if not existing.is_active:
+            raise ValueError(f"Entry {entry_id} is already inactive")
+
+        await deactivate_entry_db(self.db, entry_id)
+        entry = await get_entry(self.db, entry_id)
+        logger.info("Deactivated entry %s", entry_id)
+        return entry  # type: ignore[return-value]
+
+    async def reactivate_entry(self, entry_id: str) -> KnowledgeEntry:
+        """Reactivate a previously deactivated entry. Entry must exist and be inactive."""
+        existing = await get_entry(self.db, entry_id)
+        if existing is None:
+            raise ValueError(f"Entry {entry_id} not found")
+        if existing.is_active:
+            raise ValueError(f"Entry {entry_id} is already active")
+
+        await reactivate_entry_db(self.db, entry_id)
+        entry = await get_entry(self.db, entry_id)
+        logger.info("Reactivated entry %s", entry_id)
+        return entry  # type: ignore[return-value]
 
     async def get_entries_without_embeddings(self, limit: int = 100) -> list[str]:
         """Get entry IDs that need embeddings."""
