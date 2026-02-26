@@ -5,6 +5,7 @@ import json
 from personal_kb.ingest.extractor import (
     ExtractedEntry,
     _is_code_file,
+    _is_prose_file,
     _parse_entries,
     extract_entries,
     summarize_file,
@@ -39,6 +40,32 @@ class TestIsCodeFile:
 
     def test_nested_path(self):
         assert _is_code_file("src/personal_kb/tools/kb_store.py") is True
+
+
+class TestIsProseFile:
+    def test_markdown_is_prose(self):
+        assert _is_prose_file("README.md") is True
+
+    def test_txt_is_prose(self):
+        assert _is_prose_file("notes.txt") is True
+
+    def test_rst_is_prose(self):
+        assert _is_prose_file("docs/guide.rst") is True
+
+    def test_html_is_prose(self):
+        assert _is_prose_file("page.html") is True
+
+    def test_python_is_not_prose(self):
+        assert _is_prose_file("main.py") is False
+
+    def test_yaml_is_not_prose(self):
+        assert _is_prose_file("config.yaml") is False
+
+    def test_json_is_not_prose(self):
+        assert _is_prose_file("data.json") is False
+
+    def test_case_insensitive(self):
+        assert _is_prose_file("NOTES.TXT") is True
 
 
 class TestSummarizeFile:
@@ -79,6 +106,22 @@ class TestSummarizeFile:
     async def test_no_code_supplement_for_docs(self):
         llm = FakeLLM(response="summary")
         await summarize_file(llm, "notes.md", "# Notes")
+        assert "SOURCE CODE file" not in llm.last_system
+
+    async def test_uses_prose_supplement_for_markdown(self):
+        llm = FakeLLM(response="summary")
+        await summarize_file(llm, "notes.md", "# Notes")
+        assert "NOTES or DOCUMENTATION" in llm.last_system
+
+    async def test_uses_prose_supplement_for_txt(self):
+        llm = FakeLLM(response="summary")
+        await summarize_file(llm, "ideas.txt", "Some ideas")
+        assert "NOTES or DOCUMENTATION" in llm.last_system
+
+    async def test_no_prose_supplement_for_config(self):
+        llm = FakeLLM(response="summary")
+        await summarize_file(llm, "config.yaml", "key: value")
+        assert "NOTES or DOCUMENTATION" not in llm.last_system
         assert "SOURCE CODE file" not in llm.last_system
 
 
@@ -124,6 +167,18 @@ class TestExtractEntries:
     async def test_no_code_supplement_for_docs(self):
         llm = FakeLLM(response="[]")
         await extract_entries(llm, "guide.md", "# Guide")
+        assert "SOURCE CODE file" not in llm.last_system
+
+    async def test_uses_prose_supplement_for_markdown(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(llm, "guide.md", "# Guide")
+        assert "NOTES or DOCUMENTATION" in llm.last_system
+        assert "original insights" in llm.last_system
+
+    async def test_no_prose_supplement_for_config(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(llm, "settings.toml", "[section]")
+        assert "NOTES or DOCUMENTATION" not in llm.last_system
         assert "SOURCE CODE file" not in llm.last_system
 
 

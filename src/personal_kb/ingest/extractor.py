@@ -54,6 +54,17 @@ _CODE_EXTENSIONS: set[str] = {
     ".zig",
 }
 
+_PROSE_EXTENSIONS: set[str] = {
+    ".md",
+    ".markdown",
+    ".txt",
+    ".rst",
+    ".org",
+    ".adoc",
+    ".tex",
+    ".html",
+}
+
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
@@ -104,6 +115,13 @@ Example output:
 ]\
 """
 
+_SUMMARIZE_PROSE_SUPPLEMENT = """
+
+This is a NOTES or DOCUMENTATION file. Focus the summary on the key insights, \
+conclusions, or decisions documented — not on background context or definitions \
+the reader could find elsewhere.\
+"""
+
 _EXTRACT_CODE_SUPPLEMENT = """
 
 This is a SOURCE CODE file. The reader has full access to the code itself via \
@@ -126,12 +144,40 @@ If the code has few meaningful comments, extract fewer entries. Return [] if \
 there is nothing worth preserving beyond what the code itself communicates.\
 """
 
+_EXTRACT_PROSE_SUPPLEMENT = """
+
+This is a NOTES or DOCUMENTATION file. Focus on the author's original insights, \
+conclusions, and non-obvious reasoning — the things worth recalling later. \
+Do NOT extract:
+- Background definitions or introductory context the reader could find on \
+Wikipedia or in standard references
+- Restatements of well-known facts that merely set the stage for the real content
+- Generic best-practice advice without specific justification
+
+Instead, extract:
+- Novel arguments, analyses, or conclusions the author reaches
+- Non-obvious cause-and-effect reasoning or myth-busting
+- Specific data points, thresholds, or measurements cited as evidence
+- Decisions and their rationale ("chose X because Y")
+- Hard-won lessons or warnings from experience
+
+Fewer high-quality entries are better than many shallow ones. If the file is \
+mostly background context with one key insight, extract just that insight.\
+"""
+
 
 def _is_code_file(file_path: str) -> bool:
     """Check if a file path refers to a source code file."""
     from pathlib import PurePosixPath
 
     return PurePosixPath(file_path).suffix.lower() in _CODE_EXTENSIONS
+
+
+def _is_prose_file(file_path: str) -> bool:
+    """Check if a file path refers to a prose/documentation file."""
+    from pathlib import PurePosixPath
+
+    return PurePosixPath(file_path).suffix.lower() in _PROSE_EXTENSIONS
 
 
 @dataclass
@@ -159,6 +205,8 @@ async def summarize_file(llm: LLMProvider, file_path: str, content: str) -> str 
     system = _SUMMARIZE_SYSTEM
     if _is_code_file(file_path):
         system += _SUMMARIZE_CODE_SUPPLEMENT
+    elif _is_prose_file(file_path):
+        system += _SUMMARIZE_PROSE_SUPPLEMENT
 
     return await llm.generate(prompt, system=system)
 
@@ -177,6 +225,8 @@ async def extract_entries(llm: LLMProvider, file_path: str, content: str) -> lis
     system = _EXTRACT_SYSTEM
     if _is_code_file(file_path):
         system += _EXTRACT_CODE_SUPPLEMENT
+    elif _is_prose_file(file_path):
+        system += _EXTRACT_PROSE_SUPPLEMENT
 
     raw = await llm.generate(prompt, system=system)
     if raw is None:
