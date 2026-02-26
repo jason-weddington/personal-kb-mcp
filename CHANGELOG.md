@@ -7,44 +7,44 @@
 ### Chores
 
 - Raise coverage threshold to 76%
-  ([`2c4ea69`](https://github.com/home/jason/git/personal_kb/commit/2c4ea6989a6409ed613700f6133f8ccc271ca625))
+  ([`2c4ea69`](https://github.com/jason-weddington/personal-kb-mcp/commit/2c4ea6989a6409ed613700f6133f8ccc271ca625))
 
 ### Documentation
 
 - Add how_it_works.md technical documentation
-  ([`862baa9`](https://github.com/home/jason/git/personal_kb/commit/862baa92ea9de8d4b826f5ebac30ee13d14fec45))
+  ([`862baa9`](https://github.com/jason-weddington/personal-kb-mcp/commit/862baa92ea9de8d4b826f5ebac30ee13d14fec45))
 
 - Consolidate roadmap into dedicated ROADMAP.md
-  ([`fcd21bd`](https://github.com/home/jason/git/personal_kb/commit/fcd21bd2675905df715e4cd4bf5a85eb47acdbff))
+  ([`fcd21bd`](https://github.com/jason-weddington/personal-kb-mcp/commit/fcd21bd2675905df715e4cd4bf5a85eb47acdbff))
 
 - Improve README for public release and add setup script
-  ([`372273f`](https://github.com/home/jason/git/personal_kb/commit/372273fc6e85bd550d6e31b0cd206f66b3d4d371))
+  ([`372273f`](https://github.com/jason-weddington/personal-kb-mcp/commit/372273fc6e85bd550d6e31b0cd206f66b3d4d371))
 
 - Update README with kb_ingest tool and mark initial scope complete
-  ([`982b86c`](https://github.com/home/jason/git/personal_kb/commit/982b86c2ffccb5870ddbf9f0da291e54d1e72ce7))
+  ([`982b86c`](https://github.com/jason-weddington/personal-kb-mcp/commit/982b86c2ffccb5870ddbf9f0da291e54d1e72ce7))
 
 ### Features
 
 - Add AWS Bedrock LLM provider
-  ([`b0ccc29`](https://github.com/home/jason/git/personal_kb/commit/b0ccc29017f414f2f02e2b1f75c9aa5803122c30))
+  ([`b0ccc29`](https://github.com/jason-weddington/personal-kb-mcp/commit/b0ccc29017f414f2f02e2b1f75c9aa5803122c30))
 
 - Add kb_ingest MCP tool for disk file ingestion
-  ([`2ee5aba`](https://github.com/home/jason/git/personal_kb/commit/2ee5aba78c8ef378557d9656395dd2a67c093292))
+  ([`2ee5aba`](https://github.com/jason-weddington/personal-kb-mcp/commit/2ee5aba78c8ef378557d9656395dd2a67c093292))
 
 - Add one-liner install script
-  ([`c04020a`](https://github.com/home/jason/git/personal_kb/commit/c04020a7a629f0b02e99e7d73df3e99ba122a02e))
+  ([`c04020a`](https://github.com/jason-weddington/personal-kb-mcp/commit/c04020a7a629f0b02e99e7d73df3e99ba122a02e))
 
 - **db**: Add ingested_files table schema
-  ([`611bfb4`](https://github.com/home/jason/git/personal_kb/commit/611bfb4ddbc6a6f6a241e7ac586449ba6630b87e))
+  ([`611bfb4`](https://github.com/jason-weddington/personal-kb-mcp/commit/611bfb4ddbc6a6f6a241e7ac586449ba6630b87e))
 
 - **ingest**: Add file ingestion orchestrator
-  ([`2796d9f`](https://github.com/home/jason/git/personal_kb/commit/2796d9f96bb16f6a4b4fb0d963b4a755247eadb5))
+  ([`2796d9f`](https://github.com/jason-weddington/personal-kb-mcp/commit/2796d9f96bb16f6a4b4fb0d963b4a755247eadb5))
 
 - **ingest**: Add LLM file summarization and entry extraction
-  ([`33f6424`](https://github.com/home/jason/git/personal_kb/commit/33f642469833aa793e057daf85dad9048e0a951f))
+  ([`33f6424`](https://github.com/jason-weddington/personal-kb-mcp/commit/33f642469833aa793e057daf85dad9048e0a951f))
 
 - **ingest**: Add safety pipeline with detect-secrets and scrubadub
-  ([`4d73461`](https://github.com/home/jason/git/personal_kb/commit/4d73461f508c43409787aae5b2a367f7c55875e4))
+  ([`4d73461`](https://github.com/jason-weddington/personal-kb-mcp/commit/4d73461f508c43409787aae5b2a367f7c55875e4))
 
 
 ## v0.2.0 (2026-02-24)
@@ -52,18 +52,18 @@
 ### Chores
 
 - Add auto-versioning with semantic-release and conventional commits
-  ([`a624c00`](https://github.com/home/jason/git/personal_kb/commit/a624c00c91b735523f5ffccab059ccaa4d607a8e))
+  ([`a624c00`](https://github.com/jason-weddington/personal-kb-mcp/commit/a624c00c91b735523f5ffccab059ccaa4d607a8e))
 
 - Configure semantic-release for 0.x versioning
-  ([`1bcbdd9`](https://github.com/home/jason/git/personal_kb/commit/1bcbdd9ffecb2ad3523b2da6e13bf4421867620e))
+  ([`1bcbdd9`](https://github.com/jason-weddington/personal-kb-mcp/commit/1bcbdd9ffecb2ad3523b2da6e13bf4421867620e))
 
 ### Features
 
 - Add knowledge graph with deterministic extraction (Phase 3)
-  ([`96608c0`](https://github.com/home/jason/git/personal_kb/commit/96608c036d18ef8f3d65427ca27584b5f91bd557))
+  ([`96608c0`](https://github.com/jason-weddington/personal-kb-mcp/commit/96608c036d18ef8f3d65427ca27584b5f91bd557))
 
 - Add MCP server instructions for proactive KB usage
-  ([`d4fc513`](https://github.com/home/jason/git/personal_kb/commit/d4fc51397c8ded19f79127094bfae993228ebd5f))
+  ([`d4fc513`](https://github.com/jason-weddington/personal-kb-mcp/commit/d4fc51397c8ded19f79127094bfae993228ebd5f))
 
 
 ## v0.1.0 (2026-02-24)

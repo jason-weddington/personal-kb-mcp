@@ -32,6 +32,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.14",
     "pre-commit>=4",
+    "python-semantic-release>=10.5",
 ]
 
 [tool.pytest.ini_options]
@@ -118,6 +119,11 @@ build_command = "uv build"
 allow_zero_version = true
 major_on_zero = false
 commit_message = "chore(release): v{version}"
+
+[tool.semantic_release.remote]
+type = "github"
+name = "github"
+url = "https://github.com/jason-weddington/personal-kb-mcp"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_kb"]
