@@ -15,6 +15,45 @@ _MAX_ENTRIES_PER_FILE = 10
 
 _VALID_ENTRY_TYPES = {"factual_reference", "decision", "pattern_convention", "lesson_learned"}
 
+_CODE_EXTENSIONS: set[str] = {
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".rb",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".swift",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".fish",
+    ".sql",
+    ".r",
+    ".R",
+    ".lua",
+    ".pl",
+    ".pm",
+    ".ex",
+    ".exs",
+    ".scala",
+    ".clj",
+    ".hs",
+    ".erl",
+    ".elm",
+    ".dart",
+    ".v",
+    ".zig",
+}
+
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
@@ -25,6 +64,13 @@ might be useful to recall later.
 
 Be specific and factual. Focus on WHAT the file teaches, not how it's formatted. \
 Return ONLY the summary text, no JSON, no markdown formatting.\
+"""
+
+_SUMMARIZE_CODE_SUPPLEMENT = """
+
+This is a SOURCE CODE file. The reader has full access to the code via IDE tools, \
+so focus the summary on what the code DOES at a high level and any notable \
+design decisions — not implementation details they can read themselves.\
 """
 
 _EXTRACT_SYSTEM = """\
@@ -58,6 +104,35 @@ Example output:
 ]\
 """
 
+_EXTRACT_CODE_SUPPLEMENT = """
+
+This is a SOURCE CODE file. The reader has full access to the code itself via \
+IDE tools (LSP, grep, file reading), so they can already see what every function \
+and class does. Do NOT extract:
+- What functions or classes do — the reader can read the code
+- Common programming patterns (caching, lazy loading, error handling, etc.) \
+unless there is a project-specific twist that isn't obvious from the code
+- API signatures, data structures, or type definitions
+
+Instead, focus on COMMENTS and ANNOTATIONS left by the developer — these encode \
+hard-won lessons and context that isn't expressed by the code itself. Look for:
+- Workaround comments (HACK, WORKAROUND, XXX, NOTE, FIXME with context)
+- Decision rationale ("we do X because Y", "chose X over Y because...")
+- External system gotchas (API quirks, rate limits, undocumented behaviors)
+- Explanations of non-obvious thresholds, magic numbers, or heuristics
+- Warnings about things that look wrong but are intentional
+
+If the code has few meaningful comments, extract fewer entries. Return [] if \
+there is nothing worth preserving beyond what the code itself communicates.\
+"""
+
+
+def _is_code_file(file_path: str) -> bool:
+    """Check if a file path refers to a source code file."""
+    from pathlib import PurePosixPath
+
+    return PurePosixPath(file_path).suffix.lower() in _CODE_EXTENSIONS
+
 
 @dataclass
 class ExtractedEntry:
@@ -81,7 +156,11 @@ async def summarize_file(llm: LLMProvider, file_path: str, content: str) -> str 
     truncated = content[:_MAX_CONTENT_CHARS]
     prompt = f"File: {file_path}\n\n{truncated}"
 
-    return await llm.generate(prompt, system=_SUMMARIZE_SYSTEM)
+    system = _SUMMARIZE_SYSTEM
+    if _is_code_file(file_path):
+        system += _SUMMARIZE_CODE_SUPPLEMENT
+
+    return await llm.generate(prompt, system=system)
 
 
 async def extract_entries(llm: LLMProvider, file_path: str, content: str) -> list[ExtractedEntry]:
@@ -95,7 +174,11 @@ async def extract_entries(llm: LLMProvider, file_path: str, content: str) -> lis
     truncated = content[:_MAX_CONTENT_CHARS]
     prompt = f"File: {file_path}\n\n{truncated}"
 
-    raw = await llm.generate(prompt, system=_EXTRACT_SYSTEM)
+    system = _EXTRACT_SYSTEM
+    if _is_code_file(file_path):
+        system += _EXTRACT_CODE_SUPPLEMENT
+
+    raw = await llm.generate(prompt, system=system)
     if raw is None:
         return []
 

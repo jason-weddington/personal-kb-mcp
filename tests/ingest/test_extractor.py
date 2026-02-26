@@ -4,11 +4,41 @@ import json
 
 from personal_kb.ingest.extractor import (
     ExtractedEntry,
+    _is_code_file,
     _parse_entries,
     extract_entries,
     summarize_file,
 )
 from tests.conftest import FakeLLM
+
+
+class TestIsCodeFile:
+    def test_python_is_code(self):
+        assert _is_code_file("src/main.py") is True
+
+    def test_javascript_is_code(self):
+        assert _is_code_file("app.js") is True
+
+    def test_rust_is_code(self):
+        assert _is_code_file("lib.rs") is True
+
+    def test_shell_is_code(self):
+        assert _is_code_file("setup.sh") is True
+
+    def test_markdown_is_not_code(self):
+        assert _is_code_file("README.md") is False
+
+    def test_yaml_is_not_code(self):
+        assert _is_code_file("config.yaml") is False
+
+    def test_txt_is_not_code(self):
+        assert _is_code_file("notes.txt") is False
+
+    def test_case_insensitive(self):
+        assert _is_code_file("Main.PY") is True
+
+    def test_nested_path(self):
+        assert _is_code_file("src/personal_kb/tools/kb_store.py") is True
 
 
 class TestSummarizeFile:
@@ -40,6 +70,16 @@ class TestSummarizeFile:
         await summarize_file(llm, "big.md", long_content)
         # Prompt should be truncated, not the full 200K
         assert len(llm.last_prompt) < 150_000
+
+    async def test_uses_code_supplement_for_code_files(self):
+        llm = FakeLLM(response="summary")
+        await summarize_file(llm, "main.py", "print('hello')")
+        assert "SOURCE CODE file" in llm.last_system
+
+    async def test_no_code_supplement_for_docs(self):
+        llm = FakeLLM(response="summary")
+        await summarize_file(llm, "notes.md", "# Notes")
+        assert "SOURCE CODE file" not in llm.last_system
 
 
 class TestExtractEntries:
@@ -74,6 +114,17 @@ class TestExtractEntries:
         llm = FakeLLM(response="[]")
         result = await extract_entries(llm, "test.md", "content")
         assert result == []
+
+    async def test_uses_code_supplement_for_code_files(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(llm, "utils.py", "def foo(): pass")
+        assert "SOURCE CODE file" in llm.last_system
+        assert "COMMENTS and ANNOTATIONS" in llm.last_system
+
+    async def test_no_code_supplement_for_docs(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(llm, "guide.md", "# Guide")
+        assert "SOURCE CODE file" not in llm.last_system
 
 
 class TestParseEntries:
