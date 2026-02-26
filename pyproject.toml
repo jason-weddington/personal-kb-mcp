@@ -119,7 +119,6 @@ build_command = "uv lock && git add uv.lock && uv build"
 allow_zero_version = true
 major_on_zero = false
 commit_message = "chore(release): v{version}"
-push = false
 
 [tool.semantic_release.publish]
 upload_to_vcs_release = false
@@ -127,7 +126,8 @@ upload_to_vcs_release = false
 [tool.semantic_release.remote]
 type = "github"
 name = "github"
-url = "https://github.com/jason-weddington/personal-kb-mcp"
+url = "git@github.com:jason-weddington/personal-kb-mcp.git"
+ignore_token_for_push = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_kb"]

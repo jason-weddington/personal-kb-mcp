@@ -32,7 +32,7 @@ repos:
 
       - id: semantic-release
         name: semantic-release
-        entry: "bash -c 'branch=$(git rev-parse --abbrev-ref HEAD); msg=$(git log -1 --format=%s); if [ \"$branch\" = \"main\" ] && [[ \"$msg\" != chore\\(release\\):* ]]; then uv run semantic-release version; fi'"
+        entry: "bash -c 'branch=$(git rev-parse --abbrev-ref HEAD); msg=$(git log -1 --format=%s); if [ \"$branch\" = \"main\" ] && [[ \"$msg\" != chore\\(release\\):* ]]; then uv run semantic-release version --no-push --no-vcs-release; fi'"
         language: system
         pass_filenames: false
         always_run: true
