@@ -185,6 +185,4 @@ Claude Code instances
 
 ## Roadmap
 
-1. **Amazon Bedrock LLM provider** — Add a BedrockLLMClient implementing LLMProvider Protocol, enabling graph enrichment and query planning via AWS-hosted models
-2. **Remote storage option** — Support a remote backend (e.g., PostgreSQL, Turso) as an alternative to local SQLite for cross-machine access and cloud deployment
-3. **Team support** — Add contributor metadata to entries (who stored it, which agent/session), enabling multi-user knowledge bases with attribution and provenance tracking
+See [ROADMAP.md](ROADMAP.md).
