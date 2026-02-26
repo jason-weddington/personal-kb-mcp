@@ -16,6 +16,9 @@ dependencies = [
 personal-kb = "personal_kb.__main__:main"
 
 [project.optional-dependencies]
+aws = [
+    "aws-sdk-bedrock-runtime>=0.3.0",
+]
 safety = [
     "detect-secrets>=1.4",
     "scrubadub>=2.0",
@@ -87,6 +90,18 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["scrubadub", "scrubadub.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aws_sdk_bedrock_runtime", "aws_sdk_bedrock_runtime.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["smithy_core", "smithy_core.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["smithy_aws_core", "smithy_aws_core.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

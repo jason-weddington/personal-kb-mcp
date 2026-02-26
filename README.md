@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/jason-weddington/personal-kb-mcp/ma
 
 - **Python 3.13+** and **[uv](https://docs.astral.sh/uv/)** (Python package manager)
 - **[Ollama](https://ollama.com/)** — for local vector embeddings (optional but recommended)
-- **Anthropic API key** — for graph enrichment, query planning, and answer synthesis (optional but recommended)
+- **Anthropic API key** or **AWS credentials** — for graph enrichment, query planning, and answer synthesis (optional but recommended; either provider works)
 
 ### What works without each dependency
 
@@ -102,6 +102,31 @@ Add the server to your MCP client config.
 ```
 
 Replace `/path/to/personal_kb` with the actual path where you cloned the repo. The `ANTHROPIC_API_KEY` is optional — omit it to run without Anthropic features.
+
+### AWS Bedrock setup
+
+To use Claude via AWS Bedrock instead of the Anthropic API directly:
+
+```json
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/personal_kb", "personal-kb"],
+      "env": {
+        "KB_EXTRACTION_PROVIDER": "bedrock",
+        "KB_QUERY_PROVIDER": "bedrock",
+        "AWS_ACCESS_KEY_ID": "AKIA...",
+        "AWS_SECRET_ACCESS_KEY": "...",
+        "KB_BEDROCK_REGION": "us-east-1"
+      }
+    }
+  }
+}
+```
+
+This requires the optional AWS dependency: `uv sync --extra aws`. Uses the cross-region inference profile `us.anthropic.claude-haiku-4-5-20251001-v1:0` by default (override with `KB_BEDROCK_MODEL`).
 
 ### Fully local setup (no API keys)
 
@@ -200,18 +225,22 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Model for vector embeddings |
 | `KB_EMBEDDING_DIM` | `1024` | Embedding vector dimensions |
 | `KB_OLLAMA_TIMEOUT` | `10.0` | Embedding timeout in seconds |
+| **Bedrock (AWS-managed Claude)** | | |
+| `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model ID (cross-region inference profile) |
+| `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
+| `KB_BEDROCK_TIMEOUT` | `30.0` | Request timeout in seconds |
 | **Provider selection** | | |
-| `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic` or `ollama`) |
-| `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning and synthesis (`anthropic` or `ollama`) |
+| `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
+| `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning and synthesis (`anthropic`, `bedrock`, or `ollama`) |
 
 ## Provider Architecture
 
-The server uses two independent LLM slots, each configurable to use either Anthropic (cloud) or Ollama (local):
+The server uses two independent LLM slots, each configurable to use Anthropic (direct API), Bedrock (AWS-managed Claude), or Ollama (local):
 
 - **Extraction LLM** (`KB_EXTRACTION_PROVIDER`) — Enriches the knowledge graph by extracting entities and relationships from stored entries.
 - **Query LLM** (`KB_QUERY_PROVIDER`) — Plans graph queries from natural language questions and synthesizes answers in `kb_summarize`.
 
-Both default to `anthropic`. Vector embeddings always use Ollama and are independent of the provider settings.
+Both default to `anthropic`. You can mix providers (e.g., `bedrock` for extraction, `ollama` for queries). Vector embeddings always use Ollama and are independent of the provider settings.
 
 ## Development
 

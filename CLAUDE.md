@@ -48,8 +48,11 @@ Format: `type(optional-scope): description`
 | `ANTHROPIC_API_KEY` | (unset) | Anthropic API key (enrichment, planning, synthesis) |
 | `KB_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Anthropic model for planning/synthesis |
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Anthropic timeout (seconds) |
-| `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic` or `ollama`) |
-| `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning/synthesis (`anthropic` or `ollama`) |
+| `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model ID (cross-region inference profile) |
+| `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
+| `KB_BEDROCK_TIMEOUT` | `30.0` | Bedrock timeout (seconds) |
+| `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
+| `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning/synthesis (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_MANAGER` | (unset) | Set `TRUE` for maintenance + ingestion tools |
 | `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |

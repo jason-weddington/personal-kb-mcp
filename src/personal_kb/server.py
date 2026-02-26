@@ -19,7 +19,7 @@ from personal_kb.config import (
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
-from personal_kb.llm import AnthropicLLMClient
+from personal_kb.llm import AnthropicLLMClient, BedrockLLMClient
 from personal_kb.llm.ollama import OllamaLLMClient
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
@@ -37,6 +37,10 @@ def _create_llm(provider: str) -> LLMProvider | None:
     if provider == "anthropic":
         if AnthropicLLMClient is not None:
             return AnthropicLLMClient()
+        return None
+    if provider == "bedrock":
+        if BedrockLLMClient is not None:
+            return BedrockLLMClient()
         return None
     if provider == "ollama":
         return OllamaLLMClient()

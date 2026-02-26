@@ -70,6 +70,21 @@ def get_log_level() -> str:
     return os.environ.get("KB_LOG_LEVEL", "WARNING")
 
 
+def get_bedrock_model() -> str:
+    """Return the Bedrock model ID from KB_BEDROCK_MODEL."""
+    return os.environ.get("KB_BEDROCK_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+
+
+def get_bedrock_region() -> str:
+    """Return the AWS region for Bedrock from KB_BEDROCK_REGION."""
+    return os.environ.get("KB_BEDROCK_REGION", "us-east-1")
+
+
+def get_bedrock_timeout() -> float:
+    """Return the Bedrock timeout in seconds from KB_BEDROCK_TIMEOUT."""
+    return float(os.environ.get("KB_BEDROCK_TIMEOUT", "30.0"))
+
+
 def get_ingest_max_file_size() -> int:
     """Return max file size in bytes for ingestion from KB_INGEST_MAX_FILE_SIZE."""
     return int(os.environ.get("KB_INGEST_MAX_FILE_SIZE", str(500 * 1024)))

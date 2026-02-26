@@ -8,4 +8,9 @@ try:
 except ImportError:
     AnthropicLLMClient = None  # type: ignore[assignment,misc]
 
-__all__ = ["AnthropicLLMClient", "LLMProvider", "OllamaLLMClient"]
+try:
+    from personal_kb.llm.bedrock import BedrockLLMClient
+except ImportError:
+    BedrockLLMClient = None  # type: ignore[assignment,misc]
+
+__all__ = ["AnthropicLLMClient", "BedrockLLMClient", "LLMProvider", "OllamaLLMClient"]
