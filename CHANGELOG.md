@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.6.0 (2026-02-26)
+
+### Features
+
+- Prose-specific extraction prompt for notes and documentation
+  ([`cd72fca`](https://github.com/jason-weddington/personal-kb-mcp/commit/cd72fcaaacbf852db89b1f7d6e53bcdd3fa80491))
+
+
 ## v0.5.1 (2026-02-26)
 
 ### Bug Fixes
