@@ -21,14 +21,23 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
-    hooks:
-      - id: conventional-pre-commit
-        stages: [commit-msg]
-
   - repo: local
     hooks:
+      - id: conventional-commit
+        name: Conventional Commit (main only)
+        entry: "bash -c 'branch=$(git rev-parse --abbrev-ref HEAD); [ \"$branch\" != \"main\" ] && exit 0; head -1 \"$1\" | grep -qE \"^(feat|fix|chore|docs|refactor|test|ci|style|perf|build|revert)(\\(.+\\))?!?: .+\" || { echo \"Commit message on main must be a conventional commit\"; exit 1; }' --"
+        language: system
+        stages: [commit-msg]
+        always_run: true
+
+      - id: semantic-release
+        name: semantic-release
+        entry: "bash -c 'branch=$(git rev-parse --abbrev-ref HEAD); msg=$(git log -1 --format=%s); if [ \"$branch\" = \"main\" ] && [[ \"$msg\" != chore\\(release\\):* ]]; then uv run semantic-release version; fi'"
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [post-commit]
+
       - id: mypy
         name: mypy
         entry: uv run --frozen mypy
