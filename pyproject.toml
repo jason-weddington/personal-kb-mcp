@@ -126,7 +126,7 @@ upload_to_vcs_release = false
 [tool.semantic_release.remote]
 type = "github"
 name = "github"
-url = "git@github.com:jason-weddington/personal-kb-mcp.git"
+url = "ssh://git@github.com/jason-weddington/personal-kb-mcp.git"
 ignore_token_for_push = true
 
 [tool.hatch.build.targets.wheel]
