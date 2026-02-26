@@ -2,6 +2,51 @@
 
 <!-- version list -->
 
+## v0.4.0 (2026-02-26)
+
+### Chores
+
+- Raise coverage threshold to 76%
+  ([`2c4ea69`](https://github.com/home/jason/git/personal_kb/commit/2c4ea6989a6409ed613700f6133f8ccc271ca625))
+
+### Documentation
+
+- Add how_it_works.md technical documentation
+  ([`862baa9`](https://github.com/home/jason/git/personal_kb/commit/862baa92ea9de8d4b826f5ebac30ee13d14fec45))
+
+- Consolidate roadmap into dedicated ROADMAP.md
+  ([`fcd21bd`](https://github.com/home/jason/git/personal_kb/commit/fcd21bd2675905df715e4cd4bf5a85eb47acdbff))
+
+- Improve README for public release and add setup script
+  ([`372273f`](https://github.com/home/jason/git/personal_kb/commit/372273fc6e85bd550d6e31b0cd206f66b3d4d371))
+
+- Update README with kb_ingest tool and mark initial scope complete
+  ([`982b86c`](https://github.com/home/jason/git/personal_kb/commit/982b86c2ffccb5870ddbf9f0da291e54d1e72ce7))
+
+### Features
+
+- Add AWS Bedrock LLM provider
+  ([`b0ccc29`](https://github.com/home/jason/git/personal_kb/commit/b0ccc29017f414f2f02e2b1f75c9aa5803122c30))
+
+- Add kb_ingest MCP tool for disk file ingestion
+  ([`2ee5aba`](https://github.com/home/jason/git/personal_kb/commit/2ee5aba78c8ef378557d9656395dd2a67c093292))
+
+- Add one-liner install script
+  ([`c04020a`](https://github.com/home/jason/git/personal_kb/commit/c04020a7a629f0b02e99e7d73df3e99ba122a02e))
+
+- **db**: Add ingested_files table schema
+  ([`611bfb4`](https://github.com/home/jason/git/personal_kb/commit/611bfb4ddbc6a6f6a241e7ac586449ba6630b87e))
+
+- **ingest**: Add file ingestion orchestrator
+  ([`2796d9f`](https://github.com/home/jason/git/personal_kb/commit/2796d9f96bb16f6a4b4fb0d963b4a755247eadb5))
+
+- **ingest**: Add LLM file summarization and entry extraction
+  ([`33f6424`](https://github.com/home/jason/git/personal_kb/commit/33f642469833aa793e057daf85dad9048e0a951f))
+
+- **ingest**: Add safety pipeline with detect-secrets and scrubadub
+  ([`4d73461`](https://github.com/home/jason/git/personal_kb/commit/4d73461f508c43409787aae5b2a367f7c55875e4))
+
+
 ## v0.2.0 (2026-02-24)
 
 ### Chores
