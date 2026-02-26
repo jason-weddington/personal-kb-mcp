@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v0.5.1 (2026-02-26)
+
+### Bug Fixes
+
+- Semantic-release push config and SSH remote URL
+  ([`3e368a2`](https://github.com/jason-weddington/personal-kb-mcp/commit/3e368a2b3d5771f45c6cdeb065a172aa2135390c))
+
+- Use ssh:// URL format for semantic-release remote
+  ([`4bfb8ea`](https://github.com/jason-weddington/personal-kb-mcp/commit/4bfb8ea0763e98c586155a2c0978eb608cf5e15a))
+
+
 ## v0.5.0 (2026-02-26)
 
 ### Chores
