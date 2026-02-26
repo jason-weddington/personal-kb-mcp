@@ -126,6 +126,12 @@ class TestSummarizeFile:
 
 
 class TestExtractEntries:
+    async def test_audience_framing_in_base_prompt(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(llm, "config.yaml", "key: value")
+        assert "memorized" in llm.last_system
+        assert "doesn't exist online" in llm.last_system
+
     async def test_extracts_entries(self):
         entries = [
             {
@@ -173,7 +179,7 @@ class TestExtractEntries:
         llm = FakeLLM(response="[]")
         await extract_entries(llm, "guide.md", "# Guide")
         assert "NOTES or DOCUMENTATION" in llm.last_system
-        assert "original insights" in llm.last_system
+        assert "original arguments" in llm.last_system
 
     async def test_no_prose_supplement_for_config(self):
         llm = FakeLLM(response="[]")

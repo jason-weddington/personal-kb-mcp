@@ -69,26 +69,36 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 _SUMMARIZE_SYSTEM = """\
-You are a knowledge base assistant. Given a file's path and content, write a \
-2-3 sentence summary describing what knowledge this file contains and why it \
-might be useful to recall later.
+You are a knowledge base assistant. The reader of your summaries is an AI \
+coding agent that has effectively memorized public knowledge — documentation, \
+tutorials, Stack Overflow, Wikipedia. What it lacks is private, project-specific \
+context that doesn't exist online.
 
-Be specific and factual. Focus on WHAT the file teaches, not how it's formatted. \
+Given a file's path and content, write a 2-3 sentence summary focusing on what \
+makes this file's knowledge UNIQUE — project-specific decisions, personal \
+preferences, undocumented behaviors, or hard-won lessons. Skip restating \
+well-known concepts the reader already knows.
+
 Return ONLY the summary text, no JSON, no markdown formatting.\
 """
 
 _SUMMARIZE_CODE_SUPPLEMENT = """
 
-This is a SOURCE CODE file. The reader has full access to the code via IDE tools, \
-so focus the summary on what the code DOES at a high level and any notable \
-design decisions — not implementation details they can read themselves.\
+This is a SOURCE CODE file. The reader can access the code directly, so focus \
+on high-level purpose and any notable design decisions — not implementation \
+details.\
 """
 
 _EXTRACT_SYSTEM = """\
-You are a knowledge extraction system. Given a file, extract discrete knowledge \
-entries suitable for a personal knowledge base.
+You are a knowledge extraction system. The reader of these entries is an AI \
+coding agent powered by a state-of-the-art LLM. It has effectively memorized \
+the public internet — documentation, tutorials, Stack Overflow, Wikipedia, \
+open-source code. What it LACKS is private context that doesn't exist online: \
+project-specific decisions, personal preferences, undocumented bugs, \
+hard-won lessons, and internal conventions.
 
-Return ONLY a JSON array. Each object has:
+Given a file, extract ONLY knowledge that an internet-trained AI wouldn't \
+already know. Return a JSON array. Each object has:
 - "short_title": brief identifier (3-8 words)
 - "long_title": descriptive title (1 sentence)
 - "knowledge_details": the actual knowledge content (detailed, self-contained)
@@ -96,19 +106,19 @@ Return ONLY a JSON array. Each object has:
 - "tags": list of lowercase tag strings (2-5 tags)
 
 Rules:
-- Extract 1-10 entries per file. Only extract genuinely useful knowledge.
+- Extract 1-10 entries per file. Fewer high-quality entries are better than many shallow ones.
 - Each entry must be SELF-CONTAINED — understandable without the source file.
-- Prefer specific, actionable knowledge over vague summaries.
+- Skip anything the reader would already know from public sources.
 - entry_type must be one of: factual_reference, decision, pattern_convention, lesson_learned.
 - Skip boilerplate, TODOs, and trivial content.
-- Return [] if the file has no extractable knowledge.
+- Return [] if the file has no extractable knowledge beyond public knowledge.
 
 Example output:
 [
   {
     "short_title": "aiosqlite vec loading",
     "long_title": "How to load sqlite-vec extension with aiosqlite",
-    "knowledge_details": "Use sqlite_vec.load(db._conn) via a closure passed to db._execute().",
+    "knowledge_details": "Use sqlite_vec.load(db._conn) not loadable_path().",
     "entry_type": "lesson_learned",
     "tags": ["sqlite", "aiosqlite", "sqlite-vec"]
   }
@@ -117,23 +127,18 @@ Example output:
 
 _SUMMARIZE_PROSE_SUPPLEMENT = """
 
-This is a NOTES or DOCUMENTATION file. Focus the summary on the key insights, \
-conclusions, or decisions documented — not on background context or definitions \
-the reader could find elsewhere.\
+This is a NOTES or DOCUMENTATION file. Focus on the key insights, conclusions, \
+or decisions — not background context the reader already knows.\
 """
 
 _EXTRACT_CODE_SUPPLEMENT = """
 
-This is a SOURCE CODE file. The reader has full access to the code itself via \
-IDE tools (LSP, grep, file reading), so they can already see what every function \
-and class does. Do NOT extract:
-- What functions or classes do — the reader can read the code
-- Common programming patterns (caching, lazy loading, error handling, etc.) \
-unless there is a project-specific twist that isn't obvious from the code
-- API signatures, data structures, or type definitions
+This is a SOURCE CODE file. The AI reader can read the code directly and \
+already knows common programming patterns. Do NOT extract what the code does \
+or how standard patterns work — the reader can see that.
 
 Instead, focus on COMMENTS and ANNOTATIONS left by the developer — these encode \
-hard-won lessons and context that isn't expressed by the code itself. Look for:
+context that isn't in the code or on the internet:
 - Workaround comments (HACK, WORKAROUND, XXX, NOTE, FIXME with context)
 - Decision rationale ("we do X because Y", "chose X over Y because...")
 - External system gotchas (API quirks, rate limits, undocumented behaviors)
@@ -146,23 +151,19 @@ there is nothing worth preserving beyond what the code itself communicates.\
 
 _EXTRACT_PROSE_SUPPLEMENT = """
 
-This is a NOTES or DOCUMENTATION file. Focus on the author's original insights, \
-conclusions, and non-obvious reasoning — the things worth recalling later. \
-Do NOT extract:
-- Background definitions or introductory context the reader could find on \
-Wikipedia or in standard references
-- Restatements of well-known facts that merely set the stage for the real content
-- Generic best-practice advice without specific justification
+This is a NOTES or DOCUMENTATION file. The AI reader already knows standard \
+definitions, common best practices, and textbook explanations. Do NOT extract \
+background context that merely sets the stage for the real content.
 
 Instead, extract:
-- Novel arguments, analyses, or conclusions the author reaches
+- The author's original arguments, analyses, or conclusions
 - Non-obvious cause-and-effect reasoning or myth-busting
 - Specific data points, thresholds, or measurements cited as evidence
 - Decisions and their rationale ("chose X because Y")
 - Hard-won lessons or warnings from experience
 
-Fewer high-quality entries are better than many shallow ones. If the file is \
-mostly background context with one key insight, extract just that insight.\
+If the file is mostly background context with one key insight, extract just \
+that insight.\
 """
 
 
