@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v0.5.0 (2026-02-26)
+
+### Chores
+
+- Add release workflow with recursion guard
+  ([`a526541`](https://github.com/jason-weddington/personal-kb-mcp/commit/a526541c43fe78d82706f9f465a5a5b255262d9f))
+
+- Fix semantic-release config and add as dev dep
+  ([`8d28751`](https://github.com/jason-weddington/personal-kb-mcp/commit/8d28751ab97a820b7658a1bbd28c9a9f9a0912f7))
+
+### Features
+
+- Code-specific extraction prompt for file ingestion
+  ([`284548a`](https://github.com/jason-weddington/personal-kb-mcp/commit/284548a03e9b8d6baaa05848b6902d2fa40aa696))
+
+
 ## v0.4.0 (2026-02-26)
 
 ### Chores
