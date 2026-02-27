@@ -117,43 +117,40 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 
 
 _INSTRUCTIONS = """\
-As you work, proactively use this knowledge base. Don't wait to be asked.
+This KB stores private context that you — an AI agent with public knowledge \
+already memorized — would not otherwise have: project decisions, personal \
+conventions, hard-won lessons, and domain-specific facts.
 
-CAPTURE knowledge when you encounter:
+QUERYING — pick the right tool:
+- kb_search: Quick lookup by keywords or filters. Use for duplicate checking, \
+finding a specific entry, or filtering by tags/project/type.
+- kb_ask: Explore related knowledge via graph traversal. Use when you need \
+to discover connections, trace decision history, or find everything related \
+to a concept.
+- kb_summarize: Get a synthesized natural-language answer with citations. \
+Use when you need to answer a user question directly from the KB.
+
+STORING — capture knowledge proactively:
 - Technical decisions and their rationale ("chose X because Y")
 - Patterns, conventions, or architecture worth preserving
 - Lessons learned from debugging, fixing issues, or trial-and-error
 - Key facts: API behaviors, config values, version constraints, gotchas
 - Anything the user explicitly asks you to remember
 
-DON'T capture:
-- Trivial or obvious information
-- Temporary session context (what you're working on right now)
-- Information already in an existing entry — update it instead
+DON'T capture trivial info, temporary session context, or duplicates. \
+SEARCH before storing — if a relevant entry exists, use update_entry_id.
 
-SEARCH before storing to avoid duplicates. If a relevant entry exists,
-use update_entry_id to update it rather than creating a new one.
+INGESTING — extend the KB from files on disk:
+- kb_ingest: Read files, extract knowledge entries, and add them to the graph. \
+Accepts file paths, directories, or glob patterns (e.g. *.md, docs/**/*.txt).
 
-SEARCH at the start of tasks to recall relevant prior knowledge,
-especially when working in a domain or project you've stored entries for.
-
-Entry type guidance:
-- factual_reference: version numbers, API details, config values
-- decision: "chose X because Y" — rationale matters
-- pattern_convention: coding standards, workflow preferences
-- lesson_learned: hard-won debugging insights, things that surprised you
-
-Use tags for discoverability. Use project_ref for project-specific
-knowledge; omit it for knowledge that applies broadly.
+Entry types: factual_reference, decision, pattern_convention, lesson_learned.
+Use tags for discoverability. Use project_ref for project-specific knowledge.
 
 Use hints to build the knowledge graph:
 - {"supersedes": "kb-00042"} when replacing prior knowledge
 - {"person": "jason"}, {"tool": "sqlite"} to link entities
 - {"related_entities": [{"id": "kb-00003", "edge_type": "depends_on"}]}
-
-Use kb_summarize for synthesized natural language answers with citations.
-Use kb_ask for structured graph queries when you need raw data.
-Use kb_search for keyword/semantic search.
 """
 
 
@@ -169,9 +166,9 @@ def create_server() -> FastMCP:
     register_kb_search(mcp)
     register_kb_ask(mcp)
     register_kb_summarize(mcp)
+    register_kb_ingest(mcp)
 
     if is_manager_mode():
         register_kb_maintain(mcp)
-        register_kb_ingest(mcp)
 
     return mcp

@@ -2,7 +2,7 @@
 
 ## Near-term
 
-- **Improve tool descriptions for query tools** — Agents default to `kb_search` (keyword lookup) when `kb_ask` (graph traversal + query planning) or `kb_summarize` (synthesized answers) would give better results. Review and improve tool descriptions and server instructions so any agent naturally picks the right tool based on the protocol alone. No out-of-band hacks — behavior must be driven by the MCP protocol layer.
+(empty — pick from medium-term or add new items)
 
 ## Medium-term
 
@@ -15,4 +15,5 @@
 
 ## Completed
 
+- **Improve tool descriptions for query tools** — Rewrote MCP instructions and tool docstrings to differentiate kb_search (quick lookup), kb_ask (graph exploration), and kb_summarize (synthesized answers). Ungated kb_ingest with glob support.
 - **Amazon Bedrock LLM provider** — BedrockLLMClient using the async-native `aws-sdk-bedrock-runtime` SDK, with smithy-json newline workaround. (b0ccc29)

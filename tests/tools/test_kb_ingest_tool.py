@@ -59,26 +59,31 @@ async def tool_context():
     await db.close()
 
 
+def _register_and_capture(mcp_mock):
+    """Register kb_ingest on a mock MCP and return the captured tools dict."""
+    tools = {}
+
+    def capture_tool():
+        def decorator(func):
+            tools[func.__name__] = func
+            return func
+
+        return decorator
+
+    mcp_mock.tool = capture_tool
+    register_kb_ingest(mcp_mock)
+    return tools
+
+
 class TestKbIngestTool:
     async def test_error_when_no_llm(self, tool_context, tmp_path):
         ctx, lifespan = tool_context
         lifespan["query_llm"] = None
 
-        mcp = MagicMock()
-        tools = {}
-
-        def capture_tool():
-            def decorator(func):
-                tools[func.__name__] = func
-                return func
-
-            return decorator
-
-        mcp.tool = capture_tool
-        register_kb_ingest(mcp)
+        tools = _register_and_capture(MagicMock())
 
         result = await tools["kb_ingest"](
-            file_path=str(tmp_path / "test.md"),
+            path=str(tmp_path / "test.md"),
             ctx=ctx,
         )
         assert "No LLM available" in result
@@ -87,21 +92,10 @@ class TestKbIngestTool:
         ctx, lifespan = tool_context
         lifespan["query_llm"] = FakeLLM()
 
-        mcp = MagicMock()
-        tools = {}
-
-        def capture_tool():
-            def decorator(func):
-                tools[func.__name__] = func
-                return func
-
-            return decorator
-
-        mcp.tool = capture_tool
-        register_kb_ingest(mcp)
+        tools = _register_and_capture(MagicMock())
 
         result = await tools["kb_ingest"](
-            file_path="/nonexistent/path/file.md",
+            path="/nonexistent/path/file.md",
             ctx=ctx,
         )
         assert "does not exist" in result
@@ -124,21 +118,10 @@ class TestKbIngestTool:
         llm = SequenceLLM(["Summary of notes.", json.dumps(entries_json)])
         lifespan["query_llm"] = llm
 
-        mcp = MagicMock()
-        tools = {}
-
-        def capture_tool():
-            def decorator(func):
-                tools[func.__name__] = func
-                return func
-
-            return decorator
-
-        mcp.tool = capture_tool
-        register_kb_ingest(mcp)
+        tools = _register_and_capture(MagicMock())
 
         result = await tools["kb_ingest"](
-            file_path=str(f),
+            path=str(f),
             project_ref="test-project",
             ctx=ctx,
         )
@@ -163,21 +146,10 @@ class TestKbIngestTool:
         llm = SequenceLLM(["Dry run summary.", json.dumps(entries_json)])
         lifespan["query_llm"] = llm
 
-        mcp = MagicMock()
-        tools = {}
-
-        def capture_tool():
-            def decorator(func):
-                tools[func.__name__] = func
-                return func
-
-            return decorator
-
-        mcp.tool = capture_tool
-        register_kb_ingest(mcp)
+        tools = _register_and_capture(MagicMock())
 
         result = await tools["kb_ingest"](
-            file_path=str(f),
+            path=str(f),
             dry_run=True,
             ctx=ctx,
         )
@@ -209,21 +181,98 @@ class TestKbIngestTool:
         )
         lifespan["query_llm"] = llm
 
-        mcp = MagicMock()
-        tools = {}
-
-        def capture_tool():
-            def decorator(func):
-                tools[func.__name__] = func
-                return func
-
-            return decorator
-
-        mcp.tool = capture_tool
-        register_kb_ingest(mcp)
+        tools = _register_and_capture(MagicMock())
 
         result = await tools["kb_ingest"](
-            file_path=str(tmp_path),
+            path=str(tmp_path),
+            ctx=ctx,
+        )
+        assert "Ingestion complete" in result
+        assert "2 ingested" in result
+
+    async def test_glob_pattern_matches_files(self, tool_context, tmp_path, monkeypatch):
+        ctx, lifespan = tool_context
+        monkeypatch.chdir(tmp_path)
+
+        # Create .md and .txt files — glob *.md should only match .md
+        (tmp_path / "notes.md").write_text("# Notes")
+        (tmp_path / "readme.md").write_text("# Readme")
+        (tmp_path / "data.txt").write_text("plain text")
+
+        entries_json = [
+            {
+                "short_title": "entry",
+                "long_title": "An entry",
+                "knowledge_details": "Details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        llm = SequenceLLM(
+            [
+                "Summary 1.",
+                json.dumps(entries_json),
+                "Summary 2.",
+                json.dumps(entries_json),
+            ]
+        )
+        lifespan["query_llm"] = llm
+
+        tools = _register_and_capture(MagicMock())
+
+        result = await tools["kb_ingest"](
+            path="*.md",
+            ctx=ctx,
+        )
+        assert "Ingestion complete" in result
+        assert "2 ingested" in result
+
+    async def test_glob_no_matches(self, tool_context, tmp_path, monkeypatch):
+        ctx, lifespan = tool_context
+        monkeypatch.chdir(tmp_path)
+        lifespan["query_llm"] = FakeLLM()
+
+        tools = _register_and_capture(MagicMock())
+
+        result = await tools["kb_ingest"](
+            path="*.nonexistent",
+            ctx=ctx,
+        )
+        assert "No files matched pattern" in result
+
+    async def test_glob_recursive_pattern(self, tool_context, tmp_path, monkeypatch):
+        ctx, lifespan = tool_context
+        monkeypatch.chdir(tmp_path)
+
+        # Create nested structure
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (tmp_path / "top.md").write_text("# Top")
+        (sub / "nested.md").write_text("# Nested")
+
+        entries_json = [
+            {
+                "short_title": "entry",
+                "long_title": "An entry",
+                "knowledge_details": "Details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        llm = SequenceLLM(
+            [
+                "Summary 1.",
+                json.dumps(entries_json),
+                "Summary 2.",
+                json.dumps(entries_json),
+            ]
+        )
+        lifespan["query_llm"] = llm
+
+        tools = _register_and_capture(MagicMock())
+
+        result = await tools["kb_ingest"](
+            path="**/*.md",
             ctx=ctx,
         )
         assert "Ingestion complete" in result

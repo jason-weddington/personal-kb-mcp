@@ -16,3 +16,4 @@ venv/
 .coverage
 htmlcov/
 .mcp.json
+.envrc

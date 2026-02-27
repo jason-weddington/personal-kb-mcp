@@ -41,8 +41,9 @@ def register_kb_summarize(mcp: FastMCP) -> None:
     ) -> str:
         """Answer a question with a synthesized natural language response.
 
-        Citations reference entry IDs [kb-XXXXX].
-        Retrieves relevant entries and uses an LLM to synthesize an answer.
+        Best for answering user questions directly — produces a final,
+        readable answer with [kb-XXXXX] citations, not raw search results.
+        Retrieves relevant entries via graph+search, then synthesizes with an LLM.
         Falls back to raw results if LLM is unavailable.
         """
         if ctx is None:

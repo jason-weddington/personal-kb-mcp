@@ -19,6 +19,31 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_GLOB_CHARS = set("*?[")
+
+
+def _is_glob(path: str) -> bool:
+    """Return True if the path contains glob metacharacters."""
+    return bool(_GLOB_CHARS.intersection(path))
+
+
+def _tally_result(result: IngestResult, file_result: FileResult) -> None:
+    """Update IngestResult counters from a single FileResult."""
+    if file_result.action == "ingested":
+        result.ingested += 1
+        result.entries_created += file_result.entry_count
+    elif file_result.action == "skipped":
+        result.skipped += 1
+    elif file_result.action == "flagged":
+        result.flagged += 1
+    elif file_result.action == "error":
+        result.errors += 1
+    elif file_result.action == "unchanged":
+        result.unchanged += 1
+    elif file_result.action == "dry_run":
+        result.ingested += 1  # Count as would-be-ingested
+        result.entries_created += file_result.entry_count
+
 
 def _format_file_result(r: FileResult) -> str:
     """Format a single file result."""
@@ -64,9 +89,15 @@ def register_kb_ingest(mcp: FastMCP) -> None:
 
     @mcp.tool()
     async def kb_ingest(
-        file_path: Annotated[
+        path: Annotated[
             str,
-            Field(description="Absolute path to a file or directory to ingest"),
+            Field(
+                description=(
+                    "File, directory, or glob pattern to ingest. "
+                    "Accepts absolute paths, relative paths, ~ paths, "
+                    "and glob patterns (e.g. *.md, docs/**/*.txt)."
+                ),
+            ),
         ],
         project_ref: Annotated[
             str | None,
@@ -78,19 +109,17 @@ def register_kb_ingest(mcp: FastMCP) -> None:
         ] = False,
         recursive: Annotated[
             bool,
-            Field(description="Recurse into subdirectories"),
+            Field(description="Recurse into subdirectories (for directory paths)"),
         ] = True,
         ctx: Context | None = None,
     ) -> str:
-        """Ingest files from disk into the knowledge base.
+        """Ingest files from disk to extend the KB with existing content.
 
         Reads files, runs safety checks (deny-list, secret detection, PII redaction),
         uses an LLM to summarize and extract structured knowledge entries.
 
         Files become note nodes in the knowledge graph, with extracted entries linked
         back to their source via extracted_from edges.
-
-        Requires KB_MANAGER=TRUE environment variable.
 
         Supports: .md, .txt, .py, .js, .ts, .yaml, .json, .toml, and many more text formats.
         Skips: binaries, images, archives, keys, .env files, and other sensitive formats.
@@ -118,7 +147,29 @@ def register_kb_ingest(mcp: FastMCP) -> None:
             llm=query_llm,
         )
 
-        target = Path(file_path).expanduser().resolve()
+        # Glob pattern: expand and ingest each matched file
+        if _is_glob(path):
+            base = Path.cwd()
+            matched = sorted(f for f in base.glob(path) if f.is_file())
+            if not matched:
+                return f"Error: No files matched pattern: {path}"
+
+            result = IngestResult()
+            for file_path in matched:
+                result.total_files += 1
+                file_result = await ingester.ingest_file(
+                    file_path,
+                    project_ref=project_ref,
+                    base_dir=base,
+                    dry_run=dry_run,
+                )
+                result.file_results.append(file_result)
+                _tally_result(result, file_result)
+
+            return _format_ingest_result(result, dry_run)
+
+        # Single file or directory
+        target = Path(path).expanduser().resolve()
 
         if not target.exists():
             return f"Error: Path does not exist: {target}"

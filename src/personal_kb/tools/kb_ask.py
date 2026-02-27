@@ -59,12 +59,15 @@ def register_kb_ask(mcp: FastMCP) -> None:
     ) -> str:
         """Answer questions by traversing the knowledge graph and combining with search.
 
+        Best for discovery and exploration — when you need to find connections,
+        trace history, or understand how knowledge relates.
+
         Strategies:
         - auto: Hybrid search + expand via graph neighbors
-        - decision_trace: Follow supersedes chains for decision entries
-        - timeline: Chronological entries for a scope
-        - related: BFS from a starting entry/concept
-        - connection: Find paths between two nodes
+        - decision_trace: Follow supersedes chains ("how did decision X evolve?")
+        - timeline: Chronological entries for a scope ("what happened in project X?")
+        - related: BFS from a starting entry/concept ("what connects to tag:python?")
+        - connection: Find paths between two nodes ("how are X and Y related?")
         """
         if ctx is None:
             raise RuntimeError("Context not injected")

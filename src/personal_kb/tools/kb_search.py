@@ -69,6 +69,10 @@ def register_kb_search(mcp: FastMCP) -> None:
         Combines BM25 full-text search with vector similarity (when Ollama is available)
         using Reciprocal Rank Fusion. Results include confidence decay — older entries
         are flagged with staleness warnings.
+
+        Best for quick lookups: checking if an entry exists, finding by keywords,
+        filtering by tags/project/type. For exploring related knowledge, use kb_ask.
+        For a synthesized answer to a question, use kb_summarize.
         """
         from personal_kb.search.hybrid import hybrid_search
 
