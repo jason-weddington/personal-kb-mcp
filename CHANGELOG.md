@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.8.0 (2026-02-27)
+
+### Features
+
+- Add Bedrock bearer token auth and remove smithy-json workaround
+  ([`d0f535e`](https://github.com/jason-weddington/personal-kb-mcp/commit/d0f535e4732bbfbfa2da263a7033fe944da88ec6))
+
+
 ## v0.7.0 (2026-02-27)
 
 ### Features
