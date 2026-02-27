@@ -107,8 +107,18 @@ async def test_is_available_true_with_aws_key():
 
 
 @pytest.mark.asyncio
-async def test_is_available_false_without_aws_key():
-    """is_available returns False when no AWS credentials set."""
+async def test_is_available_true_with_bearer_token():
+    """is_available returns True when bearer token is set."""
+    with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
+        mock_get.return_value = MagicMock()
+        with patch.dict("os.environ", {"AWS_BEARER_TOKEN_BEDROCK": "ABSKtest123"}):
+            llm = BedrockLLMClient()
+            assert await llm.is_available() is True
+
+
+@pytest.mark.asyncio
+async def test_is_available_false_without_any_credentials():
+    """is_available returns False when no credentials set."""
     with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
         mock_get.return_value = MagicMock()
         with patch.dict("os.environ", {}, clear=True):
@@ -127,18 +137,16 @@ async def test_is_available_false_when_sdk_missing():
 
 
 @pytest.mark.asyncio
-async def test_generate_escapes_newlines(mock_bedrock_client):
-    """Newlines are escaped to work around smithy-json serialization bug."""
+async def test_generate_passes_newlines_through(mock_bedrock_client):
+    """Newlines are passed through directly (smithy-json now handles escaping)."""
     llm = BedrockLLMClient()
     await llm.generate("line 1\nline 2\nline 3", system="rule 1\nrule 2")
     call_args = mock_bedrock_client.converse.call_args
     converse_input = call_args[0][0]
     prompt_value = converse_input.messages[0].content[0].value
     system_value = converse_input.system[0].value
-    assert "\n" not in prompt_value
-    assert "\\n" in prompt_value
-    assert "\n" not in system_value
-    assert "\\n" in system_value
+    assert prompt_value == "line 1\nline 2\nline 3"
+    assert system_value == "rule 1\nrule 2"
 
 
 @pytest.mark.asyncio
