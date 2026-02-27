@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.7.0 (2026-02-27)
+
+### Features
+
+- Ungate kb_ingest with glob support and improve tool descriptions
+  ([`5059ef2`](https://github.com/jason-weddington/personal-kb-mcp/commit/5059ef2a87efee193f268a28682697c83dfbc3da))
+
+### Refactoring
+
+- Add audience framing to extraction prompts
+  ([`32cc488`](https://github.com/jason-weddington/personal-kb-mcp/commit/32cc488f170beb627fb74faa2c9a415f31ba3d51))
+
+
 ## v0.6.0 (2026-02-26)
 
 ### Features
