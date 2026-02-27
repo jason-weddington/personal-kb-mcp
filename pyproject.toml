@@ -18,6 +18,7 @@ personal-kb = "personal_kb.__main__:main"
 [project.optional-dependencies]
 aws = [
     "aws-sdk-bedrock-runtime>=0.3.0",
+    "smithy-json @ git+https://github.com/jason-weddington/smithy-python.git@fix/json-control-char-escaping#subdirectory=packages/smithy-json",
 ]
 safety = [
     "detect-secrets>=1.4",
@@ -128,6 +129,9 @@ type = "github"
 name = "github"
 url = "ssh://git@github.com/jason-weddington/personal-kb-mcp.git"
 ignore_token_for_push = true
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_kb"]

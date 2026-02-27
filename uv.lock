@@ -1294,6 +1294,7 @@ dependencies = [
 [package.optional-dependencies]
 aws = [
     { name = "aws-sdk-bedrock-runtime" },
+    { name = "smithy-json" },
 ]
 safety = [
     { name = "detect-secrets" },
@@ -1321,6 +1322,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "scrubadub", marker = "extra == 'safety'", specifier = ">=2.0" },
+    { name = "smithy-json", marker = "extra == 'aws'", git = "https://github.com/jason-weddington/smithy-python.git?subdirectory=packages%2Fsmithy-json&rev=fix%2Fjson-control-char-escaping" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
 ]
 provides-extras = ["aws", "safety"]
@@ -2122,11 +2124,7 @@ wheels = [
 [[package]]
 name = "smithy-core"
 version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/76/f3/98e9a96ae2d7f9a5d92cf5b7a02791ae4c563530a5fbec7b4dce5797758e/smithy_core-0.3.0.tar.gz", hash = "sha256:7d3501d28aab379a3ab4ae33a8ff854779a3e4bd1f1e048960f350c717e1f38d", size = 50629, upload-time = "2026-01-02T17:41:49.506Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/0c/bdb2e66c477f5b3682d39152e299d0687750690837437cbbfee833e72975/smithy_core-0.3.0-py3-none-any.whl", hash = "sha256:1aa7d681d53c984c510068f25853d3c0a874cbedad7b753e20b25618b589490a", size = 64900, upload-time = "2026-01-02T17:41:48.624Z" },
-]
+source = { git = "https://github.com/jason-weddington/smithy-python.git?subdirectory=packages%2Fsmithy-core&rev=fix%2Fjson-control-char-escaping#f7bc20290c07c96ff5c6ccb257a1ea71198ac658" }
 
 [[package]]
 name = "smithy-http"
@@ -2148,14 +2146,10 @@ awscrt = [
 [[package]]
 name = "smithy-json"
 version = "0.2.1"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/jason-weddington/smithy-python.git?subdirectory=packages%2Fsmithy-json&rev=fix%2Fjson-control-char-escaping#f7bc20290c07c96ff5c6ccb257a1ea71198ac658" }
 dependencies = [
     { name = "ijson" },
     { name = "smithy-core" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/70/74/1489187f6ec3e645f8d986de23c0a74d5d9b5ec5796a5ca1d95cd7881ea8/smithy_json-0.2.1.tar.gz", hash = "sha256:a8889465cb04d1ef9ba5efae036115d37770ce65b3b6de2f95e66c0cf9e0dad8", size = 7210, upload-time = "2025-12-30T23:23:17.077Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/c1/b9ca91402b415e38566eb8b6c16c0136382bff2dcd39fd28cc58d4eda1a9/smithy_json-0.2.1-py3-none-any.whl", hash = "sha256:4222dcbe8a5187ba18caaf556d280804c45e6646fba92f0f6148c4f1d9bb721b", size = 9908, upload-time = "2025-12-30T23:23:16.194Z" },
 ]
 
 [[package]]

@@ -76,11 +76,11 @@ class TestDetectSecrets:
             # detect-secrets installed, should find nothing
             assert result == []
 
-    def test_detects_high_entropy_string(self):
-        result = detect_secrets_in_content('API_KEY = "AKIAIOSFODNN7EXAMPLE1234567890abcdefg"')
+    def test_detects_keyword_secret(self):
+        result = detect_secrets_in_content('password = "hunter2"')
         if result is not None:
-            # Should detect something (exact types depend on plugins)
-            assert len(result) >= 0  # At least runs without error
+            # KeywordDetector should catch "password"
+            assert len(result) > 0
 
 
 class TestRedactPII:

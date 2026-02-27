@@ -109,15 +109,14 @@ def detect_secrets_in_content(content: str) -> list[str] | None:
     with transient_settings(
         {
             "plugins_used": [
-                {"name": "HexHighEntropyString"},
-                {"name": "Base64HighEntropyString"},
                 {"name": "KeywordDetector"},
                 {"name": "PrivateKeyDetector"},
+                {"name": "BasicAuthDetector"},
             ]
         }
     ):
-        for i, line in enumerate(content.splitlines(), 1):
-            for secret in scan_line(filename="<content>", line=line, line_number=i):
+        for line in content.splitlines():
+            for secret in scan_line(line=line):
                 stype = secret.type
                 if stype not in seen:
                     seen.add(stype)
