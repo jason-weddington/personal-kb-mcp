@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.8.1 (2026-02-27)
+
+### Bug Fixes
+
+- Pin smithy-json to fork and fix detect-secrets 1.5 compat
+  ([`b870ca7`](https://github.com/jason-weddington/personal-kb-mcp/commit/b870ca72763acff726b1f230b278dc4a5a56d048))
+
+
 ## v0.8.0 (2026-02-27)
 
 ### Features
