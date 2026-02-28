@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.9.2 (2026-02-27)
+
+### Bug Fixes
+
+- Show long_title in compact search results for better discoverability
+  ([`e3d434e`](https://github.com/jason-weddington/personal-kb-mcp/commit/e3d434e4eea5926cf04c6d5991c87d01402a3c23))
+
+
 ## v0.9.1 (2026-02-27)
 
 ### Bug Fixes
