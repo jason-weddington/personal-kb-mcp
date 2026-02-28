@@ -2,6 +2,30 @@
 
 <!-- version list -->
 
+## v0.10.0 (2026-02-28)
+
+### Chores
+
+- Add agent graph traversal guidance to roadmap, update Done
+  ([`891684b`](https://github.com/jason-weddington/personal-kb-mcp/commit/891684b37394c6750ff1578a24ed398823bf3288))
+
+- Add timing output to test_dry_run.py
+  ([`3b82cce`](https://github.com/jason-weddington/personal-kb-mcp/commit/3b82cce145681abbdb7b472ed725b598cdc679bb))
+
+### Documentation
+
+- Add positioning and research-grounded graph improvement plan to roadmap
+  ([`acaceb0`](https://github.com/jason-weddington/personal-kb-mcp/commit/acaceb0591bc89d088c9d478e771af9a481045a0))
+
+- Rewrite README with uvx install, correct Bedrock auth, all tools
+  ([`3fdab2a`](https://github.com/jason-weddington/personal-kb-mcp/commit/3fdab2af99757f70fc9f42fdc9f0574b95165413))
+
+### Features
+
+- Add entity deduplication in graph enricher
+  ([`9242e57`](https://github.com/jason-weddington/personal-kb-mcp/commit/9242e574191c77b00cdcac43c633e0a04ab9746f))
+
+
 ## v0.9.2 (2026-02-27)
 
 ### Bug Fixes
