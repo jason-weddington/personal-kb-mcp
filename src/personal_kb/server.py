@@ -25,10 +25,12 @@ from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.kb_ask import register_kb_ask
+from personal_kb.tools.kb_get import register_kb_get
 from personal_kb.tools.kb_ingest import register_kb_ingest
 from personal_kb.tools.kb_maintain import register_kb_maintain
 from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
+from personal_kb.tools.kb_store_batch import register_kb_store_batch
 from personal_kb.tools.kb_summarize import register_kb_summarize
 
 
@@ -122,15 +124,21 @@ already memorized — would not otherwise have: project decisions, personal \
 conventions, hard-won lessons, and domain-specific facts.
 
 QUERYING — pick the right tool:
-- kb_search: Quick lookup by keywords or filters. Use for duplicate checking, \
-finding a specific entry, or filtering by tags/project/type.
+- kb_search: Quick lookup by keywords or filters. Returns compact summaries \
+(no details). Use for duplicate checking, finding entries, or filtering by \
+tags/project/type.
+- kb_get: Retrieve full details for specific entries by ID. Use after \
+kb_search to read the complete content of interesting results.
 - kb_ask: Explore related knowledge via graph traversal. Use when you need \
 to discover connections, trace decision history, or find everything related \
-to a concept.
+to a concept. Returns full details.
 - kb_summarize: Get a synthesized natural-language answer with citations. \
 Use when you need to answer a user question directly from the KB.
 
 STORING — capture knowledge proactively:
+- kb_store: Create or update a single entry.
+- kb_store_batch: Create multiple entries in one call (max 10). More \
+efficient — uses a single LLM call for graph enrichment.
 - Technical decisions and their rationale ("chose X because Y")
 - Patterns, conventions, or architecture worth preserving
 - Lessons learned from debugging, fixing issues, or trial-and-error
@@ -163,7 +171,9 @@ def create_server() -> FastMCP:
     )
 
     register_kb_store(mcp)
+    register_kb_store_batch(mcp)
     register_kb_search(mcp)
+    register_kb_get(mcp)
     register_kb_ask(mcp)
     register_kb_summarize(mcp)
     register_kb_ingest(mcp)

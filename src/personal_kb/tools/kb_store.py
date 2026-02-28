@@ -1,17 +1,20 @@
 """kb_store MCP tool — create and update knowledge entries."""
 
 import logging
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
+from personal_kb.confidence.decay import compute_effective_confidence
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
+from personal_kb.tools.formatters import format_entry_compact
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +22,13 @@ logger = logging.getLogger(__name__)
 def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
     """Format the result of a store operation for the MCP response."""
     action = "Updated" if is_update else "Created"
-    lines = [
-        f"{action} entry {entry.id} (v{entry.version})",
-        f"  Title: {entry.short_title}",
-        f"  Type: {entry.entry_type.value}",
-    ]
-    if entry.project_ref:
-        lines.append(f"  Project: {entry.project_ref}")
-    if entry.tags:
-        lines.append(f"  Tags: {', '.join(entry.tags)}")
+    anchor = entry.updated_at or entry.created_at or datetime.now(UTC)
+    eff = compute_effective_confidence(entry.confidence_level, entry.entry_type, anchor)
+    compact = format_entry_compact(entry, eff)
+    line = f"{action} {entry.id} (v{entry.version})\n{compact}"
     if not entry.has_embedding:
-        lines.append("  Note: Entry will be embedded when Ollama is available")
-    return "\n".join(lines)
+        line += "\n  Note: Entry will be embedded when Ollama is available"
+    return line
 
 
 def register_kb_store(mcp: FastMCP) -> None:

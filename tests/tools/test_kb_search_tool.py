@@ -43,7 +43,9 @@ def test_format_results():
     assert "Test" in output
     assert "test-proj" in output
     assert "85%" in output
-    assert "a, b" in output
+    assert "#a #b" in output
+    # Compact format should NOT include knowledge_details
+    assert "Some details here" not in output
 
 
 def test_format_results_with_staleness():
@@ -66,5 +68,4 @@ def test_format_results_with_staleness():
         )
     ]
     output = format_search_results(results)
-    assert "WARNING" in output
-    assert "Stale" in output
+    assert "[STALE]" in output

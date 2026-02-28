@@ -9,35 +9,17 @@ from pydantic import Field
 
 from personal_kb.models.entry import EntryType
 from personal_kb.models.search import SearchQuery, SearchResult
+from personal_kb.tools.formatters import format_entry_compact, format_result_list
 
 logger = logging.getLogger(__name__)
 
 
 def format_search_results(results: list[SearchResult], match_source_note: str | None = None) -> str:
-    """Format search results for the MCP response."""
-    if not results:
-        return "No results found."
-
-    lines = [f"Found {len(results)} result(s):\n"]
-    if match_source_note:
-        lines.append(f"Note: {match_source_note}\n")
-
-    for i, r in enumerate(results, 1):
-        entry = r.entry
-        lines.append(f"--- Result {i} [{entry.id}] (score: {r.score:.4f}) ---")
-        lines.append(f"  Title: {entry.short_title}")
-        lines.append(f"  Type: {entry.entry_type.value}")
-        if entry.project_ref:
-            lines.append(f"  Project: {entry.project_ref}")
-        lines.append(f"  Confidence: {r.effective_confidence:.0%}")
-        if r.staleness_warning:
-            lines.append(f"  WARNING: {r.staleness_warning}")
-        if entry.tags:
-            lines.append(f"  Tags: {', '.join(entry.tags)}")
-        lines.append(f"  Details: {entry.knowledge_details}")
-        lines.append("")
-
-    return "\n".join(lines)
+    """Format search results as compact entries (no details)."""
+    entries = [
+        format_entry_compact(r.entry, r.effective_confidence, r.staleness_warning) for r in results
+    ]
+    return format_result_list(entries, note=match_source_note)
 
 
 def register_kb_search(mcp: FastMCP) -> None:

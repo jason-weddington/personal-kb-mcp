@@ -15,6 +15,40 @@ _VALID_ENTITY_TYPES = {"person", "tool", "concept", "technology"}
 
 _MAX_RELATIONSHIPS = 8
 
+_MAX_BATCH_CONTENT = 500
+
+_BATCH_SYSTEM_PROMPT = """\
+You are a knowledge graph builder. Given multiple knowledge entries, extract \
+entities and their relationships for EACH entry.
+
+Return ONLY a JSON object keyed by entry ID. Each value is an array of \
+relationship objects with:
+- "entity": entity name (lowercase, hyphens for spaces)
+- "entity_type": one of: person, tool, concept, technology
+- "relationship": how the entry relates to the entity
+
+Good entities are SPECIFIC enough to connect related entries:
+- "thread-safety", "connection-pooling", "dependency-injection" (good concepts)
+- "error", "problem", "pattern" (too vague — avoid these)
+
+Rules:
+- Extract 2-6 entities per entry. Use [] for entries that are too generic.
+- Skip tags and project references (already captured separately).
+- entity_type MUST be one of: person, tool, concept, technology.
+
+Example output:
+{
+  "kb-00001": [
+    {"entity": "fastapi", "entity_type": "tool", "relationship": "uses"}
+  ],
+  "kb-00002": [
+    {"entity": "redis", "entity_type": "technology", "relationship": "depends_on"}
+  ]
+}\
+"""
+
+_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+
 _SYSTEM_PROMPT = """\
 You are a knowledge graph builder. Given a knowledge entry, extract entities \
 and their relationships to this entry.
@@ -88,6 +122,92 @@ class GraphEnricher:
         await self._db.commit()
 
         return added
+
+    async def enrich_batch(self, entries: list[KnowledgeEntry]) -> int:
+        """Enrich multiple entries with a single LLM call.
+
+        Returns total edges added. Falls back to per-entry on parse failure.
+        """
+        if not entries:
+            return 0
+        if not await self._llm.is_available():
+            return 0
+
+        prompt = self._build_batch_prompt(entries)
+        raw = await self._llm.generate(prompt, system=_BATCH_SYSTEM_PROMPT)
+        if raw is None:
+            return 0
+
+        batch_rels = self._parse_batch_relationships(raw, [e.id for e in entries])
+
+        # Fallback: if batch parse returned nothing, try per-entry
+        if batch_rels is None:
+            logger.warning("Batch parse failed, falling back to per-entry enrichment")
+            total = 0
+            for entry in entries:
+                try:
+                    total += await self.enrich_entry(entry)
+                except Exception:
+                    logger.warning("Fallback enrich failed for %s", entry.id, exc_info=True)
+            return total
+
+        total = 0
+        for entry in entries:
+            rels = batch_rels.get(entry.id, [])
+            await self._ensure_entry_node(entry)
+            await self._clear_enrichment_edges(entry.id)
+            for rel in rels:
+                total += await self._add_enrichment_edge(entry.id, rel)
+
+        await self._db.commit()
+        return total
+
+    def _build_batch_prompt(self, entries: list[KnowledgeEntry]) -> str:
+        """Build a prompt containing all entries for batch enrichment."""
+        parts: list[str] = []
+        for entry in entries:
+            content = entry.knowledge_details[:_MAX_BATCH_CONTENT]
+            parts.append(f"[{entry.id}] {entry.short_title} ({entry.entry_type.value}): {content}")
+        return "\n\n".join(parts)
+
+    def _parse_batch_relationships(
+        self, raw: str, entry_ids: list[str]
+    ) -> dict[str, list[dict[str, str]]] | None:
+        """Parse batch LLM response into per-entry relationship dicts.
+
+        Returns None if the JSON object cannot be parsed (triggers fallback).
+        """
+        # Strip markdown fences if present
+        fence_match = _FENCE_RE.search(raw)
+        if fence_match:
+            raw = fence_match.group(1)
+
+        # Find JSON object in response
+        obj_match = _JSON_OBJECT_RE.search(raw)
+        if not obj_match:
+            logger.warning("No JSON object found in batch LLM response")
+            return None
+
+        try:
+            data = json.loads(obj_match.group(0))
+        except json.JSONDecodeError:
+            logger.warning("Malformed JSON in batch LLM response")
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        result: dict[str, list[dict[str, str]]] = {}
+        valid_ids = set(entry_ids)
+        for eid, rels in data.items():
+            if eid not in valid_ids:
+                continue
+            if not isinstance(rels, list):
+                continue
+            parsed = self._parse_relationships(json.dumps(rels))
+            result[eid] = parsed
+
+        return result
 
     async def enrich_all(self, entries: list[KnowledgeEntry]) -> tuple[int, int]:
         """Enrich multiple entries. Returns (succeeded, failed) counts."""

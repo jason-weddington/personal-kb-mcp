@@ -337,3 +337,76 @@ async def test_enrich_all(db):
     assert succeeded == 3
     assert failed == 0
     assert llm.generate_count == 3
+
+
+# --- enrich_batch ---
+
+
+@pytest.mark.asyncio
+async def test_enrich_batch_single_call(db):
+    """enrich_batch uses a single LLM call for all entries."""
+    batch_response = json.dumps(
+        {
+            "kb-00001": [
+                {"entity": "tool-a", "entity_type": "tool", "relationship": "uses"},
+            ],
+            "kb-00002": [
+                {"entity": "tool-b", "entity_type": "tool", "relationship": "depends_on"},
+            ],
+            "kb-00003": [],
+        }
+    )
+    llm = FakeLLM(response=batch_response)
+    enricher = GraphEnricher(db, llm)
+    entries = [_make_entry(id=f"kb-{i:05d}") for i in range(1, 4)]
+
+    added = await enricher.enrich_batch(entries)
+    assert added == 2
+    assert llm.generate_count == 1  # single call
+
+    # Verify edges exist
+    cursor = await db.execute(
+        "SELECT source, target FROM graph_edges WHERE json_extract(properties, '$.source') = 'llm'"
+    )
+    rows = await cursor.fetchall()
+    assert len(rows) == 2
+    sources = {row[0] for row in rows}
+    assert sources == {"kb-00001", "kb-00002"}
+
+
+@pytest.mark.asyncio
+async def test_enrich_batch_fallback_on_parse_failure(db):
+    """If batch JSON parse fails, falls back to per-entry enrichment."""
+    # First call returns garbage (batch), subsequent calls return valid per-entry
+    llm = FakeLLM(response="not valid json")
+    enricher = GraphEnricher(db, llm)
+    entries = [_make_entry(id=f"kb-{i:05d}") for i in range(1, 3)]
+
+    # After batch fails, fallback calls enrich_entry per entry
+    # Those also get "not valid json" so add 0 edges, but no crash
+    added = await enricher.enrich_batch(entries)
+    assert added == 0
+    # 1 batch call + 2 per-entry fallback calls = 3
+    assert llm.generate_count == 3
+
+
+@pytest.mark.asyncio
+async def test_enrich_batch_empty_list(db):
+    """enrich_batch with empty list returns 0."""
+    llm = FakeLLM(response="[]")
+    enricher = GraphEnricher(db, llm)
+
+    added = await enricher.enrich_batch([])
+    assert added == 0
+    assert llm.generate_count == 0
+
+
+@pytest.mark.asyncio
+async def test_enrich_batch_llm_unavailable(db):
+    """enrich_batch returns 0 when LLM is unavailable."""
+    llm = FakeLLM(available=False)
+    enricher = GraphEnricher(db, llm)
+    entries = [_make_entry(id="kb-00001")]
+
+    added = await enricher.enrich_batch(entries)
+    assert added == 0

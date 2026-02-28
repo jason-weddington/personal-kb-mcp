@@ -17,9 +17,9 @@ async def test_format_store_result_create(store):
         tags=["tag1", "tag2"],
     )
     result = format_store_result(entry, is_update=False)
-    assert "Created entry kb-00001" in result
+    assert "Created kb-00001" in result
     assert "my-project" in result
-    assert "tag1, tag2" in result
+    assert "#tag1 #tag2" in result
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_format_store_result_update(store):
         change_reason="Updated",
     )
     result = format_store_result(updated, is_update=True)
-    assert "Updated entry kb-00001 (v2)" in result
+    assert "Updated kb-00001 (v2)" in result
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from personal_kb.graph.queries import (
 from personal_kb.models.entry import KnowledgeEntry
 from personal_kb.models.search import SearchQuery
 from personal_kb.search.embeddings import EmbeddingClient
+from personal_kb.tools.formatters import format_entry_compact, format_entry_full, format_result_list
 
 logger = logging.getLogger(__name__)
 
@@ -379,9 +380,8 @@ async def _strategy_connection(
                     entry.updated_at or entry.created_at or now,
                     now,
                 )
-                lines.append(
-                    f"  [{entry.id}] {entry.entry_type.value}: {entry.short_title} ({eff:.0%})"
-                )
+                warn = staleness_warning(eff, entry.entry_type)
+                lines.append(f"  {format_entry_compact(entry, eff, warn)}")
 
     return "\n".join(lines)
 
@@ -391,21 +391,7 @@ def _format_entries(
     header: str,
 ) -> str:
     """Format a list of (entry, context_string) tuples for output."""
-    now = datetime.now(UTC)
-    lines = [f"{header}\n", f"Found {len(entries_with_context)} result(s):\n"]
-
-    for entry, ctx_str in entries_with_context:
-        anchor = entry.updated_at or entry.created_at or now
-        eff = compute_effective_confidence(entry.confidence_level, entry.entry_type, anchor, now)
-        warning = staleness_warning(eff, entry.entry_type)
-
-        lines.append(f"[{entry.id}] {entry.entry_type.value}: {entry.short_title} ({eff:.0%})")
-        lines.append(f"  \u21b3 {ctx_str}")
-        if entry.tags:
-            lines.append(f"  Tags: {', '.join(entry.tags)}")
-        if warning:
-            lines.append(f"  WARNING: {warning}")
-        lines.append(f"  {entry.knowledge_details}")
-        lines.append("")
-
-    return "\n".join(lines)
+    formatted = [
+        format_entry_full(entry, context=ctx_str) for entry, ctx_str in entries_with_context
+    ]
+    return format_result_list(formatted, header=header)

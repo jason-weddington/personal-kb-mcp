@@ -61,7 +61,8 @@ def test_format_entries_with_tags():
         (_make_entry(tags=["python", "sqlite"]), "test"),
     ]
     output = _format_entries(entries, "Header")
-    assert "python, sqlite" in output
+    assert "#python" in output
+    assert "#sqlite" in output
 
 
 def test_format_entries_decision_type():
@@ -75,7 +76,7 @@ def test_format_entries_decision_type():
 
 
 def test_format_entries_includes_details():
-    """Should include knowledge details."""
+    """Should include knowledge details (kb_ask shows full entries)."""
     entries = [
         (_make_entry(knowledge_details="Very important fact"), "found"),
     ]
@@ -296,5 +297,5 @@ async def test_auto_with_planner_uses_refined_search_query(db, fake_embedder, st
         include_graph_context=True,
         limit=20,
     )
-    # Should use the refined query, not the verbose original
-    assert "Auto search: sqlite WAL" in result
+    # Should use the refined query — visible in the header
+    assert "sqlite WAL" in result

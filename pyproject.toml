@@ -110,7 +110,7 @@ ignore_missing_imports = true
 source = ["personal_kb"]
 
 [tool.coverage.report]
-fail_under = 76
+fail_under = 76.5
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
