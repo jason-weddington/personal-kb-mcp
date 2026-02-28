@@ -410,3 +410,313 @@ async def test_enrich_batch_llm_unavailable(db):
 
     added = await enricher.enrich_batch(entries)
     assert added == 0
+
+
+# --- entity deduplication ---
+
+
+@pytest.mark.asyncio
+async def test_dedup_reuses_existing_node(db):
+    """When an existing node is similar enough, the enricher reuses it."""
+    from personal_kb.graph.builder import GraphBuilder
+
+    entry1 = _make_entry(id="kb-00001")
+    builder = GraphBuilder(db)
+    await builder.build_for_entry(entry1)
+
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        "INSERT INTO graph_nodes (node_id, node_type, properties, created_at) "
+        "VALUES (?, ?, '{}', ?)",
+        ("tool:aiosqlite", "tool", now),
+    )
+    await db.commit()
+
+    llm = FakeLLM(
+        response=json.dumps(
+            [{"entity": "aiosqlite3", "entity_type": "tool", "relationship": "uses"}]
+        )
+    )
+    enricher = GraphEnricher(db, llm)
+    entry2 = _make_entry(id="kb-00002")
+
+    added = await enricher.enrich_entry(entry2)
+    assert added == 1
+
+    cursor = await db.execute(
+        "SELECT target FROM graph_edges "
+        "WHERE source = 'kb-00002' AND json_extract(properties, '$.source') = 'llm'"
+    )
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "tool:aiosqlite"
+
+
+@pytest.mark.asyncio
+async def test_dedup_cross_type_match(db):
+    """Dedup merges across entity types (concept:async-io -> technology:asyncio)."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        "INSERT INTO graph_nodes (node_id, node_type, properties, created_at) "
+        "VALUES (?, ?, '{}', ?)",
+        ("technology:asyncio", "technology", now),
+    )
+    await db.commit()
+
+    llm = FakeLLM(
+        response=json.dumps(
+            [{"entity": "async-io", "entity_type": "concept", "relationship": "implements"}]
+        )
+    )
+    enricher = GraphEnricher(db, llm)
+    entry = _make_entry(id="kb-00001")
+
+    added = await enricher.enrich_entry(entry)
+    assert added == 1
+
+    cursor = await db.execute(
+        "SELECT target FROM graph_edges "
+        "WHERE source = 'kb-00001' AND json_extract(properties, '$.source') = 'llm'"
+    )
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "technology:asyncio"
+
+
+@pytest.mark.asyncio
+async def test_dedup_no_false_match(db):
+    """Sufficiently different names should NOT be merged."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        "INSERT INTO graph_nodes (node_id, node_type, properties, created_at) "
+        "VALUES (?, ?, '{}', ?)",
+        ("tool:redis", "tool", now),
+    )
+    await db.commit()
+
+    llm = FakeLLM(
+        response=json.dumps(
+            [{"entity": "postgresql", "entity_type": "tool", "relationship": "uses"}]
+        )
+    )
+    enricher = GraphEnricher(db, llm)
+    entry = _make_entry(id="kb-00001")
+
+    added = await enricher.enrich_entry(entry)
+    assert added == 1
+
+    cursor = await db.execute(
+        "SELECT target FROM graph_edges "
+        "WHERE source = 'kb-00001' AND json_extract(properties, '$.source') = 'llm'"
+    )
+    rows = await cursor.fetchall()
+    assert rows[0][0] == "tool:postgresql"
+
+
+@pytest.mark.asyncio
+async def test_dedup_exact_match_reuses(db):
+    """Exact match reuses the existing node (trivial dedup case)."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        "INSERT INTO graph_nodes (node_id, node_type, properties, created_at) "
+        "VALUES (?, ?, '{}', ?)",
+        ("concept:dependency-injection", "concept", now),
+    )
+    await db.commit()
+
+    llm = FakeLLM(
+        response=json.dumps(
+            [
+                {
+                    "entity": "dependency-injection",
+                    "entity_type": "concept",
+                    "relationship": "implements",
+                }
+            ]
+        )
+    )
+    enricher = GraphEnricher(db, llm)
+    entry = _make_entry(id="kb-00001")
+
+    added = await enricher.enrich_entry(entry)
+    assert added == 1
+
+    cursor = await db.execute(
+        "SELECT target FROM graph_edges "
+        "WHERE source = 'kb-00001' AND json_extract(properties, '$.source') = 'llm'"
+    )
+    rows = await cursor.fetchall()
+    assert rows[0][0] == "concept:dependency-injection"
+
+
+@pytest.mark.asyncio
+async def test_dedup_within_same_enrich_call(db):
+    """New entities added within the same enrich call are visible to later edges."""
+    llm = FakeLLM(
+        response=json.dumps(
+            [
+                {"entity": "fastapi", "entity_type": "tool", "relationship": "uses"},
+                {"entity": "fast-api", "entity_type": "tool", "relationship": "depends_on"},
+            ]
+        )
+    )
+    enricher = GraphEnricher(db, llm)
+    entry = _make_entry(id="kb-00001")
+
+    await enricher.enrich_entry(entry)
+    cursor = await db.execute(
+        "SELECT target FROM graph_edges "
+        "WHERE source = 'kb-00001' AND json_extract(properties, '$.source') = 'llm'"
+    )
+    rows = await cursor.fetchall()
+    targets = {row[0] for row in rows}
+    assert targets == {"tool:fastapi"}
+
+
+@pytest.mark.asyncio
+async def test_dedup_picks_highest_similarity(db):
+    """When multiple nodes match above threshold, highest similarity wins."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat()
+    for node_id, node_type in [
+        ("technology:postgresql", "technology"),
+        ("tool:postgres-db", "tool"),
+    ]:
+        await db.execute(
+            "INSERT INTO graph_nodes (node_id, node_type, properties, created_at) "
+            "VALUES (?, ?, '{}', ?)",
+            (node_id, node_type, now),
+        )
+    await db.commit()
+
+    # "postgre-sql" is closer to "postgresql" (0.95) than "postgres-db" (0.73)
+    llm = FakeLLM(
+        response=json.dumps(
+            [{"entity": "postgre-sql", "entity_type": "tool", "relationship": "uses"}]
+        )
+    )
+    enricher = GraphEnricher(db, llm)
+    entry = _make_entry(id="kb-00001")
+
+    added = await enricher.enrich_entry(entry)
+    assert added == 1
+
+    cursor = await db.execute(
+        "SELECT target FROM graph_edges "
+        "WHERE source = 'kb-00001' AND json_extract(properties, '$.source') = 'llm'"
+    )
+    rows = await cursor.fetchall()
+    assert rows[0][0] == "technology:postgresql"
+
+
+@pytest.mark.asyncio
+async def test_dedup_batch_enrichment(db):
+    """Dedup works in batch enrichment mode too."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        "INSERT INTO graph_nodes (node_id, node_type, properties, created_at) "
+        "VALUES (?, ?, '{}', ?)",
+        ("tool:aiosqlite", "tool", now),
+    )
+    await db.commit()
+
+    batch_response = json.dumps(
+        {
+            "kb-00001": [
+                {"entity": "aiosqlite3", "entity_type": "tool", "relationship": "uses"},
+            ],
+            "kb-00002": [
+                {"entity": "aiosqlite", "entity_type": "tool", "relationship": "depends_on"},
+            ],
+        }
+    )
+    llm = FakeLLM(response=batch_response)
+    enricher = GraphEnricher(db, llm)
+    entries = [_make_entry(id=f"kb-{i:05d}") for i in range(1, 3)]
+
+    added = await enricher.enrich_batch(entries)
+    assert added == 2
+
+    cursor = await db.execute(
+        "SELECT source, target FROM graph_edges "
+        "WHERE json_extract(properties, '$.source') = 'llm' "
+        "ORDER BY source"
+    )
+    rows = await cursor.fetchall()
+    assert len(rows) == 2
+    for row in rows:
+        assert row[1] == "tool:aiosqlite"
+
+
+@pytest.mark.asyncio
+async def test_resolve_node_id_unit():
+    """Unit test for _resolve_node_id without a database."""
+    from unittest.mock import AsyncMock
+
+    db_mock = AsyncMock()
+    llm = FakeLLM()
+    enricher = GraphEnricher(db_mock, llm)
+
+    enricher._vocab_cache = {
+        "tool": ["aiosqlite", "redis", "fastapi"],
+        "concept": ["connection-pooling", "dependency-injection"],
+        "technology": ["asyncio", "postgresql"],
+    }
+
+    assert enricher._resolve_node_id("redis", "tool") == "tool:redis"
+    assert enricher._resolve_node_id("async-io", "concept") == "technology:asyncio"
+
+    result = enricher._resolve_node_id("kubernetes", "technology")
+    assert result == "technology:kubernetes"
+    assert "kubernetes" in enricher._vocab_cache["technology"]
+
+    assert enricher._resolve_node_id("completely-different", "tool") == "tool:completely-different"
+
+
+@pytest.mark.asyncio
+async def test_resolve_node_id_no_cache():
+    """When vocab cache is None, _resolve_node_id returns the candidate as-is."""
+    from unittest.mock import AsyncMock
+
+    db_mock = AsyncMock()
+    llm = FakeLLM()
+    enricher = GraphEnricher(db_mock, llm)
+
+    assert enricher._vocab_cache is None
+    assert enricher._resolve_node_id("anything", "tool") == "tool:anything"
+
+
+@pytest.mark.asyncio
+async def test_dedup_threshold_boundary():
+    """Verify the threshold is respected at the boundary."""
+    from difflib import SequenceMatcher
+    from unittest.mock import AsyncMock
+
+    from personal_kb.graph.enricher import _DEDUP_SIMILARITY_THRESHOLD
+
+    db_mock = AsyncMock()
+    llm = FakeLLM()
+    enricher = GraphEnricher(db_mock, llm)
+
+    # "abcd" vs "abce" -> ratio 0.75 (below 0.85 threshold)
+    enricher._vocab_cache = {"tool": ["abcd"]}
+    ratio = SequenceMatcher(None, "abce", "abcd").ratio()
+    assert ratio < _DEDUP_SIMILARITY_THRESHOLD
+    assert enricher._resolve_node_id("abce", "tool") == "tool:abce"
+
+    # "aiosqlite" vs "aiosqlite3" -> ratio ~0.95 (above 0.85 threshold)
+    enricher._vocab_cache = {"tool": ["aiosqlite"]}
+    ratio = SequenceMatcher(None, "aiosqlite3", "aiosqlite").ratio()
+    assert ratio >= _DEDUP_SIMILARITY_THRESHOLD
+    assert enricher._resolve_node_id("aiosqlite3", "tool") == "tool:aiosqlite"

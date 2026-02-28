@@ -3,9 +3,11 @@
 import json
 import logging
 import re
+from difflib import SequenceMatcher
 
 import aiosqlite
 
+from personal_kb.graph.queries import get_graph_vocabulary
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import KnowledgeEntry
 
@@ -16,6 +18,8 @@ _VALID_ENTITY_TYPES = {"person", "tool", "concept", "technology"}
 _MAX_RELATIONSHIPS = 8
 
 _MAX_BATCH_CONTENT = 500
+
+_DEDUP_SIMILARITY_THRESHOLD = 0.85
 
 _BATCH_SYSTEM_PROMPT = """\
 You are a knowledge graph builder. Given multiple knowledge entries, extract \
@@ -96,6 +100,7 @@ class GraphEnricher:
         """Initialize with a database connection and LLM provider."""
         self._db = db
         self._llm = llm
+        self._vocab_cache: dict[str, list[str]] | None = None
 
     async def enrich_entry(self, entry: KnowledgeEntry) -> int:
         """Extract relationships from an entry via LLM and add as graph edges.
@@ -112,6 +117,7 @@ class GraphEnricher:
 
         relationships = self._parse_relationships(raw)
 
+        await self._load_vocab_cache()
         await self._ensure_entry_node(entry)
         await self._clear_enrichment_edges(entry.id)
 
@@ -120,6 +126,7 @@ class GraphEnricher:
             added += await self._add_enrichment_edge(entry.id, rel)
 
         await self._db.commit()
+        self._vocab_cache = None
 
         return added
 
@@ -151,6 +158,7 @@ class GraphEnricher:
                     logger.warning("Fallback enrich failed for %s", entry.id, exc_info=True)
             return total
 
+        await self._load_vocab_cache()
         total = 0
         for entry in entries:
             rels = batch_rels.get(entry.id, [])
@@ -160,6 +168,7 @@ class GraphEnricher:
                 total += await self._add_enrichment_edge(entry.id, rel)
 
         await self._db.commit()
+        self._vocab_cache = None
         return total
 
     def _build_batch_prompt(self, entries: list[KnowledgeEntry]) -> str:
@@ -304,19 +313,60 @@ class GraphEnricher:
             (entry_id,),
         )
 
+    async def _load_vocab_cache(self) -> None:
+        """Load graph vocabulary into the instance cache if not already loaded."""
+        if self._vocab_cache is None:
+            self._vocab_cache = await get_graph_vocabulary(self._db)
+
+    def _resolve_node_id(self, entity: str, entity_type: str) -> str:
+        """Find an existing node ID that matches the candidate, or build a new one.
+
+        Compares against cached vocabulary using SequenceMatcher. If a similar
+        node exists (ratio >= threshold), reuses it regardless of entity_type.
+        This merges near-duplicates like concept:async-io and technology:asyncio.
+        """
+        candidate_id = f"{entity_type}:{entity}"
+
+        if self._vocab_cache is None:
+            return candidate_id
+
+        best_match: str | None = None
+        best_ratio: float = 0.0
+
+        for node_type, names in self._vocab_cache.items():
+            for name in names:
+                ratio = SequenceMatcher(None, entity, name).ratio()
+                if ratio >= _DEDUP_SIMILARITY_THRESHOLD and ratio > best_ratio:
+                    best_ratio = ratio
+                    best_match = f"{node_type}:{name}"
+
+        if best_match is not None:
+            if best_match != candidate_id:
+                logger.debug(
+                    "Dedup: %s -> %s (similarity %.2f)", candidate_id, best_match, best_ratio
+                )
+            return best_match
+
+        # No match found — register in cache so later edges in the same batch see it
+        self._vocab_cache.setdefault(entity_type, []).append(entity)
+        return candidate_id
+
     async def _add_enrichment_edge(self, entry_id: str, rel: dict[str, str]) -> int:
         """Add a single LLM-derived edge. Returns 1 if added, 0 if duplicate."""
         from datetime import UTC, datetime
 
-        node_id = f"{rel['entity_type']}:{rel['entity']}"
+        node_id = self._resolve_node_id(rel["entity"], rel["entity_type"])
         now = datetime.now(UTC).isoformat()
+
+        # Extract actual node type from resolved node_id (may differ from rel)
+        resolved_type = node_id.split(":", 1)[0]
 
         # Ensure target node exists (don't overwrite deterministic nodes)
         await self._db.execute(
             """INSERT INTO graph_nodes (node_id, node_type, properties, created_at)
                VALUES (?, ?, '{}', ?)
                ON CONFLICT(node_id) DO NOTHING""",
-            (node_id, rel["entity_type"], now),
+            (node_id, resolved_type, now),
         )
 
         # Insert edge with LLM source marker
