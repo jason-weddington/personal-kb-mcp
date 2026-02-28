@@ -4,11 +4,7 @@ Problems worth solving, in priority order. Not specs — the "how" gets figured 
 
 ## Now
 
-- **No visibility into what the KB knows at a glance.** Starting a session, the agent has no idea what's in the KB without searching. A lightweight "what's in here?" summary (top entries by project, recent additions, graph stats) would help the agent decide whether to search or just proceed.
-
-## Next
-
-- **`kb_get` returns inactive entries without marking them.** Fetching a deactivated entry by ID returns full content with no indication it's inactive. This wastes tokens on obsolete information and can mislead the agent into using stale knowledge. Inactive entries should either be skipped by default or clearly marked.
+- **Agents default to kb_search and miss graph connections.** Despite improved tool descriptions, agents still hammer kb_search with keyword variations instead of using `kb_ask strategy:related` to traverse the knowledge graph. This means serendipitous discovery — the KB's most unique value — rarely happens. The graph already connects related entries across projects and topics, but agents don't reach for it.
 
 ## Later
 
@@ -24,3 +20,5 @@ Problems worth solving, in priority order. Not specs — the "how" gets figured 
 - Knowledge graph with LLM enrichment — entity extraction, relationship edges, graph traversal queries.
 - File ingestion pipeline — deny-list, secrets scanning, PII redaction, LLM summarize + extract.
 - Token efficiency — compact output, kb_get two-phase retrieval, kb_store_batch with batch enrichment.
+- kb_get skips inactive entries — no stale knowledge leaking into agent context.
+- Show long_title in compact search results — one extra line per result dramatically improves discoverability.
