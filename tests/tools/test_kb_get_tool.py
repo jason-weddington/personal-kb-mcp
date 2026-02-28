@@ -2,7 +2,7 @@
 
 import pytest
 
-from personal_kb.db.queries import get_entry
+from personal_kb.db.queries import get_entry, touch_accessed
 from personal_kb.models.entry import EntryType
 from personal_kb.tools.formatters import format_entry_full, format_result_list
 from personal_kb.tools.kb_get import _MAX_IDS
@@ -14,12 +14,17 @@ async def _kb_get_logic(db, ids: list[str]) -> str:
         return f"Error: Maximum {_MAX_IDS} IDs per request (got {len(ids)})."
 
     formatted: list[str] = []
+    accessed_ids: list[str] = []
     for eid in ids:
         entry = await get_entry(db, eid)
         if entry is None or not entry.is_active:
             formatted.append(f"[{eid}] not found")
         else:
             formatted.append(format_entry_full(entry))
+            accessed_ids.append(eid)
+
+    if accessed_ids:
+        await touch_accessed(db, accessed_ids)
 
     return format_result_list(formatted)
 
@@ -115,3 +120,44 @@ async def test_get_cap_at_20(db):
     ids = [f"kb-{i:05d}" for i in range(1, 22)]
     result = await _kb_get_logic(db, ids)
     assert "Maximum 20" in result
+
+
+@pytest.mark.asyncio
+async def test_get_updates_last_accessed(db, store):
+    """kb_get should update last_accessed — explicit retrieval resets decay clock."""
+    entry = await store.create_entry(
+        short_title="Decay test",
+        long_title="Access-aware decay",
+        knowledge_details="Explicit retrieval should reset the decay clock.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    # Initially NULL
+    fetched = await get_entry(db, entry.id)
+    assert fetched is not None
+    assert fetched.last_accessed is None
+
+    # kb_get should touch last_accessed
+    await _kb_get_logic(db, [entry.id])
+
+    fetched = await get_entry(db, entry.id)
+    assert fetched is not None
+    assert fetched.last_accessed is not None
+
+
+@pytest.mark.asyncio
+async def test_get_does_not_touch_missing_entries(db, store):
+    """kb_get should not touch last_accessed for missing/inactive entries."""
+    entry = await store.create_entry(
+        short_title="Will deactivate",
+        long_title="Inactive entry",
+        knowledge_details="Should not get accessed.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await store.deactivate_entry(entry.id)
+
+    await _kb_get_logic(db, [entry.id, "kb-99999"])
+
+    fetched = await get_entry(db, entry.id)
+    assert fetched is not None
+    assert fetched.last_accessed is None

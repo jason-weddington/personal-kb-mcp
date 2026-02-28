@@ -10,7 +10,7 @@ from fastmcp.server.context import Context
 from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence, staleness_warning
-from personal_kb.db.queries import get_entry, touch_accessed
+from personal_kb.db.queries import get_entry
 from personal_kb.graph.planner import QueryPlanner
 from personal_kb.graph.queries import (
     bfs_entries,
@@ -213,10 +213,6 @@ async def _strategy_auto(
 
     if not entries_with_context:
         return "No results found."
-
-    # Track access for all returned entries
-    accessed_ids = [e.id for e, _ in entries_with_context]
-    await touch_accessed(db, accessed_ids)
 
     return _format_entries(entries_with_context, f"Auto search: {question}")
 

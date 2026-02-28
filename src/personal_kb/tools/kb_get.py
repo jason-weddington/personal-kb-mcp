@@ -34,7 +34,7 @@ def register_kb_get(mcp: FastMCP) -> None:
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        from personal_kb.db.queries import get_entry
+        from personal_kb.db.queries import get_entry, touch_accessed
 
         lifespan = ctx.lifespan_context
         db = lifespan["db"]
@@ -46,11 +46,16 @@ def register_kb_get(mcp: FastMCP) -> None:
             return f"Error: Maximum {_MAX_IDS} IDs per request (got {len(ids)})."
 
         formatted: list[str] = []
+        accessed_ids: list[str] = []
         for eid in ids:
             entry = await get_entry(db, eid)
             if entry is None or not entry.is_active:
                 formatted.append(f"[{eid}] not found")
             else:
                 formatted.append(format_entry_full(entry))
+                accessed_ids.append(eid)
+
+        if accessed_ids:
+            await touch_accessed(db, accessed_ids)
 
         return format_result_list(formatted)
