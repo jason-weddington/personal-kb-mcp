@@ -41,8 +41,8 @@ def get_llm_model() -> str:
 
 
 def get_llm_timeout() -> float:
-    """Return the LLM timeout in seconds from KB_LLM_TIMEOUT."""
-    return float(os.environ.get("KB_LLM_TIMEOUT", "120.0"))
+    """Return the Ollama LLM timeout in seconds from KB_OLLAMA_LLM_TIMEOUT."""
+    return float(os.environ.get("KB_OLLAMA_LLM_TIMEOUT", "120.0"))
 
 
 def get_anthropic_model() -> str:

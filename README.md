@@ -220,7 +220,7 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | **Ollama (local LLM)** | | |
 | `KB_OLLAMA_URL` | `http://localhost:11434` | Ollama API base URL |
 | `KB_OLLAMA_MODEL` | `qwen3:4b` | Model for generation tasks |
-| `KB_LLM_TIMEOUT` | `120.0` | Generation timeout in seconds |
+| `KB_OLLAMA_LLM_TIMEOUT` | `120.0` | Generation timeout in seconds |
 | **Ollama embeddings** | | |
 | `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Model for vector embeddings |
 | `KB_EMBEDDING_DIM` | `1024` | Embedding vector dimensions |
