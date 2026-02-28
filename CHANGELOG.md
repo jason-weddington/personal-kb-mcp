@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.9.1 (2026-02-27)
+
+### Bug Fixes
+
+- Kb_get skips inactive entries
+  ([`fff774f`](https://github.com/jason-weddington/personal-kb-mcp/commit/fff774fff7743375d654da28d5920b354b6454b0))
+
+### Chores
+
+- Update roadmap philosophy, add dogfooding note, fix test_dry_run provider support
+  ([`6177814`](https://github.com/jason-weddington/personal-kb-mcp/commit/6177814de222fd1669fba9a5e6759f146e7e2078))
+
+
 ## v0.9.0 (2026-02-27)
 
 ### Chores
