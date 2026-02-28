@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.12.1 (2026-02-28)
+
+### Bug Fixes
+
+- Only reset confidence decay on explicit kb_get retrieval
+  ([`2b7117a`](https://github.com/jason-weddington/personal-kb-mcp/commit/2b7117a158812437aaca4afeffb4843c33ba7319))
+
+### Chores
+
+- Ratchet coverage threshold to 77%
+  ([`80bc430`](https://github.com/jason-weddington/personal-kb-mcp/commit/80bc4300ac5a1fa9667bff880657783fc2a7c875))
+
+
 ## v0.12.0 (2026-02-28)
 
 ### Features
