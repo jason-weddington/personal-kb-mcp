@@ -73,12 +73,18 @@ def format_entry_full(
     return "\n".join(lines)
 
 
+def format_graph_hint(entry: KnowledgeEntry, via_node: str) -> str:
+    """One-liner hint: See also: [kb-00042] Title (via concept:async-io)."""
+    return f"See also: [{entry.id}] {entry.short_title} (via {via_node})"
+
+
 def format_result_list(
     formatted_entries: list[str],
     header: str | None = None,
     note: str | None = None,
+    hints: list[str] | None = None,
 ) -> str:
-    """Count + note + entries joined by blank lines."""
+    """Count + note + entries joined by blank lines, optional graph hints."""
     if not formatted_entries:
         return "No results found."
 
@@ -90,4 +96,8 @@ def format_result_list(
         lines.append(f"Note: {note}")
     lines.append("")
     lines.append("\n\n".join(formatted_entries))
+    if hints:
+        lines.append("")
+        lines.append("Related entries via graph:")
+        lines.extend(f"  {h}" for h in hints)
     return "\n".join(lines)

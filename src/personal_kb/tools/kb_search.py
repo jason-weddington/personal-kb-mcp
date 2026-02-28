@@ -3,23 +3,78 @@
 import logging
 from typing import Annotated
 
+import aiosqlite
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
 from personal_kb.models.entry import EntryType
 from personal_kb.models.search import SearchQuery, SearchResult
-from personal_kb.tools.formatters import format_entry_compact, format_result_list
+from personal_kb.tools.formatters import format_entry_compact, format_graph_hint, format_result_list
 
 logger = logging.getLogger(__name__)
 
+_SPARSE_THRESHOLD = 3
+_MAX_HINTS = 3
 
-def format_search_results(results: list[SearchResult], match_source_note: str | None = None) -> str:
+
+async def collect_graph_hints(
+    db: aiosqlite.Connection,
+    results: list[SearchResult],
+    max_hints: int = _MAX_HINTS,
+) -> list[str]:
+    """Collect graph-connected entries as hints when results are sparse.
+
+    For each search result, does a 1-hop neighbor lookup to find connected
+    entries not already in the result set. Returns formatted hint strings.
+    """
+    from personal_kb.db.queries import get_entry
+    from personal_kb.graph.queries import get_neighbors
+
+    seen_ids = {r.entry.id for r in results}
+    hints: list[str] = []
+
+    for r in results:
+        neighbors = await get_neighbors(db, r.entry.id, limit=10)
+        for neighbor_id, edge_type, _direction in neighbors:
+            if not neighbor_id.startswith("kb-"):
+                # Intermediate node (tag, concept, etc.) — look one more hop
+                # to find entries connected through this node
+                via_node = neighbor_id
+                second_hop = await get_neighbors(db, neighbor_id, limit=10)
+                for entry_id, _edge_type, _dir in second_hop:
+                    if entry_id in seen_ids or not entry_id.startswith("kb-"):
+                        continue
+                    entry = await get_entry(db, entry_id)
+                    if entry and entry.is_active:
+                        seen_ids.add(entry_id)
+                        hints.append(format_graph_hint(entry, via_node))
+                        if len(hints) >= max_hints:
+                            return hints
+            else:
+                if neighbor_id in seen_ids:
+                    continue
+                entry = await get_entry(db, neighbor_id)
+                if entry and entry.is_active:
+                    seen_ids.add(neighbor_id)
+                    # Find the shared intermediate node for context
+                    hints.append(format_graph_hint(entry, f"{edge_type} from {r.entry.id}"))
+                    if len(hints) >= max_hints:
+                        return hints
+
+    return hints
+
+
+def format_search_results(
+    results: list[SearchResult],
+    match_source_note: str | None = None,
+    graph_hints: list[str] | None = None,
+) -> str:
     """Format search results as compact entries (no details)."""
     entries = [
         format_entry_compact(r.entry, r.effective_confidence, r.staleness_warning) for r in results
     ]
-    return format_result_list(entries, note=match_source_note)
+    return format_result_list(entries, note=match_source_note, hints=graph_hints)
 
 
 def register_kb_search(mcp: FastMCP) -> None:
@@ -80,4 +135,9 @@ def register_kb_search(mcp: FastMCP) -> None:
         if embedder is None or not await embedder.is_available():
             note = "Vector search unavailable (Ollama offline). Results are FTS-only."
 
-        return format_search_results(results, note)
+        # Collect graph hints when results are sparse
+        hints = None
+        if len(results) < _SPARSE_THRESHOLD:
+            hints = await collect_graph_hints(db, results)
+
+        return format_search_results(results, note, graph_hints=hints)
