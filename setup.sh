@@ -83,7 +83,7 @@ if command -v ollama &>/dev/null; then
 
         # Optionally pull LLM model
         echo -e "${BOLD}Checking Ollama LLM model (optional)...${NC}"
-        llm_model="${KB_LLM_MODEL:-qwen3:4b}"
+        llm_model="${KB_OLLAMA_MODEL:-qwen3:4b}"
         if echo "$pulled_models" | grep -q "$llm_model"; then
             ok "$llm_model (already pulled)"
         else

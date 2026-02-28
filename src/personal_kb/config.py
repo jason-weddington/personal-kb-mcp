@@ -36,8 +36,8 @@ def get_embedding_dim() -> int:
 
 
 def get_llm_model() -> str:
-    """Return the LLM model name from KB_LLM_MODEL."""
-    return os.environ.get("KB_LLM_MODEL", "qwen3:4b")
+    """Return the Ollama LLM model name from KB_OLLAMA_MODEL."""
+    return os.environ.get("KB_OLLAMA_MODEL", "qwen3:4b")
 
 
 def get_llm_timeout() -> float:

@@ -148,7 +148,7 @@ To use Ollama for all LLM features instead of Anthropic:
 }
 ```
 
-This requires `ollama pull qwen3:4b` (or whichever model you set in `KB_LLM_MODEL`).
+This requires `ollama pull qwen3:4b` (or whichever model you set in `KB_OLLAMA_MODEL`).
 
 ## Tools
 
@@ -219,7 +219,7 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Request timeout in seconds |
 | **Ollama (local LLM)** | | |
 | `KB_OLLAMA_URL` | `http://localhost:11434` | Ollama API base URL |
-| `KB_LLM_MODEL` | `qwen3:4b` | Model for generation tasks |
+| `KB_OLLAMA_MODEL` | `qwen3:4b` | Model for generation tasks |
 | `KB_LLM_TIMEOUT` | `120.0` | Generation timeout in seconds |
 | **Ollama embeddings** | | |
 | `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Model for vector embeddings |
