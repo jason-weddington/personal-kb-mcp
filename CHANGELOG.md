@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.11.0 (2026-02-28)
+
+### Features
+
+- Add access-aware confidence decay
+  ([`a5d567a`](https://github.com/jason-weddington/personal-kb-mcp/commit/a5d567a08d5adee1a5b8267203bf05be015761f3))
+
+
 ## v0.10.0 (2026-02-28)
 
 ### Chores
