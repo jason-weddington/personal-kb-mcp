@@ -21,21 +21,35 @@ def compute_effective_confidence(
     entry_type: EntryType,
     created_at: datetime,
     now: datetime | None = None,
+    last_accessed: datetime | None = None,
 ) -> float:
     """Compute confidence after time-based decay.
 
     Uses exponential decay: effective = base * 2^(-age_days / half_life)
+
+    The decay anchor is the most recent of created_at and last_accessed,
+    so entries that keep getting retrieved maintain their confidence.
     """
     if now is None:
         now = datetime.now(UTC)
 
+    # Use the most recent timestamp as the decay anchor
+    anchor = created_at
+    if last_accessed is not None:
+        if last_accessed.tzinfo is None:
+            last_accessed = last_accessed.replace(tzinfo=UTC)
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+        if last_accessed > anchor:
+            anchor = last_accessed
+
     # Ensure both are timezone-aware for comparison
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=UTC)
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
 
-    age_days = (now - created_at).total_seconds() / 86400.0
+    age_days = (now - anchor).total_seconds() / 86400.0
     if age_days <= 0:
         return base_confidence
 

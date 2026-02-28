@@ -113,6 +113,9 @@ async def apply_schema(db: aiosqlite.Connection) -> None:
     if row is None:
         await db.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
 
+    # Migration: add last_accessed column (nullable, default NULL)
+    await _migrate_add_last_accessed(db)
+
     await db.commit()
 
 
@@ -175,3 +178,11 @@ async def apply_ingest_schema(db: aiosqlite.Connection) -> None:
     """Create ingested_files table."""
     await db.executescript(INGEST_SCHEMA_SQL)
     await db.commit()
+
+
+async def _migrate_add_last_accessed(db: aiosqlite.Connection) -> None:
+    """Add last_accessed column to knowledge_entries if it doesn't exist."""
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "last_accessed" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN last_accessed TEXT")

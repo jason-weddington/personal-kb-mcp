@@ -66,3 +66,15 @@ async def test_entry_id_sequence():
         assert row[0] == 1
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_last_accessed_column_exists():
+    """The last_accessed column should be present after schema migration."""
+    db = await create_connection(":memory:")
+    try:
+        cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        assert "last_accessed" in columns
+    finally:
+        await db.close()

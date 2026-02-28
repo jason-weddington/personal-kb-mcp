@@ -52,7 +52,11 @@ def format_entry_full(
     if effective_confidence is None:
         anchor = entry.updated_at or entry.created_at or now
         effective_confidence = compute_effective_confidence(
-            entry.confidence_level, entry.entry_type, anchor, now
+            entry.confidence_level,
+            entry.entry_type,
+            anchor,
+            now,
+            last_accessed=entry.last_accessed,
         )
     if stale_warning is None:
         stale_warning = staleness_warning(effective_confidence, entry.entry_type)

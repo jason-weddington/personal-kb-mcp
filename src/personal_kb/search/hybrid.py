@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import aiosqlite
 
 from personal_kb.confidence.decay import compute_effective_confidence, staleness_warning
-from personal_kb.db.queries import get_entry
+from personal_kb.db.queries import get_entry, touch_accessed
 from personal_kb.models.search import SearchQuery, SearchResult
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.search.fts import fts_search
@@ -70,7 +70,11 @@ async def hybrid_search(
         # Apply confidence decay (reset clock on updates)
         anchor = entry.updated_at or entry.created_at or now
         eff_conf = compute_effective_confidence(
-            entry.confidence_level, entry.entry_type, anchor, now
+            entry.confidence_level,
+            entry.entry_type,
+            anchor,
+            now,
+            last_accessed=entry.last_accessed,
         )
 
         # Filter stale unless requested
@@ -88,5 +92,9 @@ async def hybrid_search(
                 match_source=match_source if vec_results else "fts",
             )
         )
+
+    # Track access for returned entries
+    if results:
+        await touch_accessed(db, [r.entry.id for r in results])
 
     return results

@@ -2,6 +2,7 @@
 
 import pytest
 
+from personal_kb.db.queries import get_entry
 from personal_kb.models.entry import EntryType
 from personal_kb.models.search import SearchQuery
 from personal_kb.search.hybrid import hybrid_search
@@ -94,3 +95,49 @@ async def test_hybrid_no_results(db, store):
     query = SearchQuery(query="nonexistent topic xyzzy")
     results = await hybrid_search(db, None, query)
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_updates_last_accessed(db, store):
+    """Search results should update last_accessed on returned entries."""
+    await store.create_entry(
+        short_title="Access tracking test",
+        long_title="Testing access tracking",
+        knowledge_details="This entry should get its last_accessed updated on search.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    # Verify last_accessed is initially NULL
+    entry = await get_entry(db, "kb-00001")
+    assert entry is not None
+    assert entry.last_accessed is None
+
+    # Search for the entry
+    query = SearchQuery(query="access tracking test")
+    results = await hybrid_search(db, None, query)
+    assert len(results) >= 1
+
+    # Verify last_accessed was set
+    entry = await get_entry(db, "kb-00001")
+    assert entry is not None
+    assert entry.last_accessed is not None
+
+
+@pytest.mark.asyncio
+async def test_hybrid_no_results_no_access_update(db, store):
+    """When search returns nothing, no access tracking happens."""
+    await store.create_entry(
+        short_title="Unrelated topic",
+        long_title="Unrelated entry",
+        knowledge_details="This should not be accessed.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    query = SearchQuery(query="nonexistent xyzzy")
+    results = await hybrid_search(db, None, query)
+    assert results == []
+
+    # last_accessed should still be NULL
+    entry = await get_entry(db, "kb-00001")
+    assert entry is not None
+    assert entry.last_accessed is None

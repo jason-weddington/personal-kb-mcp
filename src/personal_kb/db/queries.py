@@ -23,6 +23,8 @@ async def next_entry_id(db: aiosqlite.Connection) -> str:
 
 def row_to_entry(row: aiosqlite.Row) -> KnowledgeEntry:
     """Convert a database row to a KnowledgeEntry."""
+    col_names = row.keys()
+    last_accessed_raw = row["last_accessed"] if "last_accessed" in col_names else None
     return KnowledgeEntry(
         id=row["id"],
         project_ref=row["project_ref"],
@@ -36,6 +38,7 @@ def row_to_entry(row: aiosqlite.Row) -> KnowledgeEntry:
         hints=json.loads(row["hints"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+        last_accessed=datetime.fromisoformat(last_accessed_raw) if last_accessed_raw else None,
         superseded_by=row["superseded_by"],
         is_active=bool(row["is_active"]),
         has_embedding=bool(row["has_embedding"]),
@@ -153,6 +156,21 @@ async def delete_entry_cascade(db: aiosqlite.Connection, entry_id: str) -> None:
     await db.execute("DELETE FROM graph_edges WHERE source = ? OR target = ?", (entry_id, entry_id))
     await db.execute("DELETE FROM graph_nodes WHERE node_id = ?", (entry_id,))
     await db.execute("DELETE FROM knowledge_entries WHERE id = ?", (entry_id,))
+    await db.commit()
+
+
+async def touch_accessed(db: aiosqlite.Connection, entry_ids: list[str]) -> None:
+    """Batch-update last_accessed to now for the given entry IDs."""
+    if not entry_ids:
+        return
+    now = _now_iso()
+    placeholders = ",".join("?" for _ in entry_ids)
+    await db.execute(
+        "UPDATE knowledge_entries SET last_accessed = ? WHERE id IN ("  # noqa: S608
+        + placeholders
+        + ")",
+        [now, *entry_ids],
+    )
     await db.commit()
 
 

@@ -30,6 +30,7 @@ class KnowledgeEntry(BaseModel):
     hints: dict[str, object] = Field(default_factory=dict)
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    last_accessed: datetime | None = None
     superseded_by: str | None = None
     is_active: bool = True
     has_embedding: bool = False
