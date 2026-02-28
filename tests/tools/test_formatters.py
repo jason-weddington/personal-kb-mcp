@@ -96,6 +96,7 @@ def test_compact_with_meta():
     entry = _make_entry()
     result = format_entry_compact(entry, 0.85)
     assert "[kb-00001]" in result
+    assert "A test entry" in result  # long_title shown
     assert "#python" in result
     assert "Some important details" not in result  # no details in compact
 
@@ -103,7 +104,15 @@ def test_compact_with_meta():
 def test_compact_no_meta():
     entry = _make_entry(tags=[], project_ref=None)
     result = format_entry_compact(entry, 0.85)
-    assert "\n" not in result  # single line, no meta
+    assert "A test entry" in result  # long_title still shown
+
+
+def test_compact_skips_long_title_when_same():
+    entry = _make_entry(short_title="Same", long_title="Same")
+    result = format_entry_compact(entry, 0.85, stale_warning=None)
+    # long_title line should not appear since it matches short_title
+    lines = result.strip().split("\n")
+    assert not any(line == "  Same" for line in lines)
 
 
 def test_compact_with_staleness():

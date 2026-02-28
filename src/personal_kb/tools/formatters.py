@@ -30,12 +30,15 @@ def format_entry_compact(
     effective_confidence: float,
     stale_warning: str | None = None,
 ) -> str:
-    """Header + meta, no details. For kb_search and kb_store."""
+    """Header + long_title + meta, no details. For kb_search and kb_store."""
     header = format_entry_header(entry, effective_confidence)
+    lines = [header]
+    if entry.long_title and entry.long_title != entry.short_title:
+        lines.append(f"  {entry.long_title}")
     meta = format_entry_meta(entry, stale_warning)
     if meta:
-        return f"{header}\n  {meta}"
-    return header
+        lines.append(f"  {meta}")
+    return "\n".join(lines)
 
 
 def format_entry_full(
