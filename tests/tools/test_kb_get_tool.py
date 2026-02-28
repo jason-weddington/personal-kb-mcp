@@ -16,7 +16,7 @@ async def _kb_get_logic(db, ids: list[str]) -> str:
     formatted: list[str] = []
     for eid in ids:
         entry = await get_entry(db, eid)
-        if entry is None:
+        if entry is None or not entry.is_active:
             formatted.append(f"[{eid}] not found")
         else:
             formatted.append(format_entry_full(entry))
@@ -91,6 +91,22 @@ async def test_get_mixed_found_and_missing(db, store):
     assert "kb-99999" in result
     assert "not found" in result
     assert "2 result(s)" in result
+
+
+@pytest.mark.asyncio
+async def test_get_inactive_entry_skipped(db, store):
+    """Inactive entries are treated as not found."""
+    entry = await store.create_entry(
+        short_title="Soon gone",
+        long_title="Will be deactivated",
+        knowledge_details="Should not appear after deactivation",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await store.deactivate_entry(entry.id)
+
+    result = await _kb_get_logic(db, [entry.id])
+    assert "not found" in result
+    assert "Should not appear" not in result
 
 
 @pytest.mark.asyncio

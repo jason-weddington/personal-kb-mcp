@@ -6,6 +6,10 @@ Problems worth solving, in priority order. Not specs — the "how" gets figured 
 
 - **No visibility into what the KB knows at a glance.** Starting a session, the agent has no idea what's in the KB without searching. A lightweight "what's in here?" summary (top entries by project, recent additions, graph stats) would help the agent decide whether to search or just proceed.
 
+## Next
+
+- **`kb_get` returns inactive entries without marking them.** Fetching a deactivated entry by ID returns full content with no indication it's inactive. This wastes tokens on obsolete information and can mislead the agent into using stale knowledge. Inactive entries should either be skipped by default or clearly marked.
+
 ## Later
 
 - **Knowledge lives on one machine.** SQLite is local-only. Working from a different machine means no KB. A remote-capable backend (Turso, Postgres, or even SQLite over a sync protocol) would make the KB portable without giving up the simplicity of the current setup.

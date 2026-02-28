@@ -48,7 +48,7 @@ def register_kb_get(mcp: FastMCP) -> None:
         formatted: list[str] = []
         for eid in ids:
             entry = await get_entry(db, eid)
-            if entry is None:
+            if entry is None or not entry.is_active:
                 formatted.append(f"[{eid}] not found")
             else:
                 formatted.append(format_entry_full(entry))
