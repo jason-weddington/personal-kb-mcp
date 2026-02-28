@@ -4,20 +4,44 @@
 Usage:
     uv run python scripts/test_dry_run.py [FILE_PATH]
 
-Requires ANTHROPIC_API_KEY to be set.
+Respects KB_EXTRACTION_PROVIDER (default: anthropic) to select the LLM.
+Set KB_EXTRACTION_PROVIDER=ollama and KB_OLLAMA_MODEL=qwen3.5:35b-a3b
+to test local models.
 """
 
 import asyncio
 import sys
 from pathlib import Path
 
+from personal_kb.config import get_extraction_provider
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.ingest.ingester import FileIngester
-from personal_kb.llm.anthropic import AnthropicLLMClient
+from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
+
+
+def _create_llm(provider: str) -> LLMProvider | None:
+    """Create an LLM client for the given provider name."""
+    if provider == "anthropic":
+        try:
+            from personal_kb.llm.anthropic import AnthropicLLMClient
+        except Exception:
+            return None
+        return AnthropicLLMClient()
+    if provider == "bedrock":
+        try:
+            from personal_kb.llm.bedrock import BedrockLLMClient
+        except Exception:
+            return None
+        return BedrockLLMClient()
+    if provider == "ollama":
+        from personal_kb.llm.ollama import OllamaLLMClient
+
+        return OllamaLLMClient()
+    return None
 
 
 async def main() -> None:
@@ -29,19 +53,22 @@ async def main() -> None:
         print(f"File not found: {file_path}")
         sys.exit(1)
 
+    provider = get_extraction_provider()
+
     print(f"File: {file_path}")
     print(f"Size: {file_path.stat().st_size:,} bytes")
+    print(f"Provider: {provider}")
     print()
 
-    # Set up in-memory DB + Haiku LLM
+    # Set up in-memory DB + LLM
     db = await create_connection(":memory:")
     store = KnowledgeStore(db)
     embedder = EmbeddingClient(db)
     graph_builder = GraphBuilder(db)
 
-    llm = AnthropicLLMClient()
-    if not await llm.is_available():
-        print("ERROR: Anthropic API not available. Set ANTHROPIC_API_KEY.")
+    llm = _create_llm(provider)
+    if llm is None or not await llm.is_available():
+        print(f"ERROR: {provider} LLM not available. Check credentials/config.")
         await db.close()
         sys.exit(1)
 
@@ -55,7 +82,7 @@ async def main() -> None:
         llm=llm,
     )
 
-    print("Running dry-run ingestion (2 Haiku calls)...")
+    print(f"Running dry-run ingestion via {provider}...")
     print("=" * 70)
 
     result = await ingester.ingest_file(
@@ -78,8 +105,6 @@ async def main() -> None:
     print(f"EXTRACTED ENTRIES ({result.entry_count})")
     print(f"{'─' * 70}")
 
-    # Dry run doesn't store entries, so we need to re-run extraction
-    # to see the actual entry content. Let's do it directly.
     from personal_kb.ingest.extractor import extract_entries
 
     content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -92,7 +117,6 @@ async def main() -> None:
         print(f"      Type:  {entry.entry_type}")
         print(f"      Tags:  {', '.join(entry.tags)}")
         print("      Content:")
-        # Wrap long content
         for line in entry.knowledge_details.splitlines():
             print(f"        {line}")
 

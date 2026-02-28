@@ -1,19 +1,22 @@
 # Roadmap
 
-## Near-term
+Problems worth solving, in priority order. Not specs — the "how" gets figured out when we build it.
 
-(empty — pick from medium-term or add new items)
+## Now
 
-## Medium-term
+- **No visibility into what the KB knows at a glance.** Starting a session, the agent has no idea what's in the KB without searching. A lightweight "what's in here?" summary (top entries by project, recent additions, graph stats) would help the agent decide whether to search or just proceed.
 
-- **Multi-contributor support** — Add contributor metadata to entries (who stored it, which agent/session), enabling multi-user knowledge bases with attribution and provenance tracking.
-- **Remote storage option** — Support a remote backend (e.g., PostgreSQL, Turso) as an alternative to local SQLite for cross-machine access and cloud deployment.
+## Later
 
-## Long-term
+- **Knowledge lives on one machine.** SQLite is local-only. Working from a different machine means no KB. A remote-capable backend (Turso, Postgres, or even SQLite over a sync protocol) would make the KB portable without giving up the simplicity of the current setup.
 
-- **Team knowledge base** — Multiple developers and coding agents contributing to a shared KB. Collective experiential learning across a dev team.
+- **Single-user only.** No concept of who stored an entry or which agent session produced it. Multi-contributor support (attribution, provenance) is a prerequisite for team use — multiple developers and coding agents contributing to a shared KB.
 
-## Completed
+## Done
 
-- **Improve tool descriptions for query tools** — Rewrote MCP instructions and tool docstrings to differentiate kb_search (quick lookup), kb_ask (graph exploration), and kb_summarize (synthesized answers). Ungated kb_ingest with glob support.
-- **Amazon Bedrock LLM provider** — BedrockLLMClient using the async-native `aws-sdk-bedrock-runtime` SDK, with smithy-json newline workaround. (b0ccc29)
+- Improve tool descriptions for query tools — differentiate kb_search, kb_ask, kb_summarize; ungate kb_ingest with glob support.
+- Amazon Bedrock LLM provider — BedrockLLMClient with async-native SDK, smithy-json newline workaround.
+- Ollama, Anthropic, and Bedrock provider switching — configurable extraction and query LLM backends.
+- Knowledge graph with LLM enrichment — entity extraction, relationship edges, graph traversal queries.
+- File ingestion pipeline — deny-list, secrets scanning, PII redaction, LLM summarize + extract.
+- Token efficiency — compact output, kb_get two-phase retrieval, kb_store_batch with batch enrichment.

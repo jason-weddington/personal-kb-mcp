@@ -21,6 +21,12 @@
 - MCP tools in `src/personal_kb/tools/` (one file per tool)
 - Tests mirror source structure under `tests/`
 
+## Roadmap
+
+`ROADMAP.md` is a prioritized list of **problems worth solving**, not feature specs. Items describe the pain point and why it matters — the solution gets figured out when we pick it up. Keep it to one screenful. When we finish something, move it to Done as a one-liner and update the priorities. Don't prescribe implementation details in the roadmap; that's wasted effort when we can go from problem to shipped code in a single session.
+
+This is a dogfooding project — we build the KB and use it in the same sessions. When you notice friction using the KB tools (wasted tokens, missing capabilities, awkward workflows), add the problem to ROADMAP.md under Next. You're the primary consumer of this tool; your perspective on what's painful matters.
+
 ## Commit Convention
 
 This repo uses **conventional commits** enforced by a `commit-msg` hook.
