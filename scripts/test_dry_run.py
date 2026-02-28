@@ -11,6 +11,7 @@ to test local models.
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 from personal_kb.config import get_extraction_provider
@@ -85,12 +86,14 @@ async def main() -> None:
     print(f"Running dry-run ingestion via {provider}...")
     print("=" * 70)
 
+    t0 = time.monotonic()
     result = await ingester.ingest_file(
         file_path,
         base_dir=file_path.parent,
         dry_run=True,
         project_ref=None,
     )
+    t_ingest = time.monotonic() - t0
 
     print(f"\nAction: {result.action}")
     if result.reason:
@@ -109,7 +112,9 @@ async def main() -> None:
 
     content = file_path.read_text(encoding="utf-8", errors="replace")
     rel_path = file_path.name
+    t1 = time.monotonic()
     entries = await extract_entries(llm, rel_path, content)
+    t_extract = time.monotonic() - t1
 
     for i, entry in enumerate(entries, 1):
         print(f"\n  [{i}] {entry.short_title}")
@@ -120,8 +125,11 @@ async def main() -> None:
         for line in entry.knowledge_details.splitlines():
             print(f"        {line}")
 
+    t_total = t_ingest + t_extract
+
     print(f"\n{'=' * 70}")
     print(f"Total: {len(entries)} entries extracted")
+    print(f"Time:  {t_ingest:.1f}s summarize + {t_extract:.1f}s extract = {t_total:.1f}s total")
 
     await llm.close()
     await embedder.close()
