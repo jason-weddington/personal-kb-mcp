@@ -2,9 +2,7 @@
 
 A persistent knowledge base for AI coding agents, exposed as an [MCP](https://modelcontextprotocol.io/) server. Agents store technical decisions, debugging insights, patterns, and facts — the server builds a knowledge graph automatically and answers natural language queries with cited, synthesized responses.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/jason-weddington/personal-kb-mcp/main/install.sh | bash
-```
+No installation needed — just add the MCP config below and your client handles the rest.
 
 ## Features
 
@@ -18,65 +16,40 @@ curl -fsSL https://raw.githubusercontent.com/jason-weddington/personal-kb-mcp/ma
 ## Prerequisites
 
 - **Python 3.13+** and **[uv](https://docs.astral.sh/uv/)** (Python package manager)
-- **[Ollama](https://ollama.com/)** — for local vector embeddings (optional but recommended)
-- **Anthropic API key** or **AWS credentials** — for graph enrichment, query planning, and answer synthesis (optional but recommended; either provider works)
+- **[Ollama](https://ollama.com/)** — optional, for local vector embeddings
+- **LLM provider** (pick one, optional but recommended):
+  - **Anthropic API key** — simplest setup
+  - **AWS Bedrock bearer token** — use Claude through your AWS account
+  - **Ollama** — fully local, no API keys needed
 
 ### What works without each dependency
 
-| Component | Without Ollama | Without Anthropic |
+| Component | Without Ollama | Without LLM provider |
 |---|---|---|
 | Store entries | Works | Works |
 | Full-text search (FTS5) | Works | Works |
 | Vector similarity search | Disabled | Works (needs Ollama) |
 | Graph building (deterministic) | Works | Works |
-| Graph enrichment (LLM entities) | Disabled (or use Ollama LLM) | Disabled (or use Ollama LLM) |
-| Query planning (`kb_ask` auto) | Disabled (or use Ollama LLM) | Disabled (or use Ollama LLM) |
-| Answer synthesis (`kb_summarize`) | Disabled (or use Ollama LLM) | Disabled (or use Ollama LLM) |
-| File ingestion (`kb_ingest`) | Disabled (or use Ollama LLM) | Disabled (or use Ollama LLM) |
+| Graph enrichment (LLM entities) | Disabled (or use Ollama LLM) | Disabled |
+| Query planning (`kb_ask` auto) | Disabled (or use Ollama LLM) | Disabled |
+| Answer synthesis (`kb_summarize`) | Disabled (or use Ollama LLM) | Disabled |
+| File ingestion (`kb_ingest`) | Disabled (or use Ollama LLM) | Disabled |
 
-At minimum, you get a fully functional knowledge store with full-text search and a deterministic knowledge graph. Add Ollama for vector search; add an Anthropic API key (or Ollama LLM models) for the smart features.
+At minimum, you get a fully functional knowledge store with full-text search and a deterministic knowledge graph. Add Ollama for vector search; add any LLM provider for the smart features.
 
 ## Quick Start
 
-```bash
-# 1. Clone and install
-git clone https://github.com/jdkern11/personal_kb.git
-cd personal_kb
-uv sync
+### With Anthropic (simplest)
 
-# 2. Install Ollama and pull the embedding model
-# See https://ollama.com/download for Ollama installation
-ollama pull qwen3-embedding:0.6b
-
-# 3. (Optional) Pull an Ollama LLM for fully-local operation
-ollama pull qwen3:4b
-
-# 4. Run the setup script to verify everything works
-./setup.sh
-```
-
-Or run the setup script directly — it handles steps 2-4 and checks your environment:
-
-```bash
-git clone https://github.com/jdkern11/personal_kb.git
-cd personal_kb
-uv sync
-./setup.sh
-```
-
-## MCP Client Configuration
-
-Add the server to your MCP client config.
-
-**Claude Code** (`.mcp.json` in your project root or `~/.claude/mcp.json` globally):
+Add this to your MCP client config — Claude Code (`~/.claude/mcp.json`), Claude Desktop (`claude_desktop_config.json`), etc.:
 
 ```json
 {
   "mcpServers": {
     "personal-kb": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/personal_kb", "personal-kb"],
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git", "personal-kb"],
       "env": {
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
@@ -85,60 +58,17 @@ Add the server to your MCP client config.
 }
 ```
 
-**Claude Desktop** (`claude_desktop_config.json`):
+That's it. `uvx` installs and runs the server automatically.
 
-```json
-{
-  "mcpServers": {
-    "personal-kb": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/personal_kb", "personal-kb"],
-      "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-..."
-      }
-    }
-  }
-}
-```
-
-Replace `/path/to/personal_kb` with the actual path where you cloned the repo. The `ANTHROPIC_API_KEY` is optional — omit it to run without Anthropic features.
-
-### AWS Bedrock setup
-
-To use Claude via AWS Bedrock instead of the Anthropic API directly:
+### Fully local (Ollama, no API keys)
 
 ```json
 {
   "mcpServers": {
     "personal-kb": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/personal_kb", "personal-kb"],
-      "env": {
-        "KB_EXTRACTION_PROVIDER": "bedrock",
-        "KB_QUERY_PROVIDER": "bedrock",
-        "AWS_ACCESS_KEY_ID": "AKIA...",
-        "AWS_SECRET_ACCESS_KEY": "...",
-        "KB_BEDROCK_REGION": "us-east-1"
-      }
-    }
-  }
-}
-```
-
-This requires the optional AWS dependency: `uv sync --extra aws`. Uses the cross-region inference profile `us.anthropic.claude-haiku-4-5-20251001-v1:0` by default (override with `KB_BEDROCK_MODEL`).
-
-### Fully local setup (no API keys)
-
-To use Ollama for all LLM features instead of Anthropic:
-
-```json
-{
-  "mcpServers": {
-    "personal-kb": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/personal_kb", "personal-kb"],
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git", "personal-kb"],
       "env": {
         "KB_EXTRACTION_PROVIDER": "ollama",
         "KB_QUERY_PROVIDER": "ollama"
@@ -148,7 +78,55 @@ To use Ollama for all LLM features instead of Anthropic:
 }
 ```
 
-This requires `ollama pull qwen3:4b` (or whichever model you set in `KB_OLLAMA_MODEL`).
+Pull the models first:
+
+```bash
+ollama pull qwen3-embedding:0.6b   # for vector search
+ollama pull qwen3:4b               # for LLM features (graph enrichment, query planning, synthesis)
+```
+
+### AWS Bedrock
+
+Bedrock requires a clone install because of a forked dependency (`smithy-json`). Once the upstream fix merges, `uvx` will work here too.
+
+```bash
+git clone https://github.com/jason-weddington/personal-kb-mcp.git
+cd personal-kb-mcp
+uv sync --extra aws
+```
+
+Then add the MCP config pointing to your clone:
+
+```json
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/personal-kb-mcp", "personal-kb"],
+      "env": {
+        "KB_EXTRACTION_PROVIDER": "bedrock",
+        "KB_QUERY_PROVIDER": "bedrock",
+        "AWS_BEARER_TOKEN_BEDROCK": "your-bearer-token",
+        "KB_BEDROCK_REGION": "us-east-1"
+      }
+    }
+  }
+}
+```
+
+Uses the cross-region inference profile `us.anthropic.claude-haiku-4-5-20251001-v1:0` by default (override with `KB_BEDROCK_MODEL`).
+
+> **Legacy SigV4 auth** also works — set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` instead of `AWS_BEARER_TOKEN_BEDROCK`. Bearer token auth is preferred.
+
+### Ollama setup (if using embeddings or local LLM)
+
+```bash
+# Install Ollama: https://ollama.com/download
+
+ollama pull qwen3-embedding:0.6b   # for vector search
+ollama pull qwen3:4b               # only if using Ollama as LLM provider
+```
 
 ## Tools
 
@@ -156,9 +134,17 @@ This requires `ollama pull qwen3:4b` (or whichever model you set in `KB_OLLAMA_M
 
 Store or update a knowledge entry. Each entry has a short title, long title, full content, entry type, optional tags, and optional project reference. Updates create version records preserving full history. Graph edges and embeddings are built automatically on store.
 
+### `kb_store_batch`
+
+Store multiple entries in a single call (max 10). More efficient than repeated `kb_store` — uses a single LLM call for graph enrichment across all entries.
+
 ### `kb_search`
 
-Hybrid search combining BM25 full-text search with vector similarity (when Ollama is available). Supports filtering by project, entry type, and tags. Results include confidence scores with staleness decay.
+Hybrid search combining BM25 full-text search with vector similarity (when Ollama is available). Returns compact summaries (no `knowledge_details`). Supports filtering by project, entry type, and tags. Results include confidence scores with staleness decay.
+
+### `kb_get`
+
+Retrieve full details for one or more entries by ID. Use after `kb_search` to read the complete `knowledge_details` of interesting results.
 
 ### `kb_ask`
 
@@ -226,12 +212,15 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | `KB_EMBEDDING_DIM` | `1024` | Embedding vector dimensions |
 | `KB_OLLAMA_TIMEOUT` | `10.0` | Embedding timeout in seconds |
 | **Bedrock (AWS-managed Claude)** | | |
+| `AWS_BEARER_TOKEN_BEDROCK` | _(unset)_ | Bearer token for Bedrock auth (preferred method) |
 | `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model ID (cross-region inference profile) |
 | `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
 | `KB_BEDROCK_TIMEOUT` | `30.0` | Request timeout in seconds |
 | **Provider selection** | | |
 | `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning and synthesis (`anthropic`, `bedrock`, or `ollama`) |
+
+> **Legacy SigV4 auth:** Bedrock also supports `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` for traditional IAM credentials. Bearer token auth (`AWS_BEARER_TOKEN_BEDROCK`) is the preferred method.
 
 ## Provider Architecture
 
@@ -245,7 +234,13 @@ Both default to `anthropic`. You can mix providers (e.g., `bedrock` for extracti
 ## Development
 
 ```bash
+git clone https://github.com/jason-weddington/personal-kb-mcp.git
+cd personal-kb-mcp
+uv sync
+
 uv run pytest                    # run tests
 uv run ruff check src/ tests/    # lint
 uv run personal-kb               # run server directly
 ```
+
+For Bedrock support: `uv sync --extra aws`. For secret/PII detection in `kb_ingest`: `uv sync --extra safety`.
