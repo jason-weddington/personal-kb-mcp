@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v0.9.0 (2026-02-27)
+
+### Chores
+
+- Rename KB_LLM_MODEL to KB_OLLAMA_MODEL for consistency
+  ([`d52499c`](https://github.com/jason-weddington/personal-kb-mcp/commit/d52499c87117f07e94e3085309ad4e58c843dd78))
+
+- Rename KB_LLM_TIMEOUT to KB_OLLAMA_LLM_TIMEOUT
+  ([`1e77124`](https://github.com/jason-weddington/personal-kb-mcp/commit/1e77124638da41835fc631729873a8b6e180d7b7))
+
+### Features
+
+- Compact output, kb_get two-phase retrieval, kb_store_batch
+  ([`19546b1`](https://github.com/jason-weddington/personal-kb-mcp/commit/19546b1971269f37f803a6e6af981c0f08c49884))
+
+
 ## v0.8.1 (2026-02-27)
 
 ### Bug Fixes
