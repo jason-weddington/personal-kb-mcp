@@ -1,6 +1,6 @@
 [project]
 name = "personal-kb"
-version = "0.11.0"
+version = "0.12.0"
 description = "Personal Knowledge MCP Server — structured retrieval, knowledge graph, and multi-granularity summaries"
 requires-python = ">=3.13"
 dependencies = [

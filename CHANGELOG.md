@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.12.0 (2026-02-28)
+
+### Features
+
+- Add graph-hint annotations on sparse search results
+  ([`f1a3bf5`](https://github.com/jason-weddington/personal-kb-mcp/commit/f1a3bf5885751cfd73869d0b21f6b1416d6c964b))
+
+
 ## v0.11.0 (2026-02-28)
 
 ### Features
