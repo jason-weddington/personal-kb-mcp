@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.14.0 (2026-02-28)
+
+### Features
+
+- Add eval baseline snapshot
+  ([`25cf89a`](https://github.com/jason-weddington/personal-kb-mcp/commit/25cf89aebdb4800532729378cb7c52c72f1b8c4e))
+
+
 ## v0.13.0 (2026-02-28)
 
 ### Features
