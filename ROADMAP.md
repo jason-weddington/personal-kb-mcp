@@ -10,6 +10,10 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Now
 
+- **Agentic ingestion.** kb_ingest extracts entries blind — no awareness of what's already in the KB. Creates duplicates constantly. An agent loop would: read file → search KB for overlap → extract only new knowledge → verify entities against graph vocab. On by default, toggle off with `KB_AGENTIC_INGEST=FALSE`.
+
+- **Agentic synthesis.** kb_summarize does one retrieval pass then synthesizes from whatever came back. An agent loop would: retrieve → assess coverage → retrieve more if gaps → synthesize. Multi-hop retrieval for complex questions. On by default, toggle off with `KB_AGENTIC_SYNTHESIS=FALSE`.
+
 - **Intra-cluster noise in search results.** Relative score thresholds cut cross-cluster noise (the "fullstack returns Docker entries" problem), but can't distinguish relevant from irrelevant entries within the same topic cluster. When 8 entries share a cluster, RRF ranks them all similarly — the right one is buried among its neighbors. Needs semantic re-ranking: query-entity matching, personalized PageRank seeded from query terms, or LLM-based re-scoring of the top-k candidates.
 
 ## Later
@@ -18,6 +22,7 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Done
 
+- Agentic query planning — ReAct agent loop for kb_ask auto strategy. Fast-path skips LLM on strong results; 6 internal tools; ScriptedLLM for deterministic testing. Toggle: `KB_AGENTIC_QUERY=FALSE`.
 - PostgreSQL backend — Database Protocol abstraction, pgvector + tsvector, migration script with auto-embed. SQLite remains default.
 - Graph-boosted hybrid ranking — researched, rejected. Co-citation is query-agnostic; rewards connectivity not specificity. Net lateral on eval. Branch `feat/graph-proximity-rrf` preserved.
 - Search quality eval framework — controlled corpus, golden queries, baseline snapshot (MRR=0.85, recall@5=1.0, NDCG@5=0.89).

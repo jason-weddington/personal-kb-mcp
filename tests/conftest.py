@@ -89,6 +89,31 @@ class FakeLLM:
         pass
 
 
+class ScriptedLLM:
+    """LLM that returns pre-scripted responses in order.
+
+    Used for testing multi-turn agent loops where each turn needs a
+    different response.
+    """
+
+    def __init__(self, responses: list[str | None], fallback: str | None = None):
+        self._responses = list(responses)
+        self._fallback = fallback
+        self.calls: list[dict[str, str | None]] = []
+
+    async def is_available(self) -> bool:
+        return True
+
+    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+        self.calls.append({"prompt": prompt, "system": system})
+        if self._responses:
+            return self._responses.pop(0)
+        return self._fallback
+
+    async def close(self) -> None:
+        pass
+
+
 @pytest_asyncio.fixture
 async def graph_builder(db):
     """Graph builder backed by in-memory DB."""

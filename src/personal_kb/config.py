@@ -98,3 +98,13 @@ def get_database_url() -> str | None:
 def get_ingest_max_file_size() -> int:
     """Return max file size in bytes for ingestion from KB_INGEST_MAX_FILE_SIZE."""
     return int(os.environ.get("KB_INGEST_MAX_FILE_SIZE", str(500 * 1024)))
+
+
+def is_agentic_query() -> bool:
+    """Return True if agentic query planning is enabled (default: TRUE)."""
+    return os.environ.get("KB_AGENTIC_QUERY", "TRUE").upper() == "TRUE"
+
+
+def get_agentic_max_tool_calls() -> int:
+    """Return max tool calls for agentic query loop from KB_AGENTIC_MAX_CALLS."""
+    return int(os.environ.get("KB_AGENTIC_MAX_CALLS", "4"))

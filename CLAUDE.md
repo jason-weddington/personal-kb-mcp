@@ -75,4 +75,6 @@ Format: `type(optional-scope): description`
 | `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning/synthesis (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_MANAGER` | (unset) | Set `TRUE` for maintenance + ingestion tools |
 | `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
+| `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for kb_ask auto strategy |
+| `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in agentic query loop |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |

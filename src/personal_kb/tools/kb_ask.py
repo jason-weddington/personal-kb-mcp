@@ -112,9 +112,23 @@ async def _strategy_auto_with_planner(
     include_graph_context: bool,
     limit: int,
 ) -> str:
-    """Auto strategy with optional LLM query planner."""
+    """Auto strategy with optional LLM query planner.
+
+    When agentic query is enabled and an LLM is available, delegates to the
+    ReAct agent loop which can plan, execute, evaluate, and retry.  Falls back
+    to the single-shot planner when agentic query is disabled.
+    """
+    from personal_kb.config import is_agentic_query
     from personal_kb.llm.provider import LLMProvider
 
+    # --- Agentic path ---
+    if query_llm is not None and isinstance(query_llm, LLMProvider) and is_agentic_query():
+        from personal_kb.graph.agent import agentic_query
+
+        agent_result = await agentic_query(db, embedder, query_llm, question)
+        return await _format_agent_result_full(agent_result, db, question, limit)
+
+    # --- Single-shot planner path ---
     plan = None
     if query_llm is not None and isinstance(query_llm, LLMProvider):
         planner = QueryPlanner(db, query_llm)
@@ -385,6 +399,37 @@ async def _strategy_connection(
                 lines.append(f"  {format_entry_compact(entry, eff, warn)}")
 
     return "\n".join(lines)
+
+
+async def _format_agent_result_full(
+    result: object,
+    db: Database,
+    question: str,
+    limit: int,
+) -> str:
+    """Format an AgentResult with full entry details."""
+    from personal_kb.graph.agent import AgentResult
+
+    if not isinstance(result, AgentResult):
+        return "No results found."
+    if not result.entries:
+        header = f"[Agent: {result.turns_used} tool calls] No results found."
+        if result.reasoning:
+            header += f"\n{result.reasoning}"
+        return header
+
+    entries_with_context: list[tuple[KnowledgeEntry, str]] = []
+    for entry_id, context in result.entries[:limit]:
+        entry = await get_entry(db, entry_id)
+        if entry:
+            entries_with_context.append((entry, context))
+
+    header = f"[Agent: {result.turns_used} tool calls]"
+    if result.reasoning:
+        header += f" {result.reasoning}"
+
+    formatted = [format_entry_full(entry, context=ctx) for entry, ctx in entries_with_context]
+    return format_result_list(formatted, header=header)
 
 
 def _format_entries(

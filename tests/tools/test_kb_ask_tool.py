@@ -205,8 +205,11 @@ async def test_connection_finds_path(db, graph_builder):
 
 
 @pytest.mark.asyncio
-async def test_auto_with_planner_dispatches_related(db, store, graph_builder, fake_embedder):
+async def test_auto_with_planner_dispatches_related(
+    db, store, graph_builder, fake_embedder, monkeypatch
+):
     """Planner choosing 'related' should dispatch to related strategy."""
+    monkeypatch.setenv("KB_AGENTIC_QUERY", "FALSE")
     e1 = await store.create_entry(
         short_title="Python tips",
         long_title="Python tips",
@@ -270,8 +273,9 @@ async def test_auto_with_planner_fallback_when_unavailable(db, fake_embedder, st
 
 
 @pytest.mark.asyncio
-async def test_auto_with_planner_uses_refined_search_query(db, fake_embedder, store):
+async def test_auto_with_planner_uses_refined_search_query(db, fake_embedder, store, monkeypatch):
     """When planner returns auto with refined search_query, it should be used."""
+    monkeypatch.setenv("KB_AGENTIC_QUERY", "FALSE")
     await store.create_entry(
         short_title="SQLite WAL",
         long_title="SQLite WAL mode",
