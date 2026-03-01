@@ -21,10 +21,12 @@ async def hybrid_search(
     db: Database,
     embedder: EmbeddingClient | None,
     query: SearchQuery,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], int]:
     """Execute hybrid search combining FTS5 and vector similarity via RRF.
 
     Falls back to FTS-only when embeddings are unavailable.
+    Returns (results, filtered_count) where filtered_count is the number
+    of candidates removed by the relative score threshold.
     """
     fetch_limit = query.limit * 3  # Over-fetch for re-ranking
 
@@ -57,6 +59,14 @@ async def hybrid_search(
 
     # Sort by combined RRF score (higher = better)
     sorted_ids = sorted(rrf_scores, key=lambda eid: rrf_scores[eid], reverse=True)
+
+    # Apply relative relevance threshold
+    pre_filter_count = len(sorted_ids)
+    if sorted_ids and query.min_score_ratio > 0:
+        top_score = rrf_scores[sorted_ids[0]]
+        min_score = top_score * query.min_score_ratio
+        sorted_ids = [eid for eid in sorted_ids if rrf_scores[eid] >= min_score]
+    filtered_count = pre_filter_count - len(sorted_ids)
 
     # Build results
     now = datetime.now(UTC)
@@ -92,4 +102,4 @@ async def hybrid_search(
             )
         )
 
-    return results
+    return results, filtered_count

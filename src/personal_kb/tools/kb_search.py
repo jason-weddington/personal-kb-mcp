@@ -69,12 +69,15 @@ def format_search_results(
     results: list[SearchResult],
     match_source_note: str | None = None,
     graph_hints: list[str] | None = None,
+    filtered_count: int = 0,
 ) -> str:
     """Format search results as compact entries (no details)."""
     entries = [
         format_entry_compact(r.entry, r.effective_confidence, r.staleness_warning) for r in results
     ]
-    return format_result_list(entries, note=match_source_note, hints=graph_hints)
+    return format_result_list(
+        entries, note=match_source_note, hints=graph_hints, filtered_count=filtered_count
+    )
 
 
 def register_kb_search(mcp: FastMCP) -> None:
@@ -95,7 +98,7 @@ def register_kb_search(mcp: FastMCP) -> None:
         ] = None,
         limit: Annotated[
             int, Field(description="Maximum results to return (1-50)", ge=1, le=50)
-        ] = 10,
+        ] = 5,
         include_stale: Annotated[
             bool, Field(description="Include entries with very low confidence")
         ] = False,
@@ -128,7 +131,7 @@ def register_kb_search(mcp: FastMCP) -> None:
         db = lifespan["db"]
         embedder = lifespan["embedder"]
 
-        results = await hybrid_search(db, embedder, search_query)
+        results, filtered_count = await hybrid_search(db, embedder, search_query)
 
         # Add a note if vector search was unavailable
         note = None
@@ -140,4 +143,6 @@ def register_kb_search(mcp: FastMCP) -> None:
         if len(results) < _SPARSE_THRESHOLD:
             hints = await collect_graph_hints(db, results)
 
-        return format_search_results(results, note, graph_hints=hints)
+        return format_search_results(
+            results, note, graph_hints=hints, filtered_count=filtered_count
+        )

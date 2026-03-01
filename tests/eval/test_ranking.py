@@ -39,7 +39,7 @@ class TestExpectedInTopK:
             include_stale=query_def.get("include_stale", False),
         )
 
-        results = await hybrid_search(db, embedder, search_query)
+        results, _filtered = await hybrid_search(db, embedder, search_query)
         result_ids = [r.entry.id for r in results]
 
         for expected_title in query_def["expected"]:
@@ -70,7 +70,7 @@ class TestExcludedAbsent:
             include_stale=query_def.get("include_stale", False),
         )
 
-        results = await hybrid_search(db, embedder, search_query)
+        results, _filtered = await hybrid_search(db, embedder, search_query)
         result_ids = [r.entry.id for r in results]
 
         for excluded_title in query_def["excluded"]:

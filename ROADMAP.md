@@ -10,7 +10,7 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Now
 
-- **Knowledge lives on one machine.** SQLite is local-only. Working from a different machine means no KB. If the positioning promise is "your knowledge follows you across agents," it needs to follow you across machines too. A remote-capable backend (Turso, Postgres, or even SQLite over a sync protocol) would make the KB truly portable without giving up the simplicity of the current setup.
+- **Intra-cluster noise in search results.** Relative score thresholds cut cross-cluster noise (the "fullstack returns Docker entries" problem), but can't distinguish relevant from irrelevant entries within the same topic cluster. When 8 entries share a cluster, RRF ranks them all similarly — the right one is buried among its neighbors. Needs semantic re-ranking: query-entity matching, personalized PageRank seeded from query terms, or LLM-based re-scoring of the top-k candidates.
 
 ## Later
 
@@ -18,6 +18,7 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Done
 
+- PostgreSQL backend — Database Protocol abstraction, pgvector + tsvector, migration script with auto-embed. SQLite remains default.
 - Graph-boosted hybrid ranking — researched, rejected. Co-citation is query-agnostic; rewards connectivity not specificity. Net lateral on eval. Branch `feat/graph-proximity-rrf` preserved.
 - Search quality eval framework — controlled corpus, golden queries, baseline snapshot (MRR=0.85, recall@5=1.0, NDCG@5=0.89).
 - Entity dedup, access-aware decay, sparse graph hints — three graph quality improvements grounded in GraphRAG research.

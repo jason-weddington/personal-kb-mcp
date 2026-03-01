@@ -17,7 +17,7 @@ class TestGraphHints:
         """A narrow query returning <3 results should trigger graph hints."""
         db, embedder, _, _ = eval_kb
 
-        results = await hybrid_search(
+        results, _filtered = await hybrid_search(
             db,
             embedder,
             SearchQuery(
@@ -41,7 +41,7 @@ class TestGraphHints:
         db, embedder, _, _ = eval_kb
 
         # Search for something narrow in the devops cluster
-        results = await hybrid_search(
+        results, _filtered = await hybrid_search(
             db,
             embedder,
             SearchQuery(
@@ -62,7 +62,7 @@ class TestGraphHints:
         """Queries with >=3 results should not trigger hints."""
         db, embedder, _, _ = eval_kb
 
-        results = await hybrid_search(
+        results, _filtered = await hybrid_search(
             db,
             embedder,
             SearchQuery(
@@ -86,7 +86,7 @@ class TestGraphHints:
         # secrets-dotenv-old is deactivated
         deactivated_id = title_to_id["secrets-dotenv-old"]
 
-        results = await hybrid_search(
+        results, _filtered = await hybrid_search(
             db,
             embedder,
             SearchQuery(

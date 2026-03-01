@@ -179,7 +179,7 @@ async def _strategy_auto(
         include_stale=False,
     )
 
-    results = await hybrid_search(db, embedder, search_query)
+    results, _filtered_count = await hybrid_search(db, embedder, search_query)
 
     # Collect search result entries
     seen_ids: set[str] = set()

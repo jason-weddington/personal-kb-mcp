@@ -10,21 +10,21 @@
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 4
     },
     "q02-fts5-search": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 2
     },
     "q03-wal-mode": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 2
     },
     "q04-fastapi-vs-flask": {
       "mrr": 1.0,
@@ -52,14 +52,14 @@
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 1
     },
     "q08-ci-pipeline": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 2
     },
     "q09-race-condition": {
       "mrr": 1.0,
@@ -80,21 +80,21 @@
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 2
     },
     "q12-project-web": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 2
     },
     "q13-sparse-security": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 4
     }
   }
 }

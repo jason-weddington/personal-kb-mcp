@@ -14,6 +14,7 @@ class SearchQuery(BaseModel):
     tags: list[str] | None = None
     limit: int = Field(default=10, ge=1, le=50)
     include_stale: bool = False
+    min_score_ratio: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class SearchResult(BaseModel):

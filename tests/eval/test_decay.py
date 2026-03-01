@@ -20,7 +20,7 @@ class TestDecayFiltering:
         """
         db, embedder, title_to_id, _ = eval_kb
 
-        results = await hybrid_search(
+        results, _filtered = await hybrid_search(
             db,
             embedder,
             SearchQuery(
@@ -41,7 +41,7 @@ class TestDecayFiltering:
         """Same stale entry should appear with include_stale=True."""
         db, embedder, title_to_id, _ = eval_kb
 
-        results = await hybrid_search(
+        results, _filtered = await hybrid_search(
             db,
             embedder,
             SearchQuery(
@@ -69,7 +69,7 @@ class TestDecayFiltering:
         # (730d half-life). Let's use the api-versioning-old which is 300 days
         # and a decision (365d half-life) — eff ≈ 0.9 * 2^(-300/365) ≈ 0.50
         # That's above 0.3 so should still appear.
-        results = await hybrid_search(
+        results, _filtered = await hybrid_search(
             db,
             embedder,
             SearchQuery(
@@ -98,7 +98,7 @@ class TestDecayFiltering:
         # effective = 0.9 * 2^(-400/730) ≈ 0.9 * 0.685 ≈ 0.62 — still above 0.3
         # So this tests that the pattern_convention type survives better.
         # Let's just verify the stale factual refs are filtered.
-        results = await hybrid_search(
+        results, _filtered = await hybrid_search(
             db,
             embedder,
             SearchQuery(

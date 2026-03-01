@@ -37,7 +37,7 @@ class TestBaseline:
                 include_stale=q.get("include_stale", False),
             )
 
-            results = await hybrid_search(db, embedder, search_query)
+            results, _filtered = await hybrid_search(db, embedder, search_query)
             result_ids = [r.entry.id for r in results]
             results_map[q["id"]] = result_ids
 

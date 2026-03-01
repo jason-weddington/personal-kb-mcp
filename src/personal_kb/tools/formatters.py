@@ -83,6 +83,7 @@ def format_result_list(
     header: str | None = None,
     note: str | None = None,
     hints: list[str] | None = None,
+    filtered_count: int = 0,
 ) -> str:
     """Count + note + entries joined by blank lines, optional graph hints."""
     if not formatted_entries:
@@ -91,7 +92,10 @@ def format_result_list(
     lines: list[str] = []
     if header:
         lines.append(header)
-    lines.append(f"{len(formatted_entries)} result(s)")
+    count_line = f"{len(formatted_entries)} result(s)"
+    if filtered_count > 0:
+        count_line += f" ({filtered_count} low-relevance filtered)"
+    lines.append(count_line)
     if note:
         lines.append(f"Note: {note}")
     lines.append("")
