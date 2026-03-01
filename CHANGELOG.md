@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.15.1 (2026-02-28)
+
+### Bug Fixes
+
+- Auto-rebuild embeddings during postgres migration
+  ([`4ae866b`](https://github.com/jason-weddington/personal-kb-mcp/commit/4ae866ba78e3da3bac080fa58c878b7e042a5518))
+
+
 ## v0.15.0 (2026-02-28)
 
 ### Documentation
