@@ -10,16 +10,15 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Now
 
-**Graph-boosted hybrid ranking (3-signal RRF).** Add graph proximity as a third signal alongside BM25 and vector in `hybrid_search`. For each candidate, 2-hop BFS to count reachable co-candidates, weighted by inverse node degree. Every kb_search call becomes graph-aware — agents don't need to know about kb_ask. Eval baseline exists to measure impact. *(G-Retriever, Think-on-Graph, KG-RAG — Size: M)*
+- **Knowledge lives on one machine.** SQLite is local-only. Working from a different machine means no KB. If the positioning promise is "your knowledge follows you across agents," it needs to follow you across machines too. A remote-capable backend (Turso, Postgres, or even SQLite over a sync protocol) would make the KB truly portable without giving up the simplicity of the current setup.
 
 ## Later
-
-- **Knowledge lives on one machine.** SQLite is local-only. Working from a different machine means no KB. If the positioning promise is "your knowledge follows you across agents," it needs to follow you across machines too. A remote-capable backend (Turso, Postgres, or even SQLite over a sync protocol) would make the KB truly portable without giving up the simplicity of the current setup.
 
 - **Single-user only.** No concept of who stored an entry or which agent session produced it. Multi-contributor support (attribution, provenance) is a prerequisite for team use — multiple developers and coding agents contributing to a shared KB.
 
 ## Done
 
+- Graph-boosted hybrid ranking — researched, rejected. Co-citation is query-agnostic; rewards connectivity not specificity. Net lateral on eval. Branch `feat/graph-proximity-rrf` preserved.
 - Search quality eval framework — controlled corpus, golden queries, baseline snapshot (MRR=0.85, recall@5=1.0, NDCG@5=0.89).
 - Entity dedup, access-aware decay, sparse graph hints — three graph quality improvements grounded in GraphRAG research.
 - Improve tool descriptions for query tools — differentiate kb_search, kb_ask, kb_summarize; ungate kb_ingest with glob support.
