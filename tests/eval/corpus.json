@@ -1,0 +1,253 @@
+[
+  {
+    "short_title": "aiosqlite-async-pattern",
+    "long_title": "Using aiosqlite for async SQLite access in Python",
+    "knowledge_details": "aiosqlite wraps sqlite3 in a background thread. Always use await db.execute() never db._conn.execute() directly. The connection object is not thread-safe — pass closures via _execute() that capture db._conn.",
+    "entry_type": "pattern_convention",
+    "tags": ["python", "sqlite", "async"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "fts5-content-sync",
+    "long_title": "FTS5 content-sync triggers for full-text search",
+    "knowledge_details": "Use content='knowledge_entries' with auto-sync triggers rather than contentless FTS5. Tags stored as space-separated text get indexed directly by FTS5. Triggers handle INSERT, UPDATE, DELETE automatically.",
+    "entry_type": "pattern_convention",
+    "tags": ["sqlite", "fts5", "search"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "wal-mode-concurrency",
+    "long_title": "SQLite WAL mode for concurrent read/write access",
+    "knowledge_details": "WAL mode enables concurrent readers with a single writer. Enable via PRAGMA journal_mode=WAL. Critical for server applications where multiple connections read simultaneously. Checkpoint happens automatically.",
+    "entry_type": "factual_reference",
+    "tags": ["sqlite", "concurrency"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "connection-pooling-pitfalls",
+    "long_title": "Connection pooling pitfalls with SQLite and aiosqlite",
+    "knowledge_details": "SQLite does not need traditional connection pooling — a single aiosqlite connection with WAL mode handles most workloads. Connection pools cause lock contention. Keep it simple with one connection.",
+    "entry_type": "lesson_learned",
+    "tags": ["sqlite", "python", "async"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "sqlite-vec-loading",
+    "long_title": "Loading sqlite-vec extension with aiosqlite",
+    "knowledge_details": "Load sqlite-vec via sqlite_vec.load(db._conn) inside a closure passed to _execute(). The loadable_path() approach does not work with aiosqlite. Must enable extensions first with enable_load_extension(True).",
+    "entry_type": "factual_reference",
+    "tags": ["sqlite", "sqlite-vec", "python"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "cross-thread-aiosqlite",
+    "long_title": "Cross-thread safety rules for aiosqlite connections",
+    "knowledge_details": "Never use db._conn.execute() directly from the async thread — always use await db.execute(). The _conn is owned by the background thread. Direct access causes 'database is locked' or segfaults.",
+    "entry_type": "lesson_learned",
+    "tags": ["python", "sqlite", "async", "threading"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "sqlite-json-extract",
+    "long_title": "Using json_extract in SQLite for JSONB columns",
+    "knowledge_details": "json_extract(column, '$.key') extracts values from JSON columns. Use json_extract(properties, '$.source') = 'llm' to filter LLM-generated edges. Works with both TEXT and JSONB storage.",
+    "entry_type": "factual_reference",
+    "tags": ["sqlite", "json"],
+    "project_ref": "personal-kb",
+    "days_old": 250
+  },
+  {
+    "short_title": "db-migration-strategy",
+    "long_title": "Database migration strategy for SQLite schema changes",
+    "knowledge_details": "Apply schema changes idempotently with CREATE TABLE IF NOT EXISTS and ALTER TABLE ADD COLUMN. For destructive changes, create new table, copy data, drop old. No migration framework needed for single-user apps.",
+    "entry_type": "decision",
+    "tags": ["sqlite", "schema"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "fastapi-vs-flask-decision",
+    "long_title": "Chose FastAPI over Flask for the web service layer",
+    "knowledge_details": "Chose FastAPI for native async support, automatic OpenAPI docs, and Pydantic integration. Flask would require additional libraries for async and validation. Performance is better with uvicorn + FastAPI for IO-bound workloads.",
+    "entry_type": "decision",
+    "tags": ["python", "api", "web"],
+    "project_ref": "web-service"
+  },
+  {
+    "short_title": "rest-api-conventions",
+    "long_title": "REST API design conventions for internal services",
+    "knowledge_details": "Use plural nouns for resources (/users, /entries). Return 201 for creates, 200 for updates. Always include pagination via Link headers. Error responses use RFC 7807 problem+json format.",
+    "entry_type": "pattern_convention",
+    "tags": ["api", "rest", "web"],
+    "project_ref": "web-service"
+  },
+  {
+    "short_title": "jwt-auth-middleware",
+    "long_title": "JWT authentication middleware pattern for FastAPI",
+    "knowledge_details": "Use a dependency injection middleware that extracts and validates JWT from Authorization header. Store signing key in env var. Token expiry should be 15 minutes with refresh tokens for long sessions.",
+    "entry_type": "pattern_convention",
+    "tags": ["api", "auth", "security"],
+    "project_ref": "web-service"
+  },
+  {
+    "short_title": "cors-config-pattern",
+    "long_title": "CORS configuration pattern for FastAPI applications",
+    "knowledge_details": "Use CORSMiddleware with explicit allow_origins list — never use allow_origins=['*'] in production. Allow credentials requires specific origins. Preflight caching via max_age reduces OPTIONS requests.",
+    "entry_type": "pattern_convention",
+    "tags": ["api", "cors", "security", "web"],
+    "project_ref": "web-service"
+  },
+  {
+    "short_title": "api-versioning-strategy",
+    "long_title": "API versioning strategy — URL path prefix approach",
+    "knowledge_details": "Use URL path versioning (/v1/resource, /v2/resource). Header-based versioning is harder to test and cache. Version only when breaking changes are needed. Support N-1 version for 6 months after deprecation.",
+    "entry_type": "decision",
+    "tags": ["api", "versioning"],
+    "project_ref": "web-service",
+    "hints": {"supersedes": "api-versioning-old"}
+  },
+  {
+    "short_title": "api-versioning-old",
+    "long_title": "API versioning via custom header (superseded)",
+    "knowledge_details": "Originally used X-API-Version header for version selection. This caused caching issues with CDNs and was difficult to test with curl. Replaced by URL path versioning.",
+    "entry_type": "decision",
+    "tags": ["api", "versioning"],
+    "project_ref": "web-service",
+    "days_old": 300
+  },
+  {
+    "short_title": "rate-limiting-approach",
+    "long_title": "Rate limiting implementation using sliding window",
+    "knowledge_details": "Sliding window counter in Redis for rate limiting. 100 requests per minute for authenticated users, 20 for anonymous. Use 429 status with Retry-After header. Consider token bucket for burst-friendly APIs.",
+    "entry_type": "pattern_convention",
+    "tags": ["api", "security"],
+    "project_ref": "web-service",
+    "days_old": 200
+  },
+  {
+    "short_title": "openapi-schema-gen",
+    "long_title": "OpenAPI schema generation from Pydantic models in FastAPI",
+    "knowledge_details": "FastAPI auto-generates OpenAPI 3.1 schemas from Pydantic models. Use Field(description=...) for docs. Customize via model_config. Export schema via app.openapi() for client codegen.",
+    "entry_type": "factual_reference",
+    "tags": ["api", "python", "pydantic"],
+    "project_ref": "web-service"
+  },
+  {
+    "short_title": "async-fastapi-db-pooling",
+    "long_title": "Async database connection management in FastAPI with aiosqlite",
+    "knowledge_details": "Use FastAPI lifespan to create and close the aiosqlite connection. Store in app state dict. For SQLite, a single connection in WAL mode is sufficient — no pool needed. Avoid creating connections per-request.",
+    "entry_type": "pattern_convention",
+    "tags": ["python", "api", "async", "sqlite"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "docker-multi-stage",
+    "long_title": "Docker multi-stage builds for Python applications",
+    "knowledge_details": "Use multi-stage builds: builder stage installs deps with pip, final stage copies only site-packages. Reduces image size by 60%. Use python:3.13-slim as final base. Pin all dependency versions.",
+    "entry_type": "pattern_convention",
+    "tags": ["docker", "python", "deployment"]
+  },
+  {
+    "short_title": "github-actions-ci",
+    "long_title": "GitHub Actions CI pipeline for Python projects",
+    "knowledge_details": "Matrix test across Python 3.12 and 3.13. Cache uv dependencies. Run ruff check, mypy, and pytest in parallel jobs. Use concurrency groups to cancel stale runs. Pin action versions to SHAs.",
+    "entry_type": "pattern_convention",
+    "tags": ["ci", "github", "python", "testing"]
+  },
+  {
+    "short_title": "deployment-checklist",
+    "long_title": "Production deployment checklist for Python services",
+    "knowledge_details": "Pre-deploy: run full test suite, check for secrets in diff, verify migrations. Deploy: blue-green or rolling update. Post-deploy: smoke tests, check error rates, monitor latency P99 for 30 minutes.",
+    "entry_type": "pattern_convention",
+    "tags": ["deployment", "production"]
+  },
+  {
+    "short_title": "monitoring-alerting",
+    "long_title": "Monitoring and alerting strategy for microservices",
+    "knowledge_details": "Use RED method: Rate, Errors, Duration for service metrics. Alert on error rate >1% sustained 5 min, P99 latency >2s, and availability <99.9%. Use Prometheus + Grafana stack. PagerDuty for critical alerts.",
+    "entry_type": "decision",
+    "tags": ["monitoring", "devops"]
+  },
+  {
+    "short_title": "logging-structured",
+    "long_title": "Structured logging convention with JSON output",
+    "knowledge_details": "Use structlog for structured JSON logging. Include request_id, user_id, and operation in every log. Log to stderr (stdout reserved for application output/MCP). Use WARNING as default level in production.",
+    "entry_type": "pattern_convention",
+    "tags": ["logging", "python"],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "infra-terraform-modules",
+    "long_title": "Terraform module structure for infrastructure as code",
+    "knowledge_details": "Organize Terraform into modules: networking, compute, storage, monitoring. Use remote state in S3 with DynamoDB locking. Tag all resources with project and environment. Keep modules under 200 lines.",
+    "entry_type": "pattern_convention",
+    "tags": ["terraform", "infrastructure", "devops"],
+    "days_old": 400
+  },
+  {
+    "short_title": "secrets-management",
+    "long_title": "Secrets management approach for applications",
+    "knowledge_details": "Never store secrets in code or config files. Use environment variables for local dev, AWS Secrets Manager for production. Rotate secrets every 90 days. detect-secrets as pre-commit hook to prevent leaks.",
+    "entry_type": "pattern_convention",
+    "tags": ["security", "devops"],
+    "hints": {"supersedes": "secrets-dotenv-old"}
+  },
+  {
+    "short_title": "secrets-dotenv-old",
+    "long_title": "Secrets via .env files (superseded by Secrets Manager)",
+    "knowledge_details": "Originally used .env files with python-dotenv for all environments including staging. This was insecure for shared environments and caused secret sprawl. Replaced by AWS Secrets Manager.",
+    "entry_type": "decision",
+    "tags": ["security"],
+    "days_old": 350,
+    "deactivate": true
+  },
+  {
+    "short_title": "race-condition-asyncio",
+    "long_title": "Debugging asyncio race conditions in aiosqlite",
+    "knowledge_details": "Race condition when two coroutines call db.execute() concurrently — aiosqlite serializes but the interleaving of commit() calls can cause unexpected state. Fix: use explicit transactions or a semaphore for multi-step ops.",
+    "entry_type": "lesson_learned",
+    "tags": ["python", "async", "debugging", "sqlite"]
+  },
+  {
+    "short_title": "encoding-utf8-gotcha",
+    "long_title": "UTF-8 encoding gotcha with JSON serialization in Python",
+    "knowledge_details": "json.dumps() uses ensure_ascii=True by default, escaping non-ASCII chars to \\uXXXX. For readable output use ensure_ascii=False. Watch out for surrogate pairs in user input — they cause UnicodeEncodeError.",
+    "entry_type": "lesson_learned",
+    "tags": ["python", "json", "encoding", "debugging"]
+  },
+  {
+    "short_title": "memory-leak-profiling",
+    "long_title": "Memory leak profiling with tracemalloc in long-running services",
+    "knowledge_details": "Use tracemalloc to snapshot memory at intervals. Compare snapshots to find growing allocations. Common leak: unbounded caches, unclosed database cursors, circular references preventing GC. objgraph for visual analysis.",
+    "entry_type": "lesson_learned",
+    "tags": ["python", "debugging", "performance"]
+  },
+  {
+    "short_title": "deadlock-debugging",
+    "long_title": "Debugging database deadlocks in concurrent SQLite access",
+    "knowledge_details": "SQLite deadlocks happen when two connections hold read locks and both try to write. Fix: use a single connection with WAL mode, or use IMMEDIATE transactions. Enable sqlite3_busy_timeout to reduce lock failures.",
+    "entry_type": "lesson_learned",
+    "tags": ["sqlite", "debugging", "concurrency"]
+  },
+  {
+    "short_title": "test-flake-investigation",
+    "long_title": "Investigating test flakes caused by event loop reuse",
+    "knowledge_details": "pytest-asyncio event loop scope caused flaky tests when fixtures leaked state. Fix: use function-scoped event loop (default in pytest-asyncio 0.24+). Each test gets a fresh loop. Never share mutable state across async tests.",
+    "entry_type": "lesson_learned",
+    "tags": ["python", "testing", "async", "debugging"]
+  },
+  {
+    "short_title": "import-cycle-resolution",
+    "long_title": "Resolving Python import cycles with deferred imports",
+    "knowledge_details": "Break import cycles by deferring imports into functions (not module level). Use TYPE_CHECKING block for type hints only. Restructure if the cycle indicates a dependency inversion problem. Common in large packages.",
+    "entry_type": "lesson_learned",
+    "tags": ["python", "debugging"]
+  },
+  {
+    "short_title": "timeout-tuning-lesson",
+    "long_title": "Lesson learned tuning HTTP client timeouts for Ollama",
+    "knowledge_details": "Default httpx timeout of 5s was too short for Ollama embedding calls on first load (model loading adds 10-20s). Set connect=5s, read=30s. Use a separate shorter timeout for health checks. Graceful fallback on timeout.",
+    "entry_type": "lesson_learned",
+    "tags": ["python", "ollama", "performance"],
+    "project_ref": "personal-kb"
+  }
+]

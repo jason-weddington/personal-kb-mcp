@@ -1,0 +1,63 @@
+{
+  "dim": 64,
+  "clusters": [
+    {
+      "name": "database",
+      "axis": 0,
+      "queries": ["q01-sqlite-async", "q02-fts5-search", "q03-wal-mode", "q11-project-filter"],
+      "entries": [
+        "aiosqlite-async-pattern",
+        "fts5-content-sync",
+        "wal-mode-concurrency",
+        "connection-pooling-pitfalls",
+        "sqlite-vec-loading",
+        "cross-thread-aiosqlite",
+        "sqlite-json-extract",
+        "db-migration-strategy"
+      ]
+    },
+    {
+      "name": "api",
+      "axis": 8,
+      "queries": ["q04-fastapi-vs-flask", "q05-rest-auth", "q06-cors-setup", "q12-project-web"],
+      "entries": [
+        "fastapi-vs-flask-decision",
+        "rest-api-conventions",
+        "jwt-auth-middleware",
+        "cors-config-pattern",
+        "api-versioning-strategy",
+        "rate-limiting-approach",
+        "openapi-schema-gen",
+        "async-fastapi-db-pooling"
+      ]
+    },
+    {
+      "name": "devops",
+      "axis": 16,
+      "queries": ["q07-docker-setup", "q08-ci-pipeline", "q13-sparse-security", "q14-sparse-terraform"],
+      "entries": [
+        "docker-multi-stage",
+        "github-actions-ci",
+        "deployment-checklist",
+        "monitoring-alerting",
+        "logging-structured",
+        "infra-terraform-modules",
+        "secrets-management"
+      ]
+    },
+    {
+      "name": "debugging",
+      "axis": 24,
+      "queries": ["q09-race-condition", "q10-encoding-bug", "q15-stale-decay"],
+      "entries": [
+        "race-condition-asyncio",
+        "encoding-utf8-gotcha",
+        "memory-leak-profiling",
+        "deadlock-debugging",
+        "test-flake-investigation",
+        "import-cycle-resolution",
+        "timeout-tuning-lesson"
+      ]
+    }
+  ]
+}

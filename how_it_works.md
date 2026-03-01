@@ -44,17 +44,29 @@ See: `search/embeddings.py`, `search/vector.py`, `db/schema.py`
 
 ## Hybrid Search and Reciprocal Rank Fusion
 
-When both FTS and vector search produce results, they are combined using Reciprocal Rank Fusion (RRF). The implementation lives in `search/hybrid.py:hybrid_search`.
+When both FTS and vector search produce results, they are combined using Reciprocal Rank Fusion (RRF) [1]. The implementation lives in `search/hybrid.py:hybrid_search`.
 
 The process starts by over-fetching: both FTS and vector search are asked for `limit * 3` results (three times the caller's requested limit). Over-fetching improves re-ranking quality because entries that appear in both lists — which are the strongest signals of relevance — are more likely to be captured even if they rank modestly in one list.
 
-Each entry's RRF score is computed as: `score(d) = sum of 1/(K + rank + 1)` across all lists in which it appears, where K is a constant set to 60 (the standard value from the RRF literature) and rank is the entry's zero-based position in each list. An entry that appears in both FTS and vector results gets the sum of its two reciprocal rank scores, naturally boosting entries confirmed by both retrieval methods. Entries from only one list still get a score, just lower.
+Each entry's RRF score is computed as: `score(d) = sum of 1/(K + rank + 1)` across all lists in which it appears, where K is a constant set to 60 (the value from the original RRF paper [1]) and rank is the entry's zero-based position in each list. An entry that appears in both FTS and vector results gets the sum of its two reciprocal rank scores, naturally boosting entries confirmed by both retrieval methods. Entries from only one list still get a score, just lower.
 
 After RRF scoring, entries are sorted by combined score in descending order (higher is better, the inverse of the raw FTS and distance scores). The top entries up to the caller's limit are then looked up to get their full data, confidence decay is applied, and stale entries (effective confidence below 0.3) are filtered out unless the caller explicitly requests them via `include_stale`.
 
 Each result carries a `match_source` field: `"hybrid"` if both FTS and vector contributed results, or `"fts"` if vector search returned nothing (because Ollama was unavailable or no embeddings exist).
 
 See: `search/hybrid.py`
+
+## Sparse Graph Hints
+
+When `kb_search` returns fewer than 3 results, the system augments the response with graph-connected entries that the user might find relevant. This idea draws on Think-on-Graph's iterative graph reasoning [2] and GraphRAG's community-level summarization [3], adapted to a much smaller scale: instead of multi-hop reasoning chains or hierarchical community summaries, we do a simple 1-2 hop BFS and format the results as hints. The `collect_graph_hints` function in `tools/kb_search.py` walks the knowledge graph outward from each search result to find related entries that didn't match the query directly.
+
+For each result entry, the function calls `get_neighbors` with a limit of 10. Non-entry neighbors — tags, concepts, tools, and other intermediate nodes — get a second hop: the function calls `get_neighbors` again on the intermediate node to find entries connected through it. For example, if a search result has a `has_tag` edge to `tag:security`, and another entry also has a `has_tag` edge to `tag:security`, that second entry becomes a hint candidate. Direct entry-to-entry neighbors (from `supersedes`, `references`, etc.) are also collected but only need the single hop.
+
+A `seen_ids` set tracks all result entry IDs and any entries already collected as hints, preventing duplicates. Deactivated entries are filtered out — only entries with `is_active = True` are included. The function returns up to 3 formatted hint strings like `"See also: [kb-00042] Title (via tag:security)"`, where the `via` label identifies the intermediate node or edge type that connects the hint to the original result.
+
+The sparse threshold and max hints are constants (`_SPARSE_THRESHOLD = 3`, `_MAX_HINTS = 3`). When results are plentiful, hints are skipped entirely — the function is never called.
+
+See: `tools/kb_search.py`, `tools/formatters.py`
 
 ## Confidence Decay
 
@@ -67,11 +79,11 @@ Half-lives vary by entry type, reflecting how quickly different kinds of knowled
 - **pattern_convention**: 730 days (2 years) — coding standards and conventions are durable
 - **lesson_learned**: 1,825 days (5 years) — hard-won debugging insights and experiential knowledge stick
 
-The decay clock anchors on `updated_at`, not `created_at`. This means editing an entry resets its decay, which makes sense: if you've verified and updated a piece of knowledge, it should be treated as fresh. The `knowledge_store.py:update_entry` method always sets `updated_at` to the current time.
+The decay clock anchors on whichever is more recent: `updated_at` or `last_accessed`. This access-aware approach is inspired by MemoryBank's dynamic memory management [4] and the recency-relevance-importance scoring in Generative Agents [5] — the insight being that retrieval frequency is a valid signal for knowledge value, not just recency of creation. Editing an entry resets its decay via `updated_at`, because if you've verified and updated a piece of knowledge it should be treated as fresh. Retrieving an entry via `kb_get` resets its decay via `last_accessed`, because actively-used knowledge shouldn't rot just because it hasn't been edited. The `db/queries.py:touch_accessed` function batch-updates `last_accessed` to the current time for all entries returned by a `kb_get` call. Crucially, search alone does not reset the decay clock — only explicit retrieval via `kb_get` does. This means an entry that keeps appearing in search results but is never opened will still decay, while one that a user regularly retrieves stays fresh.
 
 Two thresholds govern how decay affects results. At 50% effective confidence, a staleness warning is attached to the result, suggesting the user verify the information is still current. At 30%, the entry is filtered out of search results entirely (unless the caller passes `include_stale=True`). For a factual reference with the default 0.9 confidence, the warning appears around 90 days (one half-life, when 0.9 drops to ~0.45) and the hard cutoff around 160 days (when 0.9 drops to ~0.27).
 
-See: `confidence/decay.py`
+See: `confidence/decay.py`, `db/queries.py` (`touch_accessed`)
 
 ## The Knowledge Graph
 
@@ -102,6 +114,8 @@ The builder creates edges in this order:
 The `GraphEnricher` in `graph/enricher.py` adds a second layer of edges by asking an LLM to extract entities and relationships from each entry's content. The LLM works with a closed set of four entity types: `person`, `tool`, `concept`, and `technology`. The system prompt instructs it to extract 2-6 entities per entry, returning a JSON array where each object specifies an entity name, entity type, and relationship type. Relationship types are open-ended — the LLM can use whatever describes the connection best (`uses`, `depends_on`, `implements`, `solves`, `replaces`, etc.).
 
 The enricher's response parsing is defensive: it strips markdown code fences, finds the JSON array via regex, validates each item's structure and entity type, and caps results at 8 relationships. All LLM-derived edges are marked with `{"source": "llm"}` in their properties, which enables selective clearing. When re-enriching an entry, the enricher deletes only edges where `json_extract(properties, '$.source') = 'llm'`, preserving all deterministic edges. The enricher also ensures the entry node exists (via `ON CONFLICT DO NOTHING`) before adding edges, avoiding foreign key violations if the deterministic builder hasn't run yet.
+
+Before creating a new entity node, the enricher checks for near-duplicates in the existing graph — an entity resolution step inspired by GraphRAG [3] and LightRAG [6], where entity deduplication is identified as critical for small graphs where fragmentation degrades connectivity. It loads the current graph vocabulary — all non-entry node IDs grouped by type — via `get_graph_vocabulary()`, then compares each LLM-extracted entity name against every existing name using `difflib.SequenceMatcher`. If a match scores at or above 0.85, the enricher reuses the existing node instead of creating a new one. This matching is cross-type: if the LLM extracts `concept:asyncio` but `technology:asyncio` already exists in the graph, the enricher will merge to the existing node. The vocabulary cache is loaded once per `enrich_entry` or `enrich_batch` call, and new entities are registered in the cache immediately so later edges in the same batch can resolve against them.
 
 Enrichment never breaks storage. The entire enrichment call is wrapped in a try/except in `kb_store.py:_enrich_graph`, so failures are logged and swallowed.
 
@@ -155,6 +169,22 @@ Each step is wrapped in its own try/except block. A failure in embedding does no
 
 See: `tools/kb_store.py`, `store/knowledge_store.py`
 
+## Token Efficiency
+
+MCP tool responses consume tokens in the calling LLM's context window, so the server uses a two-phase retrieval pattern to minimize waste. Search results from `kb_search` include only compact metadata — entry ID, type, titles, tags, project, and confidence — but omit the `knowledge_details` field, which is often the bulk of the content. When the caller needs full details for specific entries, it calls `kb_get` with one or more entry IDs (up to 20) to retrieve the complete content. This means a search over hundreds of entries sends back a manageable summary, and the caller only pays the token cost for entries it actually wants to read.
+
+The formatting layer lives in `tools/formatters.py` and provides shared functions used across all tools. `format_entry_compact` produces a 2-3 line summary (header with ID, type, short title, confidence percentage; long title if different from short; tag and project metadata). `format_entry_full` adds the `knowledge_details` body and optionally a context line (like "via tag:python" in `kb_ask` results). `format_result_list` assembles a list of formatted entries with a count header, optional notes, and optional graph hint lines. `format_graph_hint` produces the one-liner hint format used by sparse graph hints.
+
+`kb_get` also resets the confidence decay clock for retrieved entries. After formatting results, it calls `touch_accessed` to batch-update `last_accessed` on all successfully retrieved entries. This ties access-aware decay directly to the tool that indicates genuine user interest — reading the full content of an entry signals it is still useful.
+
+### Batch Storage (kb_store_batch)
+
+The `kb_store_batch` tool accepts up to 10 entries in a single call. Each entry goes through the standard pipeline — create, embed, build graph — individually. But graph enrichment is batched: instead of making one LLM call per entry, the enricher's `enrich_batch` method sends all entries in a single prompt and parses a JSON object keyed by entry ID from the response. This reduces LLM round-trips from N to 1. If the batch response fails to parse, the enricher falls back to per-entry enrichment so storage never fails due to a parsing issue.
+
+The core logic is extracted into `batch_store_entries()`, a standalone async function that takes a list of entry dicts and the server lifespan context. This extraction keeps the business logic testable without requiring a FastMCP context.
+
+See: `tools/formatters.py`, `tools/kb_get.py`, `tools/kb_store_batch.py`
+
 ## File Ingestion (kb_ingest)
 
 The `kb_ingest` tool reads files from disk and converts them into knowledge entries through an 11-step pipeline orchestrated by `ingest/ingester.py:FileIngester`.
@@ -187,19 +217,21 @@ See: `ingest/safety.py`, `ingest/extractor.py`, `ingest/ingester.py`, `tools/kb_
 
 ## Dual LLM Architecture
 
-The server uses two independent LLM slots: one for extraction (graph enrichment during storage) and one for queries (planning in `kb_ask` and synthesis in `kb_summarize`). Each slot can be independently configured to use either Anthropic or Ollama as its backend, controlled by the `KB_EXTRACTION_PROVIDER` and `KB_QUERY_PROVIDER` environment variables. Both default to `anthropic`.
+The server uses two independent LLM slots: one for extraction (graph enrichment during storage) and one for queries (planning in `kb_ask` and synthesis in `kb_summarize`). Each slot can be independently configured to use Anthropic, Bedrock, or Ollama as its backend, controlled by the `KB_EXTRACTION_PROVIDER` and `KB_QUERY_PROVIDER` environment variables (values: `anthropic`, `bedrock`, or `ollama`). Both default to `anthropic`.
 
-This separation exists because the two use cases have different performance characteristics. Extraction runs on every store operation and produces structured JSON — it benefits from a fast, inexpensive model. Query planning and synthesis are interactive and user-facing — they benefit from a more capable model. Running both on Anthropic (Claude Haiku) works well for most setups, but you could run extraction on a local Ollama model to reduce API costs while keeping Anthropic for queries, or vice versa.
+This separation exists because the two use cases have different performance characteristics. Extraction runs on every store operation and produces structured JSON — it benefits from a fast, inexpensive model. Query planning and synthesis are interactive and user-facing — they benefit from a more capable model. Running both on Anthropic (Claude Haiku) works well for most setups, but you could run extraction on a local Ollama model to reduce API costs while keeping Anthropic for queries, or use Bedrock for both in an AWS environment.
 
-Both backends implement the `LLMProvider` protocol defined in `llm/provider.py`: `is_available()` checks if the backend is reachable, `generate()` sends a prompt with an optional system message and returns the response text or None, and `close()` releases resources. The protocol is decorated with `@runtime_checkable` so it can be used with `isinstance()` checks at runtime.
+All three backends implement the `LLMProvider` protocol defined in `llm/provider.py`: `is_available()` checks if the backend is reachable, `generate()` sends a prompt with an optional system message and returns the response text or None, and `close()` releases resources. The protocol is decorated with `@runtime_checkable` so it can be used with `isinstance()` checks at runtime.
 
 The **Anthropic client** (`llm/anthropic.py`) uses lazy SDK import — the `anthropic` package is only imported when `_get_client()` is first called. If the package is not installed, the client returns None from `_get_client()` and all `generate()` calls return None. This means the server can run without the anthropic package installed if only Ollama is used. The client also uses success-only caching: `_available` is set to True after a successful `generate()` call, but reset to None (not False) on failure, allowing retries. Availability checking is lightweight — it just verifies the SDK is importable and `ANTHROPIC_API_KEY` is set, deferring the actual API call to the first `generate()`.
+
+The **Bedrock client** (`llm/bedrock.py`) uses the `aws-sdk-bedrock-runtime` package, a natively async SDK generated from the Smithy service model. It supports two authentication modes. The primary path uses bearer token auth via the `AWS_BEARER_TOKEN_BEDROCK` environment variable — this required monkey-patching the SDK because the Bedrock service model declares `httpBearerAuth` support but the codegen doesn't wire it up. The `_configure_bearer_auth` function injects a custom `BearerAuthScheme` (built on the existing smithy_http `APIKeyAuthScheme` plumbing) into the SDK's Config object and patches the auth scheme resolver to prefer bearer auth when a token is present. The fallback path uses traditional SigV4 signing via `AWS_ACCESS_KEY_ID` with the `EnvironmentCredentialsResolver` from smithy_aws_core. If neither credential is set, the client disables itself. Like the other clients, it uses lazy SDK import and success-only caching. The SDK is an optional dependency (`[project.optional-dependencies] aws`).
 
 The **Ollama client** (`llm/ollama.py`) talks to Ollama's `/api/generate` endpoint over httpx. It uses the same success-only caching pattern as the embedding client: ping `/api/tags` to check availability, cache success, retry on failure. The model and timeout are configured separately from the embedding model — `KB_OLLAMA_MODEL` (default `qwen3:4b`) and `KB_OLLAMA_LLM_TIMEOUT` (default 120 seconds).
 
 The factory function `_create_llm()` in `server.py` selects the right client class based on the provider string. During server lifespan setup, two LLM clients are created (one per slot), and the extraction client is wrapped in a `GraphEnricher` instance while the query client is passed directly to the lifespan context for use by `kb_ask` and `kb_summarize`.
 
-See: `llm/provider.py`, `llm/anthropic.py`, `llm/ollama.py`, `server.py`
+See: `llm/provider.py`, `llm/anthropic.py`, `llm/bedrock.py`, `llm/ollama.py`, `server.py`
 
 ## Graceful Degradation
 
@@ -207,14 +239,32 @@ The system is designed to always store entries and serve full-text search at min
 
 When **Ollama is unreachable**, the embedding client's `is_available()` returns False, `embed()` returns None, and `store_embedding()` is never called. The `has_embedding` flag stays False on the entry. In hybrid search, `vector_search()` returns an empty list, and RRF operates on FTS results alone. The `match_source` in results will be `"fts"` instead of `"hybrid"`. If Ollama comes back later, the success-only caching means the next embedding attempt will retry the ping and start working. The `kb_maintain` tool can backfill missing embeddings in bulk.
 
-When **the extraction LLM is unavailable** (neither Anthropic nor Ollama reachable for the extraction slot), the `graph_enricher` is set to None in the lifespan context. The `_enrich_graph` helper in `kb_store.py` checks for None and returns immediately. Entries still get deterministic graph edges from the builder — tags, project references, text references, and hint-based edges all work without an LLM. The graph just lacks the entity-level edges (concept, technology, tool, person relationships) that enrichment would add.
+When **the extraction LLM is unavailable** (no configured provider reachable for the extraction slot), the `graph_enricher` is set to None in the lifespan context. The `_enrich_graph` helper in `kb_store.py` checks for None and returns immediately. Entries still get deterministic graph edges from the builder — tags, project references, text references, and hint-based edges all work without an LLM. The graph just lacks the entity-level edges (concept, technology, tool, person relationships) that enrichment would add.
 
 When **the query LLM is unavailable**, `kb_ask`'s auto strategy skips query planning and runs hybrid search directly with the user's raw question. The planner check in `_strategy_auto_with_planner` tests `query_llm is not None` before instantiating the `QueryPlanner`. Without a query LLM, `kb_summarize` falls back to showing raw search results prefixed with "(LLM unavailable — showing raw results)" — still useful, just not synthesized into prose.
 
 When **the anthropic package is not installed**, the `AnthropicLLMClient._get_client()` method catches `ImportError` and returns None. All subsequent `generate()` calls return None. The server starts normally and the provider slot acts as if the LLM is permanently unavailable, falling through to the same degradation paths described above.
+
+When **the aws-sdk-bedrock-runtime package is not installed**, the `BedrockLLMClient._get_client()` method catches `ImportError` and returns None, following the same pattern as the Anthropic client. When the package is installed but neither `AWS_BEARER_TOKEN_BEDROCK` nor `AWS_ACCESS_KEY_ID` is set, `is_available()` returns False and logs a warning.
 
 When **detect-secrets is not installed**, `detect_secrets_in_content()` catches `ImportError` and returns None (as opposed to an empty list, which would mean "scanned and found nothing"). The ingestion pipeline treats None as "scan not performed" and continues without flagging.
 
 When **scrubadub is not installed**, `redact_pii()` catches `ImportError` and returns the original content unchanged with an empty redactions list. Content passes through without PII redaction.
 
 The overall design principle is that each component checks its own dependencies at call time, returns a neutral result (None, empty list, or unchanged input) when those dependencies are missing, and the calling code handles neutral results by skipping the dependent step. No component throws an exception for a missing optional dependency, and no step's failure prevents subsequent steps from running.
+
+## References
+
+[1] G. V. Cormack, C. L. A. Clarke, and S. Büttcher. "Reciprocal rank fusion outperforms Condorcet and individual rank learning methods." *SIGIR 2009*. https://dl.acm.org/doi/10.1145/1571941.1572114
+
+[2] J. Sun et al. "Think-on-Graph: Deep and Responsible Reasoning of Large Language Model on Knowledge Graph." *arXiv:2307.07697*, 2023. https://arxiv.org/abs/2307.07697
+
+[3] D. Edge et al. "From Local to Global: A Graph RAG Approach to Query-Focused Summarization." Microsoft Research, 2024. https://arxiv.org/abs/2404.16130
+
+[4] W. Zhong et al. "MemoryBank: Enhancing Large Language Models with Long-Term Memory." *AAAI 2024*. https://arxiv.org/abs/2305.10250
+
+[5] J. S. Park et al. "Generative Agents: Interactive Simulacra of Human Behavior." *UIST 2023*. https://arxiv.org/abs/2304.03442
+
+[6] Z. Guo et al. "LightRAG: Simple and Fast Retrieval-Augmented Generation." *arXiv:2410.05779*, 2024. https://arxiv.org/abs/2410.05779
+
+The research survey that informed the entity deduplication, access-aware decay, and sparse graph hints features is documented in the KB itself (entries kb-00111 and kb-00112), produced by a multi-agent paper review of ~12 GraphRAG papers from the HuggingFace graphrag-papers collection.

@@ -40,6 +40,7 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--strict-markers -v"
+markers = ["eval: search quality evaluation tests"]
 
 [tool.ruff]
 target-version = "py313"
