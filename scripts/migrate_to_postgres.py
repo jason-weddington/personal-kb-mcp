@@ -6,15 +6,16 @@ Usage:
     python scripts/migrate_to_postgres.py postgresql://user:pass@localhost/kb
 
 Options:
-    --sqlite PATH   SQLite database path (default: KB_DB_PATH or
-                    ~/.local/share/personal_kb/knowledge.db)
-    --dry-run       Show what would be migrated without writing
+    --sqlite PATH       SQLite database path (default: KB_DB_PATH or
+                        ~/.local/share/personal_kb/knowledge.db)
+    --dry-run           Show what would be migrated without writing
+    --skip-embeddings   Skip embedding rebuild (do it later via kb_maintain)
 
 The script:
 1. Opens the SQLite database (read-only)
 2. Connects to PostgreSQL and applies the schema
 3. Copies all data tables in dependency order
-4. Skips embeddings (rebuild with `kb_maintain rebuild_embeddings`)
+4. Rebuilds embeddings via Ollama (unless --skip-embeddings)
 5. Skips FTS data (Postgres tsvector trigger populates on insert)
 """
 
@@ -27,6 +28,56 @@ from pathlib import Path
 import aiosqlite
 
 
+async def _rebuild_embeddings(pg, entry_count: int) -> None:
+    """Embed all active entries via Ollama into the Postgres backend."""
+    from personal_kb.db.queries import get_entry
+    from personal_kb.search.embeddings import EmbeddingClient
+
+    embedder = EmbeddingClient(pg)
+    if not await embedder.is_available():
+        print("\n  Ollama is not reachable — skipping embedding rebuild.")
+        print("  Run `kb_maintain rebuild_embeddings (force=True)` later.")
+        await embedder.close()
+        return
+
+    print(f"\nRebuilding embeddings for {entry_count} active entries...")
+
+    cursor = await pg.execute("SELECT id FROM knowledge_entries WHERE is_active = 1 ORDER BY id")
+    rows = await cursor.fetchall()
+
+    succeeded = 0
+    failed = 0
+    for i, row in enumerate(rows, 1):
+        entry_id = row[0]
+        entry = await get_entry(pg, entry_id)
+        if entry is None:
+            failed += 1
+            continue
+        try:
+            embedding = await embedder.embed(entry.embedding_text)
+            if embedding is not None:
+                await pg.vector_store(entry_id, embedding)
+                await pg.commit()
+                await pg.execute(
+                    "UPDATE knowledge_entries SET has_embedding = 1 WHERE id = ?",
+                    (entry_id,),
+                )
+                await pg.commit()
+                succeeded += 1
+            else:
+                failed += 1
+        except Exception as e:
+            failed += 1
+            print(f"    Failed to embed {entry_id}: {e}")
+
+        # Progress every 25 entries
+        if i % 25 == 0 or i == len(rows):
+            print(f"    {i}/{len(rows)} entries processed...")
+
+    await embedder.close()
+    print(f"  Embeddings: {succeeded} succeeded, {failed} failed")
+
+
 async def main() -> int:
     """Run the migration."""
     parser = argparse.ArgumentParser(description="Migrate personal-kb from SQLite to PostgreSQL")
@@ -37,12 +88,22 @@ async def main() -> int:
         help="SQLite database path (default: KB_DB_PATH env or "
         "~/.local/share/personal_kb/knowledge.db)",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Show counts without writing")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show counts without writing",
+    )
+    parser.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="Skip embedding rebuild (do it later via kb_maintain)",
+    )
     args = parser.parse_args()
 
     # Resolve SQLite path
     sqlite_path = args.sqlite or os.environ.get(
-        "KB_DB_PATH", str(Path("~/.local/share/personal_kb/knowledge.db").expanduser())
+        "KB_DB_PATH",
+        str(Path("~/.local/share/personal_kb/knowledge.db").expanduser()),
     )
     if not Path(sqlite_path).exists():
         print(f"Error: SQLite database not found at {sqlite_path}")
@@ -73,11 +134,21 @@ async def main() -> int:
     counts: dict[str, int] = {}
     for table in tables:
         try:
-            cursor = await sqlite.execute(f"SELECT COUNT(*) FROM [{table}]")  # noqa: S608
+            cursor = await sqlite.execute(
+                f"SELECT COUNT(*) FROM [{table}]"  # noqa: S608
+            )
             row = await cursor.fetchone()
             counts[table] = row[0] if row else 0
         except aiosqlite.OperationalError:
             counts[table] = 0
+
+    # Count active entries (for embedding rebuild estimate)
+    try:
+        cursor = await sqlite.execute("SELECT COUNT(*) FROM knowledge_entries WHERE is_active = 1")
+        row = await cursor.fetchone()
+        active_count = row[0] if row else 0
+    except aiosqlite.OperationalError:
+        active_count = 0
 
     print("SQLite database:", sqlite_path)
     print()
@@ -92,7 +163,8 @@ async def main() -> int:
 
     if args.dry_run:
         print(f"\nDry run: {total} total rows would be migrated.")
-        print("Embeddings will need to be rebuilt: kb_maintain rebuild_embeddings (force=True)")
+        if not args.skip_embeddings:
+            print(f"Embeddings: {active_count} active entries would be re-embedded via Ollama.")
         await sqlite.close()
         return 0
 
@@ -120,7 +192,10 @@ async def main() -> int:
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM schema_version")
             for row in rows:
-                await conn.execute("INSERT INTO schema_version (version) VALUES ($1)", row[0])
+                await conn.execute(
+                    "INSERT INTO schema_version (version) VALUES ($1)",
+                    row[0],
+                )
         migrated += len(rows)
         print(f"  schema_version: {len(rows)} rows")
 
@@ -146,7 +221,8 @@ async def main() -> int:
                 placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
                 col_names = ", ".join(cols)
                 await conn.execute(
-                    f"INSERT INTO knowledge_entries ({col_names}) VALUES ({placeholders})"  # noqa: S608
+                    "INSERT INTO knowledge_entries"  # noqa: S608
+                    f" ({col_names}) VALUES ({placeholders})"
                     " ON CONFLICT (id) DO NOTHING",
                     *values,
                 )
@@ -157,7 +233,8 @@ async def main() -> int:
     if counts["entry_versions"] > 0:
         cursor = await sqlite.execute(
             "SELECT entry_id, version_number, knowledge_details, "
-            "change_reason, confidence_level, created_at FROM entry_versions"
+            "change_reason, confidence_level, created_at "
+            "FROM entry_versions"
         )
         rows = await cursor.fetchall()
         async with pool.acquire() as conn:
@@ -187,8 +264,10 @@ async def main() -> int:
         async with pool.acquire() as conn:
             for row in rows:
                 await conn.execute(
-                    "INSERT INTO graph_nodes (node_id, node_type, properties, created_at) "
-                    "VALUES ($1, $2, $3, $4) ON CONFLICT (node_id) DO NOTHING",
+                    "INSERT INTO graph_nodes "
+                    "(node_id, node_type, properties, created_at) "
+                    "VALUES ($1, $2, $3, $4) "
+                    "ON CONFLICT (node_id) DO NOTHING",
                     row[0],
                     row[1],
                     row[2],
@@ -206,7 +285,8 @@ async def main() -> int:
         async with pool.acquire() as conn:
             for row in rows:
                 await conn.execute(
-                    "INSERT INTO graph_edges (source, target, edge_type, properties, created_at) "
+                    "INSERT INTO graph_edges "
+                    "(source, target, edge_type, properties, created_at) "
                     "VALUES ($1, $2, $3, $4, $5) "
                     "ON CONFLICT (source, target, edge_type) DO NOTHING",
                     row[0],
@@ -221,19 +301,22 @@ async def main() -> int:
     # 7. ingested_files
     if counts["ingested_files"] > 0:
         cursor = await sqlite.execute(
-            "SELECT relative_path, content_hash, note_node_id, entry_ids, summary, "
-            "file_size, file_extension, project_ref, redactions, ingested_at, "
-            "updated_at, is_active FROM ingested_files"
+            "SELECT relative_path, content_hash, note_node_id, "
+            "entry_ids, summary, file_size, file_extension, "
+            "project_ref, redactions, ingested_at, updated_at, "
+            "is_active FROM ingested_files"
         )
         rows = await cursor.fetchall()
         async with pool.acquire() as conn:
             for row in rows:
                 await conn.execute(
                     "INSERT INTO ingested_files "
-                    "(relative_path, content_hash, note_node_id, entry_ids, summary, "
-                    "file_size, file_extension, project_ref, redactions, ingested_at, "
+                    "(relative_path, content_hash, note_node_id, "
+                    "entry_ids, summary, file_size, file_extension, "
+                    "project_ref, redactions, ingested_at, "
                     "updated_at, is_active) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, "
+                    "$10, $11, $12) "
                     "ON CONFLICT (relative_path) DO NOTHING",
                     row[0],
                     row[1],
@@ -252,11 +335,16 @@ async def main() -> int:
         print(f"  ingested_files: {len(rows)} rows")
 
     print(f"\nMigrated {migrated} rows total.")
-    print()
-    print("Next steps:")
-    print("  1. Set KB_DATABASE_URL in your MCP config to point to PostgreSQL")
-    print("  2. Rebuild embeddings: kb_maintain rebuild_embeddings (force=True)")
-    print("     (Embeddings are binary blobs in a different format — they can't be copied)")
+
+    # 8. Rebuild embeddings via Ollama
+    if not args.skip_embeddings and active_count > 0:
+        await _rebuild_embeddings(pg, active_count)
+    elif args.skip_embeddings:
+        print(
+            "\nEmbeddings skipped. Rebuild later with: kb_maintain rebuild_embeddings (force=True)"
+        )
+
+    print("\nDone. Set KB_DATABASE_URL in your MCP config to switch.")
 
     await sqlite.close()
     await pool.close()

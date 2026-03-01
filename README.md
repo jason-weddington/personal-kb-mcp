@@ -293,7 +293,7 @@ python scripts/migrate_to_postgres.py postgresql://user:pass@localhost/my_kb
 python scripts/migrate_to_postgres.py postgresql://localhost/my_kb --sqlite /path/to/knowledge.db
 ```
 
-The script copies everything except embeddings (they're stored in a binary format specific to sqlite-vec). You'll rebuild them after switching.
+The script copies all data tables, then rebuilds embeddings via Ollama automatically. If Ollama isn't running, it skips embeddings gracefully — you can rebuild later. Use `--skip-embeddings` to skip intentionally.
 
 ### Switch your MCP config
 
@@ -317,15 +317,15 @@ Update your MCP client config to set `KB_DATABASE_URL`:
 
 When `KB_DATABASE_URL` is set, the server uses PostgreSQL. When it's not set, it uses SQLite (the `KB_DB_PATH` file). You can switch back and forth — both backends are always available.
 
-### Rebuild embeddings
+### If embeddings were skipped
 
-Embeddings can't be copied between backends (sqlite-vec uses packed binary, pgvector uses native arrays). After migrating, rebuild them:
+Embeddings can't be copied between backends (sqlite-vec uses packed binary, pgvector uses native arrays), so the migration script re-embeds via Ollama. If Ollama wasn't running during migration, or you used `--skip-embeddings`, rebuild them manually:
 
 ```
 kb_maintain rebuild_embeddings (force=True)
 ```
 
-This re-embeds every active entry via Ollama, so it needs Ollama running. It's safe to use the KB immediately without embeddings — you just won't get vector search results until the rebuild finishes. FTS and graph search work from the start.
+The KB works immediately without embeddings — you just won't get vector search results until the rebuild finishes. FTS and graph search work from the start.
 
 ### Keeping SQLite as a backup
 
