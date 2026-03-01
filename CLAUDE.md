@@ -23,17 +23,30 @@
 
 ## Search Quality Eval
 
-`tests/eval/` contains a regression framework with a controlled corpus (32 entries, 15 golden queries) and a `ControlledEmbedder` that makes vector search deterministic.
+`tests/eval/` contains a regression framework with a controlled corpus (32 entries, 15 golden queries) and a `ControlledEmbedder` that makes vector search deterministic. Two baselines track quality at different layers:
 
-**Baseline workflow** — when making ranking changes (RRF weights, decay formula, score normalization):
+| Baseline | File | Deterministic? | What it measures |
+|----------|------|---------------|------------------|
+| **Search baseline** | `tests/eval/baseline.json` | Yes (CI-safe) | Raw hybrid search ranking (FTS + vector RRF) |
+| **Agent baseline** | `tests/eval/agent_baseline.json` | No (live LLM) | End-to-end agentic retrieval (search + graph + refinement) |
+
+**Search baseline** (MRR=0.85, NDCG=0.89) — run for any change to ranking, RRF weights, decay, or score normalization:
 
 1. Branch off main
 2. Make your change
-3. `uv run pytest tests/eval/test_baseline.py -s` — regenerates `tests/eval/baseline.json`
+3. `uv run pytest tests/eval/test_baseline.py -s` — regenerates `baseline.json`
 4. `git diff tests/eval/baseline.json` — see what moved
 5. Commit the updated baseline alongside the code change
 
-Current weak spots: q05 (REST auth, MRR=0.33), q06 (CORS, MRR=0.25), q10 (encoding bug, MRR=0.50) — right entries found but ranked too low.
+**Agent baseline** (MRR=1.00, NDCG=1.00) — run for any change to the agent loop, tool dispatch, fast-path threshold, or prompt. Requires `ANTHROPIC_API_KEY`:
+
+1. `uv run pytest tests/eval/test_agent_baseline.py -s` — regenerates `agent_baseline.json`
+2. Check scores AND `turns_used` — regressions may show as more LLM calls even if scores hold
+3. Commit the updated baseline alongside the code change
+
+Agent baseline tests are marked `@pytest.mark.eval` and excluded from the pre-push hook (they hit a live API and rewrite the baseline file). Run them manually.
+
+**Both baselines matter.** Search quality affects the agent's fast-path (8/13 queries skip the LLM entirely). Agent quality catches regressions the search baseline misses — the 3 queries that were weak in search (q05, q06, q10) are all perfect with the agent.
 
 ## Roadmap
 
