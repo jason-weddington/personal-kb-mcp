@@ -6,6 +6,14 @@ import pytest
 
 from personal_kb.llm.bedrock import BedrockLLMClient
 
+_has_sdk = True
+try:
+    import aws_sdk_bedrock_runtime  # noqa: F401
+except ImportError:
+    _has_sdk = False
+
+needs_sdk = pytest.mark.skipif(not _has_sdk, reason="aws-sdk-bedrock-runtime not installed")
+
 
 @pytest.fixture
 def mock_converse_response():
@@ -31,6 +39,7 @@ def mock_bedrock_client(mock_converse_response):
         yield client
 
 
+@needs_sdk
 @pytest.mark.asyncio
 async def test_generate_success(mock_bedrock_client):
     """Successful generate returns text and sets available."""
@@ -40,6 +49,7 @@ async def test_generate_success(mock_bedrock_client):
     assert llm._available is True
 
 
+@needs_sdk
 @pytest.mark.asyncio
 async def test_generate_with_system_prompt(mock_bedrock_client):
     """System prompt is passed through to the Converse API."""
@@ -52,6 +62,7 @@ async def test_generate_with_system_prompt(mock_bedrock_client):
     assert converse_input.system[0].value == "You are helpful"
 
 
+@needs_sdk
 @pytest.mark.asyncio
 async def test_generate_without_system_prompt(mock_bedrock_client):
     """No system field when system is None."""
@@ -136,6 +147,7 @@ async def test_is_available_false_when_sdk_missing():
         assert await llm.is_available() is False
 
 
+@needs_sdk
 @pytest.mark.asyncio
 async def test_generate_passes_newlines_through(mock_bedrock_client):
     """Newlines are passed through directly (smithy-json now handles escaping)."""
