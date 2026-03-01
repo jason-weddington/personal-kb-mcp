@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.18.1 (2026-03-01)
+
+### Bug Fixes
+
+- Exclude eval-marked tests from pre-push hook
+  ([`ae3a4be`](https://github.com/jason-weddington/personal-kb-mcp/commit/ae3a4bee471b246a8f223998bd9359bf4e974627))
+
+### Documentation
+
+- Document agentic query planning
+  ([`4d756e8`](https://github.com/jason-weddington/personal-kb-mcp/commit/4d756e8a0566a749b0e0326efb4191c1a0225d0d))
+
+
 ## v0.18.0 (2026-03-01)
 
 ### Features
