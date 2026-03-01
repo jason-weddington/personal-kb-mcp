@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.18.0 (2026-03-01)
+
+### Features
+
+- Agentic query planning for kb_ask
+  ([`643305c`](https://github.com/jason-weddington/personal-kb-mcp/commit/643305c6f399ebf2455c49435a4f907ee7e2c3c5))
+
+
 ## v0.17.0 (2026-02-28)
 
 ### Features
