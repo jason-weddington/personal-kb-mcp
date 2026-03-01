@@ -91,7 +91,7 @@ def _vec_table_sql(dim: int) -> str:
     return f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vec USING vec0(
     entry_id TEXT PRIMARY KEY,
-    embedding FLOAT[{dim}]
+    embedding FLOAT[{dim}] distance_metric=cosine
 );
 """
 

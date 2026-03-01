@@ -216,11 +216,11 @@ class PostgresBackend:
     async def vector_search(
         self, embedding: list[float], limit: int = 20
     ) -> list[tuple[str, float]]:
-        """KNN search via pgvector L2 distance. Returns (entry_id, distance)."""
+        """KNN search via pgvector cosine distance. Returns (entry_id, distance)."""
         vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT entry_id, embedding <-> $1::vector as distance
+                """SELECT entry_id, embedding <=> $1::vector as distance
                    FROM knowledge_vec
                    ORDER BY distance
                    LIMIT $2""",

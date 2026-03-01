@@ -103,11 +103,20 @@ module = ["scrubadub", "scrubadub.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["personal_kb.llm.bedrock"]
+disallow_subclassing_any = false
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
 module = ["aws_sdk_bedrock_runtime", "aws_sdk_bedrock_runtime.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["smithy_core", "smithy_core.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["smithy_http", "smithy_http.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

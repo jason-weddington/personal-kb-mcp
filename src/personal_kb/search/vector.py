@@ -1,4 +1,4 @@
-"""sqlite-vec KNN vector search."""
+"""KNN vector search via cosine distance."""
 
 import logging
 
@@ -12,7 +12,7 @@ async def vector_search(
     query: str,
     limit: int = 20,
 ) -> list[tuple[str, float]]:
-    """Search using vector similarity via sqlite-vec.
+    """Search using cosine distance.
 
     Returns (entry_id, distance) pairs. Lower distance = better match.
     Returns empty list if embeddings are unavailable.

@@ -89,7 +89,7 @@ class Database(Protocol):
     async def vector_search(
         self, embedding: list[float], limit: int = 20
     ) -> list[tuple[str, float]]:
-        """KNN search. Returns (entry_id, distance)."""
+        """KNN search. Returns (entry_id, cosine distance)."""
         ...
 
     async def vector_delete(self, entry_id: str) -> None:

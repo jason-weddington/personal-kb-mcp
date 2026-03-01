@@ -21,6 +21,9 @@ async def create_connection(
     Dispatches to SQLite or PostgreSQL based on KB_DATABASE_URL.
     For in-memory SQLite databases, pass ":memory:".
     """
+    # Explicit ":memory:" always uses SQLite (used by tests)
+    if db_path == ":memory:":
+        return await _create_sqlite(":memory:", embedding_dim=embedding_dim)
     url = get_database_url()
     if url and url.startswith("postgresql"):
         return await _create_postgres(url, embedding_dim=embedding_dim)

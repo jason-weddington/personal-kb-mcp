@@ -153,7 +153,7 @@ class SQLiteBackend:
     async def vector_search(
         self, embedding: list[float], limit: int = 20
     ) -> list[tuple[str, float]]:
-        """KNN search via sqlite-vec. Returns (entry_id, distance) pairs."""
+        """KNN search via sqlite-vec cosine distance. Returns (entry_id, distance) pairs."""
         blob = _serialize_f32(embedding)
         cursor = await self._conn.execute(
             """SELECT entry_id, distance
