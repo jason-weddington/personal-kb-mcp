@@ -6,24 +6,29 @@ from pathlib import Path
 import aiosqlite
 import sqlite_vec
 
+from personal_kb.config import get_database_url, get_db_path
 from personal_kb.db.backend import Database
-from personal_kb.db.schema import (
-    apply_graph_schema,
-    apply_ingest_schema,
-    apply_schema,
-    apply_vec_schema,
-)
 from personal_kb.db.sqlite_backend import SQLiteBackend
 
 logger = logging.getLogger(__name__)
 
 
-async def create_connection(db_path: Path | str, *, embedding_dim: int = 1024) -> Database:
+async def create_connection(
+    db_path: Path | str | None = None, *, embedding_dim: int = 1024
+) -> Database:
     """Create and initialize a database connection.
 
-    Loads sqlite-vec, applies schema, and enables WAL mode.
-    For in-memory databases, pass ":memory:".
+    Dispatches to SQLite or PostgreSQL based on KB_DATABASE_URL.
+    For in-memory SQLite databases, pass ":memory:".
     """
+    url = get_database_url()
+    if url and url.startswith("postgresql"):
+        return await _create_postgres(url, embedding_dim=embedding_dim)
+    return await _create_sqlite(db_path or get_db_path(), embedding_dim=embedding_dim)
+
+
+async def _create_sqlite(db_path: Path | str, *, embedding_dim: int = 1024) -> Database:
+    """Create a SQLite backend with sqlite-vec and FTS5."""
     db_path = str(db_path)
 
     if db_path != ":memory:":
@@ -46,25 +51,20 @@ async def create_connection(db_path: Path | str, *, embedding_dim: int = 1024) -
 
         await conn._execute(_load_vec)  # type: ignore[no-untyped-call]
         logger.debug("sqlite-vec extension loaded")
-        vec_available = True
     except Exception:
         logger.warning("sqlite-vec extension not available — vector search disabled")
-        vec_available = False
 
-    # Wrap in backend before applying schema
+    # Wrap in backend and apply schema
     db = SQLiteBackend(conn)
+    await db.apply_schema(embedding_dim=embedding_dim)
 
-    # Apply base schema (FTS5 + tables)
-    await apply_schema(db)
+    return db
 
-    # Apply graph schema (nodes + edges)
-    await apply_graph_schema(db)
 
-    # Apply ingest schema (ingested_files)
-    await apply_ingest_schema(db)
+async def _create_postgres(url: str, *, embedding_dim: int = 1024) -> Database:
+    """Create a PostgreSQL backend with pgvector."""
+    from personal_kb.db.postgres_backend import PostgresBackend
 
-    # Apply vec schema if extension loaded
-    if vec_available:
-        await apply_vec_schema(db, dim=embedding_dim)
-
+    db = await PostgresBackend.create(url)
+    await db.apply_schema(embedding_dim=embedding_dim)
     return db

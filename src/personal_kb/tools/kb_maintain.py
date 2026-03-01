@@ -1,7 +1,6 @@
 """kb_maintain MCP tool — database maintenance operations."""
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -334,27 +333,8 @@ async def _action_purge_inactive(
 
 
 async def _action_vacuum(db: Database) -> str:
-    """Optimize database with PRAGMA optimize and VACUUM."""
-    await db.execute("PRAGMA optimize")
-
-    # VACUUM can't run inside a transaction — use executescript which auto-commits
-    await db.executescript("VACUUM;")
-
-    # Report db file size if not in-memory
-    size_info = ""
-    cursor = await db.execute("PRAGMA database_list")
-    db_row = await cursor.fetchone()
-    if db_row and db_row[2]:
-        try:
-            size = os.path.getsize(db_row[2])
-            if size < 1024 * 1024:
-                size_info = f" Database size: {size / 1024:.1f} KB"
-            else:
-                size_info = f" Database size: {size / (1024 * 1024):.1f} MB"
-        except OSError:
-            pass
-
-    return f"Vacuum complete.{size_info}"
+    """Optimize database — delegates to backend-specific implementation."""
+    return await db.vacuum()
 
 
 async def _action_entry_versions(

@@ -1,7 +1,6 @@
 """Ollama embedding client with graceful degradation."""
 
 import logging
-import struct
 
 import httpx
 
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
-    """Generates embeddings via Ollama and stores them in sqlite-vec."""
+    """Generates embeddings via Ollama and stores them in the database."""
 
     def __init__(self, db: Database, http_client: httpx.AsyncClient | None = None):
         """Initialize with a database connection and optional HTTP client."""
@@ -56,31 +55,15 @@ class EmbeddingClient:
             return None
 
     async def store_embedding(self, entry_id: str, embedding: list[float]) -> None:
-        """Store an embedding in the vec0 table."""
-        blob = _serialize_f32(embedding)
-        # Upsert: delete then insert (vec0 doesn't support ON CONFLICT)
-        await self.db.execute("DELETE FROM knowledge_vec WHERE entry_id = ?", (entry_id,))
-        await self.db.execute(
-            "INSERT INTO knowledge_vec (entry_id, embedding) VALUES (?, ?)",
-            (entry_id, blob),
-        )
+        """Store an embedding via the database backend."""
+        await self.db.vector_store(entry_id, embedding)
         await self.db.commit()
 
     async def search_similar(
         self, query_embedding: list[float], limit: int = 20
     ) -> list[tuple[str, float]]:
         """Find similar entries by vector distance. Returns (entry_id, distance) pairs."""
-        blob = _serialize_f32(query_embedding)
-        cursor = await self.db.execute(
-            """SELECT entry_id, distance
-            FROM knowledge_vec
-            WHERE embedding MATCH ?
-            ORDER BY distance
-            LIMIT ?""",
-            (blob, limit),
-        )
-        rows = await cursor.fetchall()
-        return [(row[0], row[1]) for row in rows]
+        return await self.db.vector_search(query_embedding, limit=limit)
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -92,8 +75,3 @@ class EmbeddingClient:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
-
-
-def _serialize_f32(vec: list[float]) -> bytes:
-    """Serialize a list of floats to a compact binary format for sqlite-vec."""
-    return struct.pack(f"{len(vec)}f", *vec)

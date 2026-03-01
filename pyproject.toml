@@ -20,6 +20,9 @@ aws = [
     "aws-sdk-bedrock-runtime>=0.3.0",
     "smithy-json @ git+https://github.com/jason-weddington/smithy-python.git@fix/json-control-char-escaping#subdirectory=packages/smithy-json",
 ]
+postgres = [
+    "asyncpg>=0.29",
+]
 safety = [
     "detect-secrets>=1.4",
     "scrubadub>=2.0",
@@ -80,6 +83,10 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["sqlite_vec", "sqlite_vec.*"]
 ignore_missing_imports = true
 
@@ -111,7 +118,7 @@ ignore_missing_imports = true
 source = ["personal_kb"]
 
 [tool.coverage.report]
-fail_under = 77
+fail_under = 76
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]

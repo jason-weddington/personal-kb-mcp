@@ -478,9 +478,10 @@ class FileIngester:
         """Add an extracted_from edge from an entry to its source note node."""
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
-            """INSERT OR IGNORE INTO graph_edges
+            """INSERT INTO graph_edges
                (source, target, edge_type, properties, created_at)
-               VALUES (?, ?, 'extracted_from', '{}', ?)""",
+               VALUES (?, ?, 'extracted_from', '{}', ?)
+               ON CONFLICT (source, target, edge_type) DO NOTHING""",
             (entry_id, note_node_id, now),
         )
 

@@ -306,11 +306,7 @@ class GraphEnricher:
 
     async def _clear_enrichment_edges(self, entry_id: str) -> None:
         """Remove all LLM-derived edges for a given source entry."""
-        await self._db.execute(
-            "DELETE FROM graph_edges"
-            " WHERE source = ? AND json_extract(properties, '$.source') = 'llm'",
-            (entry_id,),
-        )
+        await self._db.delete_llm_edges(entry_id)
 
     async def _load_vocab_cache(self) -> None:
         """Load graph vocabulary into the instance cache if not already loaded."""
@@ -370,8 +366,9 @@ class GraphEnricher:
 
         # Insert edge with LLM source marker
         cursor = await self._db.execute(
-            """INSERT OR IGNORE INTO graph_edges (source, target, edge_type, properties, created_at)
-               VALUES (?, ?, ?, '{"source": "llm"}', ?)""",
+            """INSERT INTO graph_edges (source, target, edge_type, properties, created_at)
+               VALUES (?, ?, ?, '{"source": "llm"}', ?)
+               ON CONFLICT (source, target, edge_type) DO NOTHING""",
             (entry_id, node_id, rel["relationship"], now),
         )
         return cursor.rowcount

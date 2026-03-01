@@ -195,7 +195,8 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | Variable | Default | Description |
 |---|---|---|
 | **Core** | | |
-| `KB_DB_PATH` | `~/.local/share/personal_kb/knowledge.db` | SQLite database file path |
+| `KB_DATABASE_URL` | _(unset)_ | PostgreSQL URL — when set, uses Postgres instead of SQLite |
+| `KB_DB_PATH` | `~/.local/share/personal_kb/knowledge.db` | SQLite database file path (ignored when `KB_DATABASE_URL` is set) |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `KB_MANAGER` | _(unset)_ | Set to `TRUE` to enable `kb_maintain` and `kb_ingest` tools |
 | `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
@@ -243,4 +244,89 @@ uv run ruff check src/ tests/    # lint
 uv run personal-kb               # run server directly
 ```
 
-For Bedrock support: `uv sync --extra aws`. For secret/PII detection in `kb_ingest`: `uv sync --extra safety`.
+For Bedrock support: `uv sync --extra aws`. For secret/PII detection in `kb_ingest`: `uv sync --extra safety`. For PostgreSQL: `uv sync --extra postgres`.
+
+## So you started with SQLite...
+
+SQLite is the default and it works great — most users will never need to change. But if your KB has grown large, you're running the server on a shared machine, or you just prefer Postgres, switching is straightforward.
+
+### What changes
+
+| | SQLite | PostgreSQL |
+|---|---|---|
+| **Full-text search** | FTS5 with BM25 | tsvector + GIN with ts_rank_cd |
+| **Vector search** | sqlite-vec (vec0) | pgvector |
+| **JSON queries** | `json_extract()` | `->>` operator |
+| **Concurrency** | WAL mode (single-writer) | Full MVCC |
+| **Setup** | Zero — it's a file | Postgres + pgvector extension |
+
+Everything else — entries, graph, versions, ingested files — works identically. The same MCP tools, the same entry format, the same search results.
+
+### Prerequisites
+
+A running PostgreSQL 15+ instance with the [pgvector](https://github.com/pgvector/pgvector) extension:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+And the `asyncpg` optional dependency:
+
+```bash
+# If running from a clone:
+uv sync --extra postgres
+
+# If using uvx, add the extra:
+uvx --from "personal-kb-mcp[postgres]" personal-kb
+```
+
+### Migrate your data
+
+```bash
+# Preview what will be migrated (read-only):
+python scripts/migrate_to_postgres.py postgresql://user:pass@localhost/my_kb --dry-run
+
+# Run the migration:
+python scripts/migrate_to_postgres.py postgresql://user:pass@localhost/my_kb
+
+# If your SQLite DB is in a non-default location:
+python scripts/migrate_to_postgres.py postgresql://localhost/my_kb --sqlite /path/to/knowledge.db
+```
+
+The script copies everything except embeddings (they're stored in a binary format specific to sqlite-vec). You'll rebuild them after switching.
+
+### Switch your MCP config
+
+Update your MCP client config to set `KB_DATABASE_URL`:
+
+```json
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "personal-kb-mcp[postgres]", "personal-kb"],
+      "env": {
+        "KB_DATABASE_URL": "postgresql://user:pass@localhost/my_kb",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+When `KB_DATABASE_URL` is set, the server uses PostgreSQL. When it's not set, it uses SQLite (the `KB_DB_PATH` file). You can switch back and forth — both backends are always available.
+
+### Rebuild embeddings
+
+Embeddings can't be copied between backends (sqlite-vec uses packed binary, pgvector uses native arrays). After migrating, rebuild them:
+
+```
+kb_maintain rebuild_embeddings (force=True)
+```
+
+This re-embeds every active entry via Ollama, so it needs Ollama running. It's safe to use the KB immediately without embeddings — you just won't get vector search results until the rebuild finishes. FTS and graph search work from the start.
+
+### Keeping SQLite as a backup
+
+The migration is additive — it doesn't modify your SQLite database. Your original file at `~/.local/share/personal_kb/knowledge.db` stays intact. To fall back, just remove `KB_DATABASE_URL` from your config.

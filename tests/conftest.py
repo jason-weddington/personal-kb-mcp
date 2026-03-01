@@ -1,7 +1,5 @@
 """Shared test fixtures."""
 
-import struct
-
 import pytest_asyncio
 
 from personal_kb.db.connection import create_connection
@@ -54,28 +52,13 @@ class FakeEmbedder:
         return [v / norm for v in vec]
 
     async def store_embedding(self, entry_id: str, embedding: list[float]) -> None:
-        blob = struct.pack(f"{len(embedding)}f", *embedding)
-        await self.db.execute("DELETE FROM knowledge_vec WHERE entry_id = ?", (entry_id,))
-        await self.db.execute(
-            "INSERT INTO knowledge_vec (entry_id, embedding) VALUES (?, ?)",
-            (entry_id, blob),
-        )
+        await self.db.vector_store(entry_id, embedding)
         await self.db.commit()
 
     async def search_similar(
         self, query_embedding: list[float], limit: int = 20
     ) -> list[tuple[str, float]]:
-        blob = struct.pack(f"{len(query_embedding)}f", *query_embedding)
-        cursor = await self.db.execute(
-            """SELECT entry_id, distance
-            FROM knowledge_vec
-            WHERE embedding MATCH ?
-            ORDER BY distance
-            LIMIT ?""",
-            (blob, limit),
-        )
-        rows = await cursor.fetchall()
-        return [(row[0], row[1]) for row in rows]
+        return await self.db.vector_search(query_embedding, limit=limit)
 
     async def close(self):
         pass

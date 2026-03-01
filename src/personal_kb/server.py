@@ -9,6 +9,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from personal_kb.config import (
+    get_database_url,
     get_db_path,
     get_embedding_dim,
     get_extraction_provider,
@@ -60,9 +61,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     )
     logger = logging.getLogger(__name__)
 
-    db_path = get_db_path()
-    logger.info("Opening database at %s", db_path)
-    db = await create_connection(db_path, embedding_dim=get_embedding_dim())
+    db_url = get_database_url()
+    if db_url:
+        logger.info("Connecting to PostgreSQL database")
+    else:
+        logger.info("Opening SQLite database at %s", get_db_path())
+    db = await create_connection(embedding_dim=get_embedding_dim())
 
     store = KnowledgeStore(db)
     embedder = EmbeddingClient(db)

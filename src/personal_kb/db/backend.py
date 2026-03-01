@@ -69,3 +69,41 @@ class Database(Protocol):
     async def close(self) -> None:
         """Close the database connection."""
         ...
+
+    async def fts_search(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        project_ref: str | None = None,
+        entry_type: str | None = None,
+        tags: list[str] | None = None,
+    ) -> list[tuple[str, float]]:
+        """Full-text search. Returns (entry_id, score) — lower = better."""
+        ...
+
+    async def vector_store(self, entry_id: str, embedding: list[float]) -> None:
+        """Upsert an embedding vector."""
+        ...
+
+    async def vector_search(
+        self, embedding: list[float], limit: int = 20
+    ) -> list[tuple[str, float]]:
+        """KNN search. Returns (entry_id, distance)."""
+        ...
+
+    async def vector_delete(self, entry_id: str) -> None:
+        """Delete embedding for an entry."""
+        ...
+
+    async def delete_llm_edges(self, entry_id: str) -> None:
+        """Delete LLM-enriched graph edges."""
+        ...
+
+    async def vacuum(self) -> str:
+        """Backend-specific optimization. Returns status string."""
+        ...
+
+    async def apply_schema(self, *, embedding_dim: int = 1024) -> None:
+        """Apply all DDL for this backend."""
+        ...

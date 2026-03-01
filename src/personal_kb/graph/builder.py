@@ -117,8 +117,9 @@ class GraphBuilder:
         """Insert an edge, ignoring duplicates."""
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
-            """INSERT OR IGNORE INTO graph_edges (source, target, edge_type, properties, created_at)
-               VALUES (?, ?, ?, '{}', ?)""",
+            """INSERT INTO graph_edges (source, target, edge_type, properties, created_at)
+               VALUES (?, ?, ?, '{}', ?)
+               ON CONFLICT (source, target, edge_type) DO NOTHING""",
             (source, target, edge_type, now),
         )
 

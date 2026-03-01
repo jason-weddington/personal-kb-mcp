@@ -150,7 +150,7 @@ async def reactivate_entry_db(db: Database, entry_id: str) -> None:
 
 async def delete_entry_cascade(db: Database, entry_id: str) -> None:
     """Hard-delete an entry and all related data."""
-    await db.execute("DELETE FROM knowledge_vec WHERE entry_id = ?", (entry_id,))
+    await db.vector_delete(entry_id)
     await db.execute("DELETE FROM entry_versions WHERE entry_id = ?", (entry_id,))
     await db.execute("DELETE FROM graph_edges WHERE source = ? OR target = ?", (entry_id, entry_id))
     await db.execute("DELETE FROM graph_nodes WHERE node_id = ?", (entry_id,))
