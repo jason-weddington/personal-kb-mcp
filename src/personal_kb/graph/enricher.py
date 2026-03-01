@@ -5,8 +5,7 @@ import logging
 import re
 from difflib import SequenceMatcher
 
-import aiosqlite
-
+from personal_kb.db.backend import Database
 from personal_kb.graph.queries import get_graph_vocabulary
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import KnowledgeEntry
@@ -96,7 +95,7 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 class GraphEnricher:
     """Uses an LLM to extract entity relationships and add them as graph edges."""
 
-    def __init__(self, db: aiosqlite.Connection, llm: LLMProvider) -> None:
+    def __init__(self, db: Database, llm: LLMProvider) -> None:
         """Initialize with a database connection and LLM provider."""
         self._db = db
         self._llm = llm

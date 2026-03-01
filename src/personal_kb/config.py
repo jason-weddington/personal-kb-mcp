@@ -85,6 +85,16 @@ def get_bedrock_timeout() -> float:
     return float(os.environ.get("KB_BEDROCK_TIMEOUT", "30.0"))
 
 
+def get_database_url() -> str | None:
+    """Return database URL if set, None for SQLite file-based.
+
+    Not used yet — reserved for Phase 2 (PostgreSQL backend).
+    When set to a ``postgresql://`` URL, the server will create a
+    PostgresBackend instead of SQLiteBackend.
+    """
+    return os.environ.get("KB_DATABASE_URL")
+
+
 def get_ingest_max_file_size() -> int:
     """Return max file size in bytes for ingestion from KB_INGEST_MAX_FILE_SIZE."""
     return int(os.environ.get("KB_INGEST_MAX_FILE_SIZE", str(500 * 1024)))

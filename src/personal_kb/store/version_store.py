@@ -2,15 +2,14 @@
 
 from datetime import datetime
 
-import aiosqlite
-
+from personal_kb.db.backend import Database
 from personal_kb.models.version import EntryVersion
 
 
 class VersionStore:
     """Read access to entry version history."""
 
-    def __init__(self, db: aiosqlite.Connection):
+    def __init__(self, db: Database):
         """Initialize with a database connection."""
         self.db = db
 

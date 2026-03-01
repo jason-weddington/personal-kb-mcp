@@ -3,9 +3,8 @@
 import logging
 from datetime import UTC, datetime
 
-import aiosqlite
-
 from personal_kb.confidence.decay import compute_effective_confidence, staleness_warning
+from personal_kb.db.backend import Database
 from personal_kb.db.queries import get_entry
 from personal_kb.models.search import SearchQuery, SearchResult
 from personal_kb.search.embeddings import EmbeddingClient
@@ -19,7 +18,7 @@ RRF_K = 60
 
 
 async def hybrid_search(
-    db: aiosqlite.Connection,
+    db: Database,
     embedder: EmbeddingClient | None,
     query: SearchQuery,
 ) -> list[SearchResult]:

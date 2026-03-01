@@ -1,6 +1,6 @@
 """DDL and migrations for the knowledge database."""
 
-import aiosqlite
+from personal_kb.db.backend import Database
 
 SCHEMA_VERSION = 1
 
@@ -102,7 +102,7 @@ SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM entry_id_seq);
 """
 
 
-async def apply_schema(db: aiosqlite.Connection) -> None:
+async def apply_schema(db: Database) -> None:
     """Apply the database schema."""
     await db.executescript(SCHEMA_SQL)
     await db.execute(INIT_SEQ_SQL)
@@ -119,7 +119,7 @@ async def apply_schema(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
-async def apply_vec_schema(db: aiosqlite.Connection, dim: int = 1024) -> None:
+async def apply_vec_schema(db: Database, dim: int = 1024) -> None:
     """Create the vec0 virtual table. Requires sqlite-vec extension loaded."""
     await db.executescript(_vec_table_sql(dim))
     await db.commit()
@@ -149,7 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_type ON graph_edges(edge_type);
 """
 
 
-async def apply_graph_schema(db: aiosqlite.Connection) -> None:
+async def apply_graph_schema(db: Database) -> None:
     """Create graph_nodes and graph_edges tables."""
     await db.executescript(GRAPH_SCHEMA_SQL)
     await db.commit()
@@ -174,13 +174,13 @@ CREATE TABLE IF NOT EXISTS ingested_files (
 """
 
 
-async def apply_ingest_schema(db: aiosqlite.Connection) -> None:
+async def apply_ingest_schema(db: Database) -> None:
     """Create ingested_files table."""
     await db.executescript(INGEST_SCHEMA_SQL)
     await db.commit()
 
 
-async def _migrate_add_last_accessed(db: aiosqlite.Connection) -> None:
+async def _migrate_add_last_accessed(db: Database) -> None:
     """Add last_accessed column to knowledge_entries if it doesn't exist."""
     cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
     columns = {row[1] for row in await cursor.fetchall()}

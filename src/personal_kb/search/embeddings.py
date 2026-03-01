@@ -3,10 +3,10 @@
 import logging
 import struct
 
-import aiosqlite
 import httpx
 
 from personal_kb.config import get_embedding_model, get_ollama_timeout, get_ollama_url
+from personal_kb.db.backend import Database
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class EmbeddingClient:
     """Generates embeddings via Ollama and stores them in sqlite-vec."""
 
-    def __init__(self, db: aiosqlite.Connection, http_client: httpx.AsyncClient | None = None):
+    def __init__(self, db: Database, http_client: httpx.AsyncClient | None = None):
         """Initialize with a database connection and optional HTTP client."""
         self.db = db
         self._http = http_client

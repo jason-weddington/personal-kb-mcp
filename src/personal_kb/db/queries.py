@@ -4,13 +4,12 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-import aiosqlite
-
+from personal_kb.db.backend import Database, Row
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.models.version import EntryVersion
 
 
-async def next_entry_id(db: aiosqlite.Connection) -> str:
+async def next_entry_id(db: Database) -> str:
     """Get and increment the next entry ID."""
     cursor = await db.execute("SELECT next_id FROM entry_id_seq")
     row = await cursor.fetchone()
@@ -21,7 +20,7 @@ async def next_entry_id(db: aiosqlite.Connection) -> str:
     return f"kb-{next_id:05d}"
 
 
-def row_to_entry(row: aiosqlite.Row) -> KnowledgeEntry:
+def row_to_entry(row: Row) -> KnowledgeEntry:
     """Convert a database row to a KnowledgeEntry."""
     col_names = row.keys()
     last_accessed_raw = row["last_accessed"] if "last_accessed" in col_names else None
@@ -46,7 +45,7 @@ def row_to_entry(row: aiosqlite.Row) -> KnowledgeEntry:
     )
 
 
-async def insert_entry(db: aiosqlite.Connection, entry: KnowledgeEntry) -> None:
+async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
     """Insert a new knowledge entry. FTS is auto-synced via triggers."""
     tags_text = " ".join(entry.tags)
     await db.execute(
@@ -77,7 +76,7 @@ async def insert_entry(db: aiosqlite.Connection, entry: KnowledgeEntry) -> None:
     await db.commit()
 
 
-async def update_entry(db: aiosqlite.Connection, entry: KnowledgeEntry) -> None:
+async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
     """Update an existing knowledge entry. FTS is auto-synced via triggers."""
     tags_text = " ".join(entry.tags)
     await db.execute(
@@ -107,14 +106,14 @@ async def update_entry(db: aiosqlite.Connection, entry: KnowledgeEntry) -> None:
     await db.commit()
 
 
-async def get_entry(db: aiosqlite.Connection, entry_id: str) -> KnowledgeEntry | None:
+async def get_entry(db: Database, entry_id: str) -> KnowledgeEntry | None:
     """Get a single entry by ID."""
     cursor = await db.execute("SELECT * FROM knowledge_entries WHERE id = ?", (entry_id,))
     row = await cursor.fetchone()
     return row_to_entry(row) if row else None
 
 
-async def insert_version(db: aiosqlite.Connection, version: EntryVersion) -> None:
+async def insert_version(db: Database, version: EntryVersion) -> None:
     """Insert an entry version record."""
     await db.execute(
         """INSERT INTO entry_versions (entry_id, version_number, knowledge_details,
@@ -131,7 +130,7 @@ async def insert_version(db: aiosqlite.Connection, version: EntryVersion) -> Non
     await db.commit()
 
 
-async def deactivate_entry_db(db: aiosqlite.Connection, entry_id: str) -> None:
+async def deactivate_entry_db(db: Database, entry_id: str) -> None:
     """Set is_active=0 and update timestamp."""
     await db.execute(
         "UPDATE knowledge_entries SET is_active = 0, updated_at = ? WHERE id = ?",
@@ -140,7 +139,7 @@ async def deactivate_entry_db(db: aiosqlite.Connection, entry_id: str) -> None:
     await db.commit()
 
 
-async def reactivate_entry_db(db: aiosqlite.Connection, entry_id: str) -> None:
+async def reactivate_entry_db(db: Database, entry_id: str) -> None:
     """Set is_active=1 and update timestamp."""
     await db.execute(
         "UPDATE knowledge_entries SET is_active = 1, updated_at = ? WHERE id = ?",
@@ -149,7 +148,7 @@ async def reactivate_entry_db(db: aiosqlite.Connection, entry_id: str) -> None:
     await db.commit()
 
 
-async def delete_entry_cascade(db: aiosqlite.Connection, entry_id: str) -> None:
+async def delete_entry_cascade(db: Database, entry_id: str) -> None:
     """Hard-delete an entry and all related data."""
     await db.execute("DELETE FROM knowledge_vec WHERE entry_id = ?", (entry_id,))
     await db.execute("DELETE FROM entry_versions WHERE entry_id = ?", (entry_id,))
@@ -159,7 +158,7 @@ async def delete_entry_cascade(db: aiosqlite.Connection, entry_id: str) -> None:
     await db.commit()
 
 
-async def touch_accessed(db: aiosqlite.Connection, entry_ids: list[str]) -> None:
+async def touch_accessed(db: Database, entry_ids: list[str]) -> None:
     """Batch-update last_accessed to now for the given entry IDs."""
     if not entry_ids:
         return
@@ -174,14 +173,14 @@ async def touch_accessed(db: aiosqlite.Connection, entry_ids: list[str]) -> None
     await db.commit()
 
 
-async def get_all_active_entry_ids(db: aiosqlite.Connection) -> list[str]:
+async def get_all_active_entry_ids(db: Database) -> list[str]:
     """Get all active entry IDs."""
     cursor = await db.execute("SELECT id FROM knowledge_entries WHERE is_active = 1 ORDER BY id")
     rows = await cursor.fetchall()
     return [row["id"] for row in rows]
 
 
-async def get_db_stats(db: aiosqlite.Connection) -> dict[str, Any]:
+async def get_db_stats(db: Database) -> dict[str, Any]:
     """Return database statistics: entry counts, graph counts, embedding counts."""
     stats: dict[str, Any] = {}
 

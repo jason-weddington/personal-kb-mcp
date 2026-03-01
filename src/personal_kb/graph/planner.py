@@ -5,8 +5,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-import aiosqlite
-
+from personal_kb.db.backend import Database
 from personal_kb.db.queries import get_db_stats
 from personal_kb.graph.queries import get_graph_vocabulary
 from personal_kb.llm.provider import LLMProvider
@@ -75,7 +74,7 @@ class QueryPlan:
 class QueryPlanner:
     """Translates natural language questions into structured query plans."""
 
-    def __init__(self, db: aiosqlite.Connection, llm: LLMProvider) -> None:
+    def __init__(self, db: Database, llm: LLMProvider) -> None:
         """Initialize with database and LLM provider."""
         self._db = db
         self._llm = llm

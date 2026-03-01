@@ -2,13 +2,13 @@
 
 import logging
 
-import aiosqlite
+from personal_kb.db.backend import Database
 
 logger = logging.getLogger(__name__)
 
 
 async def fts_search(
-    db: aiosqlite.Connection,
+    db: Database,
     query: str,
     limit: int = 20,
     project_ref: str | None = None,

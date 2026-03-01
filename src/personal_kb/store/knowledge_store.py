@@ -3,8 +3,7 @@
 import logging
 from datetime import UTC, datetime
 
-import aiosqlite
-
+from personal_kb.db.backend import Database
 from personal_kb.db.queries import (
     deactivate_entry_db,
     get_entry,
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeStore:
     """CRUD operations for knowledge entries with versioning."""
 
-    def __init__(self, db: aiosqlite.Connection):
+    def __init__(self, db: Database):
         """Initialize with a database connection."""
         self.db = db
 

@@ -3,11 +3,11 @@
 import logging
 from typing import Annotated
 
-import aiosqlite
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
+from personal_kb.db.backend import Database
 from personal_kb.models.entry import EntryType
 from personal_kb.models.search import SearchQuery, SearchResult
 from personal_kb.tools.formatters import format_entry_compact, format_graph_hint, format_result_list
@@ -19,7 +19,7 @@ _MAX_HINTS = 3
 
 
 async def collect_graph_hints(
-    db: aiosqlite.Connection,
+    db: Database,
     results: list[SearchResult],
     max_hints: int = _MAX_HINTS,
 ) -> list[str]:

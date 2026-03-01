@@ -5,11 +5,11 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-import aiosqlite
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
+from personal_kb.db.backend import Database
 from personal_kb.db.queries import (
     delete_entry_cascade,
     get_all_active_entry_ids,
@@ -89,7 +89,7 @@ def register_kb_maintain(mcp: FastMCP) -> None:
             return f"Unknown action '{action}'. Use: {', '.join(sorted(_ACTIONS))}"
 
         lifespan = ctx.lifespan_context
-        db: aiosqlite.Connection = lifespan["db"]
+        db: Database = lifespan["db"]
         store: KnowledgeStore = lifespan["store"]
         embedder: EmbeddingClient = lifespan["embedder"]
         graph_builder: GraphBuilder = lifespan["graph_builder"]
@@ -115,7 +115,7 @@ def register_kb_maintain(mcp: FastMCP) -> None:
         return "Action not implemented."
 
 
-async def _action_stats(db: aiosqlite.Connection) -> str:
+async def _action_stats(db: Database) -> str:
     """Database overview with counts."""
     stats = await get_db_stats(db)
 
@@ -159,7 +159,7 @@ async def _action_stats(db: aiosqlite.Connection) -> str:
 
 
 async def _action_deactivate(
-    db: aiosqlite.Connection,
+    db: Database,
     store: KnowledgeStore,
     entry_id: str | None,
 ) -> str:
@@ -180,7 +180,7 @@ async def _action_deactivate(
 
 
 async def _action_reactivate(
-    db: aiosqlite.Connection,
+    db: Database,
     store: KnowledgeStore,
     graph_builder: GraphBuilder,
     graph_enricher: GraphEnricher | None,
@@ -212,7 +212,7 @@ async def _action_reactivate(
 
 
 async def _action_rebuild_embeddings(
-    db: aiosqlite.Connection,
+    db: Database,
     store: KnowledgeStore,
     embedder: EmbeddingClient,
     force: bool,
@@ -257,7 +257,7 @@ async def _action_rebuild_embeddings(
 
 
 async def _action_rebuild_graph(
-    db: aiosqlite.Connection,
+    db: Database,
     graph_builder: GraphBuilder,
     graph_enricher: GraphEnricher | None,
 ) -> str:
@@ -307,7 +307,7 @@ async def _action_rebuild_graph(
 
 
 async def _action_purge_inactive(
-    db: aiosqlite.Connection,
+    db: Database,
     days_inactive: int,
     confirm: bool,
 ) -> str:
@@ -333,7 +333,7 @@ async def _action_purge_inactive(
     return f"Purged {len(entry_ids)} inactive entries (older than {days_inactive} days)."
 
 
-async def _action_vacuum(db: aiosqlite.Connection) -> str:
+async def _action_vacuum(db: Database) -> str:
     """Optimize database with PRAGMA optimize and VACUUM."""
     await db.execute("PRAGMA optimize")
 
@@ -358,7 +358,7 @@ async def _action_vacuum(db: aiosqlite.Connection) -> str:
 
 
 async def _action_entry_versions(
-    db: aiosqlite.Connection,
+    db: Database,
     entry_id: str | None,
 ) -> str:
     """Show version history for an entry."""

@@ -7,9 +7,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-import aiosqlite
-
 from personal_kb.config import get_ingest_max_file_size
+from personal_kb.db.backend import Database
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.ingest.extractor import ExtractedEntry, extract_entries, summarize_file
@@ -125,7 +124,7 @@ class FileIngester:
 
     def __init__(
         self,
-        db: aiosqlite.Connection,
+        db: Database,
         store: KnowledgeStore,
         embedder: EmbeddingClient,
         graph_builder: GraphBuilder,

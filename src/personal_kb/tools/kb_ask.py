@@ -4,12 +4,12 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
-import aiosqlite
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence, staleness_warning
+from personal_kb.db.backend import Database
 from personal_kb.db.queries import get_entry
 from personal_kb.graph.planner import QueryPlanner
 from personal_kb.graph.queries import (
@@ -104,7 +104,7 @@ def register_kb_ask(mcp: FastMCP) -> None:
 
 
 async def _strategy_auto_with_planner(
-    db: aiosqlite.Connection,
+    db: Database,
     embedder: EmbeddingClient | None,
     query_llm: object | None,
     question: str,
@@ -160,7 +160,7 @@ async def _strategy_auto_with_planner(
 
 
 async def _strategy_auto(
-    db: aiosqlite.Connection,
+    db: Database,
     embedder: EmbeddingClient | None,
     question: str,
     scope: str | None,
@@ -218,7 +218,7 @@ async def _strategy_auto(
 
 
 async def _strategy_decision_trace(
-    db: aiosqlite.Connection,
+    db: Database,
     question: str,
     scope: str | None,
     limit: int,
@@ -277,7 +277,7 @@ async def _strategy_decision_trace(
 
 
 async def _strategy_timeline(
-    db: aiosqlite.Connection,
+    db: Database,
     scope: str | None,
     limit: int,
 ) -> str:
@@ -304,7 +304,7 @@ async def _strategy_timeline(
 
 
 async def _strategy_related(
-    db: aiosqlite.Connection,
+    db: Database,
     scope: str | None,
     limit: int,
 ) -> str:
@@ -338,7 +338,7 @@ async def _strategy_related(
 
 
 async def _strategy_connection(
-    db: aiosqlite.Connection,
+    db: Database,
     scope: str | None,
     target: str | None,
 ) -> str:

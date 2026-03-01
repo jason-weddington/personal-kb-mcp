@@ -4,8 +4,7 @@ import logging
 import re
 from collections import deque
 
-import aiosqlite
-
+from personal_kb.db.backend import Database
 from personal_kb.models.entry import EntryType
 
 logger = logging.getLogger(__name__)
@@ -15,7 +14,7 @@ _ENTRY_TYPES = {t.value for t in EntryType}
 
 
 async def get_neighbors(
-    db: aiosqlite.Connection,
+    db: Database,
     node_id: str,
     edge_types: list[str] | None = None,
     direction: str = "both",
@@ -61,7 +60,7 @@ async def get_neighbors(
 
 
 async def bfs_entries(
-    db: aiosqlite.Connection,
+    db: Database,
     start_node: str,
     max_depth: int = 2,
     edge_types: list[str] | None = None,
@@ -99,7 +98,7 @@ async def bfs_entries(
 
 
 async def find_path(
-    db: aiosqlite.Connection,
+    db: Database,
     source: str,
     target: str,
     max_depth: int = 4,
@@ -171,7 +170,7 @@ def _parse_scope(scope: str) -> tuple[str, str]:
 
 
 async def entries_for_scope(
-    db: aiosqlite.Connection,
+    db: Database,
     scope: str,
     entry_type: str | None = None,
     order_by: str = "created_at",
@@ -236,7 +235,7 @@ async def entries_for_scope(
 
 
 async def supersedes_chain(
-    db: aiosqlite.Connection,
+    db: Database,
     entry_id: str,
 ) -> list[str]:
     """Build the full supersedes chain containing entry_id, oldest first.
@@ -284,7 +283,7 @@ async def supersedes_chain(
 
 
 async def get_graph_vocabulary(
-    db: aiosqlite.Connection,
+    db: Database,
     max_nodes: int = 200,
 ) -> dict[str, list[str]]:
     """Return non-entry node IDs grouped by type, ordered by connection count.
@@ -318,7 +317,7 @@ async def get_graph_vocabulary(
 
 
 async def _sort_entries(
-    db: aiosqlite.Connection,
+    db: Database,
     entry_ids: list[str],
     entry_type: str | None = None,
     order_by: str = "created_at",

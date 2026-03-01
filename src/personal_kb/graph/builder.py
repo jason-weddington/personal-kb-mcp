@@ -6,8 +6,7 @@ import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
-import aiosqlite
-
+from personal_kb.db.backend import Database
 from personal_kb.models.entry import KnowledgeEntry
 
 logger = logging.getLogger(__name__)
@@ -18,7 +17,7 @@ _KB_ID_RE = re.compile(r"kb-\d{5}")
 class GraphBuilder:
     """Deterministic graph builder that derives nodes and edges from entry data."""
 
-    def __init__(self, db: aiosqlite.Connection) -> None:
+    def __init__(self, db: Database) -> None:
         """Initialize with an aiosqlite connection."""
         self._db = db
 
