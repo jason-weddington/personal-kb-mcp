@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.19.0 (2026-03-01)
+
+### Documentation
+
+- Expand eval section in CLAUDE.md with agent baseline workflow
+  ([`9fae8c6`](https://github.com/jason-weddington/personal-kb-mcp/commit/9fae8c6032a60aa898fcd1aa70fd13ceb221c4e2))
+
+### Features
+
+- Agentic ingestion with chunking and KB-aware dedup
+  ([`f2ab5a6`](https://github.com/jason-weddington/personal-kb-mcp/commit/f2ab5a66825de52a5874a20333645a5f0a79c330))
+
+
 ## v0.18.1 (2026-03-01)
 
 ### Bug Fixes
