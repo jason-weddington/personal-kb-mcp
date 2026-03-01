@@ -1,0 +1,100 @@
+{
+  "aggregate": {
+    "mean_mrr": 0.8526,
+    "mean_recall_at_k": 1.0,
+    "mean_ndcg_at_k": 0.8894
+  },
+  "per_query": {
+    "q01-sqlite-async": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q02-fts5-search": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q03-wal-mode": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q04-fastapi-vs-flask": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q05-rest-auth": {
+      "mrr": 0.3333,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.5,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q06-cors-setup": {
+      "mrr": 0.25,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.4307,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q07-docker-setup": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q08-ci-pipeline": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q09-race-condition": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q10-encoding-bug": {
+      "mrr": 0.5,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.6309,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q11-project-filter": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q12-project-web": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q13-sparse-security": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    }
+  }
+}
