@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.16.0 (2026-02-28)
+
+### Features
+
+- Switch vector search from L2 to cosine distance
+  ([`51fb9ec`](https://github.com/jason-weddington/personal-kb-mcp/commit/51fb9ec80b952143ee90312308ab2c99fa87e899))
+
+
 ## v0.15.1 (2026-02-28)
 
 ### Bug Fixes
