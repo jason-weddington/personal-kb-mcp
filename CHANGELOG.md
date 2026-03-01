@@ -2,6 +2,30 @@
 
 <!-- version list -->
 
+## v0.15.0 (2026-02-28)
+
+### Documentation
+
+- Add eval baseline workflow to CLAUDE.md
+  ([`961ce29`](https://github.com/jason-weddington/personal-kb-mcp/commit/961ce298dda3b93cf3e4e60cf45c76e2fdffc1c0))
+
+- Update roadmap — eval framework and graph quality shipped
+  ([`9225b38`](https://github.com/jason-weddington/personal-kb-mcp/commit/9225b38a611a50591688760127d5868c03f85b89))
+
+- Update roadmap — graph ranking rejected, storage portability promoted
+  ([`034f879`](https://github.com/jason-weddington/personal-kb-mcp/commit/034f87902c0be2c0f79948e1ab8d43938495d018))
+
+### Features
+
+- Add PostgreSQL backend with asyncpg and pgvector
+  ([`a2422ac`](https://github.com/jason-weddington/personal-kb-mcp/commit/a2422ace01dcbae613625c0862d00ae31f8f5b15))
+
+### Refactoring
+
+- Introduce Database protocol and SQLiteBackend abstraction
+  ([`2c99ce9`](https://github.com/jason-weddington/personal-kb-mcp/commit/2c99ce9a951019deed869280b8b9d0b915f86e69))
+
+
 ## v0.14.0 (2026-02-28)
 
 ### Features
