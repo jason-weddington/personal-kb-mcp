@@ -48,7 +48,7 @@ repos:
 
       - id: coverage
         name: coverage
-        entry: uv run --frozen pytest --cov --cov-report=term-missing
+        entry: uv run --frozen pytest -m "not eval" --cov --cov-report=term-missing
         language: system
         pass_filenames: false
         always_run: true
