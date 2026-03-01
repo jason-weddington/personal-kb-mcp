@@ -6,17 +6,22 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from personal_kb.config import get_ingest_max_file_size
 from personal_kb.db.backend import Database
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.ingest.chunker import chunk_content
 from personal_kb.ingest.extractor import ExtractedEntry, extract_entries, summarize_file
 from personal_kb.ingest.safety import SafetyResult, run_safety_pipeline
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
+
+if TYPE_CHECKING:
+    from personal_kb.ingest.dedup_agent import DedupAgent
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +108,8 @@ class FileResult:
     entry_count: int = 0
     entry_ids: list[str] = field(default_factory=list)
     summary: str | None = None
+    chunks_processed: int = 0
+    chunks_skipped: int = 0
 
 
 @dataclass
@@ -130,6 +137,7 @@ class FileIngester:
         graph_builder: GraphBuilder,
         graph_enricher: GraphEnricher | None,
         llm: LLMProvider,
+        dedup_agent: "DedupAgent | None" = None,
     ) -> None:
         """Initialize with all required dependencies."""
         self._db = db
@@ -138,6 +146,7 @@ class FileIngester:
         self._graph_builder = graph_builder
         self._graph_enricher = graph_enricher
         self._llm = llm
+        self._dedup_agent = dedup_agent
 
     async def ingest_file(
         self,
@@ -230,19 +239,32 @@ class FileIngester:
         if dry_run:
             # Still run LLM calls for preview
             summary = await summarize_file(self._llm, rel_path, content)
-            entries = await extract_entries(self._llm, rel_path, content)
+            chunks = chunk_content(content)
+            dry_entries: list[ExtractedEntry] = []
+            dry_prev: list[str] = []
+            for chunk in chunks:
+                entries = await extract_entries(
+                    self._llm,
+                    rel_path,
+                    chunk.text,
+                    previously_extracted=dry_prev or None,
+                    chunk_heading=chunk.heading,
+                )
+                dry_entries.extend(entries)
+                dry_prev.extend(e.short_title for e in entries)
             return FileResult(
                 path=rel_path,
                 action="dry_run",
-                entry_count=len(entries),
+                entry_count=len(dry_entries),
                 summary=summary,
+                chunks_processed=len(chunks),
             )
 
         # Handle re-ingestion: deactivate old entries
         if existing:
             await self._deactivate_old_entries(existing)
 
-        # 6. Summarize
+        # 7. Summarize
         summary = await summarize_file(self._llm, rel_path, content)
         if summary is None:
             return FileResult(
@@ -251,12 +273,41 @@ class FileIngester:
                 reason="LLM unavailable for summarization",
             )
 
-        # 7. Extract entries
-        extracted = await extract_entries(self._llm, rel_path, content)
+        # 8. Chunk content
+        chunks = chunk_content(content)
 
-        # 8. Store entries through the full pipeline
+        # 9. Extract entries per chunk with running context
+        all_extracted: list[ExtractedEntry] = []
+        previously_extracted: list[str] = []
+        chunks_skipped = 0
+        for chunk in chunks:
+            # Dedup check (if agent provided)
+            if self._dedup_agent:
+                dedup_result = await self._dedup_agent.check_chunk(chunk, previously_extracted)
+                if dedup_result.action == "skip":
+                    chunks_skipped += 1
+                    continue
+                # "partial" → inject existing_titles into context
+                if dedup_result.action == "partial":
+                    combined_context = previously_extracted + dedup_result.existing_titles
+                else:
+                    combined_context = previously_extracted
+            else:
+                combined_context = previously_extracted
+
+            extracted = await extract_entries(
+                self._llm,
+                rel_path,
+                chunk.text,
+                previously_extracted=combined_context or None,
+                chunk_heading=chunk.heading,
+            )
+            all_extracted.extend(extracted)
+            previously_extracted.extend(e.short_title for e in extracted)
+
+        # 10. Store entries through the full pipeline
         entry_ids: list[str] = []
-        for ext_entry in extracted:
+        for ext_entry in all_extracted:
             entry = await self._store_extracted_entry(ext_entry, project_ref, rel_path)
             if entry:
                 entry_ids.append(entry.id)
@@ -318,6 +369,8 @@ class FileIngester:
             entry_count=len(entry_ids),
             entry_ids=entry_ids,
             summary=summary,
+            chunks_processed=len(chunks) - chunks_skipped,
+            chunks_skipped=chunks_skipped,
         )
 
     async def ingest_directory(

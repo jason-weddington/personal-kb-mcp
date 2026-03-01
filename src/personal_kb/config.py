@@ -97,7 +97,27 @@ def get_database_url() -> str | None:
 
 def get_ingest_max_file_size() -> int:
     """Return max file size in bytes for ingestion from KB_INGEST_MAX_FILE_SIZE."""
-    return int(os.environ.get("KB_INGEST_MAX_FILE_SIZE", str(500 * 1024)))
+    return int(os.environ.get("KB_INGEST_MAX_FILE_SIZE", str(5 * 1024 * 1024)))
+
+
+def get_ingest_chunk_size() -> int:
+    """Return chunk size in chars for ingestion from KB_INGEST_CHUNK_SIZE."""
+    return int(os.environ.get("KB_INGEST_CHUNK_SIZE", "16000"))
+
+
+def get_ingest_chunk_overlap() -> int:
+    """Return chunk overlap in chars for ingestion from KB_INGEST_CHUNK_OVERLAP."""
+    return int(os.environ.get("KB_INGEST_CHUNK_OVERLAP", "600"))
+
+
+def is_agentic_ingest() -> bool:
+    """Return True if agentic ingestion dedup is enabled (default: TRUE)."""
+    return os.environ.get("KB_AGENTIC_INGEST", "TRUE").upper() == "TRUE"
+
+
+def get_ingest_dedup_threshold() -> float:
+    """Return the hybrid search score threshold for dedup from KB_INGEST_DEDUP_THRESHOLD."""
+    return float(os.environ.get("KB_INGEST_DEDUP_THRESHOLD", "0.06"))
 
 
 def is_agentic_query() -> bool:

@@ -52,7 +52,12 @@ def _format_file_result(r: FileResult) -> str:
         line += f" — {r.reason}"
     if r.entry_count > 0:
         line += f" ({r.entry_count} entries)"
-    if r.entry_ids:
+    if r.chunks_processed > 1 or r.chunks_skipped > 0:
+        chunk_info = f"{r.chunks_processed} chunks"
+        if r.chunks_skipped > 0:
+            chunk_info += f", {r.chunks_skipped} skipped"
+        line += f" [{chunk_info}]"
+    elif r.entry_ids:
         line += f" [{', '.join(r.entry_ids)}]"
     return line
 
@@ -138,6 +143,16 @@ def register_kb_ingest(mcp: FastMCP) -> None:
         if query_llm is None:
             return "Error: No LLM available for ingestion. Configure an LLM provider."
 
+        # Construct dedup agent if agentic ingest is enabled
+        dedup_agent = None
+        if not dry_run:
+            from personal_kb.config import is_agentic_ingest
+
+            if is_agentic_ingest():
+                from personal_kb.ingest.dedup_agent import DedupAgent
+
+                dedup_agent = DedupAgent(db=db, embedder=embedder, llm=query_llm)
+
         ingester = FileIngester(
             db=db,
             store=store,
@@ -145,6 +160,7 @@ def register_kb_ingest(mcp: FastMCP) -> None:
             graph_builder=graph_builder,
             graph_enricher=graph_enricher,
             llm=query_llm,
+            dedup_agent=dedup_agent,
         )
 
         # Glob pattern: expand and ingest each matched file

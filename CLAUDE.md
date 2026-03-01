@@ -87,7 +87,11 @@ Format: `type(optional-scope): description`
 | `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning/synthesis (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_MANAGER` | (unset) | Set `TRUE` for maintenance + ingestion tools |
-| `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
+| `KB_INGEST_MAX_FILE_SIZE` | `5242880` | Max file size in bytes for ingestion (5MB) |
+| `KB_INGEST_CHUNK_SIZE` | `16000` | Chunk size in chars for large file ingestion |
+| `KB_INGEST_CHUNK_OVERLAP` | `600` | Overlap in chars between adjacent chunks |
+| `KB_AGENTIC_INGEST` | `TRUE` | Enable KB-aware dedup during ingestion |
+| `KB_INGEST_DEDUP_THRESHOLD` | `0.06` | Hybrid search score threshold for dedup |
 | `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for kb_ask auto strategy |
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in agentic query loop |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |

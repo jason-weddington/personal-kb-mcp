@@ -188,6 +188,58 @@ class TestExtractEntries:
         assert "SOURCE CODE file" not in llm.last_system
 
 
+class TestRunningContext:
+    async def test_previously_extracted_appears_in_system_prompt(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(
+            llm,
+            "doc.md",
+            "content",
+            previously_extracted=["async patterns", "error handling"],
+        )
+        assert "already been extracted" in llm.last_system
+        assert "async patterns" in llm.last_system
+        assert "error handling" in llm.last_system
+
+    async def test_no_injection_when_none(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(llm, "doc.md", "content", previously_extracted=None)
+        assert "already been extracted" not in llm.last_system
+
+    async def test_no_injection_when_empty(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(llm, "doc.md", "content", previously_extracted=[])
+        assert "already been extracted" not in llm.last_system
+
+    async def test_chunk_heading_in_user_prompt(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(
+            llm,
+            "doc.md",
+            "content",
+            chunk_heading="Architecture Overview",
+        )
+        assert "Section: Architecture Overview" in llm.last_prompt
+
+    async def test_no_section_line_when_no_heading(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(llm, "doc.md", "content", chunk_heading=None)
+        assert "Section:" not in llm.last_prompt
+
+    async def test_both_params_together(self):
+        llm = FakeLLM(response="[]")
+        await extract_entries(
+            llm,
+            "doc.md",
+            "content",
+            previously_extracted=["prior entry"],
+            chunk_heading="Methods",
+        )
+        assert "already been extracted" in llm.last_system
+        assert "prior entry" in llm.last_system
+        assert "Section: Methods" in llm.last_prompt
+
+
 class TestParseEntries:
     def test_parses_valid_json(self):
         data = [

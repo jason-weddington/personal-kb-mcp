@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_CONTENT_CHARS = 100_000  # ~25K tokens
 
-_MAX_ENTRIES_PER_FILE = 10
+_MAX_ENTRIES_PER_CHUNK = 10
 
 _VALID_ENTRY_TYPES = {"factual_reference", "decision", "pattern_convention", "lesson_learned"}
 
@@ -212,8 +212,23 @@ async def summarize_file(llm: LLMProvider, file_path: str, content: str) -> str 
     return await llm.generate(prompt, system=system)
 
 
-async def extract_entries(llm: LLMProvider, file_path: str, content: str) -> list[ExtractedEntry]:
-    """Extract structured knowledge entries from a file.
+async def extract_entries(
+    llm: LLMProvider,
+    file_path: str,
+    content: str,
+    *,
+    previously_extracted: list[str] | None = None,
+    chunk_heading: str | None = None,
+) -> list[ExtractedEntry]:
+    """Extract structured knowledge entries from a file or chunk.
+
+    Args:
+        llm: LLM provider for generation.
+        file_path: Relative path of the source file.
+        content: Text content to extract from.
+        previously_extracted: Titles of entries already extracted from earlier
+            chunks of the same file. Prevents cross-chunk duplication.
+        chunk_heading: The heading of the current chunk section, if any.
 
     Returns an empty list if the LLM is unavailable or extraction fails.
     """
@@ -221,13 +236,29 @@ async def extract_entries(llm: LLMProvider, file_path: str, content: str) -> lis
         return []
 
     truncated = content[:_MAX_CONTENT_CHARS]
-    prompt = f"File: {file_path}\n\n{truncated}"
 
+    # Build user prompt
+    prompt_parts = [f"File: {file_path}"]
+    if chunk_heading:
+        prompt_parts.append(f"Section: {chunk_heading}")
+    prompt_parts.append("")
+    prompt_parts.append(truncated)
+    prompt = "\n".join(prompt_parts)
+
+    # Build system prompt
     system = _EXTRACT_SYSTEM
     if _is_code_file(file_path):
         system += _EXTRACT_CODE_SUPPLEMENT
     elif _is_prose_file(file_path):
         system += _EXTRACT_PROSE_SUPPLEMENT
+
+    if previously_extracted:
+        titles = "\n".join(f"- {t}" for t in previously_extracted)
+        system += (
+            "\n\nThe following entries have already been extracted from earlier "
+            "sections of this file. Do NOT re-extract these concepts — only "
+            "extract NEW knowledge not covered below:\n" + titles
+        )
 
     raw = await llm.generate(prompt, system=system)
     if raw is None:
@@ -295,7 +326,7 @@ def _parse_entries(raw: str) -> list[ExtractedEntry]:
             )
         )
 
-        if len(results) >= _MAX_ENTRIES_PER_FILE:
+        if len(results) >= _MAX_ENTRIES_PER_CHUNK:
             break
 
     return results
