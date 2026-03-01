@@ -8,6 +8,7 @@ No installation needed — just add the MCP config below and your client handles
 
 - **Hybrid search** — BM25 full-text search + vector similarity (via Ollama embeddings), fused with Reciprocal Rank Fusion
 - **Knowledge graph** — Automatically built from entries (deterministic edges for tags/projects + LLM-extracted entities like tools, concepts, people)
+- **Agentic queries** — ReAct agent loop that plans, executes, evaluates, and retries — resolves the right entries even when single-shot search ranks them poorly
 - **Graph-aware queries** — 5 traversal strategies (auto, decision_trace, timeline, related, connection) with LLM query planning
 - **Synthesized answers** — `kb_summarize` retrieves relevant entries and uses Claude Haiku to produce cited prose answers
 - **File ingestion** — Bulk-import existing notes, code, and docs from disk with LLM-powered extraction
@@ -148,9 +149,11 @@ Retrieve full details for one or more entries by ID. Use after `kb_search` to re
 
 ### `kb_ask`
 
-Answer questions by traversing the knowledge graph. Supports 5 strategies:
+Answer questions by traversing the knowledge graph. When an LLM is available, the default `auto` strategy uses a ReAct agent loop that can plan searches, explore the graph, evaluate results, and retry with different approaches — all within a hard cap of 4 tool calls. Strong initial results skip the agent entirely (0 LLM calls). Set `KB_AGENTIC_QUERY=FALSE` to fall back to single-shot query planning.
 
-- **auto** — Hybrid search + expand results via graph neighbors (default). When an LLM is available, a query planner translates natural language into the optimal strategy automatically.
+Strategies:
+
+- **auto** — Agentic retrieval (default). The agent has access to hybrid search, graph neighbors, graph vocabulary, decision chains, and scope-based entry listing. It picks the right combination for each question.
 - **decision_trace** — Follow `supersedes` chains to trace how a decision evolved over time.
 - **timeline** — Chronological entries for a given scope (project, tag, etc.).
 - **related** — BFS from a starting node through graph edges.
@@ -200,6 +203,8 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | `KB_LOG_LEVEL` | `WARNING` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `KB_MANAGER` | _(unset)_ | Set to `TRUE` to enable `kb_maintain` and `kb_ingest` tools |
 | `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
+| `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for `kb_ask` auto strategy |
+| `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in the agentic query loop |
 | **Anthropic (cloud LLM)** | | |
 | `ANTHROPIC_API_KEY` | _(unset)_ | API key — required for Anthropic provider |
 | `KB_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Model for graph enrichment, query planning, and synthesis |

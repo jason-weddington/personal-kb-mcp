@@ -135,13 +135,36 @@ The `kb_ask` tool supports five query strategies, each suited to different kinds
 
 **connection** finds the shortest path between two nodes using BFS with a maximum depth of 4. The `graph/queries.py:find_path` function returns a list of `(source, edge_type, target)` triples forming the path, or None if no path exists. This strategy answers questions like "how are these two concepts connected?"
 
-### Query Planning
+### Agentic Query Planning
 
-When a query LLM is available, the `auto` strategy first passes the question through a `QueryPlanner` in `graph/planner.py`. The planner translates natural language questions into structured `QueryPlan` objects containing a strategy, scope, target, search query, and reasoning. The planner receives context about the graph's current state: node and edge counts by type, active entry count, and the full graph vocabulary — all non-entry node IDs grouped by type and ordered by connection count (via `graph/queries.py:get_graph_vocabulary`). This vocabulary lets the planner resolve mentions like "python" to the exact node ID `tag:python`.
+When a query LLM is available, the `auto` strategy delegates to a ReAct agent loop in `graph/agent.py` that can plan, execute, evaluate, and retry — replacing the single-shot query planner that had to pick the right strategy blindly.
 
-If the planner selects a non-auto strategy, `kb_ask` dispatches to that strategy with the planner's resolved scope and target. If the planner fails or selects auto, the system falls back to auto, optionally using the planner's refined search query. The planner's JSON parsing mirrors the enricher's defensive approach: strip fences, find JSON object, validate strategy against the allowed set.
+The agent is designed around a key insight: instead of classifying a question into one of five strategies upfront, dissolve the strategy taxonomy into tools and let the agent compose them. The agent has access to six internal tools (not exposed as MCP tools):
 
-See: `tools/kb_ask.py`, `graph/queries.py`, `graph/planner.py`
+| Tool | Purpose |
+|---|---|
+| `hybrid_search` | Full-text + vector search with optional filters |
+| `graph_neighbors` | Get edges from any node in the graph |
+| `list_graph_nodes` | Browse the knowledge graph vocabulary by type |
+| `decision_chain` | Follow supersedes chains for decision entries |
+| `scope_entries` | List entries for a project, tag, or entry type |
+| `done` | Return final answer with entry IDs and reasoning |
+
+**Fast-path optimization.** Before entering the agent loop, the system runs a hybrid search with the raw question. If the top result's RRF score exceeds a threshold (`_FAST_PATH_THRESHOLD = 0.030`), the results are returned immediately with zero LLM calls. In practice, this handles the majority of straightforward keyword queries — on the eval corpus, 8 of 13 golden queries resolve via fast-path. The fast-path results are also seeded into the agent's initial context so it doesn't waste a turn repeating the same search.
+
+**The agent loop.** Each turn, the agent receives the full conversation history (flattened into a single string for the `generate()` call — there is no chat API) and a system prompt describing the available tools, evaluation rules, and the hard cap. The agent responds with a single JSON object — either a tool call or a final answer. Tool calls are dispatched to the corresponding async function, and the formatted result is appended to the conversation as a user message. Final answers trigger entry ID lookups and return an `AgentResult` with the entries, turn count, and reasoning.
+
+**Hard cap.** The loop is bounded at 4 tool calls (configurable via `KB_AGENTIC_MAX_CALLS`), enforced by the orchestrator. The system prompt also restates the cap ("NEVER make more than 4 tool calls") as belt-and-suspenders. On exhaustion without a `done` call, the agent extracts all `kb-XXXXX` IDs mentioned in the conversation as a best-effort fallback, then falls back to fast-path results if nothing was found.
+
+**Error handling.** If the LLM returns None (provider failure), the loop breaks immediately and falls back to fast-path results. If the LLM returns unparseable JSON, an error message is injected into the conversation and the loop continues, consuming one tool call from the budget. This gives the LLM a chance to self-correct.
+
+**Compact output.** The agent only sees `format_entry_compact()` output — titles, types, scores, and metadata, but never `knowledge_details`. This keeps the context window lean across multiple turns. Full entry details are fetched only when formatting the final result for the caller.
+
+**Toggle.** Set `KB_AGENTIC_QUERY=FALSE` to bypass the agent and fall back to the single-shot `QueryPlanner` from `graph/planner.py`, which translates natural language into a structured `QueryPlan` (strategy, scope, target, search query) via a single LLM call. The planner receives graph statistics and vocabulary as context for entity resolution.
+
+**Eval results.** On the eval corpus (32 entries, 13 scorable golden queries), the agent achieves perfect MRR, recall@5, and NDCG@5 (all 1.000), up from 0.853/1.000/0.889 with hybrid search alone. The three queries where hybrid search ranked the right entry 2nd-4th (q05 REST auth, q06 CORS, q10 encoding bug) are all resolved in a single agent turn.
+
+See: `graph/agent.py`, `tools/kb_ask.py`, `graph/planner.py`
 
 ## Answer Synthesis (kb_summarize)
 
@@ -241,7 +264,7 @@ When **Ollama is unreachable**, the embedding client's `is_available()` returns 
 
 When **the extraction LLM is unavailable** (no configured provider reachable for the extraction slot), the `graph_enricher` is set to None in the lifespan context. The `_enrich_graph` helper in `kb_store.py` checks for None and returns immediately. Entries still get deterministic graph edges from the builder — tags, project references, text references, and hint-based edges all work without an LLM. The graph just lacks the entity-level edges (concept, technology, tool, person relationships) that enrichment would add.
 
-When **the query LLM is unavailable**, `kb_ask`'s auto strategy skips query planning and runs hybrid search directly with the user's raw question. The planner check in `_strategy_auto_with_planner` tests `query_llm is not None` before instantiating the `QueryPlanner`. Without a query LLM, `kb_summarize` falls back to showing raw search results prefixed with "(LLM unavailable — showing raw results)" — still useful, just not synthesized into prose.
+When **the query LLM is unavailable**, `kb_ask`'s auto strategy skips the agent loop and runs hybrid search directly with the user's raw question. The check in `_strategy_auto_with_planner` tests `query_llm is not None` before entering the agentic path. Without a query LLM, `kb_summarize` falls back to showing raw search results prefixed with "(LLM unavailable — showing raw results)" — still useful, just not synthesized into prose.
 
 When **the anthropic package is not installed**, the `AnthropicLLMClient._get_client()` method catches `ImportError` and returns None. All subsequent `generate()` calls return None. The server starts normally and the provider slot acts as if the LLM is permanently unavailable, falling through to the same degradation paths described above.
 
