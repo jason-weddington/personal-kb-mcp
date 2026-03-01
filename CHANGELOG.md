@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v0.17.0 (2026-02-28)
+
+### Features
+
+- Add relative RRF score threshold to filter low-relevance results
+  ([`0e00655`](https://github.com/jason-weddington/personal-kb-mcp/commit/0e0065502895b6b338259571b0260cc817f3add0))
+
+- Switch vector search from L2 to cosine distance
+  ([`51fb9ec`](https://github.com/jason-weddington/personal-kb-mcp/commit/51fb9ec80b952143ee90312308ab2c99fa87e899))
+
+
 ## v0.16.0 (2026-02-28)
 
 ### Features
