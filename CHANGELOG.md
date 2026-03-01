@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.13.0 (2026-02-28)
+
+### Features
+
+- Add search quality eval framework and update how_it_works.md
+  ([`74d92ae`](https://github.com/jason-weddington/personal-kb-mcp/commit/74d92ae67482b0fbf1203d48b12601e96f1383de))
+
+
 ## v0.12.1 (2026-02-28)
 
 ### Bug Fixes
