@@ -21,6 +21,20 @@
 - MCP tools in `src/personal_kb/tools/` (one file per tool)
 - Tests mirror source structure under `tests/`
 
+## Search Quality Eval
+
+`tests/eval/` contains a regression framework with a controlled corpus (32 entries, 15 golden queries) and a `ControlledEmbedder` that makes vector search deterministic.
+
+**Baseline workflow** — when making ranking changes (RRF weights, decay formula, score normalization):
+
+1. Branch off main
+2. Make your change
+3. `uv run pytest tests/eval/test_baseline.py -s` — regenerates `tests/eval/baseline.json`
+4. `git diff tests/eval/baseline.json` — see what moved
+5. Commit the updated baseline alongside the code change
+
+Current weak spots: q05 (REST auth, MRR=0.33), q06 (CORS, MRR=0.25), q10 (encoding bug, MRR=0.50) — right entries found but ranked too low.
+
 ## Roadmap
 
 `ROADMAP.md` is a prioritized list of **problems worth solving**, not feature specs. Items describe the pain point and why it matters — the solution gets figured out when we pick it up. Keep it to one screenful. When we finish something, move it to Done as a one-liner and update the priorities. Don't prescribe implementation details in the roadmap; that's wasted effort when we can go from problem to shipped code in a single session.
