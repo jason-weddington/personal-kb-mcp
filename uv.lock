@@ -1339,6 +1339,7 @@ safety = [
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "personal-kb", extra = ["aws", "postgres", "safety"] },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1366,6 +1367,7 @@ provides-extras = ["aws", "postgres", "safety"]
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=1.14" },
+    { name = "personal-kb", extras = ["aws", "postgres", "safety"] },
     { name = "pre-commit", specifier = ">=4" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
