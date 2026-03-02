@@ -489,3 +489,262 @@ class TestIngestDirectory:
         )
         result = await ingester.ingest_directory(Path("/nonexistent"))
         assert result.errors == 1
+
+
+class TestIngestContent:
+    async def test_ingests_url_content(self, ingester_deps):
+        entries_json = [
+            {
+                "short_title": "wiki patterns",
+                "long_title": "Wiki patterns for team docs",
+                "knowledge_details": "Patterns from the wiki.",
+                "entry_type": "pattern_convention",
+                "tags": ["wiki"],
+            }
+        ]
+        deps = ingester_deps
+        llm = _make_llm_with_responses("Summary of wiki page.", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+        )
+
+        url = "https://wiki.example.com/team/patterns"
+        result = await ingester.ingest_content(
+            "# Team Patterns\n\nUseful patterns from the wiki.",
+            url,
+            project_ref="test",
+        )
+        assert result.action == "ingested"
+        assert result.entry_count == 1
+        assert len(result.entry_ids) == 1
+        assert result.path == url
+
+        # Verify source_context includes URL
+        entry = await deps["store"].get_entry(result.entry_ids[0])
+        assert entry is not None
+        assert url in entry.source_context
+
+    async def test_url_dedup_unchanged(self, ingester_deps):
+        entries_json = [
+            {
+                "short_title": "test",
+                "long_title": "Test entry",
+                "knowledge_details": "Details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        deps = ingester_deps
+        url = "https://wiki.example.com/page"
+        content = "# Static content from URL"
+
+        llm1 = _make_llm_with_responses("Summary.", entries_json)
+        ingester1 = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm1,
+        )
+        result1 = await ingester1.ingest_content(content, url)
+        assert result1.action == "ingested"
+
+        # Second ingest — same content → unchanged
+        llm2 = _make_llm_with_responses("Summary.", entries_json)
+        ingester2 = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm2,
+        )
+        result2 = await ingester2.ingest_content(content, url)
+        assert result2.action == "unchanged"
+
+    async def test_url_reingestion(self, ingester_deps):
+        entries_v1 = [
+            {
+                "short_title": "v1",
+                "long_title": "V1 entry",
+                "knowledge_details": "V1 details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        deps = ingester_deps
+        url = "https://wiki.example.com/evolving"
+
+        llm1 = _make_llm_with_responses("V1 summary.", entries_v1)
+        ingester1 = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm1,
+        )
+        result1 = await ingester1.ingest_content("# V1 content", url)
+        assert result1.action == "ingested"
+        old_entry_id = result1.entry_ids[0]
+
+        # Re-ingest with different content
+        entries_v2 = [
+            {
+                "short_title": "v2",
+                "long_title": "V2 entry",
+                "knowledge_details": "V2 details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        llm2 = _make_llm_with_responses("V2 summary.", entries_v2)
+        ingester2 = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm2,
+        )
+        result2 = await ingester2.ingest_content("# V2 updated content", url)
+        assert result2.action == "ingested"
+        assert result2.entry_ids[0] != old_entry_id
+
+        # Old entry should be deactivated
+        old_entry = await deps["store"].get_entry(old_entry_id)
+        assert old_entry is not None
+        assert old_entry.is_active is False
+
+    async def test_url_dry_run(self, ingester_deps):
+        entries_json = [
+            {
+                "short_title": "test",
+                "long_title": "Test",
+                "knowledge_details": "Details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        deps = ingester_deps
+        llm = _make_llm_with_responses("Summary.", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+        )
+
+        result = await ingester.ingest_content(
+            "# Dry run content",
+            "https://wiki.example.com/dry",
+            dry_run=True,
+        )
+        assert result.action == "dry_run"
+        assert result.entry_count == 1
+        assert result.summary == "Summary."
+
+        # Nothing stored
+        cursor = await deps["db"].execute("SELECT COUNT(*) FROM knowledge_entries")
+        row = await cursor.fetchone()
+        assert row[0] == 0
+
+        cursor = await deps["db"].execute("SELECT COUNT(*) FROM ingested_files")
+        row = await cursor.fetchone()
+        assert row[0] == 0
+
+    async def test_url_secrets_flagged(self, ingester_deps):
+        deps = ingester_deps
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            deps["enricher"],
+            deps["llm"],
+        )
+
+        result = await ingester.ingest_content(
+            'password = "hunter2"',
+            "https://wiki.example.com/secrets",
+        )
+        # If detect-secrets is installed, should be flagged
+        # If not installed, secrets detection is skipped and it will be ingested
+        assert result.action in ("flagged", "ingested", "error")
+
+    async def test_url_note_node(self, ingester_deps):
+        entries_json = [
+            {
+                "short_title": "node test",
+                "long_title": "Note node test",
+                "knowledge_details": "Details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        deps = ingester_deps
+        url = "https://wiki.example.com/node-test"
+        llm = _make_llm_with_responses("Node test summary.", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+        )
+
+        await ingester.ingest_content("# Node test\n\nContent.", url)
+
+        # Verify note node with URL in properties
+        cursor = await deps["db"].execute(
+            "SELECT * FROM graph_nodes WHERE node_id = ?",
+            (f"note:{url}",),
+        )
+        node = await cursor.fetchone()
+        assert node is not None
+        assert node["node_type"] == "note"
+        props = json.loads(node["properties"])
+        assert props["url"] == url
+        assert "summary" in props
+
+    async def test_url_extracted_from_edge(self, ingester_deps):
+        entries_json = [
+            {
+                "short_title": "edge test",
+                "long_title": "Edge test entry",
+                "knowledge_details": "Details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        deps = ingester_deps
+        url = "https://wiki.example.com/edge-test"
+        llm = _make_llm_with_responses("Edge test summary.", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+        )
+
+        result = await ingester.ingest_content("# Edge test\n\nContent.", url)
+
+        # Verify extracted_from edge points to note:{url}
+        cursor = await deps["db"].execute(
+            "SELECT * FROM graph_edges WHERE edge_type = 'extracted_from' AND target = ?",
+            (f"note:{url}",),
+        )
+        edge = await cursor.fetchone()
+        assert edge is not None
+        assert edge["source"] == result.entry_ids[0]

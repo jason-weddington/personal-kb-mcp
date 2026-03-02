@@ -14,7 +14,7 @@ from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.ingest.chunker import chunk_content
 from personal_kb.ingest.extractor import ExtractedEntry, extract_entries, summarize_file
-from personal_kb.ingest.safety import SafetyResult, run_safety_pipeline
+from personal_kb.ingest.safety import SafetyResult, run_content_safety, run_safety_pipeline
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
@@ -380,6 +380,182 @@ class FileIngester:
             chunks_skipped=chunks_skipped,
         )
 
+    async def ingest_content(
+        self,
+        content: str,
+        source_url: str,
+        *,
+        project_ref: str | None = None,
+        dry_run: bool = False,
+    ) -> FileResult:
+        """Ingest pre-fetched content (e.g. from a URL).
+
+        Skips filesystem checks (deny-list, extension, file size).
+        Runs content-only safety (secrets + PII), then the full
+        LLM extraction pipeline with dedup, graph nodes, and edges.
+        """
+        # 1. Compute hash, skip if unchanged
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        existing = await self._get_ingested_file(source_url)
+        if existing and existing["content_hash"] == content_hash and existing["is_active"]:
+            return FileResult(path=source_url, action="unchanged")
+
+        # 2. Content-only safety (secrets + PII — no deny-list/extension)
+        safety: SafetyResult = run_content_safety(content)
+        if safety.action == "flag":
+            return FileResult(
+                path=source_url,
+                action="flagged",
+                reason=safety.reason,
+            )
+
+        # Use safety-processed content (may have PII redacted)
+        content = safety.content
+
+        if dry_run:
+            summary = await summarize_file(self._llm, source_url, content)
+            chunks = chunk_content(content)
+            dry_entries: list[ExtractedEntry] = []
+            dry_prev: list[str] = []
+            for chunk in chunks:
+                entries = await extract_entries(
+                    self._llm,
+                    source_url,
+                    chunk.text,
+                    previously_extracted=dry_prev or None,
+                    chunk_heading=chunk.heading,
+                )
+                dry_entries.extend(entries)
+                dry_prev.extend(e.short_title for e in entries)
+            return FileResult(
+                path=source_url,
+                action="dry_run",
+                entry_count=len(dry_entries),
+                summary=summary,
+                chunks_processed=len(chunks),
+            )
+
+        # Handle re-ingestion: deactivate old entries
+        if existing:
+            await self._deactivate_old_entries(existing)
+
+        # 3. Summarize
+        summary = await summarize_file(self._llm, source_url, content)
+        if summary is None:
+            return FileResult(
+                path=source_url,
+                action="error",
+                reason="LLM unavailable for summarization",
+            )
+
+        # 4. Chunk content
+        chunks = chunk_content(content)
+
+        # 5. Extract entries per chunk with running context
+        all_extracted: list[ExtractedEntry] = []
+        previously_extracted: list[str] = []
+        chunks_skipped = 0
+        for chunk in chunks:
+            if self._dedup_agent:
+                dedup_result = await self._dedup_agent.check_chunk(chunk, previously_extracted)
+                if dedup_result.action == "skip":
+                    chunks_skipped += 1
+                    continue
+                if dedup_result.action == "partial":
+                    combined_context = previously_extracted + dedup_result.existing_titles
+                else:
+                    combined_context = previously_extracted
+            else:
+                combined_context = previously_extracted
+
+            extracted = await extract_entries(
+                self._llm,
+                source_url,
+                chunk.text,
+                previously_extracted=combined_context or None,
+                chunk_heading=chunk.heading,
+            )
+            all_extracted.extend(extracted)
+            previously_extracted.extend(e.short_title for e in extracted)
+
+        # 6. Store entries
+        entry_ids: list[str] = []
+        for ext_entry in all_extracted:
+            entry = await self._store_extracted_entry(ext_entry, project_ref, source_url)
+            if entry:
+                entry_ids.append(entry.id)
+
+        # 7. Create note node and edges
+        note_node_id = f"note:{source_url}"
+        await self._create_note_node_for_url(note_node_id, source_url, summary)
+        for eid in entry_ids:
+            await self._add_extracted_from_edge(eid, note_node_id)
+        await self._db.commit()
+
+        # 8. Record in ingested_files
+        file_size = len(content.encode())
+        # Derive extension from URL path, or empty string
+        from urllib.parse import urlparse
+
+        url_path = urlparse(source_url).path
+        file_extension = Path(url_path).suffix if url_path else ""
+
+        now = datetime.now(UTC).isoformat()
+        if existing:
+            await self._db.execute(
+                "UPDATE ingested_files SET content_hash = ?, note_node_id = ?, "
+                "entry_ids = ?, summary = ?, file_size = ?, file_extension = ?, "
+                "project_ref = ?, redactions = ?, contributor = ?, "
+                "updated_at = ?, is_active = 1 "
+                "WHERE relative_path = ?",
+                (
+                    content_hash,
+                    note_node_id,
+                    json.dumps(entry_ids),
+                    summary,
+                    file_size,
+                    file_extension,
+                    project_ref,
+                    json.dumps(safety.redactions),
+                    self._contributor,
+                    now,
+                    source_url,
+                ),
+            )
+        else:
+            await self._db.execute(
+                "INSERT INTO ingested_files "
+                "(relative_path, content_hash, note_node_id, entry_ids, summary, "
+                "file_size, file_extension, project_ref, redactions, contributor, "
+                "ingested_at, updated_at, is_active) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                (
+                    source_url,
+                    content_hash,
+                    note_node_id,
+                    json.dumps(entry_ids),
+                    summary,
+                    file_size,
+                    file_extension,
+                    project_ref,
+                    json.dumps(safety.redactions),
+                    self._contributor,
+                    now,
+                    now,
+                ),
+            )
+        await self._db.commit()
+
+        return FileResult(
+            path=source_url,
+            action="ingested",
+            entry_count=len(entry_ids),
+            entry_ids=entry_ids,
+            summary=summary,
+            chunks_processed=len(chunks) - chunks_skipped,
+            chunks_skipped=chunks_skipped,
+        )
+
     async def ingest_directory(
         self,
         dir_path: Path,
@@ -528,6 +704,18 @@ class FileIngester:
         """Create or update a note node in the graph."""
         now = datetime.now(UTC).isoformat()
         props = json.dumps({"path": rel_path, "summary": summary})
+        await self._db.execute(
+            """INSERT INTO graph_nodes (node_id, node_type, properties, created_at)
+               VALUES (?, 'note', ?, ?)
+               ON CONFLICT(node_id) DO UPDATE SET
+                   properties = excluded.properties""",
+            (node_id, props, now),
+        )
+
+    async def _create_note_node_for_url(self, node_id: str, source_url: str, summary: str) -> None:
+        """Create or update a note node for a URL source."""
+        now = datetime.now(UTC).isoformat()
+        props = json.dumps({"url": source_url, "summary": summary})
         await self._db.execute(
             """INSERT INTO graph_nodes (node_id, node_type, properties, created_at)
                VALUES (?, 'note', ?, ?)

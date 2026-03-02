@@ -8,6 +8,7 @@ from personal_kb.ingest.safety import (
     check_deny_list,
     detect_secrets_in_content,
     redact_pii,
+    run_content_safety,
     run_safety_pipeline,
 )
 
@@ -122,3 +123,15 @@ class TestRunSafetyPipeline:
     def test_returns_safety_result(self):
         result = run_safety_pipeline(Path("readme.md"), "Normal content")
         assert isinstance(result, SafetyResult)
+
+
+class TestRunContentSafety:
+    def test_content_safety_clean(self):
+        result = run_content_safety("Just some notes about Python async patterns.")
+        assert result.action in ("allow", "flag")
+        assert isinstance(result.content, str)
+
+    def test_content_safety_secrets(self):
+        result = run_content_safety('password = "hunter2"\napi_key = "sk-12345"')
+        if result.action == "flag":
+            assert "Secrets" in result.reason

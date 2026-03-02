@@ -164,6 +164,30 @@ class SafetyResult:
     redactions: list[str] = field(default_factory=list)
 
 
+def run_content_safety(content: str) -> SafetyResult:
+    """Run content-only safety checks (secrets + PII). No deny-list or extension checks.
+
+    Use for pre-fetched content (e.g. from URLs) where path-based checks don't apply.
+    """
+    # 1. Secret detection
+    secrets = detect_secrets_in_content(content)
+    if secrets:
+        return SafetyResult(
+            action="flag",
+            content=content,
+            reason=f"Secrets detected: {', '.join(secrets)}",
+        )
+
+    # 2. PII redaction
+    cleaned, pii_types = redact_pii(content)
+
+    return SafetyResult(
+        action="allow",
+        content=cleaned,
+        redactions=pii_types,
+    )
+
+
 def run_safety_pipeline(path: Path, content: str) -> SafetyResult:
     """Run all safety checks on a file.
 
@@ -178,20 +202,5 @@ def run_safety_pipeline(path: Path, content: str) -> SafetyResult:
             reason=f"Matches deny-list pattern: {denied}",
         )
 
-    # 2. Secret detection
-    secrets = detect_secrets_in_content(content)
-    if secrets:
-        return SafetyResult(
-            action="flag",
-            content=content,
-            reason=f"Secrets detected: {', '.join(secrets)}",
-        )
-
-    # 3. PII redaction
-    cleaned, pii_types = redact_pii(content)
-
-    return SafetyResult(
-        action="allow",
-        content=cleaned,
-        redactions=pii_types,
-    )
+    # 2-3. Content-only checks (secrets + PII)
+    return run_content_safety(content)
