@@ -7,8 +7,11 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
+from personal_kb.db.backend import Database
 from personal_kb.llm.provider import LLMProvider
-from personal_kb.tools.kb_ask import _strategy_auto
+from personal_kb.models.entry import KnowledgeEntry
+from personal_kb.search.embeddings import EmbeddingClient
+from personal_kb.tools.formatters import format_entry_full
 
 logger = logging.getLogger(__name__)
 
@@ -54,31 +57,115 @@ def register_kb_summarize(mcp: FastMCP) -> None:
         embedder = lifespan["embedder"]
         query_llm = lifespan.get("query_llm")
 
-        # Retrieve entries using the auto strategy
-        raw_results = await _strategy_auto(
+        return await summarize_question(
             db,
             embedder,
+            query_llm,
             question,
             scope,
-            include_graph_context=True,
-            limit=limit,
+            limit,
         )
 
-        if raw_results == "No results found.":
-            return "No entries found matching your question."
 
-        # Try LLM synthesis
-        if query_llm is not None and isinstance(query_llm, LLMProvider):
-            synthesis = await _synthesize(query_llm, question, raw_results)
-            if synthesis is not None:
-                return synthesis
+async def summarize_question(
+    db: Database,
+    embedder: EmbeddingClient | None,
+    query_llm: object | None,
+    question: str,
+    scope: str | None = None,
+    limit: int = 20,
+) -> str:
+    """Core summarize logic, testable without FastMCP context."""
+    from personal_kb.config import is_agentic_synthesis
+    from personal_kb.tools.kb_ask import _auto_search_entries, retrieve_entries
 
-            return f"(LLM synthesis failed — showing raw results)\n\n{raw_results}"
+    # Retrieve entries via agentic or single-shot path
+    entries, agent_turns = await retrieve_entries(
+        db,
+        embedder,
+        query_llm,
+        question,
+        scope,
+        include_graph_context=True,
+        limit=limit,
+    )
 
-        return f"(LLM unavailable — showing raw results)\n\n{raw_results}"
+    if not entries:
+        return "No entries found matching your question."
+
+    # Coverage check: only when agentic synthesis enabled, LLM available,
+    # and retrieval wasn't fast-path (agent_turns > 0 means agent did work)
+    if (
+        is_agentic_synthesis()
+        and query_llm is not None
+        and isinstance(query_llm, LLMProvider)
+        and agent_turns > 0
+    ):
+        from personal_kb.tools.coverage import assess_coverage
+
+        coverage = await assess_coverage(query_llm, question, entries)
+        if coverage.has_gaps and coverage.suggested_query:
+            extra = await _auto_search_entries(
+                db,
+                embedder,
+                coverage.suggested_query,
+                scope,
+                True,
+                limit,
+            )
+            entries = _merge_entries(entries, extra)
+
+    # Synthesize with LLM
+    if query_llm is not None and isinstance(query_llm, LLMProvider):
+        synthesis = await _synthesize(query_llm, question, entries)
+        if synthesis is not None:
+            return synthesis
+
+        fallback = _format_entries_fallback(entries)
+        return f"(LLM synthesis failed — showing raw results)\n\n{fallback}"
+
+    fallback = _format_entries_fallback(entries)
+    return f"(LLM unavailable — showing raw results)\n\n{fallback}"
 
 
-async def _synthesize(llm: LLMProvider, question: str, raw_results: str) -> str | None:
-    """Synthesize an answer from retrieved entries using the LLM."""
-    prompt = f"Question: {question}\n\nRetrieved entries:\n{raw_results}"
+async def _synthesize(
+    llm: LLMProvider,
+    question: str,
+    entries: list[tuple[KnowledgeEntry, str]],
+) -> str | None:
+    """Synthesize an answer from structured entries using the LLM."""
+    # Build rich prompt with full knowledge_details
+    entry_blocks = []
+    for entry, context in entries:
+        tags_str = " ".join(f"#{t}" for t in entry.tags) if entry.tags else ""
+        block = f"[{entry.id}] {entry.short_title} {tags_str}"
+        if context:
+            block += f"\n  Context: {context}"
+        block += f"\n  {entry.knowledge_details}"
+        entry_blocks.append(block)
+
+    entries_text = "\n\n".join(entry_blocks)
+    prompt = f"Question: {question}\n\nRetrieved entries:\n{entries_text}"
     return await llm.generate(prompt, system=_SYNTHESIS_SYSTEM_PROMPT)
+
+
+def _merge_entries(
+    original: list[tuple[KnowledgeEntry, str]],
+    extra: list[tuple[KnowledgeEntry, str]],
+) -> list[tuple[KnowledgeEntry, str]]:
+    """Merge extra entries into original, deduplicating by entry ID."""
+    seen = {entry.id for entry, _ in original}
+    merged = list(original)
+    for entry, ctx in extra:
+        if entry.id not in seen:
+            seen.add(entry.id)
+            merged.append((entry, ctx))
+    return merged
+
+
+def _format_entries_fallback(
+    entries: list[tuple[KnowledgeEntry, str]],
+) -> str:
+    """Format entries for the no-LLM fallback path."""
+    formatted = [format_entry_full(entry, context=ctx) for entry, ctx in entries]
+    return "\n\n".join(formatted)

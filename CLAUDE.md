@@ -94,4 +94,5 @@ Format: `type(optional-scope): description`
 | `KB_INGEST_DEDUP_THRESHOLD` | `0.06` | Hybrid search score threshold for dedup |
 | `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for kb_ask auto strategy |
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in agentic query loop |
+| `KB_AGENTIC_SYNTHESIS` | `TRUE` | Enable agentic retrieval + coverage check for kb_summarize |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |

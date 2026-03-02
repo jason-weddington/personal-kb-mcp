@@ -128,3 +128,8 @@ def is_agentic_query() -> bool:
 def get_agentic_max_tool_calls() -> int:
     """Return max tool calls for agentic query loop from KB_AGENTIC_MAX_CALLS."""
     return int(os.environ.get("KB_AGENTIC_MAX_CALLS", "4"))
+
+
+def is_agentic_synthesis() -> bool:
+    """Return True if agentic synthesis is enabled (default: TRUE)."""
+    return os.environ.get("KB_AGENTIC_SYNTHESIS", "TRUE").upper() == "TRUE"

@@ -10,8 +10,6 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Now
 
-- **Agentic synthesis.** kb_summarize does one retrieval pass then synthesizes from whatever came back. An agent loop would: retrieve → assess coverage → retrieve more if gaps → synthesize. Multi-hop retrieval for complex questions. On by default, toggle off with `KB_AGENTIC_SYNTHESIS=FALSE`.
-
 - **Intra-cluster noise in search results.** Relative score thresholds cut cross-cluster noise (the "fullstack returns Docker entries" problem), but can't distinguish relevant from irrelevant entries within the same topic cluster. When 8 entries share a cluster, RRF ranks them all similarly — the right one is buried among its neighbors. Needs semantic re-ranking: query-entity matching, personalized PageRank seeded from query terms, or LLM-based re-scoring of the top-k candidates.
 
 ## Later
@@ -20,6 +18,7 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Done
 
+- Agentic synthesis — kb_summarize retrieves via agent loop, coverage check fills gaps, structured entries for richer synthesis. Toggle: `KB_AGENTIC_SYNTHESIS=FALSE`.
 - Agentic ingestion — markdown-aware chunking at H1/H2 headings, running context across chunks, KB-aware dedup agent (search + LLM confirm). Toggle: `KB_AGENTIC_INGEST=FALSE`.
 - Agentic query planning — ReAct agent loop for kb_ask auto strategy. Fast-path skips LLM on strong results; 6 internal tools; ScriptedLLM for deterministic testing. Toggle: `KB_AGENTIC_QUERY=FALSE`.
 - PostgreSQL backend — Database Protocol abstraction, pgvector + tsvector, migration script with auto-embed. SQLite remains default.

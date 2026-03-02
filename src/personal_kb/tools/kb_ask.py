@@ -103,6 +103,60 @@ def register_kb_ask(mcp: FastMCP) -> None:
         return "Strategy not implemented."
 
 
+async def retrieve_entries(
+    db: Database,
+    embedder: EmbeddingClient | None,
+    query_llm: object | None,
+    question: str,
+    scope: str | None = None,
+    include_graph_context: bool = True,
+    limit: int = 20,
+) -> tuple[list[tuple[KnowledgeEntry, str]], int]:
+    """Retrieve entries via agentic or single-shot path.
+
+    Returns (entries_with_context, agent_turns_used).
+    Used by both kb_ask (formatted output) and kb_summarize (structured).
+    """
+    from personal_kb.config import is_agentic_query
+    from personal_kb.llm.provider import LLMProvider
+
+    # --- Agentic path ---
+    if query_llm is not None and isinstance(query_llm, LLMProvider) and is_agentic_query():
+        from personal_kb.graph.agent import AgentResult, agentic_query
+
+        agent_result = await agentic_query(db, embedder, query_llm, question)
+        if isinstance(agent_result, AgentResult) and agent_result.entries:
+            entries: list[tuple[KnowledgeEntry, str]] = []
+            for entry_id, context in agent_result.entries[:limit]:
+                entry = await get_entry(db, entry_id)
+                if entry:
+                    entries.append((entry, context))
+            return entries, agent_result.turns_used
+
+        return [], 0
+
+    # --- Single-shot planner path ---
+    # Use planner to refine query, but always retrieve via auto search
+    # (non-auto strategies produce formatted strings, not structured entries).
+    search_query = question
+    if query_llm is not None and isinstance(query_llm, LLMProvider):
+        planner = QueryPlanner(db, query_llm)
+        plan = await planner.plan(question)
+        logger.debug("Query plan: %s", plan)
+        if plan is not None and plan.search_query:
+            search_query = plan.search_query
+
+    entries = await _auto_search_entries(
+        db,
+        embedder,
+        search_query,
+        scope,
+        include_graph_context,
+        limit,
+    )
+    return entries, 0
+
+
 async def _strategy_auto_with_planner(
     db: Database,
     embedder: EmbeddingClient | None,
@@ -173,15 +227,15 @@ async def _strategy_auto_with_planner(
     return await _strategy_auto(db, embedder, search_query, scope, include_graph_context, limit)
 
 
-async def _strategy_auto(
+async def _auto_search_entries(
     db: Database,
     embedder: EmbeddingClient | None,
     question: str,
     scope: str | None,
     include_graph_context: bool,
     limit: int,
-) -> str:
-    """Hybrid search + expand results via graph neighbors."""
+) -> list[tuple[KnowledgeEntry, str]]:
+    """Hybrid search + graph expansion, returning structured entries."""
     from personal_kb.search.hybrid import hybrid_search
 
     search_query = SearchQuery(
@@ -224,6 +278,27 @@ async def _strategy_auto(
                         break
             if len(entries_with_context) >= limit:
                 break
+
+    return entries_with_context
+
+
+async def _strategy_auto(
+    db: Database,
+    embedder: EmbeddingClient | None,
+    question: str,
+    scope: str | None,
+    include_graph_context: bool,
+    limit: int,
+) -> str:
+    """Hybrid search + expand results via graph neighbors."""
+    entries_with_context = await _auto_search_entries(
+        db,
+        embedder,
+        question,
+        scope,
+        include_graph_context,
+        limit,
+    )
 
     if not entries_with_context:
         return "No results found."
