@@ -131,7 +131,7 @@ def register_kb_store(mcp: FastMCP) -> None:
         # --- Deactivate path ---
         if deactivate_entry_id:
             try:
-                entry = await store.deactivate_entry(deactivate_entry_id)
+                entry = await store.deactivate_entry(deactivate_entry_id, contributor=contributor)
             except ValueError as e:
                 return f"Error: {e}"
             # Remove outgoing graph edges

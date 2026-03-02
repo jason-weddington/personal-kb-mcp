@@ -115,13 +115,16 @@ def register_kb_maintain(mcp: FastMCP) -> None:
         graph_builder: GraphBuilder = lifespan["graph_builder"]
         graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
         query_llm: LLMProvider | None = lifespan.get("query_llm")
+        contributor: str | None = lifespan.get("contributor")
 
         if action == "stats":
             return await _action_stats(db)
         elif action == "deactivate":
-            return await _action_deactivate(db, store, entry_id)
+            return await _action_deactivate(db, store, entry_id, contributor)
         elif action == "reactivate":
-            return await _action_reactivate(db, store, graph_builder, graph_enricher, entry_id)
+            return await _action_reactivate(
+                db, store, graph_builder, graph_enricher, entry_id, contributor
+            )
         elif action == "rebuild_embeddings":
             return await _action_rebuild_embeddings(db, store, embedder, force)
         elif action == "rebuild_graph":
@@ -193,13 +196,14 @@ async def _action_deactivate(
     db: Database,
     store: KnowledgeStore,
     entry_id: str | None,
+    contributor: str | None = None,
 ) -> str:
     """Soft-delete an entry and clean up graph edges."""
     if not entry_id:
         return "Error: entry_id is required for deactivate action."
 
     try:
-        entry = await store.deactivate_entry(entry_id)
+        entry = await store.deactivate_entry(entry_id, contributor=contributor)
     except ValueError as e:
         return f"Error: {e}"
 
@@ -216,13 +220,14 @@ async def _action_reactivate(
     graph_builder: GraphBuilder,
     graph_enricher: GraphEnricher | None,
     entry_id: str | None,
+    contributor: str | None = None,
 ) -> str:
     """Reactivate a deactivated entry and rebuild graph edges."""
     if not entry_id:
         return "Error: entry_id is required for reactivate action."
 
     try:
-        entry = await store.reactivate_entry(entry_id)
+        entry = await store.reactivate_entry(entry_id, contributor=contributor)
     except ValueError as e:
         return f"Error: {e}"
 

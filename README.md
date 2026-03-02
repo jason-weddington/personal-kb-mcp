@@ -12,6 +12,7 @@ No installation needed — just add the MCP config below and your client handles
 - **Graph-aware queries** — 5 traversal strategies (auto, decision_trace, timeline, related, connection) with LLM query planning
 - **Synthesized answers** — `kb_summarize` retrieves relevant entries and uses Claude Haiku to produce cited prose answers
 - **File ingestion** — Bulk-import existing notes, code, and docs from disk with LLM-powered extraction
+- **Multi-user attribution** — Server-side identity injection (`KB_CONTRIBUTOR`, `KB_TEAM`), per-entry attribution visible in all output, contributor/team search filters, audit trail for mutations
 - **Graceful degradation** — Every optional component (Ollama, Anthropic, vector search) fails gracefully; core storage and FTS always work
 
 ## Prerequisites
@@ -141,7 +142,7 @@ Store multiple entries in a single call (max 10). More efficient than repeated `
 
 ### `kb_search`
 
-Hybrid search combining BM25 full-text search with vector similarity (when Ollama is available). Returns compact summaries (no `knowledge_details`). Supports filtering by project, entry type, and tags. Results include confidence scores with staleness decay.
+Hybrid search combining BM25 full-text search with vector similarity (when Ollama is available). Returns compact summaries (no `knowledge_details`). Supports filtering by project, entry type, tags, contributor, and team. Results include confidence scores with staleness decay and `@contributor/team` attribution badges.
 
 ### `kb_get`
 
@@ -181,6 +182,10 @@ kb_ingest(file_path="/path/to/notes", project_ref="my-project", dry_run=True)
 - Skips binaries, images, archives, keys, `.env` files, and other sensitive formats
 - Optional safety libraries: `uv sync --extra safety` installs `detect-secrets` and `scrubadub`
 
+### `kb_feedback`
+
+Report when a KB query failed to help. Always available (not gated by `KB_MANAGER`). Three feedback types: `missing` (KB lacked needed knowledge), `unhelpful` (results existed but didn't help), `friction` (tool was awkward or slow).
+
 ### `kb_maintain`
 
 Administrative operations (only available when `KB_MANAGER=TRUE`):
@@ -192,6 +197,11 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 - `purge_inactive` — Hard-delete entries inactive for N+ days
 - `vacuum` — Optimize database (PRAGMA optimize + VACUUM)
 - `entry_versions` — Show version history for an entry
+- `list_feedback` — Recent agent feedback with optional type/date filters
+- `summarize_feedback` — LLM-clustered summary of feedback themes
+- `search_stats` — Search telemetry overview (total queries, zero-result rate, top missed queries)
+- `list_contributors` — Contributor/team stats for active entries
+- `list_audit` — Recent mutation events (create/update/deactivate/reactivate) with optional entry_id/date filters
 
 ## Environment Variables
 
@@ -205,6 +215,12 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
 | `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for `kb_ask` auto strategy |
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in the agentic query loop |
+| **Multi-user** | | |
+| `KB_CONTRIBUTOR` | _(unset)_ | Your name — attached to entries, versions, search events, and audit trail |
+| `KB_TEAM` | _(unset)_ | Your team — attached to entries alongside contributor |
+| `KB_SKIP_SAFETY` | _(unset)_ | Set to `TRUE` to bypass secret scanning on store |
+| `KB_PG_POOL_MIN` | `1` | Postgres connection pool minimum size |
+| `KB_PG_POOL_MAX` | `5` | Postgres connection pool maximum size |
 | **Anthropic (cloud LLM)** | | |
 | `ANTHROPIC_API_KEY` | _(unset)_ | API key — required for Anthropic provider |
 | `KB_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Model for graph enrichment, query planning, and synthesis |
@@ -236,6 +252,54 @@ The server uses two independent LLM slots, each configurable to use Anthropic (d
 - **Query LLM** (`KB_QUERY_PROVIDER`) — Plans graph queries from natural language questions and synthesizes answers in `kb_summarize`.
 
 Both default to `anthropic`. You can mix providers (e.g., `bedrock` for extraction, `ollama` for queries). Vector embeddings always use Ollama and are independent of the provider settings.
+
+## Team Use
+
+Multiple people (or agents) can share a single knowledge base. Each contributor runs their own MCP server instance pointed at the same database, with `KB_CONTRIBUTOR` identifying who they are.
+
+### Setup
+
+Each team member sets their identity via environment variables in their MCP config:
+
+```json
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "personal-kb-mcp[postgres]", "personal-kb"],
+      "env": {
+        "KB_DATABASE_URL": "postgresql://user:pass@shared-host/team_kb",
+        "KB_CONTRIBUTOR": "jason",
+        "KB_TEAM": "platform",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+### What you get
+
+- **Attribution** — Every entry, version, and search event records who created it. Search results show `@contributor/team` badges so you can see who wrote what.
+- **Filtering** — `kb_search` accepts `contributor` and `team` parameters to scope results to a specific person or team.
+- **Audit trail** — All mutations (create, update, deactivate, reactivate) are logged in the `audit_events` table. Use `kb_maintain list_audit` to review recent changes.
+- **Sensitivity classification** — Entries can be tagged `internal`, `restricted`, or `public` via the `sensitivity` parameter on `kb_store`. Badges appear in output to signal handling expectations.
+- **Secret scanning** — `kb_store` and `kb_store_batch` scan content for potential secrets (API keys, passwords) before storing. Override with `KB_SKIP_SAFETY=TRUE`.
+- **Contributor stats** — `kb_maintain list_contributors` shows who has contributed what.
+
+### Trust model and limitations
+
+The multi-user features provide **attribution and visibility, not access control**. Understanding the trust model is important before deploying to a team:
+
+- **Identity is environment-based, not authenticated.** `KB_CONTRIBUTOR` is set by each MCP server instance at startup. There is no login, no tokens, no verification. Anyone with database access can set any contributor name. This is appropriate for trusted teams where members configure their own environments honestly.
+- **No read restrictions.** All entries are visible to all users regardless of contributor, team, or sensitivity classification. The `sensitivity` field is a label for human judgment — it does not hide or encrypt anything. A `restricted` entry is just as readable as a `public` one.
+- **No write restrictions.** Any user can update or deactivate any entry. The `updated_by` field and audit trail record who did what, but nothing prevents the action.
+- **Vector search ignores contributor/team filters.** The contributor and team filters apply to full-text search only. Vector similarity search returns all entries regardless of attribution. Filtered-out entries can still appear in results via the RRF fusion step. This is a known limitation of the current search architecture.
+- **Audit trail is append-only but not tamper-proof.** Audit events are stored in the same database as everything else. Anyone with database access can modify or delete them. This is sufficient for "who did what" visibility, not for compliance or forensics.
+- **Last-write-wins on concurrent edits.** If two contributors update the same entry simultaneously, the last write wins. There is no locking, merge, or conflict resolution. Version history preserves both changes, but only the latest version is active.
+
+**Bottom line:** These features work well for a small trusted team sharing a knowledge base through separate MCP server instances, each configured with their own `KB_CONTRIBUTOR`. They are not designed for untrusted multi-tenant environments where users might act adversarially.
 
 ## Development
 
