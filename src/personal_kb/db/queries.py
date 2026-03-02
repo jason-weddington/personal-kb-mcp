@@ -40,6 +40,7 @@ def row_to_entry(row: Row) -> KnowledgeEntry:
         contributor=row["contributor"] if "contributor" in col_names else None,
         team=row["team"] if "team" in col_names else None,
         updated_by=row["updated_by"] if "updated_by" in col_names else None,
+        sensitivity=row["sensitivity"] if "sensitivity" in col_names else None,
     )
 
 
@@ -50,8 +51,9 @@ async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
         """INSERT INTO knowledge_entries
         (id, project_ref, short_title, long_title, knowledge_details, entry_type,
          source_context, confidence_level, tags, hints, created_at, updated_at,
-         superseded_by, is_active, has_embedding, version, contributor, team)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         superseded_by, is_active, has_embedding, version, contributor, team,
+         sensitivity)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             entry.id,
             entry.project_ref,
@@ -71,6 +73,7 @@ async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
             entry.version,
             entry.contributor,
             entry.team,
+            entry.sensitivity,
         ),
     )
     await db.commit()
@@ -83,7 +86,8 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
         """UPDATE knowledge_entries SET
         project_ref=?, short_title=?, long_title=?, knowledge_details=?, entry_type=?,
         source_context=?, confidence_level=?, tags=?, hints=?, updated_at=?,
-        superseded_by=?, is_active=?, has_embedding=?, version=?, updated_by=?
+        superseded_by=?, is_active=?, has_embedding=?, version=?, updated_by=?,
+        sensitivity=?
         WHERE id=?""",
         (
             entry.project_ref,
@@ -101,6 +105,7 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
             int(entry.has_embedding),
             entry.version,
             entry.updated_by,
+            entry.sensitivity,
             entry.id,
         ),
     )

@@ -10,15 +10,15 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Now
 
-- **Intra-cluster noise in search results.** Relative score thresholds cut cross-cluster noise (the "fullstack returns Docker entries" problem), but can't distinguish relevant from irrelevant entries within the same topic cluster. When 8 entries share a cluster, RRF ranks them all similarly — the right one is buried among its neighbors. Needs semantic re-ranking: query-entity matching, personalized PageRank seeded from query terms, or LLM-based re-scoring of the top-k candidates.
+(empty — pick from Later)
 
 ## Later
 
-- **Multi-user Phase 2.** Attribution in search output (contributor badge), contributor/team search filters, `list_contributors` maintain action.
-- **Multi-user Phase 3.** Audit events, sensitivity field on entries, transaction atomicity for multi-entry operations.
+- **Intra-cluster noise in search results.** Relative score thresholds cut cross-cluster noise (the "fullstack returns Docker entries" problem), but can't distinguish relevant from irrelevant entries within the same topic cluster. When 8 entries share a cluster, RRF ranks them all similarly — the right one is buried among its neighbors. Needs semantic re-ranking: query-entity matching, personalized PageRank seeded from query terms, or LLM-based re-scoring of the top-k candidates.
 
 ## Done
 
+- Multi-user Phase 2 & 3 — `@contributor/team` attribution badges in search output, contributor/team filters on kb_search, `list_contributors` maintain action, audit events table (`list_audit`), sensitivity field (internal/restricted/public classification).
 - Multi-user Phase 1 — server-side identity injection (`KB_CONTRIBUTOR`, `KB_TEAM`), contributor/team/updated_by columns, atomic entry ID generation, advisory locks for Postgres schema migration, configurable pool sizes, deployment config table (embedding model consistency), secret scanning on kb_store path.
 
 - Agent feedback loop — search telemetry (automatic in hybrid_search) + kb_feedback tool (missing/unhelpful/friction) + manager explore actions (list_feedback, summarize_feedback, search_stats).

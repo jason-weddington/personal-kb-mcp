@@ -36,6 +36,8 @@ _ACTIONS = {
     "list_feedback",
     "summarize_feedback",
     "search_stats",
+    "list_contributors",
+    "list_audit",
 }
 
 
@@ -50,7 +52,8 @@ def register_kb_maintain(mcp: FastMCP) -> None:
                 description=(
                     "Maintenance action: stats, deactivate, reactivate, "
                     "rebuild_embeddings, rebuild_graph, purge_inactive, vacuum, "
-                    "entry_versions, list_feedback, summarize_feedback, search_stats"
+                    "entry_versions, list_feedback, summarize_feedback, search_stats, "
+                    "list_contributors, list_audit"
                 ),
             ),
         ],
@@ -96,6 +99,8 @@ def register_kb_maintain(mcp: FastMCP) -> None:
         - list_feedback: List recent agent feedback (optional: feedback_type, since)
         - summarize_feedback: LLM-clustered summary of feedback themes (optional: since)
         - search_stats: Search telemetry overview (optional: since)
+        - list_contributors: Show contributor/team stats for active entries
+        - list_audit: Recent audit events (optional: entry_id, since)
         """
         if ctx is None:
             raise RuntimeError("Context not injected")
@@ -133,6 +138,10 @@ def register_kb_maintain(mcp: FastMCP) -> None:
             return await _action_summarize_feedback(db, query_llm, since)
         elif action == "search_stats":
             return await _action_search_stats(db, since)
+        elif action == "list_contributors":
+            return await _action_list_contributors(db)
+        elif action == "list_audit":
+            return await _action_list_audit(db, entry_id, since)
 
         return "Action not implemented."
 
@@ -555,5 +564,71 @@ async def _action_search_stats(
         lines.append("\nTop missed queries (zero results):")
         for mrow in missed_rows:
             lines.append(f"  [{mrow[1]}x] {mrow[0]}")
+
+    return "\n".join(lines)
+
+
+async def _action_list_contributors(db: Database) -> str:
+    """Show contributor/team stats for active entries."""
+    cursor = await db.execute(
+        "SELECT contributor, team, COUNT(*) as entry_count"
+        " FROM knowledge_entries"
+        " WHERE contributor IS NOT NULL AND is_active = 1"
+        " GROUP BY contributor, team"
+        " ORDER BY entry_count DESC"
+    )
+    rows = await cursor.fetchall()
+
+    if not rows:
+        return "No attributed entries found."
+
+    lines = ["Contributors\n"]
+    for row in rows:
+        contributor = row["contributor"]
+        team = row["team"]
+        count = row["entry_count"]
+        badge = f"@{contributor}"
+        if team:
+            badge += f"/{team}"
+        lines.append(f"  {badge} — {count} entries")
+
+    return "\n".join(lines)
+
+
+async def _action_list_audit(
+    db: Database,
+    entry_id: str | None,
+    since: str | None,
+) -> str:
+    """List recent audit events with optional filters."""
+    sql = "SELECT * FROM audit_events WHERE 1=1"
+    params: list[str] = []
+
+    if entry_id:
+        sql += " AND entry_id = ?"
+        params.append(entry_id)
+    if since:
+        sql += " AND created_at >= ?"
+        params.append(since)
+
+    sql += " ORDER BY created_at DESC LIMIT 50"
+
+    cursor = await db.execute(sql, tuple(params))
+    rows = await cursor.fetchall()
+
+    if not rows:
+        return "No audit events found."
+
+    lines = [f"Audit Events ({len(rows)} entries)\n"]
+    for row in rows:
+        date_str = row["created_at"][:19] if row["created_at"] else "unknown"
+        line = f"[{row['event_type']}] {date_str}"
+        if row["entry_id"]:
+            line += f" {row['entry_id']}"
+        if row["contributor"]:
+            line += f" by @{row['contributor']}"
+        if row["detail"]:
+            line += f" — {row['detail']}"
+        lines.append(line)
 
     return "\n".join(lines)

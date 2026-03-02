@@ -10,6 +10,8 @@ from personal_kb.models.entry import EntryType
 from personal_kb.tools.kb_maintain import (
     _action_deactivate,
     _action_entry_versions,
+    _action_list_audit,
+    _action_list_contributors,
     _action_list_feedback,
     _action_purge_inactive,
     _action_reactivate,
@@ -481,3 +483,149 @@ async def test_search_stats_with_since_filter(db):
 
     result = await _action_search_stats(db, "2026-01-01")
     assert "Total queries: 1" in result
+
+
+# --- List contributors ---
+
+
+@pytest.mark.asyncio
+async def test_list_contributors(db, store):
+    """list_contributors should show contributor/team stats."""
+    await store.create_entry(
+        short_title="Entry 1",
+        long_title="First entry",
+        knowledge_details="Details 1",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="jason",
+        team="platform",
+    )
+    await store.create_entry(
+        short_title="Entry 2",
+        long_title="Second entry",
+        knowledge_details="Details 2",
+        entry_type=EntryType.DECISION,
+        contributor="jason",
+        team="platform",
+    )
+    await store.create_entry(
+        short_title="Entry 3",
+        long_title="Third entry",
+        knowledge_details="Details 3",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="alice",
+    )
+
+    result = await _action_list_contributors(db)
+    assert "Contributors" in result
+    assert "@jason/platform" in result
+    assert "2 entries" in result
+    assert "@alice" in result
+    assert "1 entries" in result
+
+
+@pytest.mark.asyncio
+async def test_list_contributors_empty(db):
+    """list_contributors with no attributed entries should return message."""
+    result = await _action_list_contributors(db)
+    assert "No attributed entries found" in result
+
+
+# --- List audit ---
+
+
+@pytest.mark.asyncio
+async def test_list_audit_records_on_create(db, store):
+    """Creating an entry should record an audit event."""
+    await store.create_entry(
+        short_title="Audited entry",
+        long_title="Entry with audit",
+        knowledge_details="Details",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="jason",
+    )
+
+    result = await _action_list_audit(db, None, None)
+    assert "Audit Events" in result
+    assert "[entry_created]" in result
+    assert "kb-00001" in result
+    assert "@jason" in result
+
+
+@pytest.mark.asyncio
+async def test_list_audit_records_on_update(db, store):
+    """Updating an entry should record an audit event."""
+    entry = await store.create_entry(
+        short_title="To update",
+        long_title="Entry to update",
+        knowledge_details="Original",
+        entry_type=EntryType.DECISION,
+    )
+    await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="Updated details",
+        change_reason="Improved info",
+        updated_by="alice",
+    )
+
+    result = await _action_list_audit(db, None, None)
+    assert "[entry_updated]" in result
+    assert "Improved info" in result
+
+
+@pytest.mark.asyncio
+async def test_list_audit_records_on_deactivate(db, store):
+    """Deactivating an entry should record an audit event."""
+    entry = await store.create_entry(
+        short_title="To deactivate",
+        long_title="Entry to deactivate",
+        knowledge_details="Will be deactivated",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await store.deactivate_entry(entry.id)
+
+    result = await _action_list_audit(db, None, None)
+    assert "[entry_deactivated]" in result
+
+
+@pytest.mark.asyncio
+async def test_list_audit_records_on_reactivate(db, store):
+    """Reactivating an entry should record an audit event."""
+    entry = await store.create_entry(
+        short_title="To reactivate",
+        long_title="Entry to reactivate",
+        knowledge_details="Will be reactivated",
+        entry_type=EntryType.DECISION,
+    )
+    await store.deactivate_entry(entry.id)
+    await store.reactivate_entry(entry.id)
+
+    result = await _action_list_audit(db, None, None)
+    assert "[entry_reactivated]" in result
+
+
+@pytest.mark.asyncio
+async def test_list_audit_filter_by_entry_id(db, store):
+    """list_audit should filter by entry_id."""
+    await store.create_entry(
+        short_title="Entry A",
+        long_title="First entry",
+        knowledge_details="Details A",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await store.create_entry(
+        short_title="Entry B",
+        long_title="Second entry",
+        knowledge_details="Details B",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    result = await _action_list_audit(db, "kb-00001", None)
+    assert "kb-00001" in result
+    assert "kb-00002" not in result
+
+
+@pytest.mark.asyncio
+async def test_list_audit_empty(db):
+    """list_audit with no events should return message."""
+    result = await _action_list_audit(db, None, None)
+    assert "No audit events found" in result

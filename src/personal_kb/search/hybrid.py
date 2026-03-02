@@ -40,6 +40,8 @@ async def hybrid_search(
         project_ref=query.project_ref,
         entry_type=query.entry_type.value if query.entry_type else None,
         tags=query.tags,
+        contributor=query.contributor,
+        team=query.team,
     )
 
     # Try vector search

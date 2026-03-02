@@ -163,6 +163,8 @@ class PostgresBackend:
         project_ref: str | None = None,
         entry_type: str | None = None,
         tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> list[tuple[str, float]]:
         """Full-text search via tsvector + ts_rank_cd.
 
@@ -191,6 +193,14 @@ class PostgresBackend:
                 sql += f" AND (' ' || e.tags || ' ') LIKE ${param_idx}"
                 params.append(f"% {tag} %")
                 param_idx += 1
+        if contributor:
+            sql += f" AND e.contributor = ${param_idx}"
+            params.append(contributor)
+            param_idx += 1
+        if team:
+            sql += f" AND e.team = ${param_idx}"
+            params.append(team)
+            param_idx += 1
 
         sql += f" ORDER BY score LIMIT ${param_idx}"
         params.append(limit)
@@ -312,6 +322,7 @@ class PostgresBackend:
                 contributor TEXT,
                 team TEXT,
                 updated_by TEXT,
+                sensitivity TEXT,
                 search_vector tsvector
             )
         """)
@@ -453,6 +464,24 @@ class PostgresBackend:
             )
         """)
 
+        # Audit events
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id SERIAL PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                entry_id TEXT,
+                contributor TEXT,
+                detail TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_audit_entry ON audit_events(entry_id)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at)",
+        ]:
+            await conn.execute(idx_sql)
+
         # Deployment config
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS deployment_config (
@@ -486,6 +515,7 @@ class PostgresBackend:
             ("knowledge_entries", "contributor"),
             ("knowledge_entries", "team"),
             ("knowledge_entries", "updated_by"),
+            ("knowledge_entries", "sensitivity"),
             ("entry_versions", "contributor"),
             ("search_events", "contributor"),
             ("agent_feedback", "contributor"),

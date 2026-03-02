@@ -187,6 +187,11 @@ helps the human prioritize what to add next.
   - feedback_type: 'missing' (KB lacked needed knowledge), \
 'unhelpful' (results existed but didn't help), 'friction' (tool was awkward)
   - Do NOT use for storing knowledge — use kb_store instead.
+
+MAINTENANCE (kb_maintain, requires KB_MANAGER=TRUE):
+- list_contributors: Show contributor/team stats for active entries.
+- list_audit: Recent audit events — who created/updated/deactivated entries \
+(optional: entry_id, since).
 """
 
 

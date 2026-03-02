@@ -171,6 +171,81 @@ async def test_reactivate_active_entry_raises(store):
 
 
 @pytest.mark.asyncio
+async def test_create_entry_with_sensitivity(store):
+    """Sensitivity field should persist through create/read."""
+    entry = await store.create_entry(
+        short_title="Sensitive",
+        long_title="Sensitive entry",
+        knowledge_details="Restricted content",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        sensitivity="restricted",
+    )
+    assert entry.sensitivity == "restricted"
+
+    fetched = await store.get_entry(entry.id)
+    assert fetched is not None
+    assert fetched.sensitivity == "restricted"
+
+
+@pytest.mark.asyncio
+async def test_update_entry_with_sensitivity(store):
+    """Sensitivity can be set on update."""
+    entry = await store.create_entry(
+        short_title="Public",
+        long_title="Public entry",
+        knowledge_details="Public content",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    assert entry.sensitivity is None
+
+    updated = await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="Now restricted",
+        sensitivity="internal",
+    )
+    assert updated.sensitivity == "internal"
+
+    fetched = await store.get_entry(entry.id)
+    assert fetched is not None
+    assert fetched.sensitivity == "internal"
+
+
+@pytest.mark.asyncio
+async def test_audit_events_on_create(db, store):
+    """Creating an entry should produce an audit event."""
+    await store.create_entry(
+        short_title="Audit test",
+        long_title="Audit test entry",
+        knowledge_details="Testing audit",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="jason",
+    )
+
+    cursor = await db.execute("SELECT * FROM audit_events WHERE event_type = 'entry_created'")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["entry_id"] == "kb-00001"
+    assert rows[0]["contributor"] == "jason"
+
+
+@pytest.mark.asyncio
+async def test_audit_events_on_deactivate(db, store):
+    """Deactivating an entry should produce an audit event."""
+    entry = await store.create_entry(
+        short_title="To deactivate",
+        long_title="Deactivation audit test",
+        knowledge_details="Will be deactivated",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await store.deactivate_entry(entry.id)
+
+    cursor = await db.execute("SELECT * FROM audit_events WHERE event_type = 'entry_deactivated'")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["entry_id"] == entry.id
+
+
+@pytest.mark.asyncio
 async def test_has_embedding_flag(store):
     entry = await store.create_entry(
         short_title="Embed test",

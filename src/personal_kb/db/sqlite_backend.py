@@ -101,6 +101,8 @@ class SQLiteBackend:
         project_ref: str | None = None,
         entry_type: str | None = None,
         tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> list[tuple[str, float]]:
         """Full-text search via FTS5 BM25.
 
@@ -130,6 +132,12 @@ class SQLiteBackend:
             for tag in tags:
                 sql += " AND (' ' || e.tags || ' ') LIKE ?"
                 params.append(f"% {tag} %")
+        if contributor:
+            sql += " AND e.contributor = ?"
+            params.append(contributor)
+        if team:
+            sql += " AND e.team = ?"
+            params.append(team)
 
         sql += " ORDER BY score LIMIT ?"
         params.append(limit)

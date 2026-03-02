@@ -45,6 +45,24 @@ async def test_deployment_config_table_exists(db):
 
 
 @pytest.mark.asyncio
+async def test_audit_events_table_exists(db):
+    """audit_events table should exist after schema init."""
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='audit_events'"
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_sensitivity_column_exists(db):
+    """sensitivity column should exist on knowledge_entries after migration."""
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    assert "sensitivity" in cols
+
+
+@pytest.mark.asyncio
 async def test_multi_user_columns_nullable(db):
     """Multi-user columns should accept NULL (existing entries have no attribution)."""
     from personal_kb.models.entry import EntryType

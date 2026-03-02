@@ -102,6 +102,8 @@ def register_kb_search(mcp: FastMCP) -> None:
         include_stale: Annotated[
             bool, Field(description="Include entries with very low confidence")
         ] = False,
+        contributor: Annotated[str | None, Field(description="Filter by contributor name")] = None,
+        team: Annotated[str | None, Field(description="Filter by team name")] = None,
         ctx: Context | None = None,
     ) -> str:
         """Search the personal knowledge base using hybrid semantic + keyword search.
@@ -123,6 +125,8 @@ def register_kb_search(mcp: FastMCP) -> None:
             project_ref=project_ref,
             entry_type=entry_type,
             tags=tags,
+            contributor=contributor,
+            team=team,
             limit=limit,
             include_stale=include_stale,
         )
@@ -130,10 +134,10 @@ def register_kb_search(mcp: FastMCP) -> None:
         lifespan = ctx.lifespan_context
         db = lifespan["db"]
         embedder = lifespan["embedder"]
-        contributor: str | None = lifespan.get("contributor")
+        telemetry_contributor: str | None = lifespan.get("contributor")
 
         results, filtered_count = await hybrid_search(
-            db, embedder, search_query, contributor=contributor
+            db, embedder, search_query, contributor=telemetry_contributor
         )
 
         # Add a note if vector search was unavailable

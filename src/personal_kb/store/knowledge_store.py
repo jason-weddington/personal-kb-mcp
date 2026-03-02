@@ -19,6 +19,26 @@ from personal_kb.models.version import EntryVersion
 logger = logging.getLogger(__name__)
 
 
+async def _record_audit_event(
+    db: Database,
+    event_type: str,
+    entry_id: str,
+    contributor: str | None = None,
+    detail: str | None = None,
+) -> None:
+    """Record an audit event. Fire-and-forget — failures never break the operation."""
+    try:
+        now = datetime.now(UTC).isoformat()
+        await db.execute(
+            "INSERT INTO audit_events (event_type, entry_id, contributor, detail, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (event_type, entry_id, contributor, detail, now),
+        )
+        await db.commit()
+    except Exception:
+        logger.warning("Failed to record audit event", exc_info=True)
+
+
 class KnowledgeStore:
     """CRUD operations for knowledge entries with versioning."""
 
@@ -39,6 +59,7 @@ class KnowledgeStore:
         hints: dict[str, object] | None = None,
         contributor: str | None = None,
         team: str | None = None,
+        sensitivity: str | None = None,
     ) -> KnowledgeEntry:
         """Create a new knowledge entry with initial version."""
         entry_id = await next_entry_id(self.db)
@@ -54,6 +75,7 @@ class KnowledgeStore:
             source_context=source_context,
             contributor=contributor,
             team=team,
+            sensitivity=sensitivity,
             confidence_level=confidence_level,
             tags=tags or [],
             hints=hints or {},
@@ -75,6 +97,8 @@ class KnowledgeStore:
         )
         await insert_version(self.db, version)
 
+        await _record_audit_event(self.db, "entry_created", entry_id, contributor, short_title)
+
         logger.info("Created entry %s: %s", entry_id, short_title)
         return entry
 
@@ -87,6 +111,7 @@ class KnowledgeStore:
         tags: list[str] | None = None,
         hints: dict[str, object] | None = None,
         updated_by: str | None = None,
+        sensitivity: str | None = None,
     ) -> KnowledgeEntry:
         """Update an existing entry, creating a new version."""
         existing = await get_entry(self.db, entry_id)
@@ -106,18 +131,20 @@ class KnowledgeStore:
         if hints:
             merged_hints.update(hints)
 
-        updated = existing.model_copy(
-            update={
-                "knowledge_details": knowledge_details,
-                "confidence_level": new_confidence,
-                "tags": tags if tags is not None else existing.tags,
-                "hints": merged_hints,
-                "updated_at": now,
-                "version": new_version,
-                "has_embedding": False,  # Reset — needs re-embedding
-                "updated_by": updated_by,
-            }
-        )
+        update_fields: dict[str, object] = {
+            "knowledge_details": knowledge_details,
+            "confidence_level": new_confidence,
+            "tags": tags if tags is not None else existing.tags,
+            "hints": merged_hints,
+            "updated_at": now,
+            "version": new_version,
+            "has_embedding": False,  # Reset — needs re-embedding
+            "updated_by": updated_by,
+        }
+        if sensitivity is not None:
+            update_fields["sensitivity"] = sensitivity
+
+        updated = existing.model_copy(update=update_fields)
         await update_entry(self.db, updated)
 
         # Create version record
@@ -131,6 +158,9 @@ class KnowledgeStore:
             created_at=now,
         )
         await insert_version(self.db, version)
+
+        detail = change_reason or f"Updated to v{new_version}"
+        await _record_audit_event(self.db, "entry_updated", entry_id, updated_by, detail)
 
         logger.info("Updated entry %s to v%d", entry_id, new_version)
         return updated
@@ -147,7 +177,9 @@ class KnowledgeStore:
         )
         await self.db.commit()
 
-    async def deactivate_entry(self, entry_id: str) -> KnowledgeEntry:
+    async def deactivate_entry(
+        self, entry_id: str, contributor: str | None = None
+    ) -> KnowledgeEntry:
         """Deactivate an entry (soft-delete). Entry must exist and be active."""
         existing = await get_entry(self.db, entry_id)
         if existing is None:
@@ -157,10 +189,15 @@ class KnowledgeStore:
 
         await deactivate_entry_db(self.db, entry_id)
         entry = await get_entry(self.db, entry_id)
+        await _record_audit_event(
+            self.db, "entry_deactivated", entry_id, contributor, existing.short_title
+        )
         logger.info("Deactivated entry %s", entry_id)
         return entry  # type: ignore[return-value]
 
-    async def reactivate_entry(self, entry_id: str) -> KnowledgeEntry:
+    async def reactivate_entry(
+        self, entry_id: str, contributor: str | None = None
+    ) -> KnowledgeEntry:
         """Reactivate a previously deactivated entry. Entry must exist and be inactive."""
         existing = await get_entry(self.db, entry_id)
         if existing is None:
@@ -170,6 +207,9 @@ class KnowledgeStore:
 
         await reactivate_entry_db(self.db, entry_id)
         entry = await get_entry(self.db, entry_id)
+        await _record_audit_event(
+            self.db, "entry_reactivated", entry_id, contributor, existing.short_title
+        )
         logger.info("Reactivated entry %s", entry_id)
         return entry  # type: ignore[return-value]
 

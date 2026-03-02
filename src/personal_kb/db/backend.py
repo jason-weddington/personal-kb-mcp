@@ -78,6 +78,8 @@ class Database(Protocol):
         project_ref: str | None = None,
         entry_type: str | None = None,
         tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> list[tuple[str, float]]:
         """Full-text search. Returns (entry_id, score) — lower = better."""
         ...

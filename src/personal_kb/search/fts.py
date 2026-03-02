@@ -14,6 +14,8 @@ async def fts_search(
     project_ref: str | None = None,
     entry_type: str | None = None,
     tags: list[str] | None = None,
+    contributor: str | None = None,
+    team: str | None = None,
 ) -> list[tuple[str, float]]:
     """Search using FTS5 BM25 ranking.
 
@@ -30,6 +32,8 @@ async def fts_search(
             project_ref=project_ref,
             entry_type=entry_type,
             tags=tags,
+            contributor=contributor,
+            team=team,
         )
     except Exception:
         logger.warning("FTS search failed for query: %s", query, exc_info=True)

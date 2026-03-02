@@ -70,6 +70,8 @@ async def batch_store_entries(
         tags = entry_dict.get("tags")
         hints = entry_dict.get("hints")
 
+        sensitivity = entry_dict.get("sensitivity")
+
         entry = await store.create_entry(
             short_title=entry_dict["short_title"],
             long_title=entry_dict["long_title"],
@@ -82,6 +84,7 @@ async def batch_store_entries(
             hints=dict(hints) if hints else None,
             contributor=contributor,
             team=team,
+            sensitivity=str(sensitivity) if sensitivity else None,
         )
 
         # Embed

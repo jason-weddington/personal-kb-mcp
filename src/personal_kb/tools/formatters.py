@@ -13,13 +13,21 @@ def format_entry_header(entry: KnowledgeEntry, effective_confidence: float) -> s
 
 
 def format_entry_meta(entry: KnowledgeEntry, stale_warning: str | None = None) -> str:
-    """Format: #tag1 #tag2 | project  [STALE]."""
+    """Format: #tag1 #tag2 | project | @contributor/team  [RESTRICTED]  [STALE]."""
     parts: list[str] = []
     if entry.tags:
         parts.append(" ".join(f"#{t}" for t in entry.tags))
     if entry.project_ref:
         parts.append(entry.project_ref)
+    if entry.contributor:
+        badge = f"@{entry.contributor}"
+        if entry.team:
+            badge += f"/{entry.team}"
+        parts.append(badge)
     line = " | ".join(parts)
+    if entry.sensitivity and entry.sensitivity != "public":
+        label = f"[{entry.sensitivity.upper()}]"
+        line = f"{line}  {label}" if line else label
     if stale_warning:
         line = f"{line}  [STALE]" if line else "[STALE]"
     return line

@@ -120,6 +120,9 @@ async def apply_schema(db: Database) -> None:
     await apply_search_events_schema(db)
     await apply_feedback_schema(db)
 
+    # Audit events table
+    await apply_audit_events_schema(db)
+
     # Deployment config table
     await apply_deployment_config_schema(db)
 
@@ -222,6 +225,27 @@ async def apply_feedback_schema(db: Database) -> None:
     await db.commit()
 
 
+AUDIT_EVENTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    entry_id TEXT,
+    contributor TEXT,
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_entry ON audit_events(entry_id);
+CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+"""
+
+
+async def apply_audit_events_schema(db: Database) -> None:
+    """Create audit_events table."""
+    await db.executescript(AUDIT_EVENTS_SCHEMA_SQL)
+    await db.commit()
+
+
 DEPLOYMENT_CONFIG_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS deployment_config (
     key TEXT PRIMARY KEY,
@@ -287,3 +311,9 @@ async def _migrate_v2_multi_user(db: Database) -> None:
     ig_cols = {row[1] for row in await cursor.fetchall()}
     if "contributor" not in ig_cols:
         await db.execute("ALTER TABLE ingested_files ADD COLUMN contributor TEXT")
+
+    # knowledge_entries: sensitivity (Phase 2/3)
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    ke_cols = {row[1] for row in await cursor.fetchall()}
+    if "sensitivity" not in ke_cols:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN sensitivity TEXT")

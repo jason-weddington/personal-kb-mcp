@@ -78,6 +78,15 @@ def register_kb_store(mcp: FastMCP) -> None:
             str | None,
             Field(description="ID of existing entry to update (e.g. kb-00042)"),
         ] = None,
+        sensitivity: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Sensitivity classification: internal, restricted, public, or None. "
+                    "Classification only — no enforcement."
+                ),
+            ),
+        ] = None,
         deactivate_entry_id: Annotated[
             str | None,
             Field(
@@ -150,6 +159,7 @@ def register_kb_store(mcp: FastMCP) -> None:
                 tags=tags,
                 hints=hints,
                 updated_by=contributor,
+                sensitivity=sensitivity,
             )
             # Re-embed updated entry
             if embedder:
@@ -183,6 +193,7 @@ def register_kb_store(mcp: FastMCP) -> None:
             hints=hints,
             contributor=contributor,
             team=team,
+            sensitivity=sensitivity,
         )
 
         # Embed new entry

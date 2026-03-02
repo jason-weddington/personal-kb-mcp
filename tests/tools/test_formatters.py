@@ -184,3 +184,62 @@ def test_result_list_no_header():
     entries = ["[kb-00001] factual_reference | A (90%)"]
     result = format_result_list(entries)
     assert "1 result(s)" in result
+
+
+# --- Attribution badge ---
+
+
+def test_meta_contributor_only():
+    entry = _make_entry(contributor="jason")
+    result = format_entry_meta(entry)
+    assert "@jason" in result
+    # Should not have a slash
+    assert "@jason/" not in result
+
+
+def test_meta_contributor_and_team():
+    entry = _make_entry(contributor="jason", team="platform")
+    result = format_entry_meta(entry)
+    assert "@jason/platform" in result
+
+
+def test_meta_no_contributor():
+    entry = _make_entry()
+    result = format_entry_meta(entry)
+    assert "@" not in result
+
+
+# --- Sensitivity badge ---
+
+
+def test_meta_sensitivity_restricted():
+    entry = _make_entry(sensitivity="restricted")
+    result = format_entry_meta(entry)
+    assert "[RESTRICTED]" in result
+
+
+def test_meta_sensitivity_internal():
+    entry = _make_entry(sensitivity="internal")
+    result = format_entry_meta(entry)
+    assert "[INTERNAL]" in result
+
+
+def test_meta_sensitivity_public_hidden():
+    entry = _make_entry(sensitivity="public")
+    result = format_entry_meta(entry)
+    assert "[PUBLIC]" not in result
+
+
+def test_meta_sensitivity_none_hidden():
+    entry = _make_entry(sensitivity=None)
+    result = format_entry_meta(entry)
+    assert "[RESTRICTED]" not in result
+    assert "[INTERNAL]" not in result
+
+
+def test_meta_sensitivity_with_staleness():
+    """Sensitivity and staleness badges should both appear."""
+    entry = _make_entry(sensitivity="restricted")
+    result = format_entry_meta(entry, stale_warning="Stale")
+    assert "[RESTRICTED]" in result
+    assert "[STALE]" in result

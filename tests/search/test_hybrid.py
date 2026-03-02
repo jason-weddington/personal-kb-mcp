@@ -293,6 +293,56 @@ async def test_search_event_contributor_none_by_default(db, store):
 
 
 @pytest.mark.asyncio
+async def test_hybrid_contributor_filter(db, store):
+    """Search with contributor filter should only return matching entries."""
+    await store.create_entry(
+        short_title="Jason config",
+        long_title="Jason configuration details",
+        knowledge_details="Config details from Jason.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="jason",
+    )
+    await store.create_entry(
+        short_title="Alice config",
+        long_title="Alice configuration details",
+        knowledge_details="Config details from Alice.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="alice",
+    )
+
+    query = SearchQuery(query="config details", contributor="jason")
+    results, _filtered = await hybrid_search(db, None, query)
+    assert len(results) >= 1
+    assert all(r.entry.contributor == "jason" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_team_filter(db, store):
+    """Search with team filter should only return matching entries."""
+    await store.create_entry(
+        short_title="Platform config",
+        long_title="Platform team configuration",
+        knowledge_details="Config for platform team.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="jason",
+        team="platform",
+    )
+    await store.create_entry(
+        short_title="Infra config",
+        long_title="Infra team configuration",
+        knowledge_details="Config for infra team.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="alice",
+        team="infra",
+    )
+
+    query = SearchQuery(query="config", team="platform")
+    results, _filtered = await hybrid_search(db, None, query)
+    assert len(results) >= 1
+    assert all(r.entry.team == "platform" for r in results)
+
+
+@pytest.mark.asyncio
 async def test_search_telemetry_failure_does_not_break_search(db, store, monkeypatch):
     """Telemetry failure should not break the search results."""
     await store.create_entry(
