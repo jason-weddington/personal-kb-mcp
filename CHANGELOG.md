@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.21.0 (2026-03-02)
+
+### Features
+
+- Agent feedback loop with search telemetry and structured feedback
+  ([`63541a9`](https://github.com/jason-weddington/personal-kb-mcp/commit/63541a904b4f6842a27e8eeaeaaac3a7f7784617))
+
+
 ## v0.20.0 (2026-03-01)
 
 ### Features
