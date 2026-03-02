@@ -104,6 +104,10 @@ class Database(Protocol):
         """Backend-specific optimization. Returns status string."""
         ...
 
+    async def next_sequence_value(self) -> int:
+        """Atomically get and increment the entry ID sequence. Returns the current value."""
+        ...
+
     async def apply_schema(self, *, embedding_dim: int = 1024) -> None:
         """Apply all DDL for this backend."""
         ...

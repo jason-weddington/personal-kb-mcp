@@ -138,6 +138,8 @@ class FileIngester:
         graph_enricher: GraphEnricher | None,
         llm: LLMProvider,
         dedup_agent: "DedupAgent | None" = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> None:
         """Initialize with all required dependencies."""
         self._db = db
@@ -147,6 +149,8 @@ class FileIngester:
         self._graph_enricher = graph_enricher
         self._llm = llm
         self._dedup_agent = dedup_agent
+        self._contributor = contributor
+        self._team = team
 
     async def ingest_file(
         self,
@@ -325,7 +329,8 @@ class FileIngester:
             await self._db.execute(
                 "UPDATE ingested_files SET content_hash = ?, note_node_id = ?, "
                 "entry_ids = ?, summary = ?, file_size = ?, file_extension = ?, "
-                "project_ref = ?, redactions = ?, updated_at = ?, is_active = 1 "
+                "project_ref = ?, redactions = ?, contributor = ?, "
+                "updated_at = ?, is_active = 1 "
                 "WHERE relative_path = ?",
                 (
                     content_hash,
@@ -336,6 +341,7 @@ class FileIngester:
                     path.suffix,
                     project_ref,
                     json.dumps(safety.redactions),
+                    self._contributor,
                     now,
                     rel_path,
                 ),
@@ -344,9 +350,9 @@ class FileIngester:
             await self._db.execute(
                 "INSERT INTO ingested_files "
                 "(relative_path, content_hash, note_node_id, entry_ids, summary, "
-                "file_size, file_extension, project_ref, redactions, ingested_at, "
-                "updated_at, is_active) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                "file_size, file_extension, project_ref, redactions, contributor, "
+                "ingested_at, updated_at, is_active) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                 (
                     rel_path,
                     content_hash,
@@ -357,6 +363,7 @@ class FileIngester:
                     path.suffix,
                     project_ref,
                     json.dumps(safety.redactions),
+                    self._contributor,
                     now,
                     now,
                 ),
@@ -486,6 +493,8 @@ class FileIngester:
                 project_ref=project_ref,
                 source_context=f"Ingested from {source_path}",
                 tags=ext.tags,
+                contributor=self._contributor,
+                team=self._team,
             )
         except Exception:
             logger.warning("Failed to create entry from %s", source_path, exc_info=True)

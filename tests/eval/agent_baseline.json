@@ -38,8 +38,8 @@
       "ndcg_at_k": 1.0,
       "top_k": 5,
       "result_count": 3,
-      "turns_used": 1,
-      "reasoning": "The user is asking about choosing between FastAPI and Flask. kb-00009 is a direct decision entry comparing FastAPI vs Flask with a clear choice made, which directly answers the question. kb-00010 and kb-00011 provide relevant context on REST API conventions and FastAPI-specific patterns (JWT auth middleware), showing practical considerations for the chosen framework. These three entries together provide the decision rationale and supporting implementation patterns."
+      "turns_used": 2,
+      "reasoning": "kb-00009 is the direct decision entry comparing FastAPI vs Flask with a clear choice rationale. kb-00010 and kb-00011 provide complementary implementation patterns (REST conventions and JWT middleware) for the chosen FastAPI framework, giving a complete picture of the decision and its architectural implications."
     },
     "q05-rest-auth": {
       "mrr": 1.0,
@@ -48,16 +48,16 @@
       "top_k": 5,
       "result_count": 3,
       "turns_used": 1,
-      "reasoning": "User is asking about REST API authentication with JWT tokens. The search results clearly show kb-00011 (jwt-auth-middleware) is the most directly relevant entry covering JWT authentication middleware pattern for FastAPI. kb-00010 (rest-api-conventions) provides context on REST API design patterns, and kb-00012 (cors-config-pattern) covers related security configuration. These three entries form a coherent answer set for implementing JWT token authentication in REST APIs."
+      "reasoning": "The question asks about REST API authentication with JWT tokens. kb-00011 (jwt-auth-middleware) is the most directly relevant entry, covering JWT authentication middleware for FastAPI. kb-00010 (rest-api-conventions) provides context on REST API design that would include authentication patterns. kb-00009 (fastapi-vs-flask-decision) gives the framework context for implementation. These three entries together provide a comprehensive answer to the JWT authentication question."
     },
     "q06-cors-setup": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 2,
+      "result_count": 3,
       "turns_used": 1,
-      "reasoning": "kb-00012 is a direct match for 'CORS configuration allow origins middleware' \u2014 it's specifically a CORS configuration pattern for FastAPI. kb-00011 provides complementary middleware pattern knowledge for authentication which relates to security middleware implementation. These entries together provide comprehensive guidance on CORS middleware configuration and allow origins setup."
+      "reasoning": "kb-00012 'cors-config-pattern' is the direct match for CORS configuration with allow origins middleware. kb-00011 'jwt-auth-middleware' provides complementary middleware pattern context for FastAPI. kb-00010 'rest-api-conventions' offers broader API design context relevant to CORS as a web service security concern. All three are tagged with #web, #api, and #security."
     },
     "q07-docker-setup": {
       "mrr": 1.0,
@@ -84,7 +84,7 @@
       "top_k": 5,
       "result_count": 3,
       "turns_used": 1,
-      "reasoning": "User asks about 'asyncio race condition database locking'. The initial search returned highly relevant results: kb-00026 directly covers debugging asyncio race conditions in aiosqlite (exact match), kb-00029 covers database deadlocks in concurrent SQLite access (directly relevant to database locking), and kb-00030 covers event loop reuse issues in async testing (relevant to asyncio race conditions). These three entries comprehensively address the user's question about asyncio race conditions and database locking."
+      "reasoning": "Three highly relevant entries directly address the user's question about asyncio race conditions and database locking: kb-00026 explicitly covers debugging asyncio race conditions in aiosqlite, kb-00029 covers database deadlocks in concurrent SQLite access (directly related to locking), and kb-00030 covers async event loop issues that can cause race conditions in testing. All three are tagged with relevant keywords (async, concurrency, debugging, sqlite) and address the core concern of database access under concurrent async conditions."
     },
     "q10-encoding-bug": {
       "mrr": 1.0,
@@ -93,7 +93,7 @@
       "top_k": 5,
       "result_count": 1,
       "turns_used": 1,
-      "reasoning": "The user's question about 'UTF-8 JSON encoding unicode errors' has a direct match with kb-00027 'encoding-utf8-gotcha', which explicitly covers UTF-8 encoding gotcha with JSON serialization in Python. This entry is tagged with #python #json #encoding #debugging, which perfectly aligns with all aspects of the user's query. The other results (kb-00026, kb-00028, kb-00029, kb-00030) cover unrelated topics like asyncio race conditions, memory leaks, database deadlocks, and test flakes respectively."
+      "reasoning": "The question asks about UTF-8 JSON encoding unicode errors. Entry kb-00027 is a direct match: 'UTF-8 encoding gotcha with JSON serialization in Python' with tags #python #json #encoding #debugging. This is clearly the most relevant entry for the user's question about UTF-8 JSON encoding unicode errors. The other entries (race conditions, memory leaks, deadlocks, test flakes) are not relevant to the specific query."
     },
     "q11-project-filter": {
       "mrr": 1.0,

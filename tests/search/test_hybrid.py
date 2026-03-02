@@ -256,6 +256,43 @@ async def test_search_event_zero_results(db):
 
 
 @pytest.mark.asyncio
+async def test_search_event_records_contributor(db, store):
+    """Search event should include contributor when provided."""
+    await store.create_entry(
+        short_title="Contributor telemetry",
+        long_title="Testing contributor in search events",
+        knowledge_details="Contributor should appear in telemetry.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    query = SearchQuery(query="contributor telemetry")
+    await hybrid_search(db, None, query, contributor="jason")
+
+    cursor = await db.execute("SELECT * FROM search_events")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["contributor"] == "jason"
+
+
+@pytest.mark.asyncio
+async def test_search_event_contributor_none_by_default(db, store):
+    """Search event contributor is NULL when not provided."""
+    await store.create_entry(
+        short_title="No contributor",
+        long_title="Search without contributor",
+        knowledge_details="No contributor set.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    query = SearchQuery(query="no contributor")
+    await hybrid_search(db, None, query)
+
+    cursor = await db.execute("SELECT contributor FROM search_events")
+    row = await cursor.fetchone()
+    assert row["contributor"] is None
+
+
+@pytest.mark.asyncio
 async def test_search_telemetry_failure_does_not_break_search(db, store, monkeypatch):
     """Telemetry failure should not break the search results."""
     await store.create_entry(

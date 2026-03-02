@@ -37,6 +37,8 @@ class KnowledgeStore:
         confidence_level: float = 0.9,
         tags: list[str] | None = None,
         hints: dict[str, object] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> KnowledgeEntry:
         """Create a new knowledge entry with initial version."""
         entry_id = await next_entry_id(self.db)
@@ -50,6 +52,8 @@ class KnowledgeStore:
             knowledge_details=knowledge_details,
             entry_type=entry_type,
             source_context=source_context,
+            contributor=contributor,
+            team=team,
             confidence_level=confidence_level,
             tags=tags or [],
             hints=hints or {},
@@ -65,6 +69,7 @@ class KnowledgeStore:
             version_number=1,
             knowledge_details=knowledge_details,
             change_reason="Initial creation",
+            contributor=contributor,
             confidence_level=confidence_level,
             created_at=now,
         )
@@ -81,6 +86,7 @@ class KnowledgeStore:
         confidence_level: float | None = None,
         tags: list[str] | None = None,
         hints: dict[str, object] | None = None,
+        updated_by: str | None = None,
     ) -> KnowledgeEntry:
         """Update an existing entry, creating a new version."""
         existing = await get_entry(self.db, entry_id)
@@ -109,6 +115,7 @@ class KnowledgeStore:
                 "updated_at": now,
                 "version": new_version,
                 "has_embedding": False,  # Reset — needs re-embedding
+                "updated_by": updated_by,
             }
         )
         await update_entry(self.db, updated)
@@ -119,6 +126,7 @@ class KnowledgeStore:
             version_number=new_version,
             knowledge_details=knowledge_details,
             change_reason=change_reason,
+            contributor=updated_by,
             confidence_level=new_confidence,
             created_at=now,
         )

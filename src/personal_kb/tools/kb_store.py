@@ -9,8 +9,10 @@ from fastmcp.server.context import Context
 from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence
+from personal_kb.config import is_safety_skip
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.ingest.safety import detect_secrets_in_content
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
@@ -112,6 +114,8 @@ def register_kb_store(mcp: FastMCP) -> None:
         embedder: EmbeddingClient = lifespan["embedder"]
         graph_builder: GraphBuilder = lifespan["graph_builder"]
         db = lifespan["db"]
+        contributor: str | None = lifespan.get("contributor")
+        team: str | None = lifespan.get("team")
 
         graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
 
@@ -134,6 +138,10 @@ def register_kb_store(mcp: FastMCP) -> None:
         if update_entry_id:
             if not knowledge_details:
                 return "Error: knowledge_details is required when updating."
+            # Secret scanning
+            secret_err = _check_secrets(knowledge_details)
+            if secret_err:
+                return secret_err
             entry = await store.update_entry(
                 entry_id=update_entry_id,
                 knowledge_details=knowledge_details,
@@ -141,6 +149,7 @@ def register_kb_store(mcp: FastMCP) -> None:
                 confidence_level=confidence_level,
                 tags=tags,
                 hints=hints,
+                updated_by=contributor,
             )
             # Re-embed updated entry
             if embedder:
@@ -157,6 +166,11 @@ def register_kb_store(mcp: FastMCP) -> None:
                 "are required when creating a new entry."
             )
 
+        # Secret scanning
+        secret_err = _check_secrets(knowledge_details)
+        if secret_err:
+            return secret_err
+
         entry = await store.create_entry(
             short_title=short_title,
             long_title=long_title,
@@ -167,6 +181,8 @@ def register_kb_store(mcp: FastMCP) -> None:
             confidence_level=confidence_level,
             tags=tags,
             hints=hints,
+            contributor=contributor,
+            team=team,
         )
 
         # Embed new entry
@@ -208,3 +224,18 @@ async def _embed_entry(
             await store.mark_embedding(entry.id, True)
     except Exception:
         logger.warning("Failed to embed entry %s", entry.id, exc_info=True)
+
+
+def _check_secrets(content: str) -> str | None:
+    """Return an error message if secrets are detected, None otherwise."""
+    if is_safety_skip():
+        return None
+    secrets = detect_secrets_in_content(content)
+    if secrets:
+        types = ", ".join(secrets)
+        return (
+            f"Error: Potential secrets detected ({types}). "
+            "Remove sensitive values before storing. "
+            "Set KB_SKIP_SAFETY=TRUE to override."
+        )
+    return None

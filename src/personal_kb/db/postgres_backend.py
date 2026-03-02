@@ -112,11 +112,11 @@ class PostgresBackend:
         self._pool = pool
 
     @classmethod
-    async def create(cls, url: str) -> PostgresBackend:
+    async def create(cls, url: str, *, pool_min: int = 2, pool_max: int = 10) -> PostgresBackend:
         """Create a PostgresBackend from a connection URL."""
         import asyncpg as _asyncpg
 
-        pool = await _asyncpg.create_pool(url, min_size=2, max_size=10)
+        pool = await _asyncpg.create_pool(url, min_size=pool_min, max_size=pool_max)
         return cls(pool)
 
     async def execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Cursor:
@@ -244,6 +244,19 @@ class PostgresBackend:
                 entry_id,
             )
 
+    # -- Sequence --
+
+    async def next_sequence_value(self) -> int:
+        """Atomically get and increment the entry ID sequence."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE entry_id_seq SET next_id = next_id + 1 RETURNING next_id - 1 AS val"
+            )
+            if row is None:
+                raise RuntimeError("entry_id_seq table is empty")
+            val: int = row["val"]
+            return val
+
     # -- Maintenance --
 
     async def vacuum(self) -> str:
@@ -255,182 +268,242 @@ class PostgresBackend:
     # -- Schema --
 
     async def apply_schema(self, *, embedding_dim: int = 1024) -> None:
-        """Apply all PostgreSQL DDL."""
+        """Apply all PostgreSQL DDL. Uses advisory lock for migration safety."""
         async with self._pool.acquire() as conn:
-            # Enable pgvector
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            # Advisory lock ensures only one server instance runs migrations
+            await conn.execute("SELECT pg_advisory_lock(42)")
+            try:
+                await self._apply_schema_locked(conn, embedding_dim=embedding_dim)
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(42)")
 
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS schema_version (
-                    version INTEGER NOT NULL
-                )
-            """)
+    async def _apply_schema_locked(
+        self, conn: asyncpg.Connection, *, embedding_dim: int = 1024
+    ) -> None:
+        """Apply all PostgreSQL DDL inside an advisory lock."""
+        # Enable pgvector (must be outside transaction on some PG versions)
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS knowledge_entries (
-                    id TEXT PRIMARY KEY,
-                    project_ref TEXT,
-                    short_title TEXT NOT NULL,
-                    long_title TEXT NOT NULL,
-                    knowledge_details TEXT NOT NULL,
-                    entry_type TEXT NOT NULL,
-                    source_context TEXT,
-                    confidence_level REAL NOT NULL DEFAULT 0.9,
-                    tags TEXT NOT NULL DEFAULT '[]',
-                    hints TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_accessed TEXT,
-                    superseded_by TEXT,
-                    is_active INTEGER NOT NULL DEFAULT 1,
-                    has_embedding INTEGER NOT NULL DEFAULT 0,
-                    version INTEGER NOT NULL DEFAULT 1,
-                    search_vector tsvector
-                )
-            """)
-
-            # Indexes
-            for idx_sql in [
-                "CREATE INDEX IF NOT EXISTS idx_entries_project ON knowledge_entries(project_ref)",
-                "CREATE INDEX IF NOT EXISTS idx_entries_type ON knowledge_entries(entry_type)",
-                "CREATE INDEX IF NOT EXISTS idx_entries_active ON knowledge_entries(is_active)",
-                "CREATE INDEX IF NOT EXISTS idx_entries_fts"
-                " ON knowledge_entries USING gin(search_vector)",
-            ]:
-                await conn.execute(idx_sql)
-
-            # tsvector trigger
-            await conn.execute("""
-                CREATE OR REPLACE FUNCTION knowledge_entries_search_trigger() RETURNS trigger AS $$
-                BEGIN
-                    NEW.search_vector :=
-                        setweight(to_tsvector('english', COALESCE(NEW.short_title, '')), 'A') ||
-                        setweight(to_tsvector('english', COALESCE(NEW.long_title, '')), 'B') ||
-                        setweight(to_tsvector('english',
-                            COALESCE(NEW.knowledge_details, '')), 'C') ||
-                        setweight(to_tsvector('english', COALESCE(NEW.tags, '')), 'D');
-                    RETURN NEW;
-                END
-                $$ LANGUAGE plpgsql
-            """)
-
-            # Drop and recreate trigger to ensure it's current
-            await conn.execute("DROP TRIGGER IF EXISTS tsvector_update ON knowledge_entries")
-            await conn.execute("""
-                CREATE TRIGGER tsvector_update BEFORE INSERT OR UPDATE
-                ON knowledge_entries FOR EACH ROW
-                EXECUTE FUNCTION knowledge_entries_search_trigger()
-            """)
-
-            # Entry versions
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS entry_versions (
-                    id SERIAL PRIMARY KEY,
-                    entry_id TEXT NOT NULL REFERENCES knowledge_entries(id),
-                    version_number INTEGER NOT NULL,
-                    knowledge_details TEXT NOT NULL,
-                    change_reason TEXT,
-                    confidence_level REAL NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(entry_id, version_number)
-                )
-            """)
-
-            # Entry ID sequence
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS entry_id_seq (
-                    next_id INTEGER NOT NULL DEFAULT 1
-                )
-            """)
-            await conn.execute("""
-                INSERT INTO entry_id_seq (next_id)
-                SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM entry_id_seq)
-            """)
-
-            # Graph tables
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS graph_nodes (
-                    node_id TEXT PRIMARY KEY,
-                    node_type TEXT NOT NULL,
-                    properties TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                )
-            """)
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_nodes_type ON graph_nodes(node_type)"
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
             )
+        """)
 
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS graph_edges (
-                    id SERIAL PRIMARY KEY,
-                    source TEXT NOT NULL REFERENCES graph_nodes(node_id),
-                    target TEXT NOT NULL REFERENCES graph_nodes(node_id),
-                    edge_type TEXT NOT NULL,
-                    properties TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    UNIQUE(source, target, edge_type)
-                )
-            """)
-            for idx_sql in [
-                "CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source)",
-                "CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target)",
-                "CREATE INDEX IF NOT EXISTS idx_edges_type ON graph_edges(edge_type)",
-            ]:
-                await conn.execute(idx_sql)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id TEXT PRIMARY KEY,
+                project_ref TEXT,
+                short_title TEXT NOT NULL,
+                long_title TEXT NOT NULL,
+                knowledge_details TEXT NOT NULL,
+                entry_type TEXT NOT NULL,
+                source_context TEXT,
+                confidence_level REAL NOT NULL DEFAULT 0.9,
+                tags TEXT NOT NULL DEFAULT '[]',
+                hints TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_accessed TEXT,
+                superseded_by TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                has_embedding INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 1,
+                contributor TEXT,
+                team TEXT,
+                updated_by TEXT,
+                search_vector tsvector
+            )
+        """)
 
-            # Ingest table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS ingested_files (
-                    id SERIAL PRIMARY KEY,
-                    relative_path TEXT NOT NULL UNIQUE,
-                    content_hash TEXT NOT NULL,
-                    note_node_id TEXT NOT NULL,
-                    entry_ids TEXT NOT NULL DEFAULT '[]',
-                    summary TEXT NOT NULL,
-                    file_size INTEGER NOT NULL,
-                    file_extension TEXT NOT NULL,
-                    project_ref TEXT,
-                    redactions TEXT NOT NULL DEFAULT '[]',
-                    ingested_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    is_active INTEGER NOT NULL DEFAULT 1
-                )
-            """)
+        # Indexes
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_entries_project ON knowledge_entries(project_ref)",
+            "CREATE INDEX IF NOT EXISTS idx_entries_type ON knowledge_entries(entry_type)",
+            "CREATE INDEX IF NOT EXISTS idx_entries_active ON knowledge_entries(is_active)",
+            "CREATE INDEX IF NOT EXISTS idx_entries_fts"
+            " ON knowledge_entries USING gin(search_vector)",
+            "CREATE INDEX IF NOT EXISTS idx_entries_contributor ON knowledge_entries(contributor)",
+            "CREATE INDEX IF NOT EXISTS idx_entries_team ON knowledge_entries(team)",
+        ]:
+            await conn.execute(idx_sql)
 
-            # Search telemetry
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS search_events (
-                    id SERIAL PRIMARY KEY,
-                    query_text TEXT NOT NULL,
-                    result_count INTEGER NOT NULL,
-                    top_score REAL,
-                    match_source TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-            """)
+        # tsvector trigger
+        await conn.execute("""
+            CREATE OR REPLACE FUNCTION knowledge_entries_search_trigger() RETURNS trigger AS $$
+            BEGIN
+                NEW.search_vector :=
+                    setweight(to_tsvector('english', COALESCE(NEW.short_title, '')), 'A') ||
+                    setweight(to_tsvector('english', COALESCE(NEW.long_title, '')), 'B') ||
+                    setweight(to_tsvector('english',
+                        COALESCE(NEW.knowledge_details, '')), 'C') ||
+                    setweight(to_tsvector('english', COALESCE(NEW.tags, '')), 'D');
+                RETURN NEW;
+            END
+            $$ LANGUAGE plpgsql
+        """)
 
-            # Agent feedback
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS agent_feedback (
-                    id SERIAL PRIMARY KEY,
-                    feedback_type TEXT NOT NULL
-                        CHECK(feedback_type IN ('missing', 'unhelpful', 'friction')),
-                    tool_name TEXT,
-                    query_or_params TEXT,
-                    detail TEXT,
-                    created_at TEXT NOT NULL
-                )
-            """)
+        # Drop and recreate trigger to ensure it's current
+        await conn.execute("DROP TRIGGER IF EXISTS tsvector_update ON knowledge_entries")
+        await conn.execute("""
+            CREATE TRIGGER tsvector_update BEFORE INSERT OR UPDATE
+            ON knowledge_entries FOR EACH ROW
+            EXECUTE FUNCTION knowledge_entries_search_trigger()
+        """)
 
-            # Vector table (pgvector)
-            await conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS knowledge_vec (
-                    entry_id TEXT PRIMARY KEY,
-                    embedding vector({embedding_dim})
-                )
-            """)
+        # Entry versions
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS entry_versions (
+                id SERIAL PRIMARY KEY,
+                entry_id TEXT NOT NULL REFERENCES knowledge_entries(id),
+                version_number INTEGER NOT NULL,
+                knowledge_details TEXT NOT NULL,
+                change_reason TEXT,
+                confidence_level REAL NOT NULL,
+                contributor TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(entry_id, version_number)
+            )
+        """)
 
-            # Schema version init
-            row = await conn.fetchrow("SELECT version FROM schema_version")
+        # Entry ID sequence
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS entry_id_seq (
+                next_id INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        await conn.execute("""
+            INSERT INTO entry_id_seq (next_id)
+            SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM entry_id_seq)
+        """)
+
+        # Graph tables
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS graph_nodes (
+                node_id TEXT PRIMARY KEY,
+                node_type TEXT NOT NULL,
+                properties TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_type ON graph_nodes(node_type)")
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS graph_edges (
+                id SERIAL PRIMARY KEY,
+                source TEXT NOT NULL REFERENCES graph_nodes(node_id),
+                target TEXT NOT NULL REFERENCES graph_nodes(node_id),
+                edge_type TEXT NOT NULL,
+                properties TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE(source, target, edge_type)
+            )
+        """)
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source)",
+            "CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target)",
+            "CREATE INDEX IF NOT EXISTS idx_edges_type ON graph_edges(edge_type)",
+        ]:
+            await conn.execute(idx_sql)
+
+        # Ingest table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingested_files (
+                id SERIAL PRIMARY KEY,
+                relative_path TEXT NOT NULL UNIQUE,
+                content_hash TEXT NOT NULL,
+                note_node_id TEXT NOT NULL,
+                entry_ids TEXT NOT NULL DEFAULT '[]',
+                summary TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                file_extension TEXT NOT NULL,
+                project_ref TEXT,
+                redactions TEXT NOT NULL DEFAULT '[]',
+                contributor TEXT,
+                ingested_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+
+        # Search telemetry
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS search_events (
+                id SERIAL PRIMARY KEY,
+                query_text TEXT NOT NULL,
+                result_count INTEGER NOT NULL,
+                top_score REAL,
+                match_source TEXT NOT NULL,
+                contributor TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        # Agent feedback
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_feedback (
+                id SERIAL PRIMARY KEY,
+                feedback_type TEXT NOT NULL
+                    CHECK(feedback_type IN ('missing', 'unhelpful', 'friction')),
+                tool_name TEXT,
+                query_or_params TEXT,
+                detail TEXT,
+                contributor TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        # Deployment config
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS deployment_config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                set_at TEXT NOT NULL
+            )
+        """)
+
+        # Vector table (pgvector)
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS knowledge_vec (
+                entry_id TEXT PRIMARY KEY,
+                embedding vector({embedding_dim})
+            )
+        """)
+
+        # Schema version init
+        row = await conn.fetchrow("SELECT version FROM schema_version")
+        if row is None:
+            await conn.execute("INSERT INTO schema_version (version) VALUES ($1)", 1)
+
+        # Run migrations for existing databases
+        await self._migrate_multi_user_columns(conn)
+
+    @staticmethod
+    async def _migrate_multi_user_columns(conn: asyncpg.Connection) -> None:
+        """Add multi-user columns to existing tables if missing."""
+        _alter = "ALTER TABLE {} ADD COLUMN {} TEXT"
+        migrations = [
+            ("knowledge_entries", "contributor"),
+            ("knowledge_entries", "team"),
+            ("knowledge_entries", "updated_by"),
+            ("entry_versions", "contributor"),
+            ("search_events", "contributor"),
+            ("agent_feedback", "contributor"),
+            ("ingested_files", "contributor"),
+        ]
+        for table, column in migrations:
+            alter_sql = _alter.format(table, column)
+            row = await conn.fetchrow(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_name = $1 AND column_name = $2",
+                table,
+                column,
+            )
             if row is None:
-                await conn.execute("INSERT INTO schema_version (version) VALUES ($1)", 1)
+                await conn.execute(alter_sql)
+
+        # Indexes for new columns (idempotent)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entries_contributor ON knowledge_entries(contributor)"
+        )
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_team ON knowledge_entries(team)")

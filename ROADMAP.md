@@ -14,9 +14,12 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Later
 
-- **Single-user only.** No concept of who stored an entry or which agent session produced it. Multi-contributor support (attribution, provenance) is a prerequisite for team use — multiple developers and coding agents contributing to a shared KB.
+- **Multi-user Phase 2.** Attribution in search output (contributor badge), contributor/team search filters, `list_contributors` maintain action.
+- **Multi-user Phase 3.** Audit events, sensitivity field on entries, transaction atomicity for multi-entry operations.
 
 ## Done
+
+- Multi-user Phase 1 — server-side identity injection (`KB_CONTRIBUTOR`, `KB_TEAM`), contributor/team/updated_by columns, atomic entry ID generation, advisory locks for Postgres schema migration, configurable pool sizes, deployment config table (embedding model consistency), secret scanning on kb_store path.
 
 - Agent feedback loop — search telemetry (automatic in hybrid_search) + kb_feedback tool (missing/unhelpful/friction) + manager explore actions (list_feedback, summarize_feedback, search_stats).
 - Agentic synthesis — kb_summarize retrieves via agent loop, coverage check fills gaps, structured entries for richer synthesis. Toggle: `KB_AGENTIC_SYNTHESIS=FALSE`.

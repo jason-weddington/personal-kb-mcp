@@ -10,14 +10,9 @@ from personal_kb.models.version import EntryVersion
 
 
 async def next_entry_id(db: Database) -> str:
-    """Get and increment the next entry ID."""
-    cursor = await db.execute("SELECT next_id FROM entry_id_seq")
-    row = await cursor.fetchone()
-    if row is None:
-        raise RuntimeError("entry_id_seq table is empty")
-    next_id = row[0]
-    await db.execute("UPDATE entry_id_seq SET next_id = ?", (next_id + 1,))
-    return f"kb-{next_id:05d}"
+    """Get and increment the next entry ID (atomic)."""
+    val = await db.next_sequence_value()
+    return f"kb-{val:05d}"
 
 
 def row_to_entry(row: Row) -> KnowledgeEntry:
@@ -42,6 +37,9 @@ def row_to_entry(row: Row) -> KnowledgeEntry:
         is_active=bool(row["is_active"]),
         has_embedding=bool(row["has_embedding"]),
         version=row["version"],
+        contributor=row["contributor"] if "contributor" in col_names else None,
+        team=row["team"] if "team" in col_names else None,
+        updated_by=row["updated_by"] if "updated_by" in col_names else None,
     )
 
 
@@ -52,8 +50,8 @@ async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
         """INSERT INTO knowledge_entries
         (id, project_ref, short_title, long_title, knowledge_details, entry_type,
          source_context, confidence_level, tags, hints, created_at, updated_at,
-         superseded_by, is_active, has_embedding, version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         superseded_by, is_active, has_embedding, version, contributor, team)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             entry.id,
             entry.project_ref,
@@ -71,6 +69,8 @@ async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
             int(entry.is_active),
             int(entry.has_embedding),
             entry.version,
+            entry.contributor,
+            entry.team,
         ),
     )
     await db.commit()
@@ -83,7 +83,7 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
         """UPDATE knowledge_entries SET
         project_ref=?, short_title=?, long_title=?, knowledge_details=?, entry_type=?,
         source_context=?, confidence_level=?, tags=?, hints=?, updated_at=?,
-        superseded_by=?, is_active=?, has_embedding=?, version=?
+        superseded_by=?, is_active=?, has_embedding=?, version=?, updated_by=?
         WHERE id=?""",
         (
             entry.project_ref,
@@ -100,6 +100,7 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
             int(entry.is_active),
             int(entry.has_embedding),
             entry.version,
+            entry.updated_by,
             entry.id,
         ),
     )
@@ -117,13 +118,15 @@ async def insert_version(db: Database, version: EntryVersion) -> None:
     """Insert an entry version record."""
     await db.execute(
         """INSERT INTO entry_versions (entry_id, version_number, knowledge_details,
-        change_reason, confidence_level, created_at) VALUES (?, ?, ?, ?, ?, ?)""",
+        change_reason, confidence_level, contributor, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             version.entry_id,
             version.version_number,
             version.knowledge_details,
             version.change_reason,
             version.confidence_level,
+            version.contributor,
             version.created_at.isoformat() if version.created_at else _now_iso(),
         ),
     )

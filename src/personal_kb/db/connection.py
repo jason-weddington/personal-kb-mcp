@@ -6,7 +6,7 @@ from pathlib import Path
 import aiosqlite
 import sqlite_vec
 
-from personal_kb.config import get_database_url, get_db_path
+from personal_kb.config import get_database_url, get_db_path, get_pg_pool_max, get_pg_pool_min
 from personal_kb.db.backend import Database
 from personal_kb.db.sqlite_backend import SQLiteBackend
 
@@ -68,6 +68,54 @@ async def _create_postgres(url: str, *, embedding_dim: int = 1024) -> Database:
     """Create a PostgreSQL backend with pgvector."""
     from personal_kb.db.postgres_backend import PostgresBackend
 
-    db = await PostgresBackend.create(url)
+    db = await PostgresBackend.create(url, pool_min=get_pg_pool_min(), pool_max=get_pg_pool_max())
     await db.apply_schema(embedding_dim=embedding_dim)
+
+    await _check_deployment_config(db, embedding_dim=embedding_dim)
+
     return db
+
+
+async def _check_deployment_config(db: Database, *, embedding_dim: int) -> None:
+    """Check/store deployment config for embedding model consistency."""
+    from personal_kb.config import get_embedding_model
+
+    model = get_embedding_model()
+    dim = str(embedding_dim)
+    now_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+
+    cursor = await db.execute("SELECT key, value FROM deployment_config")
+    rows = await cursor.fetchall()
+    stored = {row["key"]: row["value"] for row in rows}
+
+    if not stored:
+        # First startup: seed the deployment config
+        await db.execute(
+            "INSERT INTO deployment_config (key, value, set_at) VALUES (?, ?, ?)"
+            " ON CONFLICT (key) DO NOTHING",
+            ("embedding_model", model, now_iso),
+        )
+        await db.execute(
+            "INSERT INTO deployment_config (key, value, set_at) VALUES (?, ?, ?)"
+            " ON CONFLICT (key) DO NOTHING",
+            ("embedding_dim", dim, now_iso),
+        )
+        await db.commit()
+        return
+
+    # Check for mismatches
+    stored_dim = stored.get("embedding_dim")
+    if stored_dim and stored_dim != dim:
+        raise RuntimeError(
+            f"Embedding dimension mismatch: DB has {stored_dim}, local is {dim}. "
+            "Vectors are incompatible — cannot mix dimensions in the same database."
+        )
+
+    stored_model = stored.get("embedding_model")
+    if stored_model and stored_model != model:
+        logger.warning(
+            "Embedding model mismatch: DB was initialized with '%s', "
+            "local is '%s'. Vectors may be incompatible.",
+            stored_model,
+            model,
+        )

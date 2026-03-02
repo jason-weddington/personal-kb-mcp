@@ -88,7 +88,6 @@ def get_bedrock_timeout() -> float:
 def get_database_url() -> str | None:
     """Return database URL if set, None for SQLite file-based.
 
-    Not used yet — reserved for Phase 2 (PostgreSQL backend).
     When set to a ``postgresql://`` URL, the server will create a
     PostgresBackend instead of SQLiteBackend.
     """
@@ -133,3 +132,28 @@ def get_agentic_max_tool_calls() -> int:
 def is_agentic_synthesis() -> bool:
     """Return True if agentic synthesis is enabled (default: TRUE)."""
     return os.environ.get("KB_AGENTIC_SYNTHESIS", "TRUE").upper() == "TRUE"
+
+
+def get_contributor() -> str | None:
+    """Return the contributor name from KB_CONTRIBUTOR, or None."""
+    return os.environ.get("KB_CONTRIBUTOR") or None
+
+
+def get_team() -> str | None:
+    """Return the team name from KB_TEAM, or None."""
+    return os.environ.get("KB_TEAM") or None
+
+
+def get_pg_pool_min() -> int:
+    """Return the Postgres connection pool minimum size from KB_PG_POOL_MIN."""
+    return int(os.environ.get("KB_PG_POOL_MIN", "1"))
+
+
+def get_pg_pool_max() -> int:
+    """Return the Postgres connection pool maximum size from KB_PG_POOL_MAX."""
+    return int(os.environ.get("KB_PG_POOL_MAX", "5"))
+
+
+def is_safety_skip() -> bool:
+    """Return True if KB_SKIP_SAFETY is set to TRUE."""
+    return os.environ.get("KB_SKIP_SAFETY", "").upper() == "TRUE"

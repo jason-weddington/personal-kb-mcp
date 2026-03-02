@@ -116,9 +116,12 @@ async def apply_schema(db: Database) -> None:
     # Migration: add last_accessed column (nullable, default NULL)
     await _migrate_add_last_accessed(db)
 
-    # Telemetry and feedback tables
+    # Telemetry and feedback tables (must exist before multi-user migration)
     await apply_search_events_schema(db)
     await apply_feedback_schema(db)
+
+    # Deployment config table
+    await apply_deployment_config_schema(db)
 
     await db.commit()
 
@@ -219,9 +222,68 @@ async def apply_feedback_schema(db: Database) -> None:
     await db.commit()
 
 
+DEPLOYMENT_CONFIG_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS deployment_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    set_at TEXT NOT NULL
+);
+"""
+
+
+async def apply_deployment_config_schema(db: Database) -> None:
+    """Create deployment_config table."""
+    await db.executescript(DEPLOYMENT_CONFIG_SCHEMA_SQL)
+    await db.commit()
+
+
 async def _migrate_add_last_accessed(db: Database) -> None:
     """Add last_accessed column to knowledge_entries if it doesn't exist."""
     cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
     columns = {row[1] for row in await cursor.fetchall()}
     if "last_accessed" not in columns:
         await db.execute("ALTER TABLE knowledge_entries ADD COLUMN last_accessed TEXT")
+
+
+async def _migrate_v2_multi_user(db: Database) -> None:
+    """Add multi-user columns if they don't exist (v2 migration)."""
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    columns = {row[1] for row in await cursor.fetchall()}
+
+    if "contributor" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN contributor TEXT")
+    if "team" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN team TEXT")
+    if "updated_by" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN updated_by TEXT")
+
+    # Indexes (IF NOT EXISTS is SQLite 3.9+)
+    await db.executescript(
+        "CREATE INDEX IF NOT EXISTS idx_entries_contributor"
+        " ON knowledge_entries(contributor);\n"
+        "CREATE INDEX IF NOT EXISTS idx_entries_team ON knowledge_entries(team);"
+    )
+
+    # entry_versions: contributor
+    cursor = await db.execute("PRAGMA table_info(entry_versions)")
+    ver_cols = {row[1] for row in await cursor.fetchall()}
+    if "contributor" not in ver_cols:
+        await db.execute("ALTER TABLE entry_versions ADD COLUMN contributor TEXT")
+
+    # search_events: contributor
+    cursor = await db.execute("PRAGMA table_info(search_events)")
+    se_cols = {row[1] for row in await cursor.fetchall()}
+    if "contributor" not in se_cols:
+        await db.execute("ALTER TABLE search_events ADD COLUMN contributor TEXT")
+
+    # agent_feedback: contributor
+    cursor = await db.execute("PRAGMA table_info(agent_feedback)")
+    fb_cols = {row[1] for row in await cursor.fetchall()}
+    if "contributor" not in fb_cols:
+        await db.execute("ALTER TABLE agent_feedback ADD COLUMN contributor TEXT")
+
+    # ingested_files: contributor
+    cursor = await db.execute("PRAGMA table_info(ingested_files)")
+    ig_cols = {row[1] for row in await cursor.fetchall()}
+    if "contributor" not in ig_cols:
+        await db.execute("ALTER TABLE ingested_files ADD COLUMN contributor TEXT")

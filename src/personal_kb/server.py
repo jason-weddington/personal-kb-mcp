@@ -9,12 +9,14 @@ from typing import Any
 from fastmcp import FastMCP
 
 from personal_kb.config import (
+    get_contributor,
     get_database_url,
     get_db_path,
     get_embedding_dim,
     get_extraction_provider,
     get_log_level,
     get_query_provider,
+    get_team,
     is_manager_mode,
 )
 from personal_kb.db.connection import create_connection
@@ -103,6 +105,16 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     else:
         logger.warning("Query LLM not available (%s) — query planning disabled", query_provider)
 
+    contributor = get_contributor()
+    team = get_team()
+    if contributor:
+        logger.info("Contributor: %s, Team: %s", contributor, team or "(not set)")
+    elif db_url:
+        logger.warning(
+            "KB_CONTRIBUTOR not set — entries will have no attribution. "
+            "Set KB_CONTRIBUTOR for multi-user provenance."
+        )
+
     try:
         yield {
             "db": db,
@@ -112,6 +124,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             "llm_client": extraction_llm,
             "graph_enricher": graph_enricher,
             "query_llm": query_llm,
+            "contributor": contributor,
+            "team": team,
         }
     finally:
         if query_llm is not None:
@@ -144,6 +158,8 @@ STORING — capture knowledge proactively:
 - kb_store: Create or update a single entry.
 - kb_store_batch: Create multiple entries in one call (max 10). More \
 efficient — uses a single LLM call for graph enrichment.
+- Entries are automatically attributed to the configured contributor \
+and team — you do not need to specify who is storing.
 - Technical decisions and their rationale ("chose X because Y")
 - Patterns, conventions, or architecture worth preserving
 - Lessons learned from debugging, fixing issues, or trial-and-error

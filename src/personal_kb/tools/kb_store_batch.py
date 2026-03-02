@@ -9,6 +9,8 @@ from fastmcp.server.context import Context
 from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence
+from personal_kb.config import is_safety_skip
+from personal_kb.ingest.safety import detect_secrets_in_content
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.formatters import format_entry_compact, format_result_list
 
@@ -41,10 +43,25 @@ async def batch_store_entries(
         if missing:
             return f"Error: entry {i} missing required fields: {', '.join(sorted(missing))}"
 
+    # Secret scanning — reject entire batch if any entry has secrets
+    if not is_safety_skip():
+        for i, entry_dict in enumerate(entries):
+            details = str(entry_dict.get("knowledge_details", ""))
+            secrets = detect_secrets_in_content(details)
+            if secrets:
+                types = ", ".join(secrets)
+                return (
+                    f"Error: Potential secrets detected in entry {i} ({types}). "
+                    "Remove sensitive values before storing. "
+                    "Set KB_SKIP_SAFETY=TRUE to override."
+                )
+
     store: KnowledgeStore = lifespan["store"]
     embedder = lifespan["embedder"]
     graph_builder: GraphBuilder = lifespan["graph_builder"]
     graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
+    contributor: str | None = lifespan.get("contributor")
+    team: str | None = lifespan.get("team")
 
     created: list[KnowledgeEntry] = []
     for entry_dict in entries:
@@ -63,6 +80,8 @@ async def batch_store_entries(
             confidence_level=confidence,
             tags=list(tags) if tags else None,
             hints=dict(hints) if hints else None,
+            contributor=contributor,
+            team=team,
         )
 
         # Embed

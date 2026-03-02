@@ -12,5 +12,6 @@ class EntryVersion(BaseModel):
     version_number: int
     knowledge_details: str
     change_reason: str | None = None
+    contributor: str | None = None
     confidence_level: float = Field(ge=0.0, le=1.0)
     created_at: datetime | None = None

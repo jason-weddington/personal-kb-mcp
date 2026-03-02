@@ -153,6 +153,9 @@ def register_kb_ingest(mcp: FastMCP) -> None:
 
                 dedup_agent = DedupAgent(db=db, embedder=embedder, llm=query_llm)
 
+        contributor: str | None = lifespan.get("contributor")
+        team: str | None = lifespan.get("team")
+
         ingester = FileIngester(
             db=db,
             store=store,
@@ -161,6 +164,8 @@ def register_kb_ingest(mcp: FastMCP) -> None:
             graph_enricher=graph_enricher,
             llm=query_llm,
             dedup_agent=dedup_agent,
+            contributor=contributor,
+            team=team,
         )
 
         # Glob pattern: expand and ingest each matched file

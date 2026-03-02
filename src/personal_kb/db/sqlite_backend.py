@@ -202,11 +202,24 @@ class SQLiteBackend:
 
         return f"Vacuum complete.{size_info}"
 
+    # -- Sequence --
+
+    async def next_sequence_value(self) -> int:
+        """Get and increment the entry ID sequence. Safe for SQLite (single-writer)."""
+        cursor = await self._conn.execute("SELECT next_id FROM entry_id_seq")
+        row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("entry_id_seq table is empty")
+        next_id: int = row[0]
+        await self._conn.execute("UPDATE entry_id_seq SET next_id = ?", (next_id + 1,))
+        return next_id
+
     # -- Schema --
 
     async def apply_schema(self, *, embedding_dim: int = 1024) -> None:
         """Apply all SQLite DDL: tables, FTS5, graph, ingest, vec0, migrations."""
         from personal_kb.db.schema import (
+            _migrate_v2_multi_user,
             apply_graph_schema,
             apply_ingest_schema,
             apply_schema,
@@ -222,3 +235,7 @@ class SQLiteBackend:
             await apply_vec_schema(self, dim=embedding_dim)
         except Exception:
             logger.warning("sqlite-vec schema not applied — vector search disabled")
+
+        # Multi-user migration (must run after all tables exist)
+        await _migrate_v2_multi_user(self)
+        await self.commit()

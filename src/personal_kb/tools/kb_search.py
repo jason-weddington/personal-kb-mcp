@@ -130,8 +130,11 @@ def register_kb_search(mcp: FastMCP) -> None:
         lifespan = ctx.lifespan_context
         db = lifespan["db"]
         embedder = lifespan["embedder"]
+        contributor: str | None = lifespan.get("contributor")
 
-        results, filtered_count = await hybrid_search(db, embedder, search_query)
+        results, filtered_count = await hybrid_search(
+            db, embedder, search_query, contributor=contributor
+        )
 
         # Add a note if vector search was unavailable
         note = None

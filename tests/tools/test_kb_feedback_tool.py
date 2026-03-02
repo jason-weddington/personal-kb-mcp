@@ -71,6 +71,24 @@ async def test_submit_feedback_optional_fields_none(db):
 
 
 @pytest.mark.asyncio
+async def test_submit_feedback_with_contributor(db):
+    """Feedback records contributor when provided."""
+    await submit_feedback(db, "missing", "kb_search", "test query", contributor="jason")
+    cursor = await db.execute("SELECT contributor FROM agent_feedback")
+    row = await cursor.fetchone()
+    assert row["contributor"] == "jason"
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_contributor_none_by_default(db):
+    """Feedback contributor is NULL when not provided."""
+    await submit_feedback(db, "friction")
+    cursor = await db.execute("SELECT contributor FROM agent_feedback")
+    row = await cursor.fetchone()
+    assert row["contributor"] is None
+
+
+@pytest.mark.asyncio
 async def test_submit_feedback_created_at_set(db):
     """created_at should be populated automatically."""
     await submit_feedback(db, "missing")

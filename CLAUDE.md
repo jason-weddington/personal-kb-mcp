@@ -95,6 +95,11 @@ Format: `type(optional-scope): description`
 | `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for kb_ask auto strategy |
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in agentic query loop |
 | `KB_AGENTIC_SYNTHESIS` | `TRUE` | Enable agentic retrieval + coverage check for kb_summarize |
+| `KB_CONTRIBUTOR` | (unset) | Contributor name for entry attribution |
+| `KB_TEAM` | (unset) | Team name for entry attribution |
+| `KB_PG_POOL_MIN` | `1` | Postgres connection pool minimum size |
+| `KB_PG_POOL_MAX` | `5` | Postgres connection pool maximum size |
+| `KB_SKIP_SAFETY` | (unset) | Set `TRUE` to bypass secret scanning on store |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
 
 ## Agent Feedback Loop
