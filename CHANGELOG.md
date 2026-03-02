@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.20.0 (2026-03-01)
+
+### Features
+
+- Agentic synthesis with coverage check for kb_summarize
+  ([`806a22a`](https://github.com/jason-weddington/personal-kb-mcp/commit/806a22a645d5108dbfea1bc5f381b6b0e2dc872e))
+
+
 ## v0.19.0 (2026-03-01)
 
 ### Documentation
