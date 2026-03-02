@@ -168,13 +168,33 @@ See: `graph/agent.py`, `tools/kb_ask.py`, `graph/planner.py`
 
 ## Answer Synthesis (kb_summarize)
 
-The `kb_summarize` tool provides a higher-level interface than `kb_ask` by adding LLM synthesis on top of retrieval. It first retrieves entries using the auto strategy (hybrid search plus graph expansion), then passes the raw results along with the question to the query LLM.
+The `kb_summarize` tool provides a higher-level interface than `kb_ask` by adding LLM synthesis on top of retrieval. The core logic lives in `summarize_question()`, an extracted function that takes the database, embedder, query LLM, question, optional scope, and limit — keeping it testable without FastMCP context.
 
-The synthesis prompt instructs the LLM to answer only from the provided entries, cite entry IDs in `[kb-XXXXX]` format, note conflicting information with citations to both sources, and be concise. The LLM produces a natural-language answer grounded in the retrieved entries.
+### Retrieval
 
-If the query LLM is unavailable or synthesis fails, the tool falls back to showing the raw search results prefixed with an explanation that LLM synthesis is unavailable. This ensures the tool always returns something useful.
+The first step calls `retrieve_entries()` from `tools/kb_ask.py`, which returns a tuple of `(entries_with_context, agent_turns_used)`. Each entry is paired with a context string describing how it was found (e.g., `"search match (score: 0.0312)"` or `"linked from kb-00042 via supersedes"`). The `agent_turns_used` count tracks how many LLM tool calls the agentic query loop made — 0 means the fast-path resolved the query without touching the LLM.
 
-See: `tools/kb_summarize.py`
+### Coverage Assessment
+
+When the retrieval involved the agent (not fast-path), the system runs a coverage check before synthesis. The check fires only when all four conditions are met: `KB_AGENTIC_SYNTHESIS` is `TRUE` (the default), a query LLM is available, the LLM implements the `LLMProvider` protocol, and `agent_turns > 0`. Fast-path results and single-shot planner results skip coverage entirely — if retrieval was confident enough to skip the agent, coverage checking would add latency for no benefit.
+
+The `assess_coverage()` function in `tools/coverage.py` makes a single LLM call. The prompt includes the question and a compact summary of each retrieved entry — entry ID, short title, tags, and the first 200 characters of `knowledge_details` (not the full content, to keep the prompt lean). The LLM is biased toward "no gaps" — it only flags a gap when an obvious, specific concept is missing, not when the answer could theoretically be more complete. The response is a JSON object with three fields: `has_gaps` (boolean), `suggested_query` (a short search query to fill the gap, or null), and `reason` (brief explanation).
+
+If coverage finds gaps and provides a suggested query, the system runs a second retrieval via `_auto_search_entries()` — hybrid search plus graph expansion using the LLM's suggested query. The extra entries are merged into the original set by `_merge_entries()`, which deduplicates by entry ID while preserving the original ordering.
+
+Coverage assessment is designed to never block synthesis. The outer wrapper catches all exceptions and returns `CoverageResult(has_gaps=False)` on any failure — LLM returning None, unparseable JSON, or unexpected errors. The JSON parsing follows the same defensive pattern as the graph enricher: strip markdown fences, find a JSON object via regex, validate fields, and fall back on parse failure.
+
+### Synthesis
+
+The `_synthesize()` function receives the question and the full structured entries — not compact summaries but complete `KnowledgeEntry` objects with their `knowledge_details`. Each entry is formatted as a block with its ID, short title, tags, optional context string, and full knowledge details. The system prompt instructs the LLM to answer only from the provided entries, cite entry IDs in `[kb-XXXXX]` format, note conflicting information with citations to both sources, and be concise. The LLM produces a natural-language answer grounded in the retrieved entries.
+
+The distinction between coverage and synthesis prompts is intentional: coverage sees 200-character previews (enough to judge relevance without burning tokens), while synthesis sees everything (necessary for accurate, detailed answers).
+
+### Fallback
+
+If the query LLM is unavailable, synthesis is skipped and the tool returns raw entries formatted with `format_entry_full()`, prefixed with "(LLM unavailable — showing raw results)". If synthesis is attempted but the LLM returns None, the same fallback fires with "(LLM synthesis failed — showing raw results)". This three-layer design — primary synthesis, failed-synthesis fallback, no-LLM fallback — ensures the tool always returns something useful.
+
+See: `tools/kb_summarize.py`, `tools/coverage.py`, `tools/kb_ask.py`
 
 ## The Entry Pipeline (kb_store)
 
@@ -210,13 +230,13 @@ See: `tools/formatters.py`, `tools/kb_get.py`, `tools/kb_store_batch.py`
 
 ## File Ingestion (kb_ingest)
 
-The `kb_ingest` tool reads files from disk and converts them into knowledge entries through an 11-step pipeline orchestrated by `ingest/ingester.py:FileIngester`.
+The `kb_ingest` tool reads files from disk and converts them into knowledge entries through a multi-step pipeline orchestrated by `ingest/ingester.py:FileIngester`.
 
 **Step 1: Deny-list check.** The first thing checked, before anything else, is whether the filename matches a deny pattern. The deny list in `ingest/safety.py` covers private keys (`.pem`, `.key`, `id_rsa`), environment files (`.env`), credentials files (`credentials.json`, `token.json`), binary formats, images, audio, video, and database files. This runs before the extension allowlist because it is a security boundary — even if a file has an allowed extension, it should be blocked if its name matches a sensitive pattern.
 
 **Step 2: Extension allowlist.** The file's extension is checked against a set of supported text formats. The allowlist includes documentation formats (`.md`, `.txt`, `.rst`, `.org`), programming languages (`.py`, `.js`, `.ts`, `.go`, `.rs`, and many more), configuration formats (`.yaml`, `.toml`, `.json`, `.xml`), and shell scripts. Files with no extension are checked against a set of known names like `Dockerfile`, `Makefile`, `README`, and `LICENSE`.
 
-**Step 3: File size limit.** The file must be under 500KB by default (configurable via `KB_INGEST_MAX_FILE_SIZE`). This prevents memory issues and excessive LLM token usage.
+**Step 3: File size limit.** The file must be under 5MB by default (configurable via `KB_INGEST_MAX_FILE_SIZE`). This prevents memory issues and excessive LLM token usage.
 
 **Step 4: UTF-8 content read.** The file is read as UTF-8 with `errors="replace"` to handle non-UTF-8 bytes gracefully rather than crashing.
 
@@ -224,19 +244,31 @@ The `kb_ingest` tool reads files from disk and converts them into knowledge entr
 
 **Step 6: Safety pipeline.** The content passes through detect-secrets (which scans for high-entropy strings, private keys, and keyword-based secrets) and scrubadub (which redacts PII like names, emails, and phone numbers). Both libraries are optional dependencies — if not installed, their checks are silently skipped. Files with detected secrets are flagged and skipped. PII-redacted content continues through the pipeline with the redactions recorded.
 
-**Step 7: LLM summarization.** The file's content (truncated at 100,000 characters) is sent to the query LLM with a system prompt requesting a 2-3 sentence summary. The summary becomes part of the note node's properties in the graph.
+**Step 7: LLM summarization.** The file's content (truncated at 100,000 characters) is sent to the query LLM with a system prompt requesting a 2-3 sentence summary. The prompt is supplemented based on file type: code files (`.py`, `.js`, etc.) get guidance to focus on high-level purpose rather than implementation details, while prose files (`.md`, `.txt`, etc.) get guidance to focus on key insights and conclusions. The summary becomes part of the note node's properties in the graph.
 
-**Step 8: LLM entry extraction.** The same truncated content is sent to the LLM with a different system prompt asking for structured knowledge entries in JSON format. The LLM returns an array of objects, each with a short title, long title, knowledge details, entry type, and tags. The parser strips markdown fences, extracts the JSON array via regex, validates each object's fields and entry type, and caps at 10 entries per file.
+**Step 8: Content chunking.** The `chunk_content()` function in `ingest/chunker.py` splits large content into manageable pieces for extraction. If the content fits within the chunk size (default 16,000 characters, configurable via `KB_INGEST_CHUNK_SIZE`), it returns a single chunk. Otherwise, it splits at H1/H2 heading boundaries using the regex `^#{1,2}\s+`, greedily merges adjacent sections up to the chunk size limit, and falls back to paragraph breaks (`\n\n`) then newline breaks (`\n`) when a section still exceeds the limit. Each chunk is a `Chunk` dataclass carrying the text, a sequential index, the start character position in the original document, and the first H1/H2 heading found in the chunk (extracted and stored for context propagation to the extraction prompt). Adjacent chunks share an overlap region (default 600 characters, configurable via `KB_INGEST_CHUNK_OVERLAP`) snapped to a newline boundary to avoid splitting mid-sentence.
 
-**Step 9: Entry storage.** Each extracted entry goes through the full `kb_store` pipeline: create the entry, generate and store the embedding, build deterministic graph edges, and enrich via LLM. Each entry runs independently, so a failure on one does not block the others.
+**Step 9: KB-aware dedup per chunk.** When agentic ingestion is enabled (`KB_AGENTIC_INGEST=TRUE`, the default), the `DedupAgent` in `ingest/dedup_agent.py` checks each chunk against the existing KB before extraction. The agent constructs a search query from the chunk's heading and first ~500 characters, runs `hybrid_search` with a limit of 5, and checks the top result's score against a threshold (default 0.06, configurable via `KB_INGEST_DEDUP_THRESHOLD`). If no results match or the top score falls below the threshold, the chunk proceeds directly to extraction without an LLM call. If results exceed the threshold, the agent sends the chunk text (first 2,000 characters) and the matching KB entry summaries to the LLM, which returns one of three verdicts: `"skip"` (knowledge is >80% covered — skip extraction entirely), `"partial"` (some overlap but new knowledge exists — extract with awareness of existing entries), or `"extract"` (mostly new knowledge — extract normally). For "partial" verdicts, the LLM also returns `existing_titles` — a list of KB entry titles that overlap — which are injected into the extraction context alongside previously extracted titles from earlier chunks. Graceful degradation is built in: any failure in search, LLM, or JSON parsing defaults to `"extract"`, so the system never loses data due to a dedup error.
 
-**Step 10: Note node and edges.** A note node with ID `note:{relative_path}` is created in the graph, carrying the file path and summary in its properties. An `extracted_from` edge is added from each extracted entry to the note node, linking entries back to their source file.
+**Step 10: LLM entry extraction.** Each chunk's text (truncated at 100,000 characters) is sent to the LLM with a system prompt asking for structured knowledge entries in JSON format. The LLM returns an array of objects, each with a short title, long title, knowledge details, entry type, and tags. The parser strips markdown fences, extracts the JSON array via regex, validates each object's fields and entry type, and caps at 10 entries per chunk. Two parameters prevent duplicate extraction across chunks: `previously_extracted` is a running list of short titles from entries already extracted from earlier chunks of the same file, and `chunk_heading` is the first H1/H2 heading from the current chunk. Both are included in the extraction prompt so the LLM skips concepts already covered. When the dedup agent returns a "partial" verdict, the `existing_titles` from the KB are appended to `previously_extracted`, creating a combined context that prevents re-extracting concepts covered by both earlier chunks and existing KB entries.
 
-**Step 11: Record in ingested_files.** The file's path, hash, note node ID, entry IDs, summary, size, extension, project reference, redactions, and timestamps are recorded in the `ingested_files` table.
+**Step 11: Entry storage.** Each extracted entry goes through the full `kb_store` pipeline: create the entry, generate and store the embedding, build deterministic graph edges, and enrich via LLM. Each entry runs independently, so a failure on one does not block the others. The entry's `source_context` is set to `"Ingested from {relative_path}"` for traceability.
+
+**Step 12: Note node and edges.** A note node with ID `note:{relative_path}` is created in the graph, carrying the file path and summary in its properties. An `extracted_from` edge is added from each extracted entry to the note node, linking entries back to their source file.
+
+**Step 13: Record in ingested_files.** The file's path, hash, note node ID, entry IDs, summary, size, extension, project reference, redactions, and timestamps are recorded in the `ingested_files` table.
 
 **Re-ingestion** is handled automatically. If a file was previously ingested but its hash has changed, the old entries are deactivated (soft-deleted), old graph edges are removed, and the file goes through the full pipeline again. The `ingested_files` record is updated in place rather than recreated.
 
-See: `ingest/safety.py`, `ingest/extractor.py`, `ingest/ingester.py`, `tools/kb_ingest.py`
+### URL Ingestion
+
+The `kb_ingest` tool also accepts pre-fetched content with a source URL, enabling ingestion of web pages, wiki articles, and other text fetched by the calling agent. The tool accepts two additional parameters: `content` (the pre-fetched text) and `source_url` (the URL for attribution and dedup). When `content` is provided, `source_url` is required and `path` is ignored.
+
+The content path calls `ingest_content()` on `FileIngester`, which runs a pipeline parallel to `ingest_file()` but skips all filesystem-specific steps: no deny-list check, no extension allowlist, and no file size check (the content is already in memory). Safety runs through `run_content_safety()` in `ingest/safety.py`, which performs secret detection and PII redaction without the deny-list check — a function extracted from `run_safety_pipeline()` so that file-mode ingestion still calls the full pipeline while content-mode calls only the content-relevant subset.
+
+The rest of the pipeline is identical: SHA-256 hash for dedup (keyed on `source_url` in the `ingested_files` table's `relative_path` column), LLM summarization, chunking, dedup agent, extraction with running context, entry storage, and graph construction. The note node uses `note:{source_url}` as its ID, with `{"url": source_url, "summary": summary}` in properties (compared to `{"path": rel_path, "summary": summary}` for file-sourced notes). The file extension is derived from the URL path via `urllib.parse.urlparse` and `Path.suffix`, defaulting to an empty string when the URL has no path extension. File size is computed as `len(content.encode())` rather than a filesystem stat call.
+
+See: `ingest/safety.py`, `ingest/extractor.py`, `ingest/chunker.py`, `ingest/dedup_agent.py`, `ingest/ingester.py`, `tools/kb_ingest.py`
 
 ## Dual LLM Architecture
 
