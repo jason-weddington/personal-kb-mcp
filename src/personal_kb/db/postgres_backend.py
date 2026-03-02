@@ -397,6 +397,31 @@ class PostgresBackend:
                 )
             """)
 
+            # Search telemetry
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS search_events (
+                    id SERIAL PRIMARY KEY,
+                    query_text TEXT NOT NULL,
+                    result_count INTEGER NOT NULL,
+                    top_score REAL,
+                    match_source TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+
+            # Agent feedback
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_feedback (
+                    id SERIAL PRIMARY KEY,
+                    feedback_type TEXT NOT NULL
+                        CHECK(feedback_type IN ('missing', 'unhelpful', 'friction')),
+                    tool_name TEXT,
+                    query_or_params TEXT,
+                    detail TEXT,
+                    created_at TEXT NOT NULL
+                )
+            """)
+
             # Vector table (pgvector)
             await conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS knowledge_vec (

@@ -214,3 +214,64 @@ async def test_hybrid_filtered_count_accurate(db, store):
     total_open = len(results_open) + filtered_open
     total_strict = len(results_strict) + filtered_strict
     assert total_open == total_strict
+
+
+# --- Search telemetry ---
+
+
+@pytest.mark.asyncio
+async def test_search_event_recorded(db, store):
+    """hybrid_search should record a search_events row."""
+    await store.create_entry(
+        short_title="Telemetry test",
+        long_title="Entry for telemetry test",
+        knowledge_details="Testing that search events are recorded.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    query = SearchQuery(query="telemetry test")
+    await hybrid_search(db, None, query)
+
+    cursor = await db.execute("SELECT * FROM search_events")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["query_text"] == "telemetry test"
+    assert rows[0]["result_count"] >= 1
+    assert rows[0]["top_score"] is not None
+    assert rows[0]["match_source"] == "fts"
+    assert rows[0]["created_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_search_event_zero_results(db):
+    """Zero-result search should record result_count=0 and top_score=None."""
+    query = SearchQuery(query="nonexistent xyzzy nothing")
+    await hybrid_search(db, None, query)
+
+    cursor = await db.execute("SELECT * FROM search_events")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["result_count"] == 0
+    assert rows[0]["top_score"] is None
+
+
+@pytest.mark.asyncio
+async def test_search_telemetry_failure_does_not_break_search(db, store, monkeypatch):
+    """Telemetry failure should not break the search results."""
+    await store.create_entry(
+        short_title="Resilience test",
+        long_title="Entry for resilience test",
+        knowledge_details="Search must work even if telemetry fails.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    # Sabotage the search_events table by dropping it
+    await db.executescript("DROP TABLE IF EXISTS search_events")
+    await db.commit()
+
+    query = SearchQuery(query="resilience test")
+    results, _filtered = await hybrid_search(db, None, query)
+
+    # Search should still return results despite telemetry failure
+    assert len(results) >= 1
+    assert results[0].entry.short_title == "Resilience test"

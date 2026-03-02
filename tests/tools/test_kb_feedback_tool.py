@@ -1,0 +1,81 @@
+"""Tests for the kb_feedback tool."""
+
+import pytest
+
+from personal_kb.tools.kb_feedback import submit_feedback
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_missing(db):
+    """submit_feedback with 'missing' type inserts a row."""
+    result = await submit_feedback(db, "missing", "kb_search", "sqlite tips", "No results")
+    assert "Feedback recorded" in result
+    assert "missing" in result
+
+    cursor = await db.execute("SELECT * FROM agent_feedback")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["feedback_type"] == "missing"
+    assert rows[0]["tool_name"] == "kb_search"
+    assert rows[0]["query_or_params"] == "sqlite tips"
+    assert rows[0]["detail"] == "No results"
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_unhelpful(db):
+    """submit_feedback with 'unhelpful' type works."""
+    result = await submit_feedback(db, "unhelpful", "kb_ask", "docker networking")
+    assert "Feedback recorded" in result
+    assert "unhelpful" in result
+
+    cursor = await db.execute("SELECT * FROM agent_feedback")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["feedback_type"] == "unhelpful"
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_friction(db):
+    """submit_feedback with 'friction' type works."""
+    result = await submit_feedback(db, "friction", detail="Too many results to parse")
+    assert "Feedback recorded" in result
+    assert "friction" in result
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_invalid_type(db):
+    """submit_feedback with invalid type returns error message."""
+    result = await submit_feedback(db, "bad_type")
+    assert "Invalid feedback_type" in result
+    assert "bad_type" in result
+    assert "friction" in result  # Lists valid types
+
+    # No row should be inserted
+    cursor = await db.execute("SELECT COUNT(*) FROM agent_feedback")
+    row = await cursor.fetchone()
+    assert row[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_optional_fields_none(db):
+    """Optional fields can all be None."""
+    result = await submit_feedback(db, "missing")
+    assert "Feedback recorded" in result
+
+    cursor = await db.execute("SELECT * FROM agent_feedback")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["tool_name"] is None
+    assert rows[0]["query_or_params"] is None
+    assert rows[0]["detail"] is None
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_created_at_set(db):
+    """created_at should be populated automatically."""
+    await submit_feedback(db, "missing")
+
+    cursor = await db.execute("SELECT created_at FROM agent_feedback")
+    row = await cursor.fetchone()
+    assert row["created_at"] is not None
+    assert "T" in row["created_at"]  # ISO format

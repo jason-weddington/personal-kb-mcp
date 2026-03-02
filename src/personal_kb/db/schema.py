@@ -116,6 +116,10 @@ async def apply_schema(db: Database) -> None:
     # Migration: add last_accessed column (nullable, default NULL)
     await _migrate_add_last_accessed(db)
 
+    # Telemetry and feedback tables
+    await apply_search_events_schema(db)
+    await apply_feedback_schema(db)
+
     await db.commit()
 
 
@@ -177,6 +181,41 @@ CREATE TABLE IF NOT EXISTS ingested_files (
 async def apply_ingest_schema(db: Database) -> None:
     """Create ingested_files table."""
     await db.executescript(INGEST_SCHEMA_SQL)
+    await db.commit()
+
+
+SEARCH_EVENTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS search_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_text TEXT NOT NULL,
+    result_count INTEGER NOT NULL,
+    top_score REAL,
+    match_source TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+FEEDBACK_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS agent_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_type TEXT NOT NULL CHECK(feedback_type IN ('missing', 'unhelpful', 'friction')),
+    tool_name TEXT,
+    query_or_params TEXT,
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+
+async def apply_search_events_schema(db: Database) -> None:
+    """Create search_events table."""
+    await db.executescript(SEARCH_EVENTS_SCHEMA_SQL)
+    await db.commit()
+
+
+async def apply_feedback_schema(db: Database) -> None:
+    """Create agent_feedback table."""
+    await db.executescript(FEEDBACK_SCHEMA_SQL)
     await db.commit()
 
 

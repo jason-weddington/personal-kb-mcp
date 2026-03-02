@@ -18,6 +18,7 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 ## Done
 
+- Agent feedback loop — search telemetry (automatic in hybrid_search) + kb_feedback tool (missing/unhelpful/friction) + manager explore actions (list_feedback, summarize_feedback, search_stats).
 - Agentic synthesis — kb_summarize retrieves via agent loop, coverage check fills gaps, structured entries for richer synthesis. Toggle: `KB_AGENTIC_SYNTHESIS=FALSE`.
 - Agentic ingestion — markdown-aware chunking at H1/H2 headings, running context across chunks, KB-aware dedup agent (search + LLM confirm). Toggle: `KB_AGENTIC_INGEST=FALSE`.
 - Agentic query planning — ReAct agent loop for kb_ask auto strategy. Fast-path skips LLM on strong results; 6 internal tools; ScriptedLLM for deterministic testing. Toggle: `KB_AGENTIC_QUERY=FALSE`.

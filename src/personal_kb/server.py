@@ -26,6 +26,7 @@ from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.kb_ask import register_kb_ask
+from personal_kb.tools.kb_feedback import register_kb_feedback
 from personal_kb.tools.kb_get import register_kb_get
 from personal_kb.tools.kb_ingest import register_kb_ingest
 from personal_kb.tools.kb_maintain import register_kb_maintain
@@ -163,6 +164,13 @@ Use hints to build the knowledge graph:
 - {"supersedes": "kb-00042"} when replacing prior knowledge
 - {"person": "jason"}, {"tool": "sqlite"} to link entities
 - {"related_entities": [{"id": "kb-00003", "edge_type": "depends_on"}]}
+
+FEEDBACK — help improve the KB:
+- kb_feedback: Report when a KB query failed to help. Takes 3 seconds, \
+helps the human prioritize what to add next.
+  - feedback_type: 'missing' (KB lacked needed knowledge), \
+'unhelpful' (results existed but didn't help), 'friction' (tool was awkward)
+  - Do NOT use for storing knowledge — use kb_store instead.
 """
 
 
@@ -181,6 +189,7 @@ def create_server() -> FastMCP:
     register_kb_ask(mcp)
     register_kb_summarize(mcp)
     register_kb_ingest(mcp)
+    register_kb_feedback(mcp)
 
     if is_manager_mode():
         register_kb_maintain(mcp)

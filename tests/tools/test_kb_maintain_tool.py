@@ -10,11 +10,14 @@ from personal_kb.models.entry import EntryType
 from personal_kb.tools.kb_maintain import (
     _action_deactivate,
     _action_entry_versions,
+    _action_list_feedback,
     _action_purge_inactive,
     _action_reactivate,
     _action_rebuild_embeddings,
     _action_rebuild_graph,
+    _action_search_stats,
     _action_stats,
+    _action_summarize_feedback,
     _action_vacuum,
 )
 
@@ -341,3 +344,140 @@ async def test_entry_versions_missing_id(db):
     """Entry versions without entry_id should return error."""
     result = await _action_entry_versions(db, None)
     assert "entry_id is required" in result
+
+
+# --- List feedback ---
+
+
+async def _insert_feedback(db, feedback_type, tool_name=None, query=None, detail=None, ts=None):
+    """Helper to insert a feedback row."""
+    ts = ts or datetime.now(UTC).isoformat()
+    await db.execute(
+        "INSERT INTO agent_feedback (feedback_type, tool_name, query_or_params, detail, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (feedback_type, tool_name, query, detail, ts),
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_feedback_returns_entries(db):
+    """list_feedback should return formatted feedback entries."""
+    await _insert_feedback(db, "missing", "kb_search", "sqlite tips", "No results found")
+    await _insert_feedback(db, "friction", detail="Slow response")
+
+    result = await _action_list_feedback(db, None, None)
+    assert "Agent Feedback (2 entries)" in result
+    assert "[missing]" in result
+    assert "[friction]" in result
+    assert "kb_search" in result
+    assert "sqlite tips" in result
+    assert "No results found" in result
+
+
+@pytest.mark.asyncio
+async def test_list_feedback_filters_by_type(db):
+    """list_feedback should filter by feedback_type."""
+    await _insert_feedback(db, "missing")
+    await _insert_feedback(db, "friction")
+
+    result = await _action_list_feedback(db, "missing", None)
+    assert "[missing]" in result
+    assert "[friction]" not in result
+
+
+@pytest.mark.asyncio
+async def test_list_feedback_filters_by_since(db):
+    """list_feedback should filter by since date."""
+    await _insert_feedback(db, "missing", ts="2025-01-01T00:00:00")
+    await _insert_feedback(db, "friction", ts="2026-06-01T00:00:00")
+
+    result = await _action_list_feedback(db, None, "2026-01-01")
+    assert "[friction]" in result
+    assert "[missing]" not in result
+
+
+@pytest.mark.asyncio
+async def test_list_feedback_empty(db):
+    """list_feedback with no entries should return message."""
+    result = await _action_list_feedback(db, None, None)
+    assert "No feedback entries found" in result
+
+
+# --- Summarize feedback ---
+
+
+@pytest.mark.asyncio
+async def test_summarize_feedback_with_llm(db, fake_llm):
+    """summarize_feedback with LLM should produce summary."""
+    await _insert_feedback(db, "missing", "kb_search", "python async")
+    await _insert_feedback(db, "missing", "kb_ask", "error handling")
+
+    fake_llm.response = "- Theme 1: Missing async knowledge\n- Theme 2: Error handling gaps"
+    result = await _action_summarize_feedback(db, fake_llm, None)
+    assert "Feedback Summary (2 entries)" in result
+    assert "Theme 1" in result
+
+
+@pytest.mark.asyncio
+async def test_summarize_feedback_without_llm(db):
+    """summarize_feedback without LLM should fall back to raw list."""
+    await _insert_feedback(db, "unhelpful", "kb_search", "docker tips")
+
+    result = await _action_summarize_feedback(db, None, None)
+    # Falls back to list_feedback format
+    assert "[unhelpful]" in result
+
+
+@pytest.mark.asyncio
+async def test_summarize_feedback_empty(db):
+    """summarize_feedback with no entries should return message."""
+    result = await _action_summarize_feedback(db, None, None)
+    assert "No feedback entries to summarize" in result
+
+
+# --- Search stats ---
+
+
+async def _insert_search_event(db, query_text, result_count, top_score, match_source, ts=None):
+    """Helper to insert a search_events row."""
+    ts = ts or datetime.now(UTC).isoformat()
+    await db.execute(
+        "INSERT INTO search_events"
+        " (query_text, result_count, top_score, match_source, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (query_text, result_count, top_score, match_source, ts),
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_search_stats_basic(db):
+    """search_stats should return correct totals."""
+    await _insert_search_event(db, "python async", 5, 0.035, "hybrid")
+    await _insert_search_event(db, "docker tips", 3, 0.020, "fts")
+    await _insert_search_event(db, "nonexistent", 0, None, "fts")
+
+    result = await _action_search_stats(db, None)
+    assert "Search Telemetry" in result
+    assert "Total queries: 3" in result
+    assert "Zero-result queries: 1 (33%)" in result
+    assert "Average top score:" in result
+    assert "nonexistent" in result  # Shows up in missed queries
+
+
+@pytest.mark.asyncio
+async def test_search_stats_empty(db):
+    """search_stats with no events should return message."""
+    result = await _action_search_stats(db, None)
+    assert "No search events recorded" in result
+
+
+@pytest.mark.asyncio
+async def test_search_stats_with_since_filter(db):
+    """search_stats should filter by since date."""
+    await _insert_search_event(db, "old query", 2, 0.01, "fts", ts="2025-01-01T00:00:00")
+    await _insert_search_event(db, "new query", 4, 0.03, "hybrid", ts="2026-06-01T00:00:00")
+
+    result = await _action_search_stats(db, "2026-01-01")
+    assert "Total queries: 1" in result

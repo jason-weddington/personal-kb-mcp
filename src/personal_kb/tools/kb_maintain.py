@@ -17,6 +17,7 @@ from personal_kb.db.queries import (
 )
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import KnowledgeEntry  # noqa: TC001
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
@@ -32,6 +33,9 @@ _ACTIONS = {
     "purge_inactive",
     "vacuum",
     "entry_versions",
+    "list_feedback",
+    "summarize_feedback",
+    "search_stats",
 }
 
 
@@ -45,7 +49,8 @@ def register_kb_maintain(mcp: FastMCP) -> None:
             Field(
                 description=(
                     "Maintenance action: stats, deactivate, reactivate, "
-                    "rebuild_embeddings, rebuild_graph, purge_inactive, vacuum, entry_versions"
+                    "rebuild_embeddings, rebuild_graph, purge_inactive, vacuum, "
+                    "entry_versions, list_feedback, summarize_feedback, search_stats"
                 ),
             ),
         ],
@@ -65,6 +70,14 @@ def register_kb_maintain(mcp: FastMCP) -> None:
             bool,
             Field(description="Required True for purge_inactive"),
         ] = False,
+        feedback_type: Annotated[
+            str | None,
+            Field(description="For list_feedback: filter by type (missing, unhelpful, friction)"),
+        ] = None,
+        since: Annotated[
+            str | None,
+            Field(description="ISO date for list_feedback/summarize_feedback/search_stats"),
+        ] = None,
         ctx: Context | None = None,
     ) -> str:
         """Administrative maintenance operations for the knowledge base.
@@ -80,6 +93,9 @@ def register_kb_maintain(mcp: FastMCP) -> None:
         - purge_inactive: Hard-delete entries inactive for N+ days (requires confirm=True)
         - vacuum: Optimize database (PRAGMA optimize + VACUUM)
         - entry_versions: Show version history (requires entry_id)
+        - list_feedback: List recent agent feedback (optional: feedback_type, since)
+        - summarize_feedback: LLM-clustered summary of feedback themes (optional: since)
+        - search_stats: Search telemetry overview (optional: since)
         """
         if ctx is None:
             raise RuntimeError("Context not injected")
@@ -93,6 +109,7 @@ def register_kb_maintain(mcp: FastMCP) -> None:
         embedder: EmbeddingClient = lifespan["embedder"]
         graph_builder: GraphBuilder = lifespan["graph_builder"]
         graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
+        query_llm: LLMProvider | None = lifespan.get("query_llm")
 
         if action == "stats":
             return await _action_stats(db)
@@ -110,6 +127,12 @@ def register_kb_maintain(mcp: FastMCP) -> None:
             return await _action_vacuum(db)
         elif action == "entry_versions":
             return await _action_entry_versions(db, entry_id)
+        elif action == "list_feedback":
+            return await _action_list_feedback(db, feedback_type, since)
+        elif action == "summarize_feedback":
+            return await _action_summarize_feedback(db, query_llm, since)
+        elif action == "search_stats":
+            return await _action_search_stats(db, since)
 
         return "Action not implemented."
 
@@ -370,5 +393,167 @@ async def _action_entry_versions(
             reason = row["change_reason"] or "(no reason)"
             confidence = row["confidence_level"]
             lines.append(f"  v{row['version_number']} ({date_str}) — {reason} [{confidence:.0%}]")
+
+    return "\n".join(lines)
+
+
+async def _action_list_feedback(
+    db: Database,
+    feedback_type: str | None,
+    since: str | None,
+) -> str:
+    """List recent agent feedback with optional filters."""
+    sql = "SELECT * FROM agent_feedback WHERE 1=1"
+    params: list[str] = []
+
+    if feedback_type:
+        sql += " AND feedback_type = ?"
+        params.append(feedback_type)
+    if since:
+        sql += " AND created_at >= ?"
+        params.append(since)
+
+    sql += " ORDER BY created_at DESC LIMIT 50"
+
+    cursor = await db.execute(sql, tuple(params))
+    rows = await cursor.fetchall()
+
+    if not rows:
+        return "No feedback entries found."
+
+    lines = [f"Agent Feedback ({len(rows)} entries)\n"]
+    for row in rows:
+        date_str = row["created_at"][:19] if row["created_at"] else "unknown"
+        line = f"[{row['feedback_type']}] {date_str}"
+        if row["tool_name"]:
+            line += f" via {row['tool_name']}"
+        if row["query_or_params"]:
+            line += f" | query: {row['query_or_params']}"
+        if row["detail"]:
+            line += f"\n  {row['detail']}"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+_FEEDBACK_SUMMARY_SYSTEM = """\
+You are analyzing agent feedback about a knowledge base. \
+Given a list of feedback entries, identify the top themes and patterns. \
+Group related feedback together and rank themes by frequency/impact. \
+Be concise — bullet points, no preamble.\
+"""
+
+
+async def _action_summarize_feedback(
+    db: Database,
+    query_llm: LLMProvider | None,
+    since: str | None,
+) -> str:
+    """Cluster feedback into themes using LLM, fallback to raw list."""
+    sql = "SELECT * FROM agent_feedback WHERE 1=1"
+    params: list[str] = []
+
+    if since:
+        sql += " AND created_at >= ?"
+        params.append(since)
+
+    sql += " ORDER BY created_at DESC LIMIT 100"
+
+    cursor = await db.execute(sql, tuple(params))
+    rows = await cursor.fetchall()
+
+    if not rows:
+        return "No feedback entries to summarize."
+
+    # Build text representation of feedback
+    feedback_lines = []
+    for row in rows:
+        line = f"[{row['feedback_type']}]"
+        if row["tool_name"]:
+            line += f" tool={row['tool_name']}"
+        if row["query_or_params"]:
+            line += f" query={row['query_or_params']}"
+        if row["detail"]:
+            line += f" — {row['detail']}"
+        feedback_lines.append(line)
+    feedback_text = "\n".join(feedback_lines)
+
+    # Try LLM synthesis
+    if query_llm is not None:
+        try:
+            summary = await query_llm.generate(
+                f"Feedback entries ({len(rows)} total):\n\n{feedback_text}",
+                system=_FEEDBACK_SUMMARY_SYSTEM,
+            )
+            if summary:
+                return f"Feedback Summary ({len(rows)} entries)\n\n{summary}"
+        except Exception:
+            logger.warning("LLM summarization failed, falling back to raw list", exc_info=True)
+
+    # Fallback: raw list
+    return await _action_list_feedback(db, None, since)
+
+
+async def _action_search_stats(
+    db: Database,
+    since: str | None,
+) -> str:
+    """Aggregate search telemetry: totals, zero-result rate, top missed queries."""
+    where = ""
+    params: list[str] = []
+    if since:
+        where = " WHERE created_at >= ?"
+        params.append(since)
+
+    # Total queries
+    total_sql = "SELECT COUNT(*) FROM search_events" + where  # noqa: S608
+    cursor = await db.execute(total_sql, tuple(params))
+    row = await cursor.fetchone()
+    total = row[0] if row else 0
+
+    if total == 0:
+        return "No search events recorded."
+
+    # Zero-result count
+    zero_where = " WHERE result_count = 0"
+    if since:
+        zero_where += " AND created_at >= ?"
+    zero_sql = "SELECT COUNT(*) FROM search_events" + zero_where  # noqa: S608
+    cursor = await db.execute(zero_sql, tuple(params))
+    row = await cursor.fetchone()
+    zero_count = row[0] if row else 0
+
+    # Average top score (non-null only)
+    avg_where = " WHERE top_score IS NOT NULL"
+    if since:
+        avg_where += " AND created_at >= ?"
+    avg_sql = "SELECT AVG(top_score) FROM search_events" + avg_where  # noqa: S608
+    cursor = await db.execute(avg_sql, tuple(params))
+    row = await cursor.fetchone()
+    avg_score = row[0] if row and row[0] is not None else 0.0
+
+    # Top missed queries (zero results, grouped)
+    missed_where = " WHERE result_count = 0"
+    if since:
+        missed_where += " AND created_at >= ?"
+    missed_sql = (
+        "SELECT query_text, COUNT(*) as cnt FROM search_events"  # noqa: S608
+        + missed_where
+        + " GROUP BY query_text ORDER BY cnt DESC LIMIT 10"
+    )
+    cursor = await db.execute(missed_sql, tuple(params))
+    missed_rows = await cursor.fetchall()
+
+    lines = [
+        "Search Telemetry\n",
+        f"Total queries: {total}",
+        f"Zero-result queries: {zero_count} ({zero_count * 100 // total}%)",
+        f"Average top score: {avg_score:.4f}",
+    ]
+
+    if missed_rows:
+        lines.append("\nTop missed queries (zero results):")
+        for mrow in missed_rows:
+            lines.append(f"  [{mrow[1]}x] {mrow[0]}")
 
     return "\n".join(lines)

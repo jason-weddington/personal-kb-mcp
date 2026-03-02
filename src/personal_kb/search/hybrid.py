@@ -102,4 +102,29 @@ async def hybrid_search(
             )
         )
 
+    # Record search telemetry (fire-and-forget)
+    event_top_score: float | None = rrf_scores[sorted_ids[0]] if sorted_ids else None
+    await _record_search_event(db, query.query, len(results), event_top_score, match_source)
+
     return results, filtered_count
+
+
+async def _record_search_event(
+    db: Database,
+    query_text: str,
+    result_count: int,
+    top_score: float | None,
+    match_source: str,
+) -> None:
+    """Record a search event for telemetry. Never raises."""
+    try:
+        now = datetime.now(UTC).isoformat()
+        await db.execute(
+            "INSERT INTO search_events"
+            " (query_text, result_count, top_score, match_source, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (query_text, result_count, top_score, match_source, now),
+        )
+        await db.commit()
+    except Exception:
+        logger.warning("Failed to record search event", exc_info=True)

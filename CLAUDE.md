@@ -96,3 +96,16 @@ Format: `type(optional-scope): description`
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in agentic query loop |
 | `KB_AGENTIC_SYNTHESIS` | `TRUE` | Enable agentic retrieval + coverage check for kb_summarize |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
+
+## Agent Feedback Loop
+
+Two layers close the feedback loop between agents and the KB maintainer:
+
+**Search telemetry** (`search_events` table) — populated automatically inside `hybrid_search()`. Every query records `query_text`, `result_count`, `top_score`, and `match_source`. Zero token cost, zero agent cooperation needed.
+
+**Agent feedback** (`agent_feedback` table + `kb_feedback` tool) — agent-initiated, structured, negative-only. Always-on (not manager-gated). Three feedback types: `missing` (KB lacked needed knowledge), `unhelpful` (results existed but didn't help), `friction` (tool was awkward or slow).
+
+**Manager explore actions** (in `kb_maintain`, requires `KB_MANAGER=TRUE`):
+- `list_feedback` — list recent feedback, filterable by `feedback_type` and `since`
+- `summarize_feedback` — pipe feedback to query LLM for theme clustering, falls back to raw list
+- `search_stats` — search telemetry overview: total queries, zero-result rate, avg top score, top missed queries
