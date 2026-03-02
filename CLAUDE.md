@@ -54,6 +54,16 @@ Agent baseline tests are marked `@pytest.mark.eval` and excluded from the pre-pu
 
 This is a dogfooding project — we build the KB and use it in the same sessions. When you notice friction using the KB tools (wasted tokens, missing capabilities, awkward workflows), add the problem to ROADMAP.md under Next. You're the primary consumer of this tool; your perspective on what's painful matters.
 
+## Documentation Workflow
+
+Every new feature (not bug fixes) requires updating three things:
+
+1. **`README.md`** — user-facing: getting started, feature overview, deciding whether to use the tool
+2. **`how_it_works.md`** — technical deep dive: how things actually work in the code, for maintainers and contributors
+3. **KB** (`kb_store`) — capture decisions, architecture, and non-obvious patterns for future sessions
+
+**Process**: Use research agents (subagent_type `Explore`) to deep dive the codebase for exact function signatures, thresholds, data flow, and behavior. Parallelize with multiple agents when researching independent features. Write docs from the research reports — every statement must be verifiable against the code. Don't guess or paraphrase from memory; the agents have the source of truth.
+
 ## Commit Convention
 
 This repo uses **conventional commits** enforced by a `commit-msg` hook.
