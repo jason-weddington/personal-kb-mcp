@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.22.0 (2026-03-02)
+
+### Features
+
+- Multi-user Phase 1 — attribution, concurrency fixes, secret scanning
+  ([`c4c8b0f`](https://github.com/jason-weddington/personal-kb-mcp/commit/c4c8b0f057f9a7c48d332f89ffdf8e30f5a2bd85))
+
+
 ## v0.21.0 (2026-03-02)
 
 ### Features
