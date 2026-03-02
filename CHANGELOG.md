@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.24.0 (2026-03-02)
+
+### Features
+
+- URL ingestion support for kb_ingest
+  ([`63e08a5`](https://github.com/jason-weddington/personal-kb-mcp/commit/63e08a5ba04a63536b60ec68f72668347698a862))
+
+
 ## v0.23.1 (2026-03-02)
 
 ### Bug Fixes
