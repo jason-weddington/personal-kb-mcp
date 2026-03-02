@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.23.0 (2026-03-02)
+
+### Chores
+
+- Include optional deps in dev group so all tests run locally
+  ([`0b27363`](https://github.com/jason-weddington/personal-kb-mcp/commit/0b27363d1c1c04c4f466034e7ca3e4dc68c93baf))
+
+### Features
+
+- Multi-user Phase 2 & 3 — attribution, filters, audit, sensitivity
+  ([`2527fca`](https://github.com/jason-weddington/personal-kb-mcp/commit/2527fcaaf1bd32c5de0c82904e9a26633663c02a))
+
+
 ## v0.22.0 (2026-03-02)
 
 ### Features
