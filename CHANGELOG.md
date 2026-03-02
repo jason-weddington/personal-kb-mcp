@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.23.1 (2026-03-02)
+
+### Bug Fixes
+
+- Pass contributor through deactivate/reactivate audit + update README
+  ([`d74dbad`](https://github.com/jason-weddington/personal-kb-mcp/commit/d74dbad16e0c25691b9ea7bf808421963d67fc84))
+
+
 ## v0.23.0 (2026-03-02)
 
 ### Chores
