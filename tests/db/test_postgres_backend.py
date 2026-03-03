@@ -32,12 +32,22 @@ class TestTranslatePlaceholders:
         sql = "UPDATE t SET x = ? WHERE id = ? AND name = ?"
         assert _translate_placeholders(sql) == "UPDATE t SET x = $1 WHERE id = $2 AND name = $3"
 
-    def test_question_mark_in_string_literal_still_replaced(self):
-        # This is a known limitation — real SQL shouldn't have ? in string literals
-        # since parameterized queries use placeholders, not inline values
+    def test_question_mark_in_string_literal_preserved(self):
         sql = "SELECT '?' FROM t WHERE x = ?"
         result = _translate_placeholders(sql)
-        assert result == "SELECT '$1' FROM t WHERE x = $2"
+        assert result == "SELECT '?' FROM t WHERE x = $1"
+
+    def test_mixed_literal_and_placeholder(self):
+        sql = "WHERE x = ? AND y = '?'"
+        assert _translate_placeholders(sql) == "WHERE x = $1 AND y = '?'"
+
+    def test_escaped_quote_with_question_mark(self):
+        sql = "WHERE name = 'it''s?' AND x = ?"
+        assert _translate_placeholders(sql) == "WHERE name = 'it''s?' AND x = $1"
+
+    def test_multiple_literals_with_placeholder_between(self):
+        sql = "WHERE a = '?' AND b = ? AND c = '?'"
+        assert _translate_placeholders(sql) == "WHERE a = '?' AND b = $1 AND c = '?'"
 
     def test_empty_sql(self):
         assert _translate_placeholders("") == ""

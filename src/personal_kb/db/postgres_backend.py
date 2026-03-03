@@ -8,7 +8,6 @@ backend translates them to ``$N`` at execute time.
 from __future__ import annotations
 
 import logging
-import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -21,20 +20,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Pre-compiled regex for placeholder translation
-_PLACEHOLDER_RE = re.compile(r"\?")
-
 
 def _translate_placeholders(sql: str) -> str:
-    """Convert ``?`` placeholders to ``$1, $2, ...`` for asyncpg."""
+    """Convert ``?`` placeholders to ``$1, $2, ...`` for asyncpg.
+
+    Skips ``?`` inside SQL string literals (single-quoted). Handles
+    escaped quotes (``''``) correctly.
+    """
+    if "?" not in sql:
+        return sql
+
+    out: list[str] = []
     counter = 0
+    in_quote = False
+    i = 0
+    length = len(sql)
 
-    def _replace(_match: re.Match[str]) -> str:
-        nonlocal counter
-        counter += 1
-        return f"${counter}"
+    while i < length:
+        ch = sql[i]
+        if ch == "'":
+            if in_quote and i + 1 < length and sql[i + 1] == "'":
+                # Escaped quote ('') — emit both, stay in quote
+                out.append("''")
+                i += 2
+                continue
+            in_quote = not in_quote
+            out.append(ch)
+        elif ch == "?" and not in_quote:
+            counter += 1
+            out.append(f"${counter}")
+        else:
+            out.append(ch)
+        i += 1
 
-    return _PLACEHOLDER_RE.sub(_replace, sql)
+    return "".join(out)
 
 
 class PostgresRow:

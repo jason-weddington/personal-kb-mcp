@@ -25,7 +25,7 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 - **Atomic batch store.** If entry 5/10 fails, entries 1-4 are already committed. No rollback, no partial-success reporting. Wrap in transaction or catch per-entry and report. (audit H8)
 - **Postgres transaction wrapper.** asyncpg auto-commits per `execute()` on separate pool connections. Multi-step ops (create_entry, delete_cascade) aren't atomic. Need a `transaction()` context manager. (audit M4)
-- **String-literal-aware placeholder translation.** `_translate_placeholders` naively replaces all `?` including inside string literals. Latent bug — first SQL with a literal `?` gets silently corrupted on Postgres. (audit H5)
+- **~~String-literal-aware placeholder translation.~~** (audit H5) → Done
 - **Config validation.** Bare `int()`/`float()` on env vars produces unhelpful errors. Unknown provider values silently return None. (audit M18)
 
 ### Ingestion hardening
@@ -51,6 +51,7 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 ## Done
 
+- String-literal-aware placeholder translation — `_translate_placeholders` now uses a quote-aware state machine instead of naive regex, preserving `?` inside SQL string literals. (audit H5)
 - Wire update params through kb_store — `short_title`, `long_title`, `entry_type`, `project_ref`, `source_context` now applied on update instead of silently ignored. `entry_type` default changed to `None` to prevent overwriting. (audit H7)
 - Fix conditional test assertions — `pytest.importorskip` for optional deps, unconditional asserts, meaningful threshold test.
 - Multi-user Phase 2 & 3 — `@contributor/team` attribution badges in search output, contributor/team filters on kb_search, `list_contributors` maintain action, audit events table (`list_audit`), sensitivity field (internal/restricted/public classification).
