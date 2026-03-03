@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.25.2 (2026-03-03)
+
+### Bug Fixes
+
+- Replace conditional test assertions with skip-or-assert
+  ([`2bb93be`](https://github.com/jason-weddington/personal-kb-mcp/commit/2bb93becb54fe5577d46b48ce89cb032db3585f4))
+
+
 ## v0.25.1 (2026-03-02)
 
 ### Bug Fixes
