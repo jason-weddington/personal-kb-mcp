@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.25.4 (2026-03-03)
+
+### Bug Fixes
+
+- Quote-aware placeholder translation in Postgres backend (audit H5)
+  ([`ac985b4`](https://github.com/jason-weddington/personal-kb-mcp/commit/ac985b41fd14994caca55b26aa5eb0ccda59bfc3))
+
+
 ## v0.25.3 (2026-03-03)
 
 ### Bug Fixes
