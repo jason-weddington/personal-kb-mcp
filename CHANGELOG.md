@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.25.1 (2026-03-02)
+
+### Bug Fixes
+
+- Harden ingestion, search, and input validation (audit quick wins)
+  ([`eb4087a`](https://github.com/jason-weddington/personal-kb-mcp/commit/eb4087a763460739c71c303c872a365e0c4abf66))
+
+
 ## v0.25.0 (2026-03-02)
 
 ### Documentation
