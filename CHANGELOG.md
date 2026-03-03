@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.27.0 (2026-03-03)
+
+### Features
+
+- SQLite-to-Postgres migration script and improved tool descriptions
+  ([`449a675`](https://github.com/jason-weddington/personal-kb-mcp/commit/449a67597f786c16188a8c427d5659eb07221583))
+
+
 ## v0.26.0 (2026-03-03)
 
 ### Features
