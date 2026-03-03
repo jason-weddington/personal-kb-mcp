@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v0.25.0 (2026-03-02)
+
+### Documentation
+
+- Add agentic ingestion, agentic synthesis, and URL ingestion to how_it_works
+  ([`10cff95`](https://github.com/jason-weddington/personal-kb-mcp/commit/10cff9548fd939ccdfcc27d5b4132031468622a7))
+
+- Add documentation workflow guidance to CLAUDE.md
+  ([`78d661e`](https://github.com/jason-weddington/personal-kb-mcp/commit/78d661eb0434ac7abe12eaccaadca8fb9bc5b7c0))
+
+- Fix detect-secrets detector list and flagging language in how_it_works
+  ([`90bfb30`](https://github.com/jason-weddington/personal-kb-mcp/commit/90bfb304c5af0f4ff875827de889ab005650c4c6))
+
+### Features
+
+- Aurora IAM database authentication
+  ([`91a4929`](https://github.com/jason-weddington/personal-kb-mcp/commit/91a49292905165c685ae4eba773edab67515bb71))
+
+
 ## v0.24.0 (2026-03-02)
 
 ### Features
