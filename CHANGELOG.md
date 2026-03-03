@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.25.3 (2026-03-03)
+
+### Bug Fixes
+
+- Wire update params through kb_store (audit H7)
+  ([`6d1550a`](https://github.com/jason-weddington/personal-kb-mcp/commit/6d1550a184334a8148795f4183fd9b053841b7eb))
+
+
 ## v0.25.2 (2026-03-03)
 
 ### Bug Fixes
