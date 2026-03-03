@@ -246,6 +246,147 @@ async def test_audit_events_on_deactivate(db, store):
 
 
 @pytest.mark.asyncio
+async def test_update_short_title(store):
+    """update_entry can change short_title."""
+    entry = await store.create_entry(
+        short_title="Old",
+        long_title="Original",
+        knowledge_details="Details",
+        entry_type=EntryType.DECISION,
+    )
+    updated = await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="Details",
+        short_title="New",
+    )
+    assert updated.short_title == "New"
+    assert updated.long_title == "Original"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_update_long_title(store):
+    """update_entry can change long_title."""
+    entry = await store.create_entry(
+        short_title="Short",
+        long_title="Old long title",
+        knowledge_details="Details",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    updated = await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="Details",
+        long_title="New long title",
+    )
+    assert updated.long_title == "New long title"
+    assert updated.short_title == "Short"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_update_entry_type(store):
+    """update_entry can change entry_type."""
+    entry = await store.create_entry(
+        short_title="Typed",
+        long_title="Typed entry",
+        knowledge_details="Details",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    updated = await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="Details",
+        entry_type=EntryType.DECISION,
+    )
+    assert updated.entry_type == EntryType.DECISION
+
+
+@pytest.mark.asyncio
+async def test_update_project_ref(store):
+    """update_entry can change project_ref."""
+    entry = await store.create_entry(
+        short_title="Project",
+        long_title="Project entry",
+        knowledge_details="Details",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="old-project",
+    )
+    updated = await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="Details",
+        project_ref="new-project",
+    )
+    assert updated.project_ref == "new-project"
+
+
+@pytest.mark.asyncio
+async def test_update_source_context(store):
+    """update_entry can change source_context."""
+    entry = await store.create_entry(
+        short_title="Sourced",
+        long_title="Sourced entry",
+        knowledge_details="Details",
+        entry_type=EntryType.LESSON_LEARNED,
+        source_context="original source",
+    )
+    updated = await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="Details",
+        source_context="new source",
+    )
+    assert updated.source_context == "new source"
+
+
+@pytest.mark.asyncio
+async def test_update_preserves_omitted_fields(store):
+    """Fields not passed to update_entry keep their original values."""
+    entry = await store.create_entry(
+        short_title="Keep me",
+        long_title="Keep me too",
+        knowledge_details="Original",
+        entry_type=EntryType.DECISION,
+        project_ref="my-project",
+        source_context="my source",
+    )
+    updated = await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="Updated details",
+    )
+    assert updated.short_title == "Keep me"
+    assert updated.long_title == "Keep me too"
+    assert updated.entry_type == EntryType.DECISION
+    assert updated.project_ref == "my-project"
+    assert updated.source_context == "my source"
+
+
+@pytest.mark.asyncio
+async def test_update_fields_persist_to_db(store):
+    """Updated metadata fields round-trip through the database."""
+    entry = await store.create_entry(
+        short_title="Original short",
+        long_title="Original long",
+        knowledge_details="Details",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="proj-a",
+        source_context="src-a",
+    )
+    await store.update_entry(
+        entry_id=entry.id,
+        knowledge_details="New details",
+        short_title="New short",
+        long_title="New long",
+        entry_type=EntryType.LESSON_LEARNED,
+        project_ref="proj-b",
+        source_context="src-b",
+    )
+    fetched = await store.get_entry(entry.id)
+    assert fetched is not None
+    assert fetched.short_title == "New short"
+    assert fetched.long_title == "New long"
+    assert fetched.entry_type == EntryType.LESSON_LEARNED
+    assert fetched.project_ref == "proj-b"
+    assert fetched.source_context == "src-b"
+    assert fetched.knowledge_details == "New details"
+
+
+@pytest.mark.asyncio
 async def test_has_embedding_flag(store):
     entry = await store.create_entry(
         short_title="Embed test",

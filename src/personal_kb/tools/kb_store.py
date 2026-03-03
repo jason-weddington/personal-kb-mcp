@@ -54,9 +54,9 @@ def register_kb_store(mcp: FastMCP) -> None:
             str, Field(description="Full content of the knowledge entry")
         ] = "",
         entry_type: Annotated[
-            EntryType,
+            EntryType | None,
             Field(description="factual_reference, decision, pattern_convention, lesson_learned"),
-        ] = EntryType.FACTUAL_REFERENCE,
+        ] = None,
         project_ref: Annotated[
             str | None, Field(description="Project tag/category for filtering")
         ] = None,
@@ -174,6 +174,11 @@ def register_kb_store(mcp: FastMCP) -> None:
                 hints=hints,
                 updated_by=contributor,
                 sensitivity=sensitivity,
+                short_title=short_title or None,
+                long_title=long_title or None,
+                entry_type=entry_type,
+                project_ref=project_ref,
+                source_context=source_context,
             )
             # Re-embed updated entry
             if embedder:
@@ -199,6 +204,9 @@ def register_kb_store(mcp: FastMCP) -> None:
         secret_err = _check_secrets(knowledge_details)
         if secret_err:
             return secret_err
+
+        if entry_type is None:
+            entry_type = EntryType.FACTUAL_REFERENCE
 
         entry = await store.create_entry(
             short_title=short_title,

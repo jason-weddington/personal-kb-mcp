@@ -112,6 +112,11 @@ class KnowledgeStore:
         hints: dict[str, object] | None = None,
         updated_by: str | None = None,
         sensitivity: str | None = None,
+        short_title: str | None = None,
+        long_title: str | None = None,
+        entry_type: EntryType | None = None,
+        project_ref: str | None = None,
+        source_context: str | None = None,
     ) -> KnowledgeEntry:
         """Update an existing entry, creating a new version."""
         existing = await get_entry(self.db, entry_id)
@@ -143,6 +148,16 @@ class KnowledgeStore:
         }
         if sensitivity is not None:
             update_fields["sensitivity"] = sensitivity
+        if short_title is not None:
+            update_fields["short_title"] = short_title
+        if long_title is not None:
+            update_fields["long_title"] = long_title
+        if entry_type is not None:
+            update_fields["entry_type"] = entry_type
+        if project_ref is not None:
+            update_fields["project_ref"] = project_ref
+        if source_context is not None:
+            update_fields["source_context"] = source_context
 
         updated = existing.model_copy(update=update_fields)
         await update_entry(self.db, updated)
