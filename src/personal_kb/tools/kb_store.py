@@ -173,7 +173,7 @@ def register_kb_store(mcp: FastMCP) -> None:
                 tags=tags,
                 hints=hints,
                 updated_by=contributor,
-                sensitivity=sensitivity,
+                sensitivity=sensitivity,  # type: ignore[arg-type]  # validated above
                 short_title=short_title or None,
                 long_title=long_title or None,
                 entry_type=entry_type,
@@ -220,7 +220,7 @@ def register_kb_store(mcp: FastMCP) -> None:
             hints=hints,
             contributor=contributor,
             team=team,
-            sensitivity=sensitivity,
+            sensitivity=sensitivity,  # type: ignore[arg-type]  # validated above
         )
 
         # Embed new entry

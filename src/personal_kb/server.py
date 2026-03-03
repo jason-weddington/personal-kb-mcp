@@ -142,6 +142,16 @@ This KB stores private context that you — an AI agent with public knowledge \
 already memorized — would not otherwise have: project decisions, personal \
 conventions, hard-won lessons, and domain-specific facts.
 
+BEFORE YOU ACT — check the KB first:
+The KB is your institutional memory. Search it BEFORE guessing, grepping, \
+or asking the user:
+- Deployment/infra questions → kb_search before SSH-ing or trying hostnames
+- New project or unfamiliar codebase → kb_search(project_ref="X") for context
+- Errors you haven't seen → kb_search the error message
+- Architectural decisions → kb_ask("decisions about X")
+- Operational procedures → kb_search before improvising
+One failed kb_search costs a second. Not searching costs minutes of fumbling.
+
 QUERYING — pick the right tool:
 - kb_search: Quick lookup by keywords or filters. Returns compact summaries \
 (no details). Use for duplicate checking, finding entries, or filtering by \
@@ -189,11 +199,6 @@ helps the human prioritize what to add next.
   - feedback_type: 'missing' (KB lacked needed knowledge), \
 'unhelpful' (results existed but didn't help), 'friction' (tool was awkward)
   - Do NOT use for storing knowledge — use kb_store instead.
-
-MAINTENANCE (kb_maintain, requires KB_MANAGER=TRUE):
-- list_contributors: Show contributor/team stats for active entries.
-- list_audit: Recent audit events — who created/updated/deactivated entries \
-(optional: entry_id, since).
 """
 
 

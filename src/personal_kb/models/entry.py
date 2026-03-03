@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,7 +29,7 @@ class KnowledgeEntry(BaseModel):
     contributor: str | None = None
     team: str | None = None
     updated_by: str | None = None
-    sensitivity: str | None = None
+    sensitivity: Literal["internal", "restricted", "public"] | None = None
     confidence_level: float = Field(default=0.9, ge=0.0, le=1.0)
     tags: list[str] = Field(default_factory=list)
     hints: dict[str, object] = Field(default_factory=dict)

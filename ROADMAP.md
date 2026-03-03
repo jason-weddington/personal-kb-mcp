@@ -12,15 +12,6 @@ Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — wha
 
 Findings from the [March 2026 code audit](audit.md). Ordered by impact and effort.
 
-### Quick wins (1-line fixes, high value)
-
-- **Symlink protection in ingestion.** `Path.glob` follows symlinks; deny-list checks filename not target. A symlink `docs/notes.md -> /etc/shadow` passes all checks. Add `path.is_symlink()` guard. (audit H3)
-- **URL ingestion content size limit.** `ingest_content()` has no max length — file path has 5MB cap but URL path has none. DoS via memory exhaustion. (audit H4)
-- **Validate sensitivity enum.** Accepts arbitrary strings (`"BANANA"` renders as `[BANANA]` badge). Restrict to `Literal["internal", "restricted", "public"] | None`. (audit H6)
-- **Filter deactivated entries from vector search.** `vector_search()` in both backends doesn't check `is_active`. Known issue, long-deferred. Join or post-filter. (audit M3)
-- **Strip quotes from FTS query tokens.** Input containing `"` produces malformed FTS5 syntax, silently returns zero results. (audit M2)
-- **Propagate scope in auto strategy.** `_auto_search_entries` accepts `scope` but never uses it — `kb_ask` with scope filter is silently ignored. (audit M11)
-
 ### Moderate effort
 
 - **Atomic batch store.** If entry 5/10 fails, entries 1-4 are already committed. No rollback, no partial-success reporting. Wrap in transaction or catch per-entry and report. (audit H8)
@@ -51,6 +42,7 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 ## Done
 
+- Audit quick wins (H3, H4, H6, M2, M3, M11) — symlink rejection, URL content size limit, sensitivity enum validation, FTS quote stripping, deactivated entry post-filter, scope propagation in auto strategy.
 - String-literal-aware placeholder translation — `_translate_placeholders` now uses a quote-aware state machine instead of naive regex, preserving `?` inside SQL string literals. (audit H5)
 - Wire update params through kb_store — `short_title`, `long_title`, `entry_type`, `project_ref`, `source_context` now applied on update instead of silently ignored. `entry_type` default changed to `None` to prevent overwriting. (audit H7)
 - Fix conditional test assertions — `pytest.importorskip` for optional deps, unconditional asserts, meaningful threshold test.

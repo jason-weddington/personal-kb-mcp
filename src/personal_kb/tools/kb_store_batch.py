@@ -93,7 +93,7 @@ async def batch_store_entries(
             hints=dict(hints) if hints else None,
             contributor=contributor,
             team=team,
-            sensitivity=str(sensitivity) if sensitivity else None,
+            sensitivity=str(sensitivity) if sensitivity else None,  # type: ignore[arg-type]  # validated by tool
         )
 
         # Embed

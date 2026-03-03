@@ -2,6 +2,7 @@
 
 import logging
 from datetime import UTC, datetime
+from typing import Literal
 
 from personal_kb.db.backend import Database
 from personal_kb.db.queries import (
@@ -59,7 +60,7 @@ class KnowledgeStore:
         hints: dict[str, object] | None = None,
         contributor: str | None = None,
         team: str | None = None,
-        sensitivity: str | None = None,
+        sensitivity: Literal["internal", "restricted", "public"] | None = None,
     ) -> KnowledgeEntry:
         """Create a new knowledge entry with initial version."""
         entry_id = await next_entry_id(self.db)
@@ -111,7 +112,7 @@ class KnowledgeStore:
         tags: list[str] | None = None,
         hints: dict[str, object] | None = None,
         updated_by: str | None = None,
-        sensitivity: str | None = None,
+        sensitivity: Literal["internal", "restricted", "public"] | None = None,
         short_title: str | None = None,
         long_title: str | None = None,
         entry_type: EntryType | None = None,
