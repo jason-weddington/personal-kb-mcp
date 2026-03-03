@@ -140,11 +140,14 @@ def register_kb_ingest(mcp: FastMCP) -> None:
     ) -> str:
         """Ingest files from disk or pre-fetched content into the KB.
 
-        Runs safety checks (secret detection, PII redaction), uses an LLM to
-        summarize and extract structured knowledge entries.
+        This is intelligent extraction, not raw dumping. An LLM reads the source,
+        identifies distinct knowledge entries (decisions, patterns, facts, lessons),
+        and creates properly titled/typed/tagged entries — typically several per file.
+        New entries are deduplicated against the existing KB, so it is safe to ingest
+        files that overlap with what's already stored. Re-ingesting the same file
+        cleanly replaces its old entries.
 
-        Sources become note nodes in the knowledge graph, with extracted entries
-        linked back via extracted_from edges.
+        Also runs secret detection and PII redaction before extraction.
 
         Two modes:
         - File mode: provide path (file, directory, or glob). Runs deny-list and

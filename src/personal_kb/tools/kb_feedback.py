@@ -46,6 +46,8 @@ def register_kb_feedback(mcp: FastMCP) -> None:
     ) -> str:
         """Report when a KB query failed to help with your task.
 
+        Call this whenever kb_search/kb_ask/kb_summarize returned poor results —
+        zero hits, irrelevant entries, or missing knowledge you expected to find.
         Takes 3 seconds, helps the human prioritize what to add next.
         Do NOT use for storing knowledge (use kb_store instead).
         """

@@ -48,6 +48,9 @@ def register_kb_summarize(mcp: FastMCP) -> None:
         readable answer with [kb-XXXXX] citations, not raw search results.
         Retrieves relevant entries via graph+search, then synthesizes with an LLM.
         Falls back to raw results if LLM is unavailable.
+
+        Use this for user-facing answers. For your own research or exploration,
+        prefer kb_search or kb_ask — they're cheaper (no synthesis LLM call).
         """
         if ctx is None:
             raise RuntimeError("Context not injected")

@@ -112,6 +112,9 @@ def register_kb_search(mcp: FastMCP) -> None:
         using Reciprocal Rank Fusion. Results include confidence decay — older entries
         are flagged with staleness warnings.
 
+        Returns compact summaries (titles + metadata, no knowledge_details).
+        Use kb_get with entry IDs to read the full content of interesting results.
+
         Best for quick lookups: checking if an entry exists, finding by keywords,
         filtering by tags/project/type. For exploring related knowledge, use kb_ask.
         For a synthesized answer to a question, use kb_summarize.

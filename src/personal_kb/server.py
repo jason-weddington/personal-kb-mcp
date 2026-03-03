@@ -180,10 +180,11 @@ DON'T capture trivial info, temporary session context, or duplicates. \
 SEARCH before storing — if a relevant entry exists, use update_entry_id.
 
 INGESTING — extend the KB from files or pre-fetched content:
-- kb_ingest: Read files or pre-fetched content, extract knowledge entries, \
-and add them to the graph. Accepts file paths, directories, glob patterns \
-(e.g. *.md, docs/**/*.txt), or pre-fetched content with a source URL \
-(pass content + source_url for web pages, wiki articles, etc.).
+- kb_ingest: Intelligent extraction, not raw dumping. An LLM reads the source \
+and creates multiple properly structured KB entries (decisions, patterns, facts). \
+Deduplicates against existing entries — safe to ingest overlapping files. \
+Accepts file paths, directories, glob patterns (e.g. *.md, docs/**/*.txt), \
+or pre-fetched content with a source URL (content + source_url).
 
 Entry types: factual_reference, decision, pattern_convention, lesson_learned.
 Use tags for discoverability. Use project_ref for project-specific knowledge.
@@ -194,8 +195,9 @@ Use hints to build the knowledge graph:
 - {"related_entities": [{"id": "kb-00003", "edge_type": "depends_on"}]}
 
 FEEDBACK — help improve the KB:
-- kb_feedback: Report when a KB query failed to help. Takes 3 seconds, \
-helps the human prioritize what to add next.
+- kb_feedback: Call this whenever a KB query returned poor results (zero hits, \
+irrelevant entries, missing knowledge). Takes 3 seconds, helps the human \
+prioritize what to add next.
   - feedback_type: 'missing' (KB lacked needed knowledge), \
 'unhelpful' (results existed but didn't help), 'friction' (tool was awkward)
   - Do NOT use for storing knowledge — use kb_store instead.

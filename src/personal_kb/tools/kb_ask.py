@@ -3,7 +3,7 @@
 import contextlib
 import logging
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
@@ -27,7 +27,7 @@ from personal_kb.tools.formatters import format_entry_compact, format_entry_full
 
 logger = logging.getLogger(__name__)
 
-_STRATEGIES = {"auto", "decision_trace", "timeline", "related", "connection"}
+Strategy = Literal["auto", "decision_trace", "timeline", "related", "connection"]
 
 
 def register_kb_ask(mcp: FastMCP) -> None:
@@ -37,9 +37,9 @@ def register_kb_ask(mcp: FastMCP) -> None:
     async def kb_ask(
         question: Annotated[str, Field(description="Natural language or keywords")],
         strategy: Annotated[
-            str,
+            Strategy,
             Field(
-                description=("Query strategy: auto, decision_trace, timeline, related, connection"),
+                description="Query strategy: auto, decision_trace, timeline, related, connection",
             ),
         ] = "auto",
         scope: Annotated[
@@ -64,18 +64,19 @@ def register_kb_ask(mcp: FastMCP) -> None:
         Best for discovery and exploration — when you need to find connections,
         trace history, or understand how knowledge relates.
 
-        Strategies:
-        - auto: Hybrid search + expand via graph neighbors
-        - decision_trace: Follow supersedes chains ("how did decision X evolve?")
-        - timeline: Chronological entries for a scope ("what happened in project X?")
-        - related: BFS from a starting entry/concept ("what connects to tag:python?")
-        - connection: Find paths between two nodes ("how are X and Y related?")
+        Strategies (prefer specific strategies over auto when intent is clear):
+        - auto: Hybrid search + graph expansion. Good default for open-ended queries.
+        - decision_trace: Follow supersedes chains to see how a decision evolved over
+          time. Use for "why did we switch from X to Y?" or "what was the original
+          rationale for Z?"
+        - timeline: Chronological view of entries in a scope. Use for "what happened
+          in project X?" or "recent changes to tag:auth".
+        - related: BFS from a starting node — finds everything connected to a concept.
+          Use for "what touches tag:python?" or "what depends on kb-00042?"
+        - connection: Find paths between two nodes. Use for "how are X and Y related?"
         """
         if ctx is None:
             raise RuntimeError("Context not injected")
-
-        if strategy not in _STRATEGIES:
-            return f"Unknown strategy '{strategy}'. Use: {', '.join(sorted(_STRATEGIES))}"
 
         lifespan = ctx.lifespan_context
         db = lifespan["db"]
