@@ -1,5 +1,6 @@
 """kb_ask MCP tool — graph traversal queries."""
 
+import contextlib
 import logging
 from datetime import UTC, datetime
 from typing import Annotated
@@ -19,7 +20,7 @@ from personal_kb.graph.queries import (
     get_neighbors,
     supersedes_chain,
 )
-from personal_kb.models.entry import KnowledgeEntry
+from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.models.search import SearchQuery
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.tools.formatters import format_entry_compact, format_entry_full, format_result_list
@@ -236,13 +237,28 @@ async def _auto_search_entries(
     limit: int,
 ) -> list[tuple[KnowledgeEntry, str]]:
     """Hybrid search + graph expansion, returning structured entries."""
+    from personal_kb.graph.queries import _parse_scope
     from personal_kb.search.hybrid import hybrid_search
+
+    # Parse scope into SearchQuery filter fields
+    project_ref = None
+    entry_type = None
+    tags = None
+    if scope:
+        scope_type, scope_value = _parse_scope(scope)
+        if scope_type == "project":
+            project_ref = scope_value
+        elif scope_type == "entry_type":
+            with contextlib.suppress(ValueError):
+                entry_type = EntryType(scope_value)
+        elif scope_type == "tag":
+            tags = [scope_value]
 
     search_query = SearchQuery(
         query=question,
-        project_ref=None,
-        entry_type=None,
-        tags=None,
+        project_ref=project_ref,
+        entry_type=entry_type,
+        tags=tags,
         limit=limit,
         include_stale=False,
     )

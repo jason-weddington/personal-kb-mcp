@@ -77,7 +77,7 @@ async def hybrid_search(
     results: list[SearchResult] = []
     for entry_id in sorted_ids[: query.limit]:
         entry = await get_entry(db, entry_id)
-        if entry is None:
+        if entry is None or not entry.is_active:
             continue
 
         # Apply confidence decay (reset clock on updates)

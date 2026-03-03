@@ -196,6 +196,14 @@ class FileIngester:
                 reason=f"Unsupported file type: {path.suffix or path.name}",
             )
 
+        # 2b. Reject symlinks (could escape deny-list via indirection)
+        if path.is_symlink():
+            return FileResult(
+                path=rel_path,
+                action="skipped",
+                reason="Symlinks not allowed",
+            )
+
         # 3. Check file size
         try:
             file_size = path.stat().st_size
@@ -412,6 +420,16 @@ class FileIngester:
         # Use safety-processed content (may have PII redacted)
         content = safety.content
 
+        # 2b. Content size limit (mirrors file size check in ingest_file)
+        content_bytes = len(content.encode("utf-8"))
+        max_size = get_ingest_max_file_size()
+        if content_bytes > max_size:
+            return FileResult(
+                path=source_url,
+                action="skipped",
+                reason=f"Content too large: {content_bytes:,} bytes (max {max_size:,})",
+            )
+
         if dry_run:
             summary = await summarize_file(self._llm, source_url, content)
             chunks = chunk_content(content)
@@ -580,7 +598,7 @@ class FileIngester:
 
         # Collect files
         pattern = "**/*" if recursive else "*"
-        files = sorted(f for f in dir_path.glob(pattern) if f.is_file())
+        files = sorted(f for f in dir_path.glob(pattern) if f.is_file() and not f.is_symlink())
 
         for file_path in files:
             result.total_files += 1

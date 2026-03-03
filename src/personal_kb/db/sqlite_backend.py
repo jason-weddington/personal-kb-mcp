@@ -32,7 +32,8 @@ def _escape_fts_query(query: str) -> str:
     tokens = query.split()
     if not tokens:
         return ""
-    return " ".join(f'"{token}"' for token in tokens)
+    cleaned = [t.replace('"', "") for t in tokens]
+    return " ".join(f'"{t}"' for t in cleaned if t)
 
 
 class SQLiteCursor:

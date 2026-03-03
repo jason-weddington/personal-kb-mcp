@@ -491,6 +491,58 @@ class TestIngestDirectory:
         assert result.errors == 1
 
 
+class TestSymlinkProtection:
+    async def test_ingest_file_skips_symlink(self, ingester_deps, tmp_path):
+        real = tmp_path / "real.md"
+        real.write_text("# Real file")
+        link = tmp_path / "link.md"
+        link.symlink_to(real)
+
+        deps = ingester_deps
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            deps["enricher"],
+            deps["llm"],
+        )
+        result = await ingester.ingest_file(link, base_dir=tmp_path)
+        assert result.action == "skipped"
+        assert "Symlinks" in result.reason
+
+    async def test_ingest_directory_skips_symlinks(self, ingester_deps, tmp_path):
+        real = tmp_path / "real.md"
+        real.write_text("# Real file")
+        link = tmp_path / "link.md"
+        link.symlink_to(real)
+
+        entries_json = [
+            {
+                "short_title": "entry",
+                "long_title": "An entry",
+                "knowledge_details": "Details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        deps = ingester_deps
+        llm = _make_llm_with_responses("Summary.", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+        )
+
+        result = await ingester.ingest_directory(tmp_path, recursive=False)
+        # Only real.md should be processed (symlink filtered in glob)
+        assert result.total_files == 1
+        assert result.ingested == 1
+
+
 class TestIngestContent:
     async def test_ingests_url_content(self, ingester_deps):
         entries_json = [
@@ -748,3 +800,22 @@ class TestIngestContent:
         edge = await cursor.fetchone()
         assert edge is not None
         assert edge["source"] == result.entry_ids[0]
+
+    async def test_url_content_too_large(self, ingester_deps, monkeypatch):
+        monkeypatch.setenv("KB_INGEST_MAX_FILE_SIZE", "50")
+        deps = ingester_deps
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            deps["enricher"],
+            deps["llm"],
+        )
+
+        result = await ingester.ingest_content(
+            "x" * 100,
+            "https://wiki.example.com/large",
+        )
+        assert result.action == "skipped"
+        assert "too large" in result.reason

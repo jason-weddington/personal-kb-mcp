@@ -20,6 +20,16 @@ from personal_kb.tools.formatters import format_entry_compact
 
 logger = logging.getLogger(__name__)
 
+_VALID_SENSITIVITY = {"internal", "restricted", "public"}
+
+
+def _validate_sensitivity(sensitivity: str | None) -> str | None:
+    """Return an error string if sensitivity is invalid, None if OK."""
+    if sensitivity is not None and sensitivity not in _VALID_SENSITIVITY:
+        valid = ", ".join(sorted(_VALID_SENSITIVITY))
+        return f'Error: Invalid sensitivity "{sensitivity}". Must be one of: {valid}'
+    return None
+
 
 def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
     """Format the result of a store operation for the MCP response."""
@@ -147,6 +157,10 @@ def register_kb_store(mcp: FastMCP) -> None:
         if update_entry_id:
             if not knowledge_details:
                 return "Error: knowledge_details is required when updating."
+            # Validate sensitivity
+            sens_err = _validate_sensitivity(sensitivity)
+            if sens_err:
+                return sens_err
             # Secret scanning
             secret_err = _check_secrets(knowledge_details)
             if secret_err:
@@ -175,6 +189,11 @@ def register_kb_store(mcp: FastMCP) -> None:
                 "Error: short_title, long_title, and knowledge_details "
                 "are required when creating a new entry."
             )
+
+        # Validate sensitivity
+        sens_err = _validate_sensitivity(sensitivity)
+        if sens_err:
+            return sens_err
 
         # Secret scanning
         secret_err = _check_secrets(knowledge_details)

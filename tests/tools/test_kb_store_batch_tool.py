@@ -123,6 +123,27 @@ async def test_batch_store_validation_error(db, store, graph_builder):
 
 
 @pytest.mark.asyncio
+async def test_batch_store_rejects_invalid_sensitivity(db, store, graph_builder):
+    """Batch with invalid sensitivity should return an error."""
+    embedder = FakeEmbedder(db)
+    ls = _lifespan(db, store, graph_builder, embedder)
+
+    entries = [
+        _entry_dict(short_title="Good", sensitivity="internal"),
+        _entry_dict(short_title="Bad", sensitivity="banana"),
+    ]
+    result = await batch_store_entries(entries, ls)
+    assert "invalid sensitivity" in result.lower()
+    assert '"banana"' in result
+    assert "entry 1" in result
+
+    # No entries should have been created
+    cursor = await db.execute("SELECT COUNT(*) FROM knowledge_entries")
+    count = (await cursor.fetchone())[0]
+    assert count == 0
+
+
+@pytest.mark.asyncio
 async def test_batch_store_enrichment_failure_continues(db, store, graph_builder):
     """If enrichment fails, entries are still created successfully."""
     embedder = FakeEmbedder(db)

@@ -3,7 +3,7 @@
 import pytest
 
 from personal_kb.models.entry import EntryType
-from personal_kb.tools.kb_store import format_store_result
+from personal_kb.tools.kb_store import _validate_sensitivity, format_store_result
 
 
 @pytest.mark.asyncio
@@ -76,3 +76,25 @@ async def test_deactivate_already_inactive(store):
     await store.deactivate_entry(entry.id)
     with pytest.raises(ValueError, match="already inactive"):
         await store.deactivate_entry(entry.id)
+
+
+# --- Sensitivity validation ---
+
+
+def test_validate_sensitivity_valid_values():
+    """Valid sensitivity values should pass."""
+    assert _validate_sensitivity(None) is None
+    assert _validate_sensitivity("internal") is None
+    assert _validate_sensitivity("restricted") is None
+    assert _validate_sensitivity("public") is None
+
+
+def test_validate_sensitivity_invalid_value():
+    """Invalid sensitivity should return an error string."""
+    result = _validate_sensitivity("banana")
+    assert result is not None
+    assert "Invalid sensitivity" in result
+    assert '"banana"' in result
+    assert "internal" in result
+    assert "public" in result
+    assert "restricted" in result

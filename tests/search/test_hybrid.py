@@ -120,6 +120,35 @@ async def test_hybrid_search_does_not_touch_last_accessed(db, store):
 
 
 @pytest.mark.asyncio
+async def test_hybrid_filters_deactivated_entries(db, store, fake_embedder):
+    """Deactivated entries should not appear in search results."""
+    entry = await store.create_entry(
+        short_title="Deprecated fact",
+        long_title="A deprecated factual entry",
+        knowledge_details="This fact is no longer accurate and was deactivated.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    # Embed the entry so it can be found by vector search too
+    embedding = await fake_embedder.embed(entry.embedding_text)
+    if embedding:
+        await fake_embedder.store_embedding(entry.id, embedding)
+        await store.mark_embedding(entry.id, True)
+
+    # Verify it appears before deactivation
+    query = SearchQuery(query="deprecated fact")
+    results_before, _ = await hybrid_search(db, fake_embedder, query)
+    assert any(r.entry.id == entry.id for r in results_before)
+
+    # Deactivate
+    await store.deactivate_entry(entry.id)
+
+    # Should NOT appear after deactivation
+    results_after, _ = await hybrid_search(db, fake_embedder, query)
+    assert not any(r.entry.id == entry.id for r in results_after)
+
+
+@pytest.mark.asyncio
 async def test_hybrid_threshold_filters_low_relevance(db, store):
     """Results below 50% of top RRF score should be filtered."""
     # Create one highly relevant entry and several loosely matching ones

@@ -43,6 +43,15 @@ async def batch_store_entries(
         if missing:
             return f"Error: entry {i} missing required fields: {', '.join(sorted(missing))}"
 
+    # Validate sensitivity values
+    from personal_kb.tools.kb_store import _VALID_SENSITIVITY
+
+    for i, entry_dict in enumerate(entries):
+        sens = entry_dict.get("sensitivity")
+        if sens is not None and sens not in _VALID_SENSITIVITY:
+            valid = ", ".join(sorted(_VALID_SENSITIVITY))
+            return f'Error: entry {i} has invalid sensitivity "{sens}". Must be one of: {valid}'
+
     # Secret scanning — reject entire batch if any entry has secrets
     if not is_safety_skip():
         for i, entry_dict in enumerate(entries):

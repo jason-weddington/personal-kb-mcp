@@ -214,7 +214,7 @@ def register_kb_ingest(mcp: FastMCP) -> None:
         # Glob pattern: expand and ingest each matched file
         if _is_glob(path):
             base = Path.cwd()
-            matched = sorted(f for f in base.glob(path) if f.is_file())
+            matched = sorted(f for f in base.glob(path) if f.is_file() and not f.is_symlink())
             if not matched:
                 return f"Error: No files matched pattern: {path}"
 

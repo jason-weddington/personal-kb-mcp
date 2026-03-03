@@ -7,6 +7,7 @@ import pytest
 
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.kb_ask import (
+    _auto_search_entries,
     _format_entries,
     _strategy_auto_with_planner,
     _strategy_connection,
@@ -303,3 +304,99 @@ async def test_auto_with_planner_uses_refined_search_query(db, fake_embedder, st
     )
     # Should use the refined query — visible in the header
     assert "sqlite WAL" in result
+
+
+# --- _auto_search_entries scope propagation ---
+
+
+@pytest.mark.asyncio
+async def test_auto_search_entries_propagates_project_scope(db, store, fake_embedder):
+    """Scope 'project:X' should filter results to that project."""
+    await store.create_entry(
+        short_title="Config alpha",
+        long_title="Alpha project config",
+        knowledge_details="Config values for alpha project.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="alpha",
+    )
+    await store.create_entry(
+        short_title="Config beta",
+        long_title="Beta project config",
+        knowledge_details="Config values for beta project.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="beta",
+    )
+
+    entries = await _auto_search_entries(
+        db,
+        fake_embedder,
+        "Config",
+        scope="project:alpha",
+        include_graph_context=False,
+        limit=20,
+    )
+    entry_ids = [e.id for e, _ in entries]
+    assert "kb-00001" in entry_ids  # alpha
+    assert "kb-00002" not in entry_ids  # beta filtered out
+
+
+@pytest.mark.asyncio
+async def test_auto_search_entries_propagates_tag_scope(db, store, fake_embedder):
+    """Scope 'tag:X' should filter results to entries with that tag."""
+    await store.create_entry(
+        short_title="Python tips",
+        long_title="Python programming tips",
+        knowledge_details="Use list comprehensions in Python.",
+        entry_type=EntryType.PATTERN_CONVENTION,
+        tags=["python"],
+    )
+    await store.create_entry(
+        short_title="Rust tips",
+        long_title="Rust programming tips",
+        knowledge_details="Use pattern matching in Rust.",
+        entry_type=EntryType.PATTERN_CONVENTION,
+        tags=["rust"],
+    )
+
+    entries = await _auto_search_entries(
+        db,
+        fake_embedder,
+        "tips",
+        scope="tag:python",
+        include_graph_context=False,
+        limit=20,
+    )
+    entry_ids = [e.id for e, _ in entries]
+    assert "kb-00001" in entry_ids  # python
+    assert "kb-00002" not in entry_ids  # rust filtered out
+
+
+@pytest.mark.asyncio
+async def test_auto_search_entries_no_scope(db, store, fake_embedder):
+    """No scope should return all matching entries."""
+    await store.create_entry(
+        short_title="Config alpha",
+        long_title="Alpha project config",
+        knowledge_details="Config values for alpha project.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="alpha",
+    )
+    await store.create_entry(
+        short_title="Config beta",
+        long_title="Beta project config",
+        knowledge_details="Config values for beta project.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="beta",
+    )
+
+    entries = await _auto_search_entries(
+        db,
+        fake_embedder,
+        "Config",
+        scope=None,
+        include_graph_context=False,
+        limit=20,
+    )
+    entry_ids = [e.id for e, _ in entries]
+    assert "kb-00001" in entry_ids
+    assert "kb-00002" in entry_ids
