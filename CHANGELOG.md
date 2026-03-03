@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.26.0 (2026-03-03)
+
+### Features
+
+- Add "check KB first" nudge to server instructions
+  ([`92171b3`](https://github.com/jason-weddington/personal-kb-mcp/commit/92171b3956e9497d537f6fd23a122c946db5313a))
+
+
 ## v0.25.4 (2026-03-03)
 
 ### Bug Fixes
