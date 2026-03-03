@@ -176,16 +176,15 @@ async def test_hybrid_threshold_filters_low_relevance(db, store):
 
     # Search specifically for docker — only the first entry should match well
     query = SearchQuery(query="Docker compose orchestration", limit=10, min_score_ratio=0.5)
-    results, filtered = await hybrid_search(db, None, query)
+    results, _filtered = await hybrid_search(db, None, query)
 
     # The docker entry should be present
     result_ids = [r.entry.id for r in results]
     assert "kb-00001" in result_ids
 
-    # Unrelated entries should be filtered (or never matched by FTS)
-    # The key assertion: filtered count should be >= 0 (we have the mechanism)
-    assert isinstance(filtered, int)
-    assert filtered >= 0
+    # Unrelated entries should not appear in results
+    assert "kb-00002" not in result_ids  # Python logging — unrelated
+    assert "kb-00003" not in result_ids  # Git branching — unrelated
 
 
 @pytest.mark.asyncio

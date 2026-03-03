@@ -27,9 +27,9 @@ def test_check_secrets_detects_keyword_secrets():
         pytest.skip("detect-secrets not installed")
 
     result = _check_secrets("password = 'super_secret_password_123'")
-    if result is not None:
-        assert "Error: Potential secrets detected" in result
-        assert "KB_SKIP_SAFETY=TRUE" in result
+    assert result is not None
+    assert "Error: Potential secrets detected" in result
+    assert "KB_SKIP_SAFETY=TRUE" in result
 
 
 def test_check_secrets_empty_content():

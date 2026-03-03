@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from personal_kb.ingest.safety import (
     SafetyResult,
     check_deny_list,
@@ -72,16 +74,14 @@ class TestDetectSecrets:
             assert result is None or isinstance(result, list)
 
     def test_clean_content_no_secrets(self):
+        pytest.importorskip("detect_secrets")
         result = detect_secrets_in_content("Just some regular text with no secrets.")
-        if result is not None:
-            # detect-secrets installed, should find nothing
-            assert result == []
+        assert result == []
 
     def test_detects_keyword_secret(self):
+        pytest.importorskip("detect_secrets")
         result = detect_secrets_in_content('password = "hunter2"')
-        if result is not None:
-            # KeywordDetector should catch "password"
-            assert len(result) > 0
+        assert len(result) > 0
 
 
 class TestRedactPII:
@@ -132,6 +132,7 @@ class TestRunContentSafety:
         assert isinstance(result.content, str)
 
     def test_content_safety_secrets(self):
+        pytest.importorskip("detect_secrets")
         result = run_content_safety('password = "hunter2"\napi_key = "sk-12345"')
-        if result.action == "flag":
-            assert "Secrets" in result.reason
+        assert result.action == "flag"
+        assert "Secrets" in result.reason

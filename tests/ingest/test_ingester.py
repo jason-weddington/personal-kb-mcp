@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 
 from personal_kb.db.connection import create_connection
@@ -714,6 +715,7 @@ class TestIngestContent:
         assert row[0] == 0
 
     async def test_url_secrets_flagged(self, ingester_deps):
+        pytest.importorskip("detect_secrets")
         deps = ingester_deps
         ingester = FileIngester(
             deps["db"],
@@ -728,9 +730,7 @@ class TestIngestContent:
             'password = "hunter2"',
             "https://wiki.example.com/secrets",
         )
-        # If detect-secrets is installed, should be flagged
-        # If not installed, secrets detection is skipped and it will be ingested
-        assert result.action in ("flagged", "ingested", "error")
+        assert result.action == "flagged"
 
     async def test_url_note_node(self, ingester_deps):
         entries_json = [
