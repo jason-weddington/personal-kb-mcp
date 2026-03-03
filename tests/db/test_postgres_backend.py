@@ -1,8 +1,12 @@
 """Unit tests for PostgresBackend wrappers — no database needed."""
 
+import ssl
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from personal_kb.db.postgres_backend import (
+    PostgresBackend,
     PostgresCursor,
     PostgresRow,
     _translate_placeholders,
@@ -158,3 +162,54 @@ class TestPostgresCursor:
         cursor = PostgresCursor([])
         assert await cursor.fetchone() is None
         assert await cursor.fetchall() == []
+
+
+class TestPostgresBackendCreate:
+    """Test PostgresBackend.create() kwarg forwarding."""
+
+    @pytest.mark.asyncio
+    async def test_create_passes_password_and_ssl(self):
+        mock_pool = AsyncMock()
+
+        def password_fn() -> str:
+            return "token-123"
+
+        ssl_ctx = ssl.create_default_context()
+
+        # asyncpg is imported lazily inside create() as `_asyncpg`
+        mock_asyncpg = AsyncMock()
+        mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
+
+        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}):
+            result = await PostgresBackend.create(
+                "postgresql://u@h/db",
+                pool_min=1,
+                pool_max=5,
+                password=password_fn,
+                ssl=ssl_ctx,
+            )
+
+        assert isinstance(result, PostgresBackend)
+        mock_asyncpg.create_pool.assert_called_once()
+        _, call_kwargs = mock_asyncpg.create_pool.call_args
+        assert call_kwargs["password"] is password_fn
+        assert call_kwargs["ssl"] is ssl_ctx
+        assert call_kwargs["min_size"] == 1
+        assert call_kwargs["max_size"] == 5
+
+    @pytest.mark.asyncio
+    async def test_create_omits_none_kwargs(self):
+        mock_pool = AsyncMock()
+        mock_asyncpg = AsyncMock()
+        mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
+
+        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}):
+            await PostgresBackend.create(
+                "postgresql://u@h/db",
+                pool_min=1,
+                pool_max=5,
+            )
+
+        _, call_kwargs = mock_asyncpg.create_pool.call_args
+        assert "password" not in call_kwargs
+        assert "ssl" not in call_kwargs

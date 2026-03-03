@@ -109,6 +109,8 @@ Format: `type(optional-scope): description`
 | `KB_TEAM` | (unset) | Team name for entry attribution |
 | `KB_PG_POOL_MIN` | `1` | Postgres connection pool minimum size |
 | `KB_PG_POOL_MAX` | `5` | Postgres connection pool maximum size |
+| `KB_PG_IAM_AUTH` | (unset) | Set `TRUE` for RDS/Aurora IAM authentication |
+| `KB_PG_REGION` | `us-east-1` | AWS region for RDS IAM token signing |
 | `KB_SKIP_SAFETY` | (unset) | Set `TRUE` to bypass secret scanning on store |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
 

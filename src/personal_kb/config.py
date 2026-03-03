@@ -157,3 +157,13 @@ def get_pg_pool_max() -> int:
 def is_safety_skip() -> bool:
     """Return True if KB_SKIP_SAFETY is set to TRUE."""
     return os.environ.get("KB_SKIP_SAFETY", "").upper() == "TRUE"
+
+
+def is_pg_iam_auth() -> bool:
+    """Return True if KB_PG_IAM_AUTH is set to TRUE (RDS/Aurora IAM auth)."""
+    return os.environ.get("KB_PG_IAM_AUTH", "").upper() == "TRUE"
+
+
+def get_pg_region() -> str:
+    """Return the AWS region for RDS IAM token signing from KB_PG_REGION."""
+    return os.environ.get("KB_PG_REGION", "us-east-1")

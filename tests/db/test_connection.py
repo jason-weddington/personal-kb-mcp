@@ -1,8 +1,11 @@
 """Tests for database connection and schema initialization."""
 
+import ssl
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
-from personal_kb.db.connection import create_connection
+from personal_kb.db.connection import _create_postgres, create_connection
 
 
 @pytest.mark.asyncio
@@ -78,3 +81,65 @@ async def test_last_accessed_column_exists():
         assert "last_accessed" in columns
     finally:
         await db.close()
+
+
+# -- IAM auth dispatch tests --
+
+
+@pytest.mark.asyncio
+async def test_create_postgres_with_iam_auth(monkeypatch):
+    """When KB_PG_IAM_AUTH=TRUE, password and ssl are passed to PostgresBackend.create()."""
+    monkeypatch.setenv("KB_PG_IAM_AUTH", "TRUE")
+    monkeypatch.setenv("KB_PG_REGION", "eu-west-1")
+
+    mock_db = AsyncMock()
+    mock_db.apply_schema = AsyncMock()
+
+    captured_kwargs = {}
+
+    async def fake_create(url, **kwargs):
+        captured_kwargs.update(kwargs)
+        return mock_db
+
+    with (
+        patch(
+            "personal_kb.db.postgres_backend.PostgresBackend.create",
+            side_effect=fake_create,
+        ),
+        patch("personal_kb.db.connection._check_deployment_config", new_callable=AsyncMock),
+    ):
+        await _create_postgres(
+            "postgresql://myuser@aurora.cluster-xxx.us-east-1.rds.amazonaws.com:5432/kb"
+        )
+
+    assert "password" in captured_kwargs
+    assert callable(captured_kwargs["password"])
+    assert "ssl" in captured_kwargs
+    assert isinstance(captured_kwargs["ssl"], ssl.SSLContext)
+
+
+@pytest.mark.asyncio
+async def test_create_postgres_without_iam_auth(monkeypatch):
+    """When KB_PG_IAM_AUTH is not set, no password or ssl kwargs are passed."""
+    monkeypatch.delenv("KB_PG_IAM_AUTH", raising=False)
+
+    mock_db = AsyncMock()
+    mock_db.apply_schema = AsyncMock()
+
+    captured_kwargs = {}
+
+    async def fake_create(url, **kwargs):
+        captured_kwargs.update(kwargs)
+        return mock_db
+
+    with (
+        patch(
+            "personal_kb.db.postgres_backend.PostgresBackend.create",
+            side_effect=fake_create,
+        ),
+        patch("personal_kb.db.connection._check_deployment_config", new_callable=AsyncMock),
+    ):
+        await _create_postgres("postgresql://myuser@myhost:5432/mydb")
+
+    assert "password" not in captured_kwargs
+    assert "ssl" not in captured_kwargs

@@ -4,7 +4,9 @@ from personal_kb.config import (
     get_contributor,
     get_pg_pool_max,
     get_pg_pool_min,
+    get_pg_region,
     get_team,
+    is_pg_iam_auth,
     is_safety_skip,
 )
 
@@ -69,3 +71,34 @@ def test_is_safety_skip_true(monkeypatch):
 def test_is_safety_skip_false(monkeypatch):
     monkeypatch.setenv("KB_SKIP_SAFETY", "FALSE")
     assert is_safety_skip() is False
+
+
+# -- IAM auth config --
+
+
+def test_is_pg_iam_auth_default():
+    assert is_pg_iam_auth() is False
+
+
+def test_is_pg_iam_auth_true(monkeypatch):
+    monkeypatch.setenv("KB_PG_IAM_AUTH", "TRUE")
+    assert is_pg_iam_auth() is True
+
+
+def test_is_pg_iam_auth_case_insensitive(monkeypatch):
+    monkeypatch.setenv("KB_PG_IAM_AUTH", "true")
+    assert is_pg_iam_auth() is True
+
+
+def test_is_pg_iam_auth_false(monkeypatch):
+    monkeypatch.setenv("KB_PG_IAM_AUTH", "FALSE")
+    assert is_pg_iam_auth() is False
+
+
+def test_get_pg_region_default():
+    assert get_pg_region() == "us-east-1"
+
+
+def test_get_pg_region_set(monkeypatch):
+    monkeypatch.setenv("KB_PG_REGION", "eu-west-1")
+    assert get_pg_region() == "eu-west-1"

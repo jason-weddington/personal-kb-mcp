@@ -14,6 +14,30 @@ Tags are stored as space-separated text in the entries table rather than as JSON
 
 See: `db/schema.py`, `db/connection.py`, `db/queries.py`, `store/knowledge_store.py`, `models/entry.py`
 
+### Database Abstraction and PostgreSQL
+
+All source code operates against a `Database` protocol defined in `db/backend.py`, not against a concrete database library. The protocol specifies 12 methods: `execute`, `executemany`, `executescript`, `commit`, `close`, `fts_search`, `vector_store`, `vector_search`, `vector_delete`, `delete_llm_edges`, `vacuum`, and `apply_schema`. Two implementations exist: `SQLiteBackend` (wrapping aiosqlite + sqlite-vec + FTS5) and `PostgresBackend` (wrapping asyncpg + pgvector + tsvector/GIN).
+
+`create_connection()` in `db/connection.py` dispatches between the two: if `KB_DATABASE_URL` is set to a `postgresql://` URL, it creates a `PostgresBackend`; otherwise it creates a `SQLiteBackend` at the configured file path. Explicit `:memory:` always uses SQLite (for tests).
+
+`PostgresBackend` translates `?` placeholders to `$1, $2, ...` via a pre-compiled regex at execute time. Each `execute()` call acquires a connection from the asyncpg pool, runs the query, and releases the connection. `commit()` is a no-op since asyncpg auto-commits. FTS uses tsvector with ts_rank_cd instead of FTS5/BM25, and vector search uses pgvector's `<=>` cosine distance operator instead of sqlite-vec.
+
+### Aurora IAM Authentication
+
+For AWS deployments, the server supports RDS/Aurora IAM authentication via `KB_PG_IAM_AUTH=TRUE`. All IAM-specific logic lives in `db/iam_auth.py`, keeping AWS/boto3 knowledge out of `PostgresBackend`. The module has three components:
+
+**DSN parsing** (`parse_dsn`): Extracts host, port, and username from the PostgreSQL connection URL via `urllib.parse.urlparse()`. The host and username are required for token generation; port defaults to 5432.
+
+**Token factory** (`make_token_factory`): Returns a zero-arg closure that calls `boto3.client('rds').generate_db_auth_token()`. The boto3 RDS client is created once when the factory is built (captured in the closure); each call generates a fresh SigV4-signed token valid for ~15 minutes. The `import boto3` is lazy — it only runs when IAM auth is enabled, so plain Postgres users never import boto3.
+
+**SSL context** (`make_ssl_context`): Returns `ssl.create_default_context()` with certificate verification enabled (`verify_mode=CERT_REQUIRED`, `check_hostname=True`). IAM auth requires TLS. Users can override the CA bundle via the `SSL_CERT_FILE` environment variable.
+
+The connection flow in `_create_postgres()`: when `is_pg_iam_auth()` returns True, it parses the DSN, builds a token factory, creates an SSL context, and passes both as `password` and `ssl` kwargs to `PostgresBackend.create()`. asyncpg's `create_pool()` accepts `password` as a callable, invoking it for each new connection — so token refresh is automatic. AWS credentials come from the standard boto3 chain (environment variables, `~/.aws/credentials` profiles, instance roles).
+
+`PostgresBackend.create()` accepts optional `password` (callable) and `ssl` (SSLContext) kwargs, forwarding them to `asyncpg.create_pool()` only when not None. This keeps the backend generic — it has no awareness of IAM, boto3, or AWS.
+
+See: `db/iam_auth.py`, `db/connection.py`, `db/postgres_backend.py`
+
 ## Full-Text Search
 
 The FTS5 virtual table `knowledge_fts` indexes four columns: `short_title`, `long_title`, `knowledge_details`, and `tags`. It uses external content mode (`content='knowledge_entries'`), meaning the FTS index does not store its own copy of the text — it reads from the main table via rowid. The tokenizer is `porter unicode61`, which applies Porter stemming for English morphology and Unicode 6.1 normalization for broad character support.

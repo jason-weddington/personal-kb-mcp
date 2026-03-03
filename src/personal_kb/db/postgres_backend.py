@@ -12,6 +12,9 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import ssl as ssl_module
+    from collections.abc import Callable
+
     import asyncpg
 
     from personal_kb.db.backend import Cursor, Row
@@ -112,11 +115,24 @@ class PostgresBackend:
         self._pool = pool
 
     @classmethod
-    async def create(cls, url: str, *, pool_min: int = 2, pool_max: int = 10) -> PostgresBackend:
+    async def create(
+        cls,
+        url: str,
+        *,
+        pool_min: int = 2,
+        pool_max: int = 10,
+        password: Callable[[], str] | None = None,
+        ssl: ssl_module.SSLContext | bool | None = None,
+    ) -> PostgresBackend:
         """Create a PostgresBackend from a connection URL."""
         import asyncpg as _asyncpg
 
-        pool = await _asyncpg.create_pool(url, min_size=pool_min, max_size=pool_max)
+        kwargs: dict[str, Any] = {"min_size": pool_min, "max_size": pool_max}
+        if password is not None:
+            kwargs["password"] = password
+        if ssl is not None:
+            kwargs["ssl"] = ssl
+        pool = await _asyncpg.create_pool(url, **kwargs)
         return cls(pool)
 
     async def execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Cursor:
@@ -327,15 +343,14 @@ class PostgresBackend:
             )
         """)
 
-        # Indexes
+        # Indexes (contributor/team indexes are in _migrate_multi_user_columns
+        # because the columns may not exist yet on pre-migration databases)
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_entries_project ON knowledge_entries(project_ref)",
             "CREATE INDEX IF NOT EXISTS idx_entries_type ON knowledge_entries(entry_type)",
             "CREATE INDEX IF NOT EXISTS idx_entries_active ON knowledge_entries(is_active)",
             "CREATE INDEX IF NOT EXISTS idx_entries_fts"
             " ON knowledge_entries USING gin(search_vector)",
-            "CREATE INDEX IF NOT EXISTS idx_entries_contributor ON knowledge_entries(contributor)",
-            "CREATE INDEX IF NOT EXISTS idx_entries_team ON knowledge_entries(team)",
         ]:
             await conn.execute(idx_sql)
 
@@ -525,7 +540,8 @@ class PostgresBackend:
             alter_sql = _alter.format(table, column)
             row = await conn.fetchrow(
                 "SELECT column_name FROM information_schema.columns"
-                " WHERE table_name = $1 AND column_name = $2",
+                " WHERE table_schema = current_schema()"
+                " AND table_name = $1 AND column_name = $2",
                 table,
                 column,
             )

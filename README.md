@@ -238,6 +238,9 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model ID (cross-region inference profile) |
 | `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
 | `KB_BEDROCK_TIMEOUT` | `30.0` | Request timeout in seconds |
+| **Aurora/RDS IAM auth** | | |
+| `KB_PG_IAM_AUTH` | _(unset)_ | Set `TRUE` for RDS/Aurora IAM authentication |
+| `KB_PG_REGION` | `us-east-1` | AWS region for RDS IAM token signing |
 | **Provider selection** | | |
 | `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning and synthesis (`anthropic`, `bedrock`, or `ollama`) |
@@ -385,6 +388,36 @@ Update your MCP client config to set `KB_DATABASE_URL`:
 ```
 
 When `KB_DATABASE_URL` is set, the server uses PostgreSQL. When it's not set, it uses SQLite (the `KB_DB_PATH` file). You can switch back and forth — both backends are always available.
+
+### Aurora Serverless with IAM auth
+
+For AWS deployments where database passwords aren't acceptable, the server supports RDS/Aurora IAM authentication. Instead of a static password in the connection string, the server generates short-lived SigV4-signed tokens that are refreshed automatically on each new connection.
+
+```json
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "personal-kb-mcp[postgres,iam]", "personal-kb"],
+      "env": {
+        "KB_DATABASE_URL": "postgresql://myuser@aurora-cluster.cluster-xxx.us-east-1.rds.amazonaws.com:5432/my_kb",
+        "KB_PG_IAM_AUTH": "TRUE",
+        "KB_PG_REGION": "us-east-1",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+Requirements:
+- The `iam` optional dependency (`boto3`) — included via `personal-kb-mcp[iam]`
+- AWS credentials available through the standard chain (environment variables, `~/.aws/credentials`, instance roles)
+- The database user must have IAM authentication enabled in RDS/Aurora
+- The connection URL should **not** include a password — the token factory provides it
+
+The server uses `boto3.client('rds').generate_db_auth_token()` to sign tokens locally (no network call) and passes them to asyncpg's connection pool as a callable password, so tokens are refreshed on every new connection. SSL is enabled automatically — IAM auth requires TLS.
 
 ### If embeddings were skipped
 

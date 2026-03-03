@@ -27,6 +27,9 @@ safety = [
     "detect-secrets>=1.4",
     "scrubadub>=2.0",
 ]
+iam = [
+    "boto3>=1.28",
+]
 
 [dependency-groups]
 dev = [
@@ -37,7 +40,7 @@ dev = [
     "mypy>=1.14",
     "pre-commit>=4",
     "python-semantic-release>=10.5",
-    "personal-kb[aws,postgres,safety]",
+    "personal-kb[aws,postgres,safety,iam]",
 ]
 
 [tool.pytest.ini_options]
@@ -124,11 +127,15 @@ ignore_missing_imports = true
 module = ["smithy_aws_core", "smithy_aws_core.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 source = ["personal_kb"]
 
 [tool.coverage.report]
-fail_under = 78.5
+fail_under = 79
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]

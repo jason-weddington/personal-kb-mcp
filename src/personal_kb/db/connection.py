@@ -6,7 +6,14 @@ from pathlib import Path
 import aiosqlite
 import sqlite_vec
 
-from personal_kb.config import get_database_url, get_db_path, get_pg_pool_max, get_pg_pool_min
+from personal_kb.config import (
+    get_database_url,
+    get_db_path,
+    get_pg_pool_max,
+    get_pg_pool_min,
+    get_pg_region,
+    is_pg_iam_auth,
+)
 from personal_kb.db.backend import Database
 from personal_kb.db.sqlite_backend import SQLiteBackend
 
@@ -66,9 +73,25 @@ async def _create_sqlite(db_path: Path | str, *, embedding_dim: int = 1024) -> D
 
 async def _create_postgres(url: str, *, embedding_dim: int = 1024) -> Database:
     """Create a PostgreSQL backend with pgvector."""
+    from typing import Any
+
     from personal_kb.db.postgres_backend import PostgresBackend
 
-    db = await PostgresBackend.create(url, pool_min=get_pg_pool_min(), pool_max=get_pg_pool_max())
+    create_kwargs: dict[str, Any] = {
+        "pool_min": get_pg_pool_min(),
+        "pool_max": get_pg_pool_max(),
+    }
+
+    if is_pg_iam_auth():
+        from personal_kb.db.iam_auth import make_ssl_context, make_token_factory, parse_dsn
+
+        dsn = parse_dsn(url)
+        region = get_pg_region()
+        create_kwargs["password"] = make_token_factory(dsn.host, dsn.port, dsn.username, region)
+        create_kwargs["ssl"] = make_ssl_context()
+        logger.info("Postgres IAM auth enabled: host=%s region=%s", dsn.host, region)
+
+    db = await PostgresBackend.create(url, **create_kwargs)
     await db.apply_schema(embedding_dim=embedding_dim)
 
     await _check_deployment_config(db, embedding_dim=embedding_dim)
