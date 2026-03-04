@@ -32,6 +32,11 @@ from personal_kb.tools.kb_ask import register_kb_ask
 from personal_kb.tools.kb_feedback import register_kb_feedback
 from personal_kb.tools.kb_get import register_kb_get
 from personal_kb.tools.kb_ingest import register_kb_ingest
+from personal_kb.tools.kb_list import (
+    register_kb_list_contributors,
+    register_kb_list_projects,
+    register_kb_list_teams,
+)
 from personal_kb.tools.kb_maintain import register_kb_maintain
 from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
@@ -226,6 +231,9 @@ _TOOL_BASES = [
     "ingest",
     "feedback",
     "maintain",
+    "list_projects",
+    "list_contributors",
+    "list_teams",
 ]
 
 
@@ -277,5 +285,10 @@ def create_server() -> FastMCP:
 
     if is_manager_mode():
         register_kb_maintain(mcp, prefix)
+
+    register_kb_list_projects(mcp, prefix)
+    if get_contributor():
+        register_kb_list_contributors(mcp, prefix)
+        register_kb_list_teams(mcp, prefix)
 
     return mcp
