@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.31.0 (2026-03-04)
+
+### Features
+
+- Add list_projects, list_contributors, list_teams discovery tools
+  ([`3ac83de`](https://github.com/jason-weddington/personal-kb-mcp/commit/3ac83deff548f30faffdd07afbeba6b910d50093))
+
+
 ## v0.30.0 (2026-03-04)
 
 ### Features
