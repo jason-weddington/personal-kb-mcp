@@ -89,23 +89,13 @@ ollama pull qwen3:4b               # for LLM features (graph enrichment, query p
 
 ### AWS Bedrock
 
-Bedrock requires a clone install because of a forked dependency (`smithy-json`). Once the upstream fix merges, `uvx` will work here too.
-
-```bash
-git clone https://github.com/jason-weddington/personal-kb-mcp.git
-cd personal-kb-mcp
-uv sync --extra aws
-```
-
-Then add the MCP config pointing to your clone:
-
 ```json
 {
   "mcpServers": {
     "personal-kb": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/personal-kb-mcp", "personal-kb"],
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git[aws]", "personal-kb"],
       "env": {
         "KB_EXTRACTION_PROVIDER": "bedrock",
         "KB_QUERY_PROVIDER": "bedrock",
@@ -270,7 +260,7 @@ Each team member sets their identity via environment variables in their MCP conf
     "personal-kb": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "personal-kb-mcp[postgres]", "personal-kb"],
+      "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git[postgres]", "personal-kb"],
       "env": {
         "KB_DATABASE_URL": "postgresql://user:pass@shared-host/team_kb",
         "KB_CONTRIBUTOR": "jason",
@@ -303,6 +293,44 @@ The multi-user features provide **attribution and visibility, not access control
 - **Last-write-wins on concurrent edits.** If two contributors update the same entry simultaneously, the last write wins. There is no locking, merge, or conflict resolution. Version history preserves both changes, but only the latest version is active.
 
 **Bottom line:** These features work well for a small trusted team sharing a knowledge base through separate MCP server instances, each configured with their own `KB_CONTRIBUTOR`. They are not designed for untrusted multi-tenant environments where users might act adversarially.
+
+### Personal + team (dual-instance pattern)
+
+Most team members want both a **shared team KB** (decisions, architecture, patterns) and a **personal KB** (dotfiles, shell aliases, workflow preferences). Run two MCP server instances with different names — the agent sees both and uses the server instructions to route entries correctly.
+
+```json
+{
+  "mcpServers": {
+    "team-kb": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git[postgres]", "personal-kb"],
+      "env": {
+        "KB_DATABASE_URL": "postgresql://user:pass@shared-host/team_kb",
+        "KB_CONTRIBUTOR": "jason",
+        "KB_TEAM": "platform",
+        "KB_INSTANCE_ROLE": "team",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    },
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git", "personal-kb"],
+      "env": {
+        "KB_INSTANCE_ROLE": "personal",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+`KB_INSTANCE_ROLE` prepends a role-specific instruction to the server description:
+- **`team`** — "This is the TEAM knowledge base — shared decisions, architecture, patterns, and conventions."
+- **`personal`** — "This is your PERSONAL knowledge base — your config, dotfiles, workflow preferences, and private notes."
+
+The MCP server name (`team-kb` vs `personal-kb`) plus the role instruction gives the agent enough signal to route stores and searches to the right instance. Environment variables in each `env` block are scoped to that server process — no collisions.
 
 ## Development
 
@@ -349,23 +377,29 @@ And the `asyncpg` optional dependency:
 uv sync --extra postgres
 
 # If using uvx, add the extra:
-uvx --from "personal-kb-mcp[postgres]" personal-kb
+uvx --from "git+https://github.com/jason-weddington/personal-kb-mcp.git[postgres]" personal-kb
 ```
 
 ### Migrate your data
 
 ```bash
 # Preview what will be migrated (read-only):
-python scripts/migrate_to_postgres.py postgresql://user:pass@localhost/my_kb --dry-run
+uv run python scripts/migrate_sqlite_to_pg.py --dry-run \
+  ~/.local/share/personal_kb/knowledge.db
 
 # Run the migration:
-python scripts/migrate_to_postgres.py postgresql://user:pass@localhost/my_kb
+uv run python scripts/migrate_sqlite_to_pg.py \
+  ~/.local/share/personal_kb/knowledge.db
 
-# If your SQLite DB is in a non-default location:
-python scripts/migrate_to_postgres.py postgresql://localhost/my_kb --sqlite /path/to/knowledge.db
+# With attribution (stamps your name on migrated entries):
+uv run python scripts/migrate_sqlite_to_pg.py \
+  --contributor jason --team platform \
+  ~/.local/share/personal_kb/knowledge.db
 ```
 
-The script copies all data tables, then rebuilds embeddings via Ollama automatically. If Ollama isn't running, it skips embeddings gracefully — you can rebuild later. Use `--skip-embeddings` to skip intentionally.
+The target Postgres connection comes from environment variables — set `KB_DATABASE_URL` before running. For Aurora IAM auth, also set `KB_PG_IAM_AUTH=TRUE` and `KB_PG_REGION`.
+
+The script copies all data tables, then rebuilds embeddings via Ollama automatically. In merge mode (target already has entries), source IDs are remapped to avoid collisions. Use `--skip-embeddings` to defer the re-embed step. See [docs/team_setup_aws.md](docs/team_setup_aws.md) for detailed reference.
 
 ### Switch your MCP config
 
@@ -377,7 +411,7 @@ Update your MCP client config to set `KB_DATABASE_URL`:
     "personal-kb": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "personal-kb-mcp[postgres]", "personal-kb"],
+      "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git[postgres]", "personal-kb"],
       "env": {
         "KB_DATABASE_URL": "postgresql://user:pass@localhost/my_kb",
         "ANTHROPIC_API_KEY": "sk-ant-..."
@@ -399,7 +433,7 @@ For AWS deployments where database passwords aren't acceptable, the server suppo
     "personal-kb": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "personal-kb-mcp[postgres,iam]", "personal-kb"],
+      "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git[postgres,iam]", "personal-kb"],
       "env": {
         "KB_DATABASE_URL": "postgresql://myuser@aurora-cluster.cluster-xxx.us-east-1.rds.amazonaws.com:5432/my_kb",
         "KB_PG_IAM_AUTH": "TRUE",

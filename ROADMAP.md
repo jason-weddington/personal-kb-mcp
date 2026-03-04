@@ -35,6 +35,10 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 - **Narrow `query_llm` type.** Typed as `object | None` with isinstance checks everywhere. Should be `LLMProvider | None`. (audit M20)
 - **Agent tool call deduplication.** ReAct loop doesn't detect identical repeated calls. Each duplicate burns a turn. (audit M14)
 
+## Next
+
+- **Conflict detection at write time.** Multiple contributors can store contradictory information with no signal. When a new entry is stored, the enricher should search for semantically similar entries and classify the relationship (supports, refines, conflicts_with, unrelated). `conflicts_with` edges get stored in the graph with the LLM's reasoning. At read time, formatters surface a `[CONFLICTING: kb-XXXXX]` badge so agents see both sides. Resolution uses the existing `supersedes` mechanism. Cost: one extra hybrid search + a few lines in the enricher prompt per store. Needs more design work before building — edge cases around context-dependent "conflicts" (different projects, different scopes) and how to avoid false positives.
+
 ## Later
 
 - **Multi-user access control.** Current model has attribution but zero isolation — any contributor can read/modify/delete any entry. Fine for trusted teams. If multi-tenant isolation is needed: Postgres row-level security or app-level access checks. (audit H1)

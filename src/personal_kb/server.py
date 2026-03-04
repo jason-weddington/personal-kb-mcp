@@ -1,6 +1,7 @@
 """FastMCP server with lifespan management and tool registration."""
 
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -137,6 +138,17 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         logger.info("Database connection closed")
 
 
+_ROLE_PREFIXES = {
+    "personal": (
+        "This is your PERSONAL knowledge base — your config, dotfiles, workflow "
+        "preferences, and private notes. Not for team-shared knowledge.\n\n"
+    ),
+    "team": (
+        "This is the TEAM knowledge base — shared decisions, architecture, patterns, "
+        "and conventions. Not for personal config or individual workflow notes.\n\n"
+    ),
+}
+
 _INSTRUCTIONS = """\
 This KB stores private context that you — an AI agent with public knowledge \
 already memorized — would not otherwise have: project decisions, personal \
@@ -204,11 +216,18 @@ prioritize what to add next.
 """
 
 
+def _build_instructions() -> str:
+    """Build server instructions, optionally prefixed by instance role."""
+    role = os.environ.get("KB_INSTANCE_ROLE", "").lower()
+    prefix = _ROLE_PREFIXES.get(role, "")
+    return prefix + _INSTRUCTIONS
+
+
 def create_server() -> FastMCP:
     """Create and configure the MCP server with all tools."""
     mcp = FastMCP(
         "personal-kb",
-        instructions=_INSTRUCTIONS,
+        instructions=_build_instructions(),
         lifespan=lifespan,
     )
 
