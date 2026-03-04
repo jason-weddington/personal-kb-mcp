@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.30.0 (2026-03-04)
+
+### Features
+
+- Add personal_kb_ prefix for KB_INSTANCE_ROLE=personal
+  ([`751ce70`](https://github.com/jason-weddington/personal-kb-mcp/commit/751ce702c3c3ddc1dbf771a32b649e996af06e0e))
+
+
 ## v0.29.0 (2026-03-04)
 
 ### Features
