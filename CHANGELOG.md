@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.29.0 (2026-03-04)
+
+### Features
+
+- Tool name prefixing via KB_INSTANCE_ROLE
+  ([`0edbc02`](https://github.com/jason-weddington/personal-kb-mcp/commit/0edbc0211b041ab6bb6ebfb5b1ff65b529126202))
+
+
 ## v0.28.0 (2026-03-04)
 
 ### Documentation
