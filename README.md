@@ -326,11 +326,19 @@ Most team members want both a **shared team KB** (decisions, architecture, patte
 }
 ```
 
-`KB_INSTANCE_ROLE` prepends a role-specific instruction to the server description:
-- **`team`** — "This is the TEAM knowledge base — shared decisions, architecture, patterns, and conventions."
-- **`personal`** — "This is your PERSONAL knowledge base — your config, dotfiles, workflow preferences, and private notes."
+`KB_INSTANCE_ROLE` controls two things:
 
-The MCP server name (`team-kb` vs `personal-kb`) plus the role instruction gives the agent enough signal to route stores and searches to the right instance. Environment variables in each `env` block are scoped to that server process — no collisions.
+1. **Role-specific instructions** prepended to the server description:
+   - **`team`** — "This is the TEAM knowledge base — shared decisions, architecture, patterns, and conventions."
+   - **`personal`** — "This is your PERSONAL knowledge base — your config, dotfiles, workflow preferences, and private notes."
+
+2. **Tool name prefixing** to avoid collisions when running two instances:
+   - **`team`** → tools are named `team_kb_store`, `team_kb_search`, etc.
+   - **`personal`** or unset → tools keep the default `kb_store`, `kb_search`, etc.
+
+   This is essential for MCP clients (like Kiro) that don't namespace tools by server name — without prefixing, both instances would expose identically-named tools.
+
+Environment variables in each `env` block are scoped to that server process — no collisions.
 
 ## Development
 

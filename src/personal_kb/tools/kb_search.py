@@ -80,10 +80,25 @@ def format_search_results(
     )
 
 
-def register_kb_search(mcp: FastMCP) -> None:
+def _search_description(prefix: str) -> str:
+    """Build kb_search description with correct tool name cross-references."""
+    return (
+        "Search the personal knowledge base using hybrid semantic + keyword search.\n\n"
+        "Combines BM25 full-text search with vector similarity (when Ollama is available) "
+        "using Reciprocal Rank Fusion. Results include confidence decay — older entries "
+        "are flagged with staleness warnings.\n\n"
+        "Best for quick lookups: checking if an entry exists, finding by keywords, "
+        f"filtering by tags/project/type. For exploring related knowledge, use {prefix}ask. "
+        f"For a synthesized answer to a question, use {prefix}summarize.\n\n"
+        "Returns compact summaries (titles + metadata, no knowledge_details). "
+        f"Use {prefix}get with entry IDs to read the full content of interesting results."
+    )
+
+
+def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
     """Register the kb_search tool with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(name=f"{prefix}search", description=_search_description(prefix))
     async def kb_search(
         query: Annotated[str, Field(description="Search query (natural language or keywords)")],
         project_ref: Annotated[
@@ -106,19 +121,7 @@ def register_kb_search(mcp: FastMCP) -> None:
         team: Annotated[str | None, Field(description="Filter by team name")] = None,
         ctx: Context | None = None,
     ) -> str:
-        """Search the personal knowledge base using hybrid semantic + keyword search.
-
-        Combines BM25 full-text search with vector similarity (when Ollama is available)
-        using Reciprocal Rank Fusion. Results include confidence decay — older entries
-        are flagged with staleness warnings.
-
-        Returns compact summaries (titles + metadata, no knowledge_details).
-        Use kb_get with entry IDs to read the full content of interesting results.
-
-        Best for quick lookups: checking if an entry exists, finding by keywords,
-        filtering by tags/project/type. For exploring related knowledge, use kb_ask.
-        For a synthesized answer to a question, use kb_summarize.
-        """
+        """Search the knowledge base using hybrid semantic + keyword search."""
         from personal_kb.search.hybrid import hybrid_search
 
         if ctx is None:

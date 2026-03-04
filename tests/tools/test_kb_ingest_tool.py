@@ -63,7 +63,7 @@ def _register_and_capture(mcp_mock):
     """Register kb_ingest on a mock MCP and return the captured tools dict."""
     tools = {}
 
-    def capture_tool():
+    def capture_tool(**_kwargs):
         def decorator(func):
             tools[func.__name__] = func
             return func

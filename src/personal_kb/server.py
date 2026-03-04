@@ -216,31 +216,61 @@ prioritize what to add next.
 """
 
 
-def _build_instructions() -> str:
+_TOOL_BASES = [
+    "store_batch",
+    "store",
+    "search",
+    "get",
+    "ask",
+    "summarize",
+    "ingest",
+    "feedback",
+    "maintain",
+]
+
+
+def _get_tool_prefix() -> str:
+    """Return the MCP tool name prefix based on KB_INSTANCE_ROLE.
+
+    - role=team  → "team_kb_"  (avoids collision with personal instance)
+    - otherwise  → "kb_"       (default, backwards-compatible)
+    """
+    role = os.environ.get("KB_INSTANCE_ROLE", "").lower()
+    if role == "team":
+        return "team_kb_"
+    return "kb_"
+
+
+def _build_instructions(prefix: str) -> str:
     """Build server instructions, optionally prefixed by instance role."""
     role = os.environ.get("KB_INSTANCE_ROLE", "").lower()
-    prefix = _ROLE_PREFIXES.get(role, "")
-    return prefix + _INSTRUCTIONS
+    text = _ROLE_PREFIXES.get(role, "") + _INSTRUCTIONS
+    if prefix != "kb_":
+        for base in _TOOL_BASES:
+            text = text.replace(f"kb_{base}", f"{prefix}{base}")
+    return text
 
 
 def create_server() -> FastMCP:
     """Create and configure the MCP server with all tools."""
+    prefix = _get_tool_prefix()
+
     mcp = FastMCP(
         "personal-kb",
-        instructions=_build_instructions(),
+        instructions=_build_instructions(prefix),
         lifespan=lifespan,
     )
 
-    register_kb_store(mcp)
-    register_kb_store_batch(mcp)
-    register_kb_search(mcp)
-    register_kb_get(mcp)
-    register_kb_ask(mcp)
-    register_kb_summarize(mcp)
-    register_kb_ingest(mcp)
-    register_kb_feedback(mcp)
+    register_kb_store(mcp, prefix)
+    register_kb_store_batch(mcp, prefix)
+    register_kb_search(mcp, prefix)
+    register_kb_get(mcp, prefix)
+    register_kb_ask(mcp, prefix)
+    register_kb_summarize(mcp, prefix)
+    register_kb_ingest(mcp, prefix)
+    register_kb_feedback(mcp, prefix)
 
     if is_manager_mode():
-        register_kb_maintain(mcp)
+        register_kb_maintain(mcp, prefix)
 
     return mcp

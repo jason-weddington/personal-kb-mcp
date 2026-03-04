@@ -15,10 +15,22 @@ logger = logging.getLogger(__name__)
 _VALID_TYPES = {"missing", "unhelpful", "friction"}
 
 
-def register_kb_feedback(mcp: FastMCP) -> None:
+def _feedback_description(prefix: str) -> str:
+    """Build kb_feedback description with correct tool name cross-references."""
+    return (
+        "Report when a KB query failed to help with your task.\n\n"
+        f"Takes 3 seconds, helps the human prioritize what to add next.\n"
+        f"Do NOT use for storing knowledge (use {prefix}store instead).\n\n"
+        f"Call this whenever {prefix}search/{prefix}ask/{prefix}summarize returned "
+        "poor results — zero hits, irrelevant entries, or missing knowledge you "
+        "expected to find."
+    )
+
+
+def register_kb_feedback(mcp: FastMCP, prefix: str = "kb_") -> None:
     """Register the kb_feedback tool with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(name=f"{prefix}feedback", description=_feedback_description(prefix))
     async def kb_feedback(
         feedback_type: Annotated[
             str,
@@ -44,13 +56,7 @@ def register_kb_feedback(mcp: FastMCP) -> None:
         ] = None,
         ctx: Context | None = None,
     ) -> str:
-        """Report when a KB query failed to help with your task.
-
-        Call this whenever kb_search/kb_ask/kb_summarize returned poor results —
-        zero hits, irrelevant entries, or missing knowledge you expected to find.
-        Takes 3 seconds, helps the human prioritize what to add next.
-        Do NOT use for storing knowledge (use kb_store instead).
-        """
+        """Report when a KB query failed to help with your task."""
         if ctx is None:
             raise RuntimeError("Context not injected")
 

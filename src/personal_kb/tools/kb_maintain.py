@@ -41,10 +41,10 @@ _ACTIONS = {
 }
 
 
-def register_kb_maintain(mcp: FastMCP) -> None:
+def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
     """Register the kb_maintain tool with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(name=f"{prefix}maintain")
     async def kb_maintain(
         action: Annotated[
             str,

@@ -14,10 +14,20 @@ logger = logging.getLogger(__name__)
 _MAX_IDS = 20
 
 
-def register_kb_get(mcp: FastMCP) -> None:
+def _get_description(prefix: str) -> str:
+    """Build kb_get description with correct tool name cross-references."""
+    return (
+        "Retrieve full details for one or more knowledge entries by ID.\n\n"
+        f"Use after {prefix}search to get the full content of interesting results. "
+        f"{prefix}search returns compact summaries; {prefix}get returns the complete "
+        "knowledge_details for entries you want to read in full."
+    )
+
+
+def register_kb_get(mcp: FastMCP, prefix: str = "kb_") -> None:
     """Register the kb_get tool with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(name=f"{prefix}get", description=_get_description(prefix))
     async def kb_get(
         entry_id: Annotated[
             str | list[str],
@@ -25,12 +35,7 @@ def register_kb_get(mcp: FastMCP) -> None:
         ],
         ctx: Context | None = None,
     ) -> str:
-        """Retrieve full details for one or more knowledge entries by ID.
-
-        Use after kb_search to get the full content of interesting results.
-        kb_search returns compact summaries; kb_get returns the complete
-        knowledge_details for entries you want to read in full.
-        """
+        """Retrieve full details for one or more knowledge entries by ID."""
         if ctx is None:
             raise RuntimeError("Context not injected")
 

@@ -43,10 +43,10 @@ def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
     return line
 
 
-def register_kb_store(mcp: FastMCP) -> None:
+def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
     """Register the kb_store tool with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(name=f"{prefix}store")
     async def kb_store(
         short_title: Annotated[str, Field(description="Brief identifier for the entry")] = "",
         long_title: Annotated[str, Field(description="Descriptive title")] = "",

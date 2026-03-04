@@ -89,10 +89,10 @@ def _format_ingest_result(result: IngestResult, dry_run: bool) -> str:
     return "\n".join(lines)
 
 
-def register_kb_ingest(mcp: FastMCP) -> None:
+def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
     """Register the kb_ingest tool with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(name=f"{prefix}ingest")
     async def kb_ingest(
         path: Annotated[
             str,

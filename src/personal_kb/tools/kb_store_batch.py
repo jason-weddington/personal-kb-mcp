@@ -140,10 +140,22 @@ async def batch_store_entries(
     return format_result_list(formatted, header=f"Batch: {len(created)} entries created")
 
 
-def register_kb_store_batch(mcp: FastMCP) -> None:
+def _store_batch_description(prefix: str) -> str:
+    """Build kb_store_batch description with correct tool name cross-references."""
+    return (
+        "Store multiple knowledge entries in a single call.\n\n"
+        f"More efficient than calling {prefix}store repeatedly — uses a single LLM "
+        "call for graph enrichment across all entries.\n\n"
+        "Each entry dict requires: short_title, long_title, knowledge_details. "
+        "Optional fields: entry_type (default: factual_reference), project_ref, "
+        "source_context, confidence_level (default: 0.9), tags, hints."
+    )
+
+
+def register_kb_store_batch(mcp: FastMCP, prefix: str = "kb_") -> None:
     """Register the kb_store_batch tool with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(name=f"{prefix}store_batch", description=_store_batch_description(prefix))
     async def kb_store_batch(
         entries: Annotated[
             list[dict[str, object]],
@@ -158,15 +170,7 @@ def register_kb_store_batch(mcp: FastMCP) -> None:
         ],
         ctx: Context | None = None,
     ) -> str:
-        """Store multiple knowledge entries in a single call.
-
-        More efficient than calling kb_store repeatedly — uses a single LLM
-        call for graph enrichment across all entries.
-
-        Each entry dict requires: short_title, long_title, knowledge_details.
-        Optional fields: entry_type (default: factual_reference), project_ref,
-        source_context, confidence_level (default: 0.9), tags, hints.
-        """
+        """Store multiple knowledge entries in a single call."""
         if ctx is None:
             raise RuntimeError("Context not injected")
 

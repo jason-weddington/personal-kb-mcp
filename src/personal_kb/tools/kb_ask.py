@@ -30,10 +30,10 @@ logger = logging.getLogger(__name__)
 Strategy = Literal["auto", "decision_trace", "timeline", "related", "connection"]
 
 
-def register_kb_ask(mcp: FastMCP) -> None:
+def register_kb_ask(mcp: FastMCP, prefix: str = "kb_") -> None:
     """Register the kb_ask tool with the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(name=f"{prefix}ask")
     async def kb_ask(
         question: Annotated[str, Field(description="Natural language or keywords")],
         strategy: Annotated[
