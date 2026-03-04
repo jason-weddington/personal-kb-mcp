@@ -333,8 +333,9 @@ Most team members want both a **shared team KB** (decisions, architecture, patte
    - **`personal`** — "This is your PERSONAL knowledge base — your config, dotfiles, workflow preferences, and private notes."
 
 2. **Tool name prefixing** to avoid collisions when running two instances:
-   - **`team`** → tools are named `team_kb_store`, `team_kb_search`, etc.
-   - **`personal`** or unset → tools keep the default `kb_store`, `kb_search`, etc.
+   - **`personal`** → `personal_kb_store`, `personal_kb_search`, etc.
+   - **`team`** → `team_kb_store`, `team_kb_search`, etc.
+   - **unset** → `kb_store`, `kb_search`, etc. (backwards-compatible default)
 
    This is essential for MCP clients (like Kiro) that don't namespace tools by server name — without prefixing, both instances would expose identically-named tools.
 

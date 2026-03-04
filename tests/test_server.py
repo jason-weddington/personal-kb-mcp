@@ -85,9 +85,9 @@ def test_tool_prefix_default():
 
 
 def test_tool_prefix_personal():
-    """role=personal → kb_ prefix (unchanged)."""
+    """role=personal → personal_kb_ prefix."""
     with patch.dict("os.environ", {"KB_INSTANCE_ROLE": "personal"}):
-        assert _get_tool_prefix() == "kb_"
+        assert _get_tool_prefix() == "personal_kb_"
 
 
 def test_tool_prefix_team():
@@ -141,6 +141,19 @@ def test_build_instructions_preserves_entry_ids():
         assert "team_kb_team_kb_" not in text
 
 
+def test_build_instructions_personal_prefix():
+    """Personal prefix should replace kb_ tool names in instructions."""
+    with patch.dict("os.environ", {"KB_INSTANCE_ROLE": "personal"}):
+        text = _build_instructions("personal_kb_")
+        assert "personal_kb_search" in text
+        assert "personal_kb_store" in text
+        assert "personal_kb_ask" in text
+        # Entry IDs should NOT be replaced
+        assert "kb-00042" in text
+        # Role prefix should be present
+        assert "PERSONAL knowledge base" in text
+
+
 async def test_create_server_default_tool_names():
     """Default server should register tools with kb_ prefix."""
     with patch.dict("os.environ", {}, clear=False):
@@ -153,6 +166,18 @@ async def test_create_server_default_tool_names():
         assert "kb_store" in tool_names
         assert "kb_search" in tool_names
         assert "kb_ask" in tool_names
+
+
+async def test_create_server_personal_tool_names():
+    """Personal server should register tools with personal_kb_ prefix."""
+    with patch.dict("os.environ", {"KB_INSTANCE_ROLE": "personal"}):
+        mcp = create_server()
+        tools = await mcp.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "personal_kb_store" in tool_names
+        assert "personal_kb_search" in tool_names
+        assert "personal_kb_ask" in tool_names
+        assert "kb_store" not in tool_names
 
 
 async def test_create_server_team_tool_names():

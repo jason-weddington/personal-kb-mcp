@@ -229,16 +229,21 @@ _TOOL_BASES = [
 ]
 
 
+_ROLE_PREFIXES_TOOL = {
+    "personal": "personal_kb_",
+    "team": "team_kb_",
+}
+
+
 def _get_tool_prefix() -> str:
     """Return the MCP tool name prefix based on KB_INSTANCE_ROLE.
 
-    - role=team  → "team_kb_"  (avoids collision with personal instance)
-    - otherwise  → "kb_"       (default, backwards-compatible)
+    - role=personal → "personal_kb_"
+    - role=team     → "team_kb_"
+    - unset/empty   → "kb_"  (backwards-compatible default)
     """
     role = os.environ.get("KB_INSTANCE_ROLE", "").lower()
-    if role == "team":
-        return "team_kb_"
-    return "kb_"
+    return _ROLE_PREFIXES_TOOL.get(role, "kb_")
 
 
 def _build_instructions(prefix: str) -> str:
