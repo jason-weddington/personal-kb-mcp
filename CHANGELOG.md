@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.28.0 (2026-03-04)
+
+### Documentation
+
+- Add AWS team setup guide and migration script usage
+  ([`f9fa3f1`](https://github.com/jason-weddington/personal-kb-mcp/commit/f9fa3f1d3928984805dfb50d5d446ad2d4719452))
+
+### Features
+
+- Add KB_INSTANCE_ROLE and update README with uvx guidance
+  ([`dac4162`](https://github.com/jason-weddington/personal-kb-mcp/commit/dac41629d8669f1a4bf8a5353a50ab0b240908bf))
+
+
 ## v0.27.0 (2026-03-03)
 
 ### Features
