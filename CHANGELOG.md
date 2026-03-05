@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.34.3 (2026-03-05)
+
+### Bug Fixes
+
+- Exclude deactivated entries from graph visualization
+  ([`d6bff53`](https://github.com/jason-weddington/personal-kb-mcp/commit/d6bff531be8f6e86fda68192768d28ec5e03274f))
+
+
 ## v0.34.2 (2026-03-05)
 
 ### Bug Fixes
