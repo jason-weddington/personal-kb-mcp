@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.32.0 (2026-03-05)
+
+### Documentation
+
+- Mark audit H8 as done in roadmap
+  ([`d4a6f8b`](https://github.com/jason-weddington/personal-kb-mcp/commit/d4a6f8b2783fa104ee66a925ead72cf64382d92a))
+
+### Features
+
+- Kb_explore — interactive graph explorer in browser
+  ([`bc96bf0`](https://github.com/jason-weddington/personal-kb-mcp/commit/bc96bf0d6f25ec3244eb4f97f88a1b1b9689b12a))
+
+
 ## v0.31.1 (2026-03-04)
 
 ### Bug Fixes
