@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.34.0 (2026-03-05)
+
+### Documentation
+
+- Add graph explorer to README and how_it_works.md
+  ([`0f3e205`](https://github.com/jason-weddington/personal-kb-mcp/commit/0f3e205f06495a99ea7b141ddd41c2799a65d7f9))
+
+### Features
+
+- Render markdown in explorer response panel
+  ([`a95e778`](https://github.com/jason-weddington/personal-kb-mcp/commit/a95e778516478bdbc789cff13ecd39253f234a11))
+
+
 ## v0.33.0 (2026-03-05)
 
 ### Features
