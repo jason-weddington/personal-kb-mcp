@@ -1,7 +1,8 @@
 """kb_summarize MCP tool — synthesized answers with citations."""
 
 import logging
-from typing import Annotated
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
@@ -81,10 +82,15 @@ async def summarize_question(
     question: str,
     scope: str | None = None,
     limit: int = 20,
+    event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> str:
     """Core summarize logic, testable without FastMCP context."""
     from personal_kb.config import is_agentic_synthesis
     from personal_kb.tools.kb_ask import _auto_search_entries, retrieve_entries
+
+    async def _emit(event: dict[str, Any]) -> None:
+        if event_callback is not None:
+            await event_callback(event)
 
     # Retrieve entries via agentic or single-shot path
     entries, agent_turns = await retrieve_entries(
@@ -95,6 +101,7 @@ async def summarize_question(
         scope,
         include_graph_context=True,
         limit=limit,
+        event_callback=event_callback,
     )
 
     if not entries:
@@ -124,8 +131,10 @@ async def summarize_question(
 
     # Synthesize with LLM
     if query_llm is not None and isinstance(query_llm, LLMProvider):
+        await _emit({"type": "synthesis_started", "entry_count": len(entries)})
         synthesis = await _synthesize(query_llm, question, entries)
         if synthesis is not None:
+            await _emit({"type": "synthesis_done"})
             return synthesis
 
         fallback = _format_entries_fallback(entries)

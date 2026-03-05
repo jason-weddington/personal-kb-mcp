@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -256,6 +257,7 @@ async def agentic_query(
     question: str,
     *,
     max_tool_calls: int | None = None,
+    event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> AgentResult:
     """Run the agentic query loop.
 
@@ -267,12 +269,24 @@ async def agentic_query(
     if max_tool_calls is None:
         max_tool_calls = get_agentic_max_tool_calls()
 
+    async def _emit(event: dict[str, Any]) -> None:
+        if event_callback is not None:
+            await event_callback(event)
+
     # --- Fast path: run hybrid_search first ---
     fast_query = SearchQuery(query=question, limit=5, include_stale=False)
     fast_results, _filtered = await hybrid_search(db, embedder, fast_query)
 
     if fast_results and fast_results[0].score >= _FAST_PATH_THRESHOLD:
         logger.debug("Agent fast-path: top score %.4f >= threshold", fast_results[0].score)
+        entry_ids = [r.entry.id for r in fast_results]
+        await _emit(
+            {
+                "type": "fast_path",
+                "entry_ids": entry_ids,
+                "top_score": fast_results[0].score,
+            }
+        )
         return AgentResult(
             entries=[(r.entry.id, f"search match (score: {r.score:.4f})") for r in fast_results],
             turns_used=0,
@@ -291,10 +305,18 @@ async def agentic_query(
     ]
 
     turns_used = 0
+    await _emit(
+        {
+            "type": "agent_started",
+            "seed_results": len(fast_results),
+            "max_turns": max_tool_calls,
+        }
+    )
 
     # --- Agent loop ---
-    for _ in range(max_tool_calls):
+    for turn_num in range(max_tool_calls):
         # Build prompt from messages
+        await _emit({"type": "thinking", "turn": turn_num + 1})
         prompt = _build_prompt(messages)
         raw = await llm.generate(prompt, system=_AGENT_SYSTEM_PROMPT)
 
@@ -307,6 +329,7 @@ async def agentic_query(
 
         if parsed is None:
             # Parse failure — inject error and continue
+            await _emit({"type": "parse_error", "turn": turn_num + 1})
             turns_used += 1
             messages.append(
                 {
@@ -324,6 +347,14 @@ async def agentic_query(
                 entry = await get_entry(db, eid)
                 if entry and entry.is_active:
                     entries.append((eid, "agent selected"))
+            await _emit(
+                {
+                    "type": "agent_done",
+                    "entry_ids": [eid for eid, _ in entries],
+                    "reasoning": parsed.reasoning,
+                    "turns_used": turns_used,
+                }
+            )
             return AgentResult(
                 entries=entries,
                 turns_used=turns_used,
@@ -332,8 +363,26 @@ async def agentic_query(
 
         # Tool call
         turns_used += 1
+        await _emit(
+            {
+                "type": "tool_call",
+                "turn": turn_num + 1,
+                "tool": parsed.tool,
+                "args": parsed.args,
+            }
+        )
         result_text = await _dispatch_tool(parsed, db, embedder)
         logger.debug("Agent tool %s → %d chars", parsed.tool, len(result_text))
+        # Extract entry IDs from result for the event
+        result_entry_ids = _ENTRY_ID_RE.findall(result_text)
+        await _emit(
+            {
+                "type": "tool_result",
+                "turn": turn_num + 1,
+                "tool": parsed.tool,
+                "entry_ids": list(dict.fromkeys(result_entry_ids)),
+            }
+        )
         messages.append({"role": "user", "content": result_text})
 
     # --- Exhaust: extract best-effort from conversation ---
@@ -349,6 +398,14 @@ async def agentic_query(
     if not entries and fast_results:
         entries = [(r.entry.id, f"search match (score: {r.score:.4f})") for r in fast_results]
 
+    await _emit(
+        {
+            "type": "agent_done",
+            "entry_ids": [eid for eid, _ in entries],
+            "reasoning": "Exhausted tool call budget",
+            "turns_used": turns_used,
+        }
+    )
     return AgentResult(
         entries=entries,
         turns_used=turns_used,

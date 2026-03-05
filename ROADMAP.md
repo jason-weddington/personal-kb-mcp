@@ -34,12 +34,33 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 - **Narrow `query_llm` type.** Typed as `object | None` with isinstance checks everywhere. Should be `LLMProvider | None`. (audit M20)
 - **Agent tool call deduplication.** ReAct loop doesn't detect identical repeated calls. Each duplicate burns a turn. (audit M14)
 
-## Next
+## Next — Graph Explorer
 
-- **Conflict detection at write time.** Multiple contributors can store contradictory information with no signal. When a new entry is stored, the enricher should search for semantically similar entries and classify the relationship (supports, refines, conflicts_with, unrelated). `conflicts_with` edges get stored in the graph with the LLM's reasoning. At read time, formatters surface a `[CONFLICTING: kb-XXXXX]` badge so agents see both sides. Resolution uses the existing `supersedes` mechanism. Cost: one extra hybrid search + a few lines in the enricher prompt per store. Needs more design work before building — edge cases around context-dependent "conflicts" (different projects, different scopes) and how to avoid false positives.
+Visual web-based graph explorer. Drives adoption by making the knowledge graph tangible. Research in [docs/graph-explorer-research/](docs/graph-explorer-research/).
+
+### Phase 1: "Screenshot-worthy" (1 session)
+- `kb_explore` MCP tool generates a self-contained HTML file with graph data inlined as JSON
+- force-graph (CDN) renders color-coded nodes by type (entry, tag, project, person, tool, concept, technology)
+- Click node → metadata panel (title, type, connections)
+- No build step, no npm, no server — just an HTML file opened in browser
+- ~300 lines Python, ~200 lines JS
+
+### Phase 2: "Live Explorer" (2-3 sessions)
+- Separate HTTP server (`uv run personal-kb-web`) importing personal_kb as a library
+- REST API for graph data, entry details, search
+- Search bar highlights matching nodes, filter by project/type/tags
+- Supersedes chains visualized as directed paths
+
+### Phase 3: "Chat + Animated Graph" (3-5 sessions)
+- Chat panel (left) + graph (right) split layout
+- SSE streaming: agent loop events interleaved with answer tokens
+- `event_callback` in `agentic_query()` emits traversal events (~20 lines change)
+- Graph animates during queries: nodes glow, particles flow along edges, camera tracks active subgraph
+- Question routing between kb_ask (explore) and kb_summarize (ask)
 
 ## Later
 
+- **Conflict detection at write time.** Multiple contributors can store contradictory information with no signal. When a new entry is stored, the enricher should search for semantically similar entries and classify the relationship (supports, refines, conflicts_with, unrelated). `conflicts_with` edges get stored in the graph with the LLM's reasoning. At read time, formatters surface a `[CONFLICTING: kb-XXXXX]` badge so agents see both sides. Resolution uses the existing `supersedes` mechanism. Cost: one extra hybrid search + a few lines in the enricher prompt per store. Needs more design work before building — edge cases around context-dependent "conflicts" (different projects, different scopes) and how to avoid false positives.
 - **Multi-user access control.** Current model has attribution but zero isolation — any contributor can read/modify/delete any entry. Fine for trusted teams. If multi-tenant isolation is needed: Postgres row-level security or app-level access checks. (audit H1)
 - **Intra-cluster noise in search results.** Relative score thresholds cut cross-cluster noise but can't distinguish within a topic cluster. Needs semantic re-ranking: query-entity matching, personalized PageRank, or LLM-based re-scoring of top-k candidates.
 

@@ -91,6 +91,31 @@ _TEMPLATE = """\
     border: 1px solid #333; border-radius: 6px;
   }
   #search-results.visible { display: block; }
+  #status-line {
+    position: fixed; top: 52px; left: 12px;
+    font-size: 12px; color: #888; z-index: 10;
+    transition: opacity 0.3s;
+  }
+  #status-line.hidden { opacity: 0; }
+  #response-panel {
+    display: none; position: fixed; top: 80px; left: 12px;
+    width: 420px; max-height: calc(100vh - 120px); overflow-y: auto;
+    background: rgba(20, 20, 30, 0.95); border: 1px solid #333;
+    border-radius: 8px; padding: 16px; z-index: 10;
+    font-size: 13px; line-height: 1.6; color: #ddd;
+  }
+  #response-panel.visible { display: block; }
+  #response-panel .close-response {
+    position: absolute; top: 8px; right: 12px;
+    background: none; border: none; color: #666;
+    cursor: pointer; font-size: 18px; line-height: 1;
+  }
+  #response-panel .close-response:hover { color: #fff; }
+  .citation {
+    color: #00bcd4; cursor: pointer; text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .citation:hover { color: #4dd0e1; }
   .search-result {
     padding: 6px 12px; cursor: pointer;
     font-size: 13px; color: #bbb;
@@ -118,6 +143,11 @@ _TEMPLATE = """\
     placeholder="Search nodes..." autocomplete="off">
   <div id="search-results"></div>
 </div>
+<div id="status-line" class="hidden"></div>
+<div id="response-panel">
+  <button class="close-response" onclick="hideResponsePanel()">&times;</button>
+  <div id="response-content"></div>
+</div>
 <div id="graph"></div>
 <div id="info-panel">
   <button id="close-btn">&times;</button>
@@ -130,6 +160,13 @@ _TEMPLATE = """\
 const GRAPH_DATA = __GRAPH_DATA__;
 const NODE_COLORS = __NODE_COLORS__;
 const HIGH_CONN_THRESHOLD = 5;
+const isServed = location.protocol !== 'file:';
+
+// Query-driven traversal state
+let queryMode = null;       // 'explore' | 'summarize' | null
+const visitedNodes = new Set();
+const resultNodes = new Set();
+const nodeStates = new Map();  // node_id -> 'visited' | 'result'
 
 // Build legend (clickable for solo mode)
 const legend = document.getElementById('legend');
@@ -208,12 +245,20 @@ const graph = ForceGraph()(document.getElementById('graph'))
   .nodeColor(n => NODE_COLORS[n.type] || '#666')
   .nodeCanvasObject((node, ctx, globalScale) => {
     const isHL = node === highlightedNode;
-    const r = Math.sqrt(node.val || 1) * 2.5 + (isHL ? 6 : 0);
-    const color = NODE_COLORS[node.type] || '#666';
+    const nState = nodeStates.get(node.id);
+    const isResult = nState === 'result';
+    const isVisited = nState === 'visited';
+    const extraR = isResult ? 3 : (isHL ? 6 : 0);
+    const r = Math.sqrt(node.val || 1) * 2.5 + extraR;
+    let color = NODE_COLORS[node.type] || '#666';
 
-    if (isHL) {
+    // Traversal state overrides
+    if (isResult) color = '#00ff88';
+    else if (isVisited) color = '#ffaa00';
+
+    if (isHL || isResult || isVisited) {
       ctx.shadowColor = color;
-      ctx.shadowBlur = 25;
+      ctx.shadowBlur = isResult ? 30 : (isVisited ? 20 : 25);
     }
     ctx.beginPath();
     ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
@@ -221,8 +266,9 @@ const graph = ForceGraph()(document.getElementById('graph'))
     ctx.fill();
     ctx.shadowBlur = 0;
 
-    // Show label on hover or for high-connectivity nodes
-    const showLabel = isHL || node === hoveredNode || (node.val || 0) >= HIGH_CONN_THRESHOLD;
+    // Show label on hover, highlight, traversal, or high-connectivity nodes
+    const showLabel = isHL || isResult || isVisited
+      || node === hoveredNode || (node.val || 0) >= HIGH_CONN_THRESHOLD;
     if (showLabel) {
       const fontSize = Math.max(10 / globalScale, 2);
       ctx.font = `${fontSize}px system-ui, sans-serif`;
@@ -364,6 +410,11 @@ document.addEventListener('keydown', e => {
 const searchResultsEl = document.getElementById('search-results');
 let searchIdx = -1;
 
+// Update placeholder based on serve mode
+if (isServed) {
+  searchInput.placeholder = 'Search nodes or ask a question...';
+}
+
 searchInput.addEventListener('input', () => {
   const q = searchInput.value.trim().toLowerCase();
   searchIdx = -1;
@@ -433,10 +484,21 @@ searchInput.addEventListener('keydown', e => {
     searchIdx = Math.max(searchIdx - 1, 0);
     updateSearchHL(items);
   } else if (e.key === 'Enter') {
-    const sel = searchIdx >= 0 ? items[searchIdx]
-      : items[0];
-    if (sel) {
-      flyToNode(sel.dataset.id);
+    // If user selected an autocomplete item, fly to it
+    if (searchIdx >= 0 && items[searchIdx]) {
+      flyToNode(items[searchIdx].dataset.id);
+      clearSearch();
+    } else if (items.length > 0 && !isServed) {
+      // file:// mode: always fly to first autocomplete result
+      flyToNode(items[0].dataset.id);
+      clearSearch();
+    } else if (isServed && searchInput.value.trim()) {
+      // Web mode: free-form query
+      const q = searchInput.value.trim();
+      clearSearch();
+      startQuery(q);
+    } else if (items.length > 0) {
+      flyToNode(items[0].dataset.id);
       clearSearch();
     }
   }
@@ -477,6 +539,170 @@ function escapeHtml(s) {
 }
 function escapeAttr(s) {
   return String(s).replace(/'/g, "\\\\'").replace(/"/g, '&quot;');
+}
+
+// --- Query-driven exploration (web server mode only) ---
+const statusLine = document.getElementById('status-line');
+const responsePanel = document.getElementById('response-panel');
+const responseContent = document.getElementById('response-content');
+
+function setStatus(msg) {
+  if (!msg) {
+    statusLine.classList.add('hidden');
+    statusLine.textContent = '';
+  } else {
+    statusLine.textContent = msg;
+    statusLine.classList.remove('hidden');
+  }
+}
+
+function resetTraversalState() {
+  queryMode = null;
+  visitedNodes.clear();
+  resultNodes.clear();
+  nodeStates.clear();
+  hideResponsePanel();
+  setStatus('');
+}
+
+function markVisited(nodeId) {
+  visitedNodes.add(nodeId);
+  if (!nodeStates.has(nodeId) || nodeStates.get(nodeId) !== 'result') {
+    nodeStates.set(nodeId, 'visited');
+  }
+}
+
+function markResult(nodeId) {
+  resultNodes.add(nodeId);
+  nodeStates.set(nodeId, 'result');
+}
+
+function emitTraversalParticles(entryIds) {
+  const links = graph.graphData().links;
+  const idSet = new Set(entryIds);
+  links.forEach(link => {
+    const s = link.source.id || link.source;
+    const t = link.target.id || link.target;
+    if (idSet.has(s) || idSet.has(t)) {
+      graph.emitParticle(link);
+    }
+  });
+}
+
+function zoomToResults() {
+  if (resultNodes.size === 0) return;
+  graph.zoomToFit(600, 40, n => resultNodes.has(n.id));
+}
+
+function showResponsePanel(answer) {
+  // Convert [kb-XXXXX] citations to clickable spans
+  const html = escapeHtml(answer).replace(
+    /\\[(kb-\\d{5})\\]/g,
+    function(_, id) {
+      return '<span class="citation" onclick="flyToNode(\\x27' + id + '\\x27)">[' + id + ']</span>';
+    }
+  );
+  responseContent.innerHTML = html;
+  responsePanel.classList.add('visible');
+}
+
+function hideResponsePanel() {
+  responsePanel.classList.remove('visible');
+  responseContent.innerHTML = '';
+}
+
+function handleSSEEvent(eventType, data) {
+  if (eventType === 'status') {
+    setStatus(data.message || '');
+  } else if (eventType === 'classified') {
+    queryMode = data.mode;
+    setStatus(data.mode === 'summarize'
+      ? 'Preparing answer...' : 'Exploring knowledge graph...');
+  } else if (eventType === 'tool_call') {
+    if (data.tool === 'graph_neighbors' && data.args?.node_id) {
+      markVisited(data.args.node_id);
+      const node = GRAPH_DATA.nodes.find(
+        n => n.id === data.args.node_id
+      );
+      if (node) {
+        graph.centerAt(node.x, node.y, 600);
+        graph.zoom(3, 600);
+      }
+    }
+  } else if (eventType === 'tool_result') {
+    if (data.entry_ids) {
+      data.entry_ids.forEach(id => markVisited(id));
+      emitTraversalParticles(data.entry_ids);
+    }
+  } else if (eventType === 'fast_path' || eventType === 'agent_done') {
+    if (data.entry_ids) {
+      data.entry_ids.forEach(id => markResult(id));
+      emitTraversalParticles(data.entry_ids);
+    }
+  } else if (eventType === 'entries') {
+    if (data.entries) {
+      data.entries.forEach(e => markResult(e.id));
+    }
+    zoomToResults();
+  } else if (eventType === 'synthesis_result') {
+    if (data.answer) {
+      showResponsePanel(data.answer);
+    }
+    // Also zoom to any result nodes
+    zoomToResults();
+  } else if (eventType === 'stream_end') {
+    setStatus('');
+  }
+}
+
+async function startQuery(question) {
+  resetTraversalState();
+  setStatus('Classifying query...');
+
+  // Reset focus/solo mode
+  focusedNode = null;
+  highlightedNode = null;
+  soloType = null;
+  legendItems.forEach(el => el.classList.remove('inactive'));
+  graph.nodeVisibility(nodeVisible).linkVisibility(linkVisible);
+
+  try {
+    const resp = await fetch('/api/query/stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question}),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      // Parse SSE events from buffer
+      const lines = buffer.split('\\n');
+      buffer = lines.pop() || '';
+
+      let currentEvent = null;
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith('data: ') && currentEvent) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            handleSSEEvent(currentEvent, data);
+          } catch (e) { /* skip bad JSON */ }
+          currentEvent = null;
+        }
+      }
+    }
+  } catch (err) {
+    setStatus('Query failed: ' + err.message);
+    setTimeout(() => setStatus(''), 3000);
+  }
 }
 </script>
 </body>

@@ -2,8 +2,9 @@
 
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
@@ -113,6 +114,7 @@ async def retrieve_entries(
     scope: str | None = None,
     include_graph_context: bool = True,
     limit: int = 20,
+    event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> tuple[list[tuple[KnowledgeEntry, str]], int]:
     """Retrieve entries via agentic or single-shot path.
 
@@ -126,7 +128,13 @@ async def retrieve_entries(
     if query_llm is not None and isinstance(query_llm, LLMProvider) and is_agentic_query():
         from personal_kb.graph.agent import AgentResult, agentic_query
 
-        agent_result = await agentic_query(db, embedder, query_llm, question)
+        agent_result = await agentic_query(
+            db,
+            embedder,
+            query_llm,
+            question,
+            event_callback=event_callback,
+        )
         if isinstance(agent_result, AgentResult) and agent_result.entries:
             entries: list[tuple[KnowledgeEntry, str]] = []
             for entry_id, context in agent_result.entries[:limit]:

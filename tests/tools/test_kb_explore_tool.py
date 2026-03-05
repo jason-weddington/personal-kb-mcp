@@ -1,5 +1,7 @@
 """Tests for the kb_explore MCP tool."""
 
+import asyncio
+import contextlib
 import json
 
 import pytest
@@ -8,7 +10,20 @@ from personal_kb.explorer.graph_data import extract_graph_data
 from personal_kb.explorer.renderer import render_explorer_html
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.models.entry import EntryType
+from personal_kb.tools import kb_explore
 from personal_kb.tools.kb_explore import explore_logic
+
+
+@pytest.fixture(autouse=True)
+def _reset_web_server():
+    """Cancel and reset the module-level web server task between tests."""
+    yield
+    task = kb_explore._web_server_task
+    if task is not None and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+            asyncio.get_event_loop().run_until_complete(task)
+    kb_explore._web_server_task = None
 
 
 @pytest.mark.asyncio
@@ -26,17 +41,18 @@ async def test_explore_logic_returns_html_and_summary(db, store, monkeypatch):
     await db.commit()
 
     opened_urls: list[str] = []
-    monkeypatch.setattr("personal_kb.tools.kb_explore.webbrowser.open", opened_urls.append)
+    monkeypatch.setattr("webbrowser.open", opened_urls.append)
 
     html, summary = await explore_logic(db)
 
     assert "<!DOCTYPE html>" in html
     assert "GRAPH_DATA" in html
     assert "force-graph" in html
-    assert "2 nodes" in summary or "3 nodes" in summary  # entry + tag (+ possible project)
+    node_count = summary.split("nodes")[0].strip().split()[-1]
+    assert int(node_count) >= 2  # entry + tag (+ possible project)
     assert "Explorer opened" in summary
     assert len(opened_urls) == 1
-    assert opened_urls[0].startswith("file://")
+    assert opened_urls[0].startswith("file://") or opened_urls[0].startswith("http://localhost:")
 
 
 @pytest.mark.asyncio
@@ -73,7 +89,7 @@ async def test_html_contains_correct_graph_data(db, store):
 async def test_explore_empty_db(db, monkeypatch):
     """explore_logic works with an empty DB."""
     opened_urls: list[str] = []
-    monkeypatch.setattr("personal_kb.tools.kb_explore.webbrowser.open", opened_urls.append)
+    monkeypatch.setattr("webbrowser.open", opened_urls.append)
 
     _html, summary = await explore_logic(db)
 

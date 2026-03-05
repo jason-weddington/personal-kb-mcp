@@ -1,0 +1,82 @@
+"""FastAPI application factory for the KB Explorer web server."""
+
+import logging
+import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
+from personal_kb.db.backend import Database
+from personal_kb.llm.provider import LLMProvider
+from personal_kb.search.embeddings import EmbeddingClient
+
+logger = logging.getLogger(__name__)
+
+
+def create_app_with_deps(
+    db: Database,
+    embedder: EmbeddingClient | None,
+    query_llm: LLMProvider | None,
+) -> Any:
+    """Create a FastAPI app using pre-existing deps from MCP lifespan.
+
+    Returns a FastAPI application. The caller owns the lifecycle of db/embedder/llm.
+    """
+    from fastapi import FastAPI
+
+    from personal_kb.web.routes import register_routes
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        yield
+
+    app = FastAPI(title="KB Explorer", lifespan=lifespan)
+    app.state.db = db
+    app.state.embedder = embedder
+    app.state.query_llm = query_llm
+    register_routes(app)
+    return app
+
+
+def create_app() -> Any:
+    """Create a standalone FastAPI app that manages its own db/embedder/llm.
+
+    Used by the CLI entry point (personal-kb-web).
+    """
+    from fastapi import FastAPI
+
+    from personal_kb.config import (
+        get_embedding_dim,
+        get_log_level,
+        get_query_provider,
+    )
+    from personal_kb.db.connection import create_connection
+    from personal_kb.server import _create_llm
+    from personal_kb.web.routes import register_routes
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        logging.basicConfig(
+            level=getattr(logging, get_log_level()),
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+            stream=sys.stderr,
+        )
+        db = await create_connection(embedding_dim=get_embedding_dim())
+        embedder = EmbeddingClient(db)
+        query_llm = _create_llm(get_query_provider())
+
+        app.state.db = db
+        app.state.embedder = embedder
+        app.state.query_llm = query_llm
+
+        try:
+            yield
+        finally:
+            if query_llm is not None:
+                await query_llm.close()
+            await embedder.close()
+            await db.close()
+
+    app = FastAPI(title="KB Explorer", lifespan=lifespan)
+    register_routes(app)
+    return app
