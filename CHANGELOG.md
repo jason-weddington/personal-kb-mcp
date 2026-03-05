@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.35.0 (2026-03-05)
+
+### Features
+
+- Staggered node-by-node traversal animation in explorer
+  ([`4415e66`](https://github.com/jason-weddington/personal-kb-mcp/commit/4415e6623fd248c4db10c8862499532b2bd7eab8))
+
+
 ## v0.34.5 (2026-03-05)
 
 ### Bug Fixes
