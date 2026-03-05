@@ -113,9 +113,13 @@ _TEMPLATE = """\
   #search-bar {
     position: fixed; top: 12px; left: 12px;
     z-index: 10; display: flex; flex-direction: column;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+  #search-bar.hidden-for-chat {
+    opacity: 0; pointer-events: none; transform: translateY(4px);
   }
   #search-input {
-    width: 280px; padding: 8px 12px;
+    width: 420px; padding: 8px 12px;
     background: rgba(20, 20, 30, 0.9);
     border: 1px solid #333; border-radius: 6px;
     color: #e0e0e0; font-size: 14px; outline: none;
@@ -123,7 +127,7 @@ _TEMPLATE = """\
   #search-input:focus { border-color: #555; }
   #search-input::placeholder { color: #555; }
   #search-results {
-    display: none; width: 280px; max-height: 300px;
+    display: none; width: 420px; max-height: 300px;
     overflow-y: auto; margin-top: 4px;
     background: rgba(20, 20, 30, 0.95);
     border: 1px solid #333; border-radius: 6px;
@@ -151,20 +155,32 @@ _TEMPLATE = """\
   #response-panel .close-response:hover { color: #fff; }
   /* Chat panel */
   #chat-panel {
-    display: none; position: fixed; top: 80px; left: 12px;
-    width: 420px; max-height: calc(100vh - 120px);
+    position: fixed; top: 12px; left: 12px;
+    width: 420px; max-height: calc(100vh - 24px);
     background: rgba(20, 20, 30, 0.95); border: 1px solid #333;
-    border-radius: 8px; z-index: 10;
+    border-radius: 8px; z-index: 11;
     font-size: 13px; line-height: 1.6; color: #ddd;
-    flex-direction: column;
+    flex-direction: column; display: flex;
+    /* Collapsed state: looks like search bar */
+    opacity: 0; pointer-events: none;
+    transform: scaleY(0.05) scaleX(1);
+    transform-origin: top left;
+    transition: opacity 0.3s ease, transform 0.3s ease;
   }
-  #chat-panel.visible { display: flex; }
-  #chat-panel .close-response {
-    position: absolute; top: 8px; right: 12px;
-    background: none; border: none; color: #666;
-    cursor: pointer; font-size: 18px; line-height: 1; z-index: 1;
+  #chat-panel.visible {
+    opacity: 1; pointer-events: auto;
+    transform: scaleY(1) scaleX(1);
   }
-  #chat-panel .close-response:hover { color: #fff; }
+  #chat-panel .chat-close {
+    position: absolute; top: 10px; right: 10px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: rgba(80, 80, 90, 0.8); border: none;
+    color: #fff; cursor: pointer; font-size: 15px;
+    font-weight: 700; line-height: 28px; text-align: center;
+    z-index: 1; transition: background 0.15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #chat-panel .chat-close:hover { background: rgba(120, 120, 130, 0.9); }
   #chat-messages {
     flex: 1; overflow-y: auto; padding: 16px;
     display: flex; flex-direction: column; gap: 10px;
@@ -289,7 +305,7 @@ _TEMPLATE = """\
 <body>
 <div id="search-bar">
   <input id="search-input" type="text"
-    placeholder="Search nodes..." autocomplete="off">
+    placeholder="Search nodes or ask a question..." autocomplete="off">
   <div id="search-results"></div>
 </div>
 <div id="status-line" class="hidden"></div>
@@ -298,7 +314,7 @@ _TEMPLATE = """\
   <div id="response-content"></div>
 </div>
 <div id="chat-panel">
-  <button class="close-response" onclick="hideChatPanel()">&times;</button>
+  <button class="chat-close" onclick="hideChatPanel()">&times;</button>
   <div id="chat-messages"></div>
   <div id="chat-input-bar">
     <input id="chat-input" type="text"
@@ -760,7 +776,11 @@ function resetTraversalState() {
   animQueue.length = 0;
   animRunning = false;
   hideResponsePanel();
-  hideChatPanel();
+  // Reset chat panel immediately (no animation) on new query
+  chatPanel.classList.remove('visible');
+  chatSessionId = null;
+  chatMessages.innerHTML = '';
+  document.getElementById('search-bar').classList.remove('hidden-for-chat');
   setStatus('');
 }
 
@@ -1044,14 +1064,25 @@ function openChatPanel(question, answer, entryIds) {
   appendChatMsg('assistant', renderMarkdown(answer));
 
   hideResponsePanel();
-  chatPanel.classList.add('visible');
-  chatInput.focus();
+  // Hide search bar, then reveal chat panel
+  const searchBar = document.getElementById('search-bar');
+  searchBar.classList.add('hidden-for-chat');
+  // Small delay so search bar fades first
+  setTimeout(() => {
+    chatPanel.classList.add('visible');
+    chatInput.focus();
+  }, 100);
 }
 
 function hideChatPanel() {
   chatPanel.classList.remove('visible');
-  chatSessionId = null;
-  chatMessages.innerHTML = '';
+  // After chat panel collapses, show search bar
+  setTimeout(() => {
+    const searchBar = document.getElementById('search-bar');
+    searchBar.classList.remove('hidden-for-chat');
+    chatSessionId = null;
+    chatMessages.innerHTML = '';
+  }, 300);
 }
 
 function setChatBusy(busy) {
