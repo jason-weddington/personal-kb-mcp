@@ -31,6 +31,27 @@ def register_routes(app: Any) -> None:
         data = await extract_graph_data(request.app.state.db)
         return JSONResponse(content=data)
 
+    @app.get("/api/entry/{entry_id}")
+    async def api_entry(entry_id: str, request: Request) -> JSONResponse:
+        """Return full entry details by ID."""
+        from personal_kb.db.queries import get_entry
+
+        entry = await get_entry(request.app.state.db, entry_id)
+        if entry is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "id": entry.id,
+                "short_title": entry.short_title,
+                "long_title": entry.long_title,
+                "knowledge_details": entry.knowledge_details,
+                "entry_type": entry.entry_type.value if entry.entry_type else None,
+                "tags": entry.tags or [],
+                "project_ref": entry.project_ref,
+                "confidence_level": entry.confidence_level,
+            }
+        )
+
     @app.post("/api/query/stream")
     async def api_query_stream(request: Request) -> StreamingResponse:
         """Stream query events via SSE."""

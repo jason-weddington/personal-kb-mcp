@@ -42,6 +42,44 @@ _TEMPLATE = """\
     font-size: 11px; font-weight: 600; margin-bottom: 8px;
   }
   #info-panel .meta { color: #999; font-size: 12px; margin-bottom: 4px; }
+  #info-panel .meta b { color: #fff; font-weight: 600; }
+  #info-panel .entry-details {
+    margin-top: 12px; border-top: 1px solid #333; padding-top: 8px;
+  }
+  #info-panel .details-toggle {
+    background: none; border: none; color: #00bcd4; cursor: pointer;
+    font-size: 12px; padding: 0; display: flex; align-items: center; gap: 4px;
+  }
+  #info-panel .details-toggle:hover { color: #4dd0e1; }
+  #info-panel .details-toggle .arrow {
+    display: inline-block; transition: transform 0.2s;
+    font-size: 10px;
+  }
+  #info-panel .details-toggle .arrow.open { transform: rotate(90deg); }
+  #info-panel .details-body {
+    display: none; margin-top: 8px; font-size: 12px;
+    line-height: 1.6; color: #ccc;
+  }
+  #info-panel .details-body.visible { display: block; }
+  #info-panel .details-body h1, #info-panel .details-body h2,
+  #info-panel .details-body h3 {
+    font-size: 13px; font-weight: 600; margin: 10px 0 4px; color: #eee;
+  }
+  #info-panel .details-body p { margin: 4px 0; }
+  #info-panel .details-body ul, #info-panel .details-body ol {
+    margin: 4px 0 4px 16px;
+  }
+  #info-panel .details-body li { margin: 2px 0; }
+  #info-panel .details-body code {
+    background: rgba(255,255,255,0.08); padding: 1px 3px;
+    border-radius: 3px; font-size: 11px;
+  }
+  #info-panel .details-body pre {
+    background: rgba(255,255,255,0.06); padding: 8px;
+    border-radius: 4px; overflow-x: auto; margin: 6px 0;
+  }
+  #info-panel .details-body pre code { background: none; padding: 0; }
+  #info-panel .details-body strong { color: #fff; }
   #info-panel .connections { margin-top: 12px; }
   #info-panel .connections h3 { font-size: 13px; margin-bottom: 6px; color: #aaa; }
   #info-panel .conn-item {
@@ -373,15 +411,26 @@ function showInfoPanel(node) {
   html += `<div class="meta">${escapeHtml(node.id)}</div>`;
 
   if (props.long_title) html += `<div class="meta">${escapeHtml(props.long_title)}</div>`;
-  if (props.entry_type) html += `<div class="meta">Type: ${escapeHtml(props.entry_type)}</div>`;
-  if (props.tags) html += `<div class="meta">Tags: ${escapeHtml(props.tags)}</div>`;
+  if (props.entry_type)
+    html += `<div class="meta"><b>Type:</b> ${escapeHtml(props.entry_type)}</div>`;
+  if (props.tags) html += `<div class="meta"><b>Tags:</b> ${escapeHtml(props.tags)}</div>`;
   if (props.project_ref)
-    html += `<div class="meta">Project: ${escapeHtml(props.project_ref)}</div>`;
+    html += `<div class="meta"><b>Project:</b> ${escapeHtml(props.project_ref)}</div>`;
   if (props.contributor)
-    html += `<div class="meta">By: ${escapeHtml(props.contributor)}</div>`;
+    html += `<div class="meta"><b>By:</b> ${escapeHtml(props.contributor)}</div>`;
   if (props.confidence_level != null)
-    html += `<div class="meta">Confidence: ${props.confidence_level}</div>`;
+    html += `<div class="meta"><b>Confidence:</b> `
+      + Math.round(props.confidence_level * 100) + `%</div>`;
   if (props.summary) html += `<div class="meta">${escapeHtml(props.summary)}</div>`;
+
+  // Full entry accordion (fetched on demand from web server)
+  if (node.type === 'entry' && isServed) {
+    html += '<div class="entry-details">'
+      + '<button class="details-toggle" onclick="toggleDetails(this, \\x27'
+      + escapeAttr(node.id) + '\\x27)">'
+      + '<span class="arrow">\\u25b6</span> Full Entry\\u2026</button>'
+      + '<div class="details-body"></div></div>';
+  }
 
   const conns = adjacency.get(node.id) || [];
   if (conns.length > 0) {
@@ -402,6 +451,32 @@ function showInfoPanel(node) {
 function focusNode(nodeId) {
   const node = GRAPH_DATA.nodes.find(n => n.id === nodeId);
   if (node) selectNode(node);
+}
+
+async function toggleDetails(btn, entryId) {
+  const arrow = btn.querySelector('.arrow');
+  const body = btn.nextElementSibling;
+  if (body.classList.contains('visible')) {
+    body.classList.remove('visible');
+    arrow.classList.remove('open');
+    return;
+  }
+  // Fetch if not already loaded
+  if (!body.dataset.loaded) {
+    arrow.textContent = '\\u23f3';
+    try {
+      const resp = await fetch('/api/entry/' + encodeURIComponent(entryId));
+      if (!resp.ok) throw new Error(resp.statusText);
+      const data = await resp.json();
+      body.innerHTML = renderMarkdown(data.knowledge_details || '(no content)');
+      body.dataset.loaded = '1';
+    } catch (e) {
+      body.innerHTML = '<em>Failed to load entry</em>';
+    }
+    arrow.textContent = '\\u25b6';
+  }
+  body.classList.add('visible');
+  arrow.classList.add('open');
 }
 
 // Left arrow = backtrack through navigation history
@@ -726,10 +801,23 @@ function handleSSEEvent(eventType, data) {
     }
   } else if (eventType === 'entries') {
     // Final entries from route handler — mark results and zoom
-    if (data.entries) {
+    if (data.entries && data.entries.length > 0) {
       revealNodesStaggered(
         data.entries.map(e => e.id), 'result'
       );
+      // Show result list in response panel
+      let md = '**Found ' + data.entries.length + ' entries:**\\n\\n';
+      data.entries.forEach(e => {
+        md += '- **[' + e.id + ']** ' + e.short_title;
+        if (e.context) md += ' — _' + e.context + '_';
+        md += '\\n';
+      });
+      queueAnimation(() => showResponsePanel(md));
+    } else {
+      queueAnimation(() => {
+        setStatus('No results found');
+        setTimeout(() => setStatus(''), 3000);
+      });
     }
     zoomToResults();
   } else if (eventType === 'synthesis_result') {

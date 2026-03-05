@@ -163,6 +163,35 @@ async def test_api_graph_returns_json(web_kb):
 
 
 @pytest.mark.asyncio
+async def test_api_entry_returns_details(web_kb):
+    """GET /api/entry/{id} returns full entry with knowledge_details."""
+    db, embedder, ids = web_kb
+
+    app = create_app_with_deps(db, embedder, None)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        entry_id = ids["sqlite-async"]
+        resp = await client.get(f"/api/entry/{entry_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == entry_id
+        assert "knowledge_details" in data
+        assert len(data["knowledge_details"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_api_entry_not_found(web_kb):
+    """GET /api/entry/{id} returns 404 for missing entry."""
+    db, embedder, _ids = web_kb
+
+    app = create_app_with_deps(db, embedder, None)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/entry/kb-99999")
+        assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_stream_no_llm_explore(web_kb):
     """Explore query without LLM defaults to explore mode."""
     db, embedder, _ids = web_kb
