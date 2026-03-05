@@ -676,6 +676,9 @@ function handleSSEEvent(eventType, data) {
     }
     // Also zoom to any result nodes
     zoomToResults();
+  } else if (eventType === 'error') {
+    setStatus('Error: ' + (data.message || 'query failed'));
+    setTimeout(() => setStatus(''), 5000);
   } else if (eventType === 'stream_end') {
     setStatus('');
   }

@@ -6,7 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from personal_kb.web.app import create_app_with_deps
-from tests.conftest import ScriptedLLM
+from tests.conftest import FakeLLM, ScriptedLLM
 
 
 def _tool_call(tool: str, **kwargs) -> str:
@@ -181,3 +181,40 @@ async def test_stream_no_llm_explore(web_kb):
         classified = next(e for e in events if e[0] == "classified")
         assert classified[1]["mode"] == "explore"
         assert any(e[0] == "stream_end" for e in events)
+
+
+class _ExplodingLLM(FakeLLM):
+    """LLM that classifies successfully then raises on the next call."""
+
+    def __init__(self):
+        super().__init__(response="summarize")
+        self._call_count = 0
+
+    async def generate(self, prompt: str, system: str | None = None) -> str | None:
+        self._call_count += 1
+        if self._call_count == 1:
+            return "summarize"
+        raise RuntimeError("LLM exploded")
+
+
+@pytest.mark.asyncio
+async def test_stream_error_yields_error_event(web_kb):
+    """When the query task raises, an error event is sent instead of crashing."""
+    db, embedder, _ids = web_kb
+
+    llm = _ExplodingLLM()
+    app = create_app_with_deps(db, embedder, llm)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/query/stream",
+            json={"question": "why sqlite?"},
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+
+        events = _parse_sse(resp.text)
+        event_types = [e[0] for e in events]
+
+        assert "error" in event_types
+        assert "stream_end" in event_types

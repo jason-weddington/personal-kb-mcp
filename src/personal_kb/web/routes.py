@@ -115,7 +115,13 @@ def register_routes(app: Any) -> None:
                     yield sse_event("status", {"message": status})
 
             # Get final result
-            result = await task
+            try:
+                result = await task
+            except Exception:
+                logger.exception("Query task failed")
+                yield sse_event("error", {"message": "Query failed"})
+                yield sse_event("stream_end", {})
+                return
 
             if result["type"] == "summarize":
                 yield sse_event(
