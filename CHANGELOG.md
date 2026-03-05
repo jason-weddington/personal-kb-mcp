@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.31.1 (2026-03-04)
+
+### Bug Fixes
+
+- Handle partial failures in batch store instead of silent half-commit
+  ([`f043e38`](https://github.com/jason-weddington/personal-kb-mcp/commit/f043e38a909ce0982a8505e516043c15c66e33d9))
+
+
 ## v0.31.0 (2026-03-04)
 
 ### Features
