@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.37.0 (2026-03-05)
+
+### Features
+
+- Multi-turn chat in graph explorer
+  ([`939a038`](https://github.com/jason-weddington/personal-kb-mcp/commit/939a0384420d1c5d39cd0ecc0e766e7646d1f2e1))
+
+
 ## v0.36.0 (2026-03-05)
 
 ### Features
