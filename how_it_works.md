@@ -334,7 +334,7 @@ The overall design principle is that each component checks its own dependencies 
 
 ## Graph Explorer Visualization
 
-The graph explorer renders the entire knowledge graph as an interactive force-directed visualization in the browser, powered by [force-graph](https://github.com/vasturiano/force-graph) (a d3-force wrapper for Canvas2D). It has two modes: a static `file://` mode that works without any web dependencies, and a query-driven mode that adds LLM-powered search via a FastAPI web server with SSE streaming.
+The graph explorer renders the entire knowledge graph as an interactive force-directed visualization in the browser, powered by [force-graph](https://github.com/vasturiano/force-graph) (a d3-force wrapper for Canvas2D). It runs as a FastAPI web server with LLM-powered query capabilities, SSE streaming, and multi-turn chat. A static `file://` fallback exists if the port is already in use.
 
 ### Graph Data Extraction
 
@@ -350,7 +350,7 @@ The search bar (top-left) filters nodes by label with autocomplete. Selecting a 
 
 ### Web Server (Query-Driven Mode)
 
-When the `web` optional dependency group is installed (`fastapi`, `uvicorn`), the explorer gains LLM-powered query capabilities. The web infrastructure lives in `web/`.
+The web infrastructure lives in `web/`.
 
 **App factory** (`web/app.py`): Two factory functions create the FastAPI application. `create_app_with_deps(db, embedder, query_llm)` is used when the explorer is launched from the `kb_explore` MCP tool — it receives the database, embedder, and LLM client directly from the MCP lifespan context, sharing connections instead of creating new ones. `create_app()` is used by the standalone `personal-kb-web` CLI entry point — it creates its own database connection, embedder, and LLM client in a lifespan handler, mirroring the MCP server's startup sequence. Both store dependencies on `app.state`.
 
@@ -376,7 +376,7 @@ The frontend detects whether it's served by the web server (`location.protocol !
 
 ### kb_explore Tool Integration
 
-The `kb_explore` MCP tool (`tools/kb_explore.py`) tries the web server first. It calls `create_app_with_deps()` with the MCP lifespan's database, embedder, and LLM client, starts uvicorn as an `asyncio.create_task`, and opens the browser. A module-level `_web_server_task` variable prevents starting duplicate servers across multiple `kb_explore` calls in the same session. If web dependencies aren't installed (`ImportError`) or the port is already in use (`OSError`), it falls back to the static `file://` mode — writing a temp HTML file and opening it with `webbrowser.open()`.
+The `kb_explore` MCP tool (`tools/kb_explore.py`) tries the web server first. It calls `create_app_with_deps()` with the MCP lifespan's database, embedder, and LLM client, starts uvicorn as an `asyncio.create_task`, and opens the browser. A module-level `_web_server_task` variable prevents starting duplicate servers across multiple `kb_explore` calls in the same session. If the port is already in use (`OSError`), it falls back to the static `file://` mode — writing a temp HTML file and opening it with `webbrowser.open()`.
 
 The standalone `personal-kb-web` CLI (`web/cli.py`) runs the same web app via `uvicorn.run()` on port 8765, opening the browser after a 1-second delay. This is useful for browsing the KB outside of an MCP session.
 

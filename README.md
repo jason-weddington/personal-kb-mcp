@@ -174,7 +174,7 @@ kb_ingest(file_path="/path/to/notes", project_ref="my-project", dry_run=True)
 
 ### `kb_explore`
 
-Open an interactive graph visualization in your browser. When web dependencies are installed (`fastapi`, `uvicorn`), it launches a local web server at `http://localhost:8765` with full query capabilities — type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Questions routed to `summarize` mode open a multi-turn chat panel where you can ask follow-up questions grounded in the retrieved KB entries, with iMessage-style message bubbles and clickable `[kb-XXXXX]` citations that fly to nodes in the graph. Without web dependencies, it falls back to a static HTML file opened via `file://` (search nodes by name only, no query features).
+Open an interactive graph visualization in your browser. Launches a local web server at `http://localhost:8765` with full query capabilities — type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Questions routed to `summarize` mode open a multi-turn chat panel where you can ask follow-up questions grounded in the retrieved KB entries, with iMessage-style message bubbles and clickable `[kb-XXXXX]` citations that fly to nodes in the graph.
 
 ### `kb_feedback`
 
@@ -358,7 +358,7 @@ uv run personal-kb               # run server directly
 uv run personal-kb-web           # launch graph explorer web UI
 ```
 
-For Bedrock support: `uv sync --extra aws`. For secret/PII detection in `kb_ingest`: `uv sync --extra safety`. For PostgreSQL: `uv sync --extra postgres`. For the graph explorer web UI: `uv sync --extra web`.
+For Bedrock support: `uv sync --extra aws`. For secret/PII detection in `kb_ingest`: `uv sync --extra safety`. For PostgreSQL: `uv sync --extra postgres`.
 
 ## So you started with SQLite...
 

@@ -33,7 +33,7 @@ async def explore_logic(
     """
     global _web_server_task
 
-    # Try web server mode (requires fastapi + uvicorn)
+    # Try web server mode
     try:
         from personal_kb.web.app import create_app_with_deps
 
@@ -67,8 +67,8 @@ async def explore_logic(
         )
         return render_explorer_html(data), summary
 
-    except (ImportError, OSError, SystemExit):
-        logger.debug("Web server unavailable, falling back to temp file mode")
+    except (OSError, SystemExit):
+        logger.debug("Web server failed to start, falling back to temp file mode")
 
     # Fallback: static temp file (no query support)
     data = await extract_graph_data(db)
@@ -96,8 +96,8 @@ def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
         name=f"{prefix}explore",
         description=(
             "Open an interactive graph explorer in the browser. "
-            "When web dependencies are installed, starts a local server with "
-            "LLM-powered query support. Falls back to a static HTML file."
+            "Starts a local server with LLM-powered query support and multi-turn chat. "
+            "Falls back to a static HTML file if the port is in use."
         ),
     )
     async def kb_explore(ctx: Context | None = None) -> str:

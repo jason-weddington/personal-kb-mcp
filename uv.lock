@@ -1405,10 +1405,12 @@ source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "anthropic" },
+    { name = "fastapi" },
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "pydantic" },
     { name = "sqlite-vec" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.optional-dependencies]
@@ -1426,15 +1428,11 @@ safety = [
     { name = "detect-secrets" },
     { name = "scrubadub" },
 ]
-web = [
-    { name = "fastapi" },
-    { name = "uvicorn", extra = ["standard"] },
-]
 
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
-    { name = "personal-kb", extra = ["aws", "iam", "postgres", "safety", "web"] },
+    { name = "personal-kb", extra = ["aws", "iam", "postgres", "safety"] },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1451,21 +1449,21 @@ requires-dist = [
     { name = "aws-sdk-bedrock-runtime", marker = "extra == 'aws'", specifier = ">=0.3.0" },
     { name = "boto3", marker = "extra == 'iam'", specifier = ">=1.28" },
     { name = "detect-secrets", marker = "extra == 'safety'", specifier = ">=1.4" },
-    { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "fastmcp", specifier = ">=2.0" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "scrubadub", marker = "extra == 'safety'", specifier = ">=2.0" },
     { name = "smithy-json", marker = "extra == 'aws'", git = "https://github.com/jason-weddington/smithy-python.git?subdirectory=packages%2Fsmithy-json&rev=fix%2Fjson-control-char-escaping" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = ">=0.34" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
-provides-extras = ["aws", "postgres", "safety", "iam", "web"]
+provides-extras = ["aws", "postgres", "safety", "iam"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=1.14" },
-    { name = "personal-kb", extras = ["aws", "postgres", "safety", "iam", "web"] },
+    { name = "personal-kb", extras = ["aws", "postgres", "safety", "iam"] },
     { name = "pre-commit", specifier = ">=4" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },

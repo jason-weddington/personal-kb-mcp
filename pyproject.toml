@@ -10,6 +10,8 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "httpx>=0.28",
     "anthropic>=0.40",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
 ]
 
 [project.scripts]
@@ -31,10 +33,6 @@ safety = [
 iam = [
     "boto3>=1.28",
 ]
-web = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.34",
-]
 
 [dependency-groups]
 dev = [
@@ -45,7 +43,7 @@ dev = [
     "mypy>=1.14",
     "pre-commit>=4",
     "python-semantic-release>=10.5",
-    "personal-kb[aws,postgres,safety,iam,web]",
+    "personal-kb[aws,postgres,safety,iam]",
 ]
 
 [tool.pytest.ini_options]
