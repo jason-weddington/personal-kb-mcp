@@ -116,6 +116,31 @@ _TEMPLATE = """\
     text-underline-offset: 2px;
   }
   .citation:hover { color: #4dd0e1; }
+  #response-content h1, #response-content h2, #response-content h3 {
+    font-size: 14px; font-weight: 600; margin: 12px 0 6px;
+    color: #eee;
+  }
+  #response-content h1 { font-size: 16px; }
+  #response-content p { margin: 6px 0; }
+  #response-content ul, #response-content ol {
+    margin: 6px 0 6px 20px;
+  }
+  #response-content li { margin: 3px 0; }
+  #response-content code {
+    background: rgba(255,255,255,0.08); padding: 1px 4px;
+    border-radius: 3px; font-size: 12px;
+  }
+  #response-content pre {
+    background: rgba(255,255,255,0.06); padding: 10px;
+    border-radius: 4px; overflow-x: auto; margin: 8px 0;
+  }
+  #response-content pre code { background: none; padding: 0; }
+  #response-content blockquote {
+    border-left: 3px solid #444; padding-left: 10px;
+    color: #aaa; margin: 8px 0;
+  }
+  #response-content strong { color: #fff; }
+  #response-content a { color: #00bcd4; }
   .search-result {
     padding: 6px 12px; cursor: pointer;
     font-size: 13px; color: #bbb;
@@ -156,6 +181,7 @@ _TEMPLATE = """\
 <div id="stats-bar"></div>
 <div id="legend"></div>
 <script src="https://unpkg.com/force-graph"></script>
+<script src="https://unpkg.com/marked/marked.min.js"></script>
 <script>
 const GRAPH_DATA = __GRAPH_DATA__;
 const NODE_COLORS = __NODE_COLORS__;
@@ -595,8 +621,8 @@ function zoomToResults() {
 }
 
 function showResponsePanel(answer) {
-  // Convert [kb-XXXXX] citations to clickable spans
-  const html = escapeHtml(answer).replace(
+  // Render markdown, then convert [kb-XXXXX] citations to clickable spans
+  const html = marked.parse(answer).replace(
     /\\[(kb-\\d{5})\\]/g,
     function(_, id) {
       return '<span class="citation" onclick="flyToNode(\\x27' + id + '\\x27)">[' + id + ']</span>';
