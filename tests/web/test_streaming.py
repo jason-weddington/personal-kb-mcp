@@ -250,3 +250,73 @@ async def test_stream_error_yields_error_event(web_kb):
         error_evt = next(e for e in events if e[0] == "error")
         assert "RuntimeError" in error_evt[1]["message"]
         assert "LLM exploded" in error_evt[1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_creates_session(web_kb):
+    """Chat stream endpoint creates a session and returns a response."""
+    db, embedder, _ids = web_kb
+
+    llm = FakeLLM(response="Here is my follow-up answer with [kb-00001].")
+    app = create_app_with_deps(db, embedder, llm)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/chat/stream",
+            json={
+                "message": "tell me more",
+                "seed_question": "what is X?",
+                "seed_answer": "X is described in [kb-00001].",
+                "seed_entry_ids": ["kb-00001"],
+            },
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+
+        events = _parse_sse(resp.text)
+        event_types = [e[0] for e in events]
+
+        assert "chat_session" in event_types
+        assert "chat_response" in event_types
+        assert "stream_end" in event_types
+
+        session_evt = next(e for e in events if e[0] == "chat_session")
+        assert "session_id" in session_evt[1]
+
+        chat_evt = next(e for e in events if e[0] == "chat_response")
+        assert "answer" in chat_evt[1]
+        assert chat_evt[1]["session_id"] == session_evt[1]["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_reuses_session(web_kb):
+    """Second chat message reuses the same session."""
+    db, embedder, _ids = web_kb
+
+    llm = FakeLLM(response="Answer to follow-up.")
+    app = create_app_with_deps(db, embedder, llm)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # First message — creates session
+        resp1 = await client.post(
+            "/api/chat/stream",
+            json={
+                "message": "first follow-up",
+                "seed_question": "Q",
+                "seed_answer": "A",
+                "seed_entry_ids": [],
+            },
+            timeout=10.0,
+        )
+        events1 = _parse_sse(resp1.text)
+        sid = next(e for e in events1 if e[0] == "chat_session")[1]["session_id"]
+
+        # Second message — reuses session
+        resp2 = await client.post(
+            "/api/chat/stream",
+            json={"message": "second follow-up", "session_id": sid},
+            timeout=10.0,
+        )
+        events2 = _parse_sse(resp2.text)
+        sid2 = next(e for e in events2 if e[0] == "chat_session")[1]["session_id"]
+        assert sid2 == sid

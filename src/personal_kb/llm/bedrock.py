@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from personal_kb.config import get_bedrock_model, get_bedrock_region
+
+if TYPE_CHECKING:
+    from personal_kb.llm.provider import Message
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +153,50 @@ class BedrockLLMClient:
             return result
         except Exception:
             logger.warning("Bedrock generation failed", exc_info=True)
+            self._available = None
+            return None
+
+    async def generate_chat(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+    ) -> str | None:
+        """Generate text from a conversation history."""
+        try:
+            client = self._get_client()
+            if client is None:
+                return None
+
+            from aws_sdk_bedrock_runtime.models import (
+                ContentBlockText,
+                ConverseInput,
+                InferenceConfiguration,
+                SystemContentBlockText,
+            )
+            from aws_sdk_bedrock_runtime.models import Message as BRMessage
+
+            br_messages = [
+                BRMessage(
+                    role=m["role"],
+                    content=[ContentBlockText(value=m["content"])],
+                )
+                for m in messages
+            ]
+            converse_input = ConverseInput(
+                model_id=get_bedrock_model(),
+                messages=br_messages,
+                inference_config=InferenceConfiguration(max_tokens=4096),
+            )
+            if system is not None:
+                converse_input.system = [SystemContentBlockText(value=system)]
+
+            response = await client.converse(converse_input)
+            result: str = response.output.value.content[0].value
+            self._available = True
+            return result
+        except Exception:
+            logger.warning("Bedrock chat generation failed", exc_info=True)
             self._available = None
             return None
 

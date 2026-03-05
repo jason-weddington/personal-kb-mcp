@@ -1,10 +1,16 @@
 """Ollama LLM client with graceful degradation."""
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import httpx
 
 from personal_kb.config import get_llm_model, get_llm_timeout, get_ollama_url
+
+if TYPE_CHECKING:
+    from personal_kb.llm.provider import Message
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,40 @@ class OllamaLLMClient:
             return result
         except Exception:
             logger.warning("LLM generation failed", exc_info=True)
+            self._available = None
+            return None
+
+    async def generate_chat(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+    ) -> str | None:
+        """Generate text from a conversation history via /api/chat."""
+        if not await self.is_available():
+            return None
+        try:
+            client = self._get_client()
+            api_messages: list[dict[str, str]] = []
+            if system is not None:
+                api_messages.append({"role": "system", "content": system})
+            for m in messages:
+                api_messages.append({"role": m["role"], "content": m["content"]})
+            resp = await client.post(
+                f"{get_ollama_url()}/api/chat",
+                json={
+                    "model": get_llm_model(),
+                    "messages": api_messages,
+                    "stream": False,
+                },
+                timeout=get_llm_timeout(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result: str = data["message"]["content"]
+            return result
+        except Exception:
+            logger.warning("Ollama chat generation failed", exc_info=True)
             self._available = None
             return None
 

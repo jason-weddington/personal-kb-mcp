@@ -34,29 +34,28 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 - **Narrow `query_llm` type.** Typed as `object | None` with isinstance checks everywhere. Should be `LLMProvider | None`. (audit M20)
 - **Agent tool call deduplication.** ReAct loop doesn't detect identical repeated calls. Each duplicate burns a turn. (audit M14)
 
-## Next — Graph Explorer
+## Next — Explorer Chat
 
-Visual web-based graph explorer. Drives adoption by making the knowledge graph tangible. Research in [docs/graph-explorer-research/](docs/graph-explorer-research/).
+Multi-turn conversational chat in the graph explorer, grounded in KB data. The graph already animates during queries — now let users follow up.
 
-### Phase 1: "Screenshot-worthy" (1 session)
-- `kb_explore` MCP tool generates a self-contained HTML file with graph data inlined as JSON
-- force-graph (CDN) renders color-coded nodes by type (entry, tag, project, person, tool, concept, technology)
-- Click node → metadata panel (title, type, connections)
-- No build step, no npm, no server — just an HTML file opened in browser
-- ~300 lines Python, ~200 lines JS
+### Phase 1: Backend multi-turn (~120 LOC)
+- Add `generate_chat(messages)` to `LLMProvider` protocol + all 3 clients (Anthropic, Bedrock, Ollama)
+- Delete `_build_prompt()` flattening in agent.py — pass messages natively
+- `ChatSession` class: holds conversation history, has KB tools, simple token budget with sliding window (keep first turn + last N, drop middle)
+- `/api/chat/stream` SSE endpoint: accepts `{question, conversation_id}`, maintains sessions in-memory
 
-### Phase 2: "Live Explorer" (2-3 sessions)
-- Separate HTTP server (`uv run personal-kb-web`) importing personal_kb as a library
-- REST API for graph data, entry details, search
-- Search bar highlights matching nodes, filter by project/type/tags
-- Supersedes chains visualized as directed paths
+### Phase 2: Frontend chat UI (~370 LOC)
+- Transform response panel into chat panel when summarize mode completes
+- Message bubbles: user right-aligned, assistant left-aligned (iMessage style)
+- Text input with enter-to-send
+- Streaming: buffer markdown chunks, re-parse on each delta
+- Typing indicator while streaming
+- Conversation seeded with original question + summary response
 
-### Phase 3: "Chat + Animated Graph" (3-5 sessions)
-- Chat panel (left) + graph (right) split layout
-- SSE streaming: agent loop events interleaved with answer tokens
-- `event_callback` in `agentic_query()` emits traversal events (~20 lines change)
-- Graph animates during queries: nodes glow, particles flow along edges, camera tracks active subgraph
-- Question routing between kb_ask (explore) and kb_summarize (ask)
+### Phase 3: Polish (~50 LOC)
+- Scroll-to-bottom on new messages
+- Clickable `[kb-XXXXX]` citations fly to graph nodes
+- Graph node highlighting from chat context
 
 ## Later
 
@@ -66,6 +65,7 @@ Visual web-based graph explorer. Drives adoption by making the knowledge graph t
 
 ## Done
 
+- Graph Explorer Phase 1-2 + animated graph — `kb_explore` MCP tool, force-graph visualization, live web server (`personal-kb-web`), SSE streaming with agent traversal animation (node glow, particles, staggered reveal, progressive camera widening), query routing (explore/summarize), markdown rendering, info panel with on-demand entry details.
 - Batch store partial failure reporting — per-entry try/except with clear error messages so agents can retry failed items. (audit H8)
 - Audit quick wins (H3, H4, H6, M2, M3, M11) — symlink rejection, URL content size limit, sensitivity enum validation, FTS quote stripping, deactivated entry post-filter, scope propagation in auto strategy.
 - String-literal-aware placeholder translation — `_translate_placeholders` now uses a quote-aware state machine instead of naive regex, preserving `?` inside SQL string literals. (audit H5)

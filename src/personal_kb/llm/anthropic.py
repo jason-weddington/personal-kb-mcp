@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from personal_kb.config import get_anthropic_model, get_anthropic_timeout
+
+if TYPE_CHECKING:
+    from personal_kb.llm.provider import Message
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,39 @@ class AnthropicLLMClient:
             return result
         except Exception:
             logger.warning("Anthropic generation failed", exc_info=True)
+            self._available = None
+            return None
+
+    async def generate_chat(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+    ) -> str | None:
+        """Generate text from a conversation history."""
+        try:
+            client = self._get_client()
+            if client is None:
+                return None
+
+            api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+            kwargs: dict[str, Any] = {
+                "model": get_anthropic_model(),
+                "max_tokens": 4096,
+                "messages": api_messages,
+            }
+            if system is not None:
+                kwargs["system"] = system
+
+            response = await client.messages.create(
+                **kwargs,
+                timeout=get_anthropic_timeout(),
+            )
+            result: str = response.content[0].text
+            self._available = True
+            return result
+        except Exception:
+            logger.warning("Anthropic chat generation failed", exc_info=True)
             self._available = None
             return None
 

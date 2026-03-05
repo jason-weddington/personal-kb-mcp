@@ -85,6 +85,19 @@ class FakeLLM:
             return None
         return self.response
 
+    async def generate_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system: str | None = None,
+    ) -> str | None:
+        # Delegate to generate with last user message for compatibility
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user"),
+            "",
+        )
+        return await self.generate(last_user, system=system)
+
     async def close(self) -> None:
         pass
 
@@ -109,6 +122,19 @@ class ScriptedLLM:
         if self._responses:
             return self._responses.pop(0)
         return self._fallback
+
+    async def generate_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system: str | None = None,
+    ) -> str | None:
+        # Flatten to single string for recording, then delegate
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user"),
+            "",
+        )
+        return await self.generate(last_user, system=system)
 
     async def close(self) -> None:
         pass

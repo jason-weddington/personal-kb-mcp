@@ -149,6 +149,92 @@ _TEMPLATE = """\
     cursor: pointer; font-size: 18px; line-height: 1;
   }
   #response-panel .close-response:hover { color: #fff; }
+  /* Chat panel */
+  #chat-panel {
+    display: none; position: fixed; top: 80px; left: 12px;
+    width: 420px; max-height: calc(100vh - 120px);
+    background: rgba(20, 20, 30, 0.95); border: 1px solid #333;
+    border-radius: 8px; z-index: 10;
+    font-size: 13px; line-height: 1.6; color: #ddd;
+    flex-direction: column;
+  }
+  #chat-panel.visible { display: flex; }
+  #chat-panel .close-response {
+    position: absolute; top: 8px; right: 12px;
+    background: none; border: none; color: #666;
+    cursor: pointer; font-size: 18px; line-height: 1; z-index: 1;
+  }
+  #chat-panel .close-response:hover { color: #fff; }
+  #chat-messages {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+    min-height: 0;
+  }
+  .chat-msg {
+    max-width: 85%; padding: 8px 12px;
+    border-radius: 12px; font-size: 13px;
+    line-height: 1.5; word-wrap: break-word;
+  }
+  .chat-msg.user {
+    align-self: flex-end; background: #1a5276;
+    color: #e0e8f0; border-bottom-right-radius: 4px;
+  }
+  .chat-msg.assistant {
+    align-self: flex-start; background: #2a2a3a;
+    color: #ddd; border-bottom-left-radius: 4px;
+  }
+  .chat-msg h1, .chat-msg h2, .chat-msg h3 {
+    font-size: 14px; font-weight: 600;
+    margin: 8px 0 4px; color: #eee;
+  }
+  .chat-msg h1 { font-size: 15px; }
+  .chat-msg p { margin: 4px 0; }
+  .chat-msg ul, .chat-msg ol { margin: 4px 0 4px 16px; }
+  .chat-msg li { margin: 2px 0; }
+  .chat-msg code {
+    background: rgba(255,255,255,0.08); padding: 1px 4px;
+    border-radius: 3px; font-size: 12px;
+  }
+  .chat-msg pre {
+    background: rgba(255,255,255,0.06); padding: 8px;
+    border-radius: 4px; overflow-x: auto; margin: 6px 0;
+  }
+  .chat-msg pre code { background: none; padding: 0; }
+  .chat-msg strong { color: #fff; }
+  .chat-msg a { color: #00bcd4; }
+  .chat-typing {
+    align-self: flex-start; color: #888;
+    font-size: 12px; padding: 4px 12px;
+  }
+  .chat-typing::after {
+    content: ''; animation: dots 1.4s steps(4, end) infinite;
+  }
+  @keyframes dots {
+    0% { content: ''; }
+    25% { content: '.'; }
+    50% { content: '..'; }
+    75% { content: '...'; }
+  }
+  #chat-input-bar {
+    display: flex; gap: 8px; padding: 10px 12px;
+    border-top: 1px solid #333;
+  }
+  #chat-input {
+    flex: 1; padding: 8px 10px;
+    background: rgba(30, 30, 40, 0.9);
+    border: 1px solid #444; border-radius: 6px;
+    color: #e0e0e0; font-size: 13px; outline: none;
+    font-family: inherit;
+  }
+  #chat-input:focus { border-color: #666; }
+  #chat-input::placeholder { color: #555; }
+  #chat-send {
+    padding: 8px 14px; background: #1a5276;
+    border: none; border-radius: 6px;
+    color: #e0e8f0; cursor: pointer; font-size: 13px;
+  }
+  #chat-send:hover { background: #1f6a9a; }
+  #chat-send:disabled { opacity: 0.5; cursor: default; }
   .citation {
     color: #00bcd4; cursor: pointer; text-decoration: underline;
     text-underline-offset: 2px;
@@ -210,6 +296,15 @@ _TEMPLATE = """\
 <div id="response-panel">
   <button class="close-response" onclick="hideResponsePanel()">&times;</button>
   <div id="response-content"></div>
+</div>
+<div id="chat-panel">
+  <button class="close-response" onclick="hideChatPanel()">&times;</button>
+  <div id="chat-messages"></div>
+  <div id="chat-input-bar">
+    <input id="chat-input" type="text"
+      placeholder="Ask a follow-up..." autocomplete="off">
+    <button id="chat-send" onclick="sendChatMessage()">Send</button>
+  </div>
 </div>
 <div id="graph"></div>
 <div id="info-panel">
@@ -665,6 +760,7 @@ function resetTraversalState() {
   animQueue.length = 0;
   animRunning = false;
   hideResponsePanel();
+  hideChatPanel();
   setStatus('');
 }
 
@@ -822,8 +918,12 @@ function handleSSEEvent(eventType, data) {
     zoomToResults();
   } else if (eventType === 'synthesis_result') {
     if (data.answer) {
-      // Show panel after animations finish
-      queueAnimation(() => showResponsePanel(data.answer));
+      queueAnimation(() => {
+        openChatPanel(
+          data.question || '', data.answer,
+          data.entry_ids || []
+        );
+      });
     }
     zoomToResults();
   } else if (eventType === 'error') {
@@ -885,6 +985,174 @@ async function startQuery(question) {
     setTimeout(() => setStatus(''), 3000);
   }
 }
+
+// --- Chat panel ---
+const chatPanel = document.getElementById('chat-panel');
+const chatMessages = document.getElementById('chat-messages');
+const chatInput = document.getElementById('chat-input');
+const chatSend = document.getElementById('chat-send');
+let chatSessionId = null;
+let chatSeedQuestion = '';
+let chatSeedAnswer = '';
+let chatSeedEntryIds = [];
+let chatBusy = false;
+
+function addChatCitation(html) {
+  return html.replace(
+    /\\[(kb-\\d{5})\\]/g,
+    function(_, id) {
+      return '<span class="citation" onclick="flyToNode(\\x27'
+        + id + '\\x27)">[' + id + ']</span>';
+    }
+  );
+}
+
+function appendChatMsg(role, contentHtml) {
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  div.innerHTML = addChatCitation(contentHtml);
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  return div;
+}
+
+function showTypingIndicator() {
+  const div = document.createElement('div');
+  div.className = 'chat-typing';
+  div.id = 'chat-typing';
+  div.textContent = 'Thinking';
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function removeTypingIndicator() {
+  const el = document.getElementById('chat-typing');
+  if (el) el.remove();
+}
+
+function openChatPanel(question, answer, entryIds) {
+  chatSessionId = null;
+  chatSeedQuestion = question;
+  chatSeedAnswer = answer;
+  chatSeedEntryIds = entryIds || [];
+  chatMessages.innerHTML = '';
+
+  // Seed with original Q + A
+  if (question) {
+    appendChatMsg('user', '<p>' + escapeHtml(question) + '</p>');
+  }
+  appendChatMsg('assistant', renderMarkdown(answer));
+
+  hideResponsePanel();
+  chatPanel.classList.add('visible');
+  chatInput.focus();
+}
+
+function hideChatPanel() {
+  chatPanel.classList.remove('visible');
+  chatSessionId = null;
+  chatMessages.innerHTML = '';
+}
+
+function setChatBusy(busy) {
+  chatBusy = busy;
+  chatInput.disabled = busy;
+  chatSend.disabled = busy;
+}
+
+async function sendChatMessage() {
+  const msg = chatInput.value.trim();
+  if (!msg || chatBusy) return;
+  chatInput.value = '';
+  setChatBusy(true);
+
+  appendChatMsg('user', '<p>' + escapeHtml(msg) + '</p>');
+  showTypingIndicator();
+
+  try {
+    const payload = {message: msg};
+    if (chatSessionId) {
+      payload.session_id = chatSessionId;
+    } else {
+      payload.seed_question = chatSeedQuestion;
+      payload.seed_answer = chatSeedAnswer;
+      payload.seed_entry_ids = chatSeedEntryIds;
+    }
+
+    const resp = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let assistantDiv = null;
+
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      const lines = buffer.split('\\n');
+      buffer = lines.pop() || '';
+
+      let currentEvent = null;
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith('data: ') && currentEvent) {
+          let data;
+          try { data = JSON.parse(line.slice(6)); }
+          catch (e) { currentEvent = null; continue; }
+
+          if (currentEvent === 'chat_session') {
+            chatSessionId = data.session_id;
+          } else if (currentEvent === 'chat_response') {
+            removeTypingIndicator();
+            assistantDiv = appendChatMsg(
+              'assistant', renderMarkdown(data.answer || '')
+            );
+            // Highlight any new entries on graph
+            if (data.new_entries) {
+              data.new_entries.forEach(id => markResult(id));
+            }
+          } else if (currentEvent === 'chat_done') {
+            if (data.new_entries && data.new_entries.length > 0) {
+              revealNodesStaggered(data.new_entries, 'result');
+            }
+          } else if (currentEvent === 'error') {
+            removeTypingIndicator();
+            appendChatMsg(
+              'assistant',
+              '<p style="color:#e57373">Error: '
+                + escapeHtml(data.message || 'unknown') + '</p>'
+            );
+          }
+          currentEvent = null;
+        }
+      }
+    }
+  } catch (err) {
+    removeTypingIndicator();
+    appendChatMsg(
+      'assistant',
+      '<p style="color:#e57373">Error: '
+        + escapeHtml(err.message) + '</p>'
+    );
+  } finally {
+    setChatBusy(false);
+    chatInput.focus();
+  }
+}
+
+chatInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChatMessage();
+  }
+});
 </script>
 </body>
 </html>

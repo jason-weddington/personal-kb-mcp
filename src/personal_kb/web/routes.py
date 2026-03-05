@@ -73,8 +73,12 @@ def register_routes(app: Any) -> None:
 
             # Set up event queue for callback bridge
             queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+            collected_entry_ids: list[str] = []
 
             async def event_callback(event: dict[str, Any]) -> None:
+                # Collect entry IDs from agent events for chat seeding
+                if event.get("type") in ("fast_path", "agent_done"):
+                    collected_entry_ids.extend(event.get("entry_ids", []))
                 await queue.put(event)
 
             async def run_query() -> dict[str, Any]:
@@ -90,7 +94,11 @@ def register_routes(app: Any) -> None:
                             question,
                             event_callback=event_callback,
                         )
-                        return {"type": "summarize", "answer": answer}
+                        return {
+                            "type": "summarize",
+                            "answer": answer,
+                            "entry_ids": collected_entry_ids,
+                        }
                     else:
                         from personal_kb.tools.kb_ask import retrieve_entries
 
@@ -150,6 +158,8 @@ def register_routes(app: Any) -> None:
                     "synthesis_result",
                     {
                         "answer": result["answer"],
+                        "question": question,
+                        "entry_ids": result.get("entry_ids", []),
                     },
                 )
             else:
@@ -165,6 +175,89 @@ def register_routes(app: Any) -> None:
 
         return StreamingResponse(
             event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/chat/stream")
+    async def api_chat_stream(request: Request) -> StreamingResponse:
+        """Stream a follow-up chat response via SSE."""
+        from personal_kb.web.chat import get_or_create_session, get_session
+
+        body = await request.json()
+        session_id = body.get("session_id")
+        message = body.get("message", "")
+        # For seeding a new session from a summarize result
+        seed_question = body.get("seed_question")
+        seed_answer = body.get("seed_answer")
+        seed_entry_ids = body.get("seed_entry_ids", [])
+
+        db = request.app.state.db
+        embedder = request.app.state.embedder
+        query_llm = request.app.state.query_llm
+
+        async def chat_stream() -> AsyncGenerator[str]:
+            if query_llm is None or not isinstance(query_llm, LLMProvider):
+                yield sse_event("error", {"message": "LLM not available"})
+                yield sse_event("stream_end", {})
+                return
+
+            # Get or create session
+            session = get_session(session_id) if session_id else None
+
+            if session is None:
+                session = get_or_create_session(None, db, embedder, query_llm)
+                if seed_question and seed_answer:
+                    session.seed(seed_question, seed_answer, seed_entry_ids)
+
+            yield sse_event(
+                "chat_session",
+                {"session_id": session.id},
+            )
+
+            # Set up event queue
+            queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+            async def event_callback(event: dict[str, Any]) -> None:
+                await queue.put(event)
+
+            async def run_chat() -> str:
+                try:
+                    return await session.reply(message, event_callback=event_callback)
+                finally:
+                    await queue.put(None)
+
+            task = asyncio.create_task(run_chat())
+
+            # Drain events
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield sse_event(event.get("type", "status"), event)
+
+            # Get result
+            try:
+                answer = await task
+            except Exception as exc:
+                logger.exception("Chat task failed")
+                detail = f"{type(exc).__name__}: {exc}"
+                yield sse_event("error", {"message": detail})
+                yield sse_event("stream_end", {})
+                return
+
+            yield sse_event(
+                "chat_response",
+                {"answer": answer, "session_id": session.id},
+            )
+            yield sse_event("stream_end", {})
+
+        return StreamingResponse(
+            chat_stream(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

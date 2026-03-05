@@ -237,12 +237,12 @@ async def _dispatch_tool(
     return f"Unknown tool: {name}"
 
 
-def _extract_entry_ids(messages: list[dict[str, str | None]]) -> list[str]:
+def _extract_entry_ids(messages: list[dict[str, str]]) -> list[str]:
     """Extract all kb-XXXXX IDs mentioned in conversation messages."""
     ids: list[str] = []
     seen: set[str] = set()
     for msg in messages:
-        content = msg.get("content") or ""
+        content = msg.get("content", "")
         for match in _ENTRY_ID_RE.findall(content):
             if match not in seen:
                 seen.add(match)
@@ -300,7 +300,7 @@ async def agentic_query(
         seed += _format_search_results(fast_results)
     seed += "\n\nFind the best entries to answer this question."
 
-    messages: list[dict[str, str | None]] = [
+    messages: list[dict[str, str]] = [
         {"role": "user", "content": seed},
     ]
 
@@ -317,8 +317,7 @@ async def agentic_query(
     for turn_num in range(max_tool_calls):
         # Build prompt from messages
         await _emit({"type": "thinking", "turn": turn_num + 1})
-        prompt = _build_prompt(messages)
-        raw = await llm.generate(prompt, system=_AGENT_SYSTEM_PROMPT)
+        raw = await llm.generate_chat(messages, system=_AGENT_SYSTEM_PROMPT)
 
         if raw is None:
             logger.warning("Agent LLM returned None — falling back to fast-path results")
@@ -411,16 +410,3 @@ async def agentic_query(
         turns_used=turns_used,
         reasoning="Exhausted tool call budget",
     )
-
-
-def _build_prompt(messages: list[dict[str, str | None]]) -> str:
-    """Flatten message list into a single prompt string for generate()."""
-    parts = []
-    for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        if role == "assistant":
-            parts.append(f"Assistant: {content}")
-        else:
-            parts.append(f"User: {content}")
-    return "\n\n".join(parts)
