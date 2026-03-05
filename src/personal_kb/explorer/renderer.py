@@ -587,6 +587,8 @@ function resetTraversalState() {
   visitedNodes.clear();
   resultNodes.clear();
   nodeStates.clear();
+  animQueue.length = 0;
+  animRunning = false;
   hideResponsePanel();
   setStatus('');
 }
@@ -603,6 +605,32 @@ function markResult(nodeId) {
   nodeStates.set(nodeId, 'result');
 }
 
+// Animation queue — stagger node reveals for a traversal feel
+const animQueue = [];
+let animRunning = false;
+const ANIM_DELAY = 250;  // ms between node reveals
+
+function queueAnimation(fn) {
+  animQueue.push(fn);
+  if (!animRunning) drainAnimQueue();
+}
+
+async function drainAnimQueue() {
+  animRunning = true;
+  while (animQueue.length > 0) {
+    const fn = animQueue.shift();
+    fn();
+    await new Promise(r => setTimeout(r, ANIM_DELAY));
+  }
+  animRunning = false;
+}
+
+function flushAnimQueue() {
+  // Run remaining animations instantly (for stream_end)
+  while (animQueue.length > 0) animQueue.shift()();
+  animRunning = false;
+}
+
 function emitTraversalParticles(entryIds) {
   const links = graph.graphData().links;
   const idSet = new Set(entryIds);
@@ -615,9 +643,32 @@ function emitTraversalParticles(entryIds) {
   });
 }
 
+function flyToNodeAnimated(nodeId) {
+  const node = GRAPH_DATA.nodes.find(n => n.id === nodeId);
+  if (node) {
+    graph.centerAt(node.x, node.y, 400);
+    graph.zoom(3, 400);
+  }
+}
+
+function revealNodesStaggered(nodeIds, state) {
+  // Queue each node reveal as a separate animation step
+  const markFn = state === 'result' ? markResult : markVisited;
+  nodeIds.forEach((id, i) => {
+    queueAnimation(() => {
+      markFn(id);
+      flyToNodeAnimated(id);
+      emitTraversalParticles([id]);
+    });
+  });
+}
+
 function zoomToResults() {
   if (resultNodes.size === 0) return;
-  graph.zoomToFit(600, 40, n => resultNodes.has(n.id));
+  // Queue the zoom after any pending animations
+  queueAnimation(() => {
+    graph.zoomToFit(600, 40, n => resultNodes.has(n.id));
+  });
 }
 
 function renderMarkdown(text) {
@@ -656,41 +707,42 @@ function handleSSEEvent(eventType, data) {
       ? 'Preparing answer...' : 'Exploring knowledge graph...');
   } else if (eventType === 'tool_call') {
     if (data.tool === 'graph_neighbors' && data.args?.node_id) {
-      markVisited(data.args.node_id);
-      const node = GRAPH_DATA.nodes.find(
-        n => n.id === data.args.node_id
-      );
-      if (node) {
-        graph.centerAt(node.x, node.y, 600);
-        graph.zoom(3, 600);
-      }
+      queueAnimation(() => {
+        markVisited(data.args.node_id);
+        flyToNodeAnimated(data.args.node_id);
+        emitTraversalParticles([data.args.node_id]);
+      });
     }
   } else if (eventType === 'tool_result') {
+    // Stagger through each returned entry one by one
     if (data.entry_ids) {
-      data.entry_ids.forEach(id => markVisited(id));
-      emitTraversalParticles(data.entry_ids);
+      revealNodesStaggered(data.entry_ids, 'visited');
     }
   } else if (eventType === 'fast_path' || eventType === 'agent_done') {
+    // Reveal final results one by one in green
     if (data.entry_ids) {
-      data.entry_ids.forEach(id => markResult(id));
-      emitTraversalParticles(data.entry_ids);
+      revealNodesStaggered(data.entry_ids, 'result');
     }
   } else if (eventType === 'entries') {
+    // Final entries from route handler — mark results and zoom
     if (data.entries) {
-      data.entries.forEach(e => markResult(e.id));
+      revealNodesStaggered(
+        data.entries.map(e => e.id), 'result'
+      );
     }
     zoomToResults();
   } else if (eventType === 'synthesis_result') {
     if (data.answer) {
-      showResponsePanel(data.answer);
+      // Show panel after animations finish
+      queueAnimation(() => showResponsePanel(data.answer));
     }
-    // Also zoom to any result nodes
     zoomToResults();
   } else if (eventType === 'error') {
     setStatus('Error: ' + (data.message || 'query failed'));
     setTimeout(() => setStatus(''), 15000);
   } else if (eventType === 'stream_end') {
-    setStatus('');
+    // Flush remaining animations and clear status
+    queueAnimation(() => setStatus(''));
   }
 }
 
