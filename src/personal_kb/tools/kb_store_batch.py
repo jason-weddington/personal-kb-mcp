@@ -73,7 +73,8 @@ async def batch_store_entries(
     team: str | None = lifespan.get("team")
 
     created: list[KnowledgeEntry] = []
-    for entry_dict in entries:
+    failed: list[tuple[int, str, str]] = []  # (index, short_title, error)
+    for i, entry_dict in enumerate(entries):
         entry_type = EntryType(entry_dict.get("entry_type", "factual_reference"))
         confidence = float(entry_dict.get("confidence_level", 0.9))
         tags = entry_dict.get("tags")
@@ -81,20 +82,26 @@ async def batch_store_entries(
 
         sensitivity = entry_dict.get("sensitivity")
 
-        entry = await store.create_entry(
-            short_title=entry_dict["short_title"],
-            long_title=entry_dict["long_title"],
-            knowledge_details=entry_dict["knowledge_details"],
-            entry_type=entry_type,
-            project_ref=entry_dict.get("project_ref"),
-            source_context=entry_dict.get("source_context"),
-            confidence_level=confidence,
-            tags=list(tags) if tags else None,
-            hints=dict(hints) if hints else None,
-            contributor=contributor,
-            team=team,
-            sensitivity=str(sensitivity) if sensitivity else None,  # type: ignore[arg-type]  # validated by tool
-        )
+        try:
+            entry = await store.create_entry(
+                short_title=entry_dict["short_title"],
+                long_title=entry_dict["long_title"],
+                knowledge_details=entry_dict["knowledge_details"],
+                entry_type=entry_type,
+                project_ref=entry_dict.get("project_ref"),
+                source_context=entry_dict.get("source_context"),
+                confidence_level=confidence,
+                tags=list(tags) if tags else None,
+                hints=dict(hints) if hints else None,
+                contributor=contributor,
+                team=team,
+                sensitivity=str(sensitivity) if sensitivity else None,  # type: ignore[arg-type]  # validated by tool
+            )
+        except Exception as exc:
+            title = str(entry_dict.get("short_title", f"entry {i}"))
+            failed.append((i, title, str(exc)))
+            logger.warning("Failed to create entry %d (%s): %s", i, title, exc)
+            continue
 
         # Embed
         if embedder:
@@ -137,7 +144,26 @@ async def batch_store_entries(
             + format_entry_compact(refreshed, eff)
         )
 
-    return format_result_list(formatted, header=f"Batch: {len(created)} entries created")
+    # Build header with failure details
+    if failed and not created:
+        lines = [f"Batch failed: all {len(failed)} entries failed."]
+        for idx, title, err in failed:
+            lines.append(f"  Entry {idx} ({title}): {err}")
+        return "\n".join(lines)
+
+    header = f"Batch: {len(created)} entries created"
+    if failed:
+        header += f", {len(failed)} failed"
+
+    result = format_result_list(formatted, header=header)
+
+    if failed:
+        fail_lines = ["", "Failed entries (retry these):"]
+        for idx, title, err in failed:
+            fail_lines.append(f"  Entry {idx} ({title}): {err}")
+        result += "\n".join(fail_lines)
+
+    return result
 
 
 def _store_batch_description(prefix: str) -> str:

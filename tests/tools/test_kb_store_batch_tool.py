@@ -1,6 +1,7 @@
 """Tests for the kb_store_batch MCP tool."""
 
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -156,3 +157,68 @@ async def test_batch_store_enrichment_failure_continues(db, store, graph_builder
     result = await batch_store_entries(entries, ls)
     assert "1 entries created" in result
     assert "kb-00001" in result
+
+
+@pytest.mark.asyncio
+async def test_batch_store_partial_failure(db, store, graph_builder):
+    """If one entry fails, others still succeed and failures are reported."""
+    embedder = FakeEmbedder(db)
+    ls = _lifespan(db, store, graph_builder, embedder)
+
+    original_create = store.create_entry
+
+    call_count = 0
+
+    async def flaky_create(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("DB write failed")
+        return await original_create(**kwargs)
+
+    entries = [
+        _entry_dict(short_title="First", knowledge_details="D1"),
+        _entry_dict(short_title="Second", knowledge_details="D2"),
+        _entry_dict(short_title="Third", knowledge_details="D3"),
+    ]
+
+    with patch.object(store, "create_entry", side_effect=flaky_create):
+        result = await batch_store_entries(entries, ls)
+
+    assert "2 entries created" in result
+    assert "1 failed" in result
+    assert "Failed entries (retry these):" in result
+    assert "Second" in result
+    assert "DB write failed" in result
+
+    # Verify only 2 entries in DB
+    cursor = await db.execute("SELECT COUNT(*) FROM knowledge_entries")
+    count = (await cursor.fetchone())[0]
+    assert count == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_store_all_fail(db, store, graph_builder):
+    """If all entries fail, return a clear error with details."""
+    embedder = FakeEmbedder(db)
+    ls = _lifespan(db, store, graph_builder, embedder)
+
+    entries = [
+        _entry_dict(short_title="A", knowledge_details="D1"),
+        _entry_dict(short_title="B", knowledge_details="D2"),
+    ]
+
+    with patch.object(
+        store, "create_entry", new=AsyncMock(side_effect=RuntimeError("connection lost"))
+    ):
+        result = await batch_store_entries(entries, ls)
+
+    assert "all 2 entries failed" in result.lower()
+    assert "Entry 0 (A)" in result
+    assert "Entry 1 (B)" in result
+    assert "connection lost" in result
+
+    # Nothing in DB
+    cursor = await db.execute("SELECT COUNT(*) FROM knowledge_entries")
+    count = (await cursor.fetchone())[0]
+    assert count == 0
