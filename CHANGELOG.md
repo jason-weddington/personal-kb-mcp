@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.34.1 (2026-03-05)
+
+### Bug Fixes
+
+- Handle query task errors in SSE stream gracefully
+  ([`a083758`](https://github.com/jason-weddington/personal-kb-mcp/commit/a08375838c8a616b82b07a8583f67793b2d5bdc8))
+
+
 ## v0.34.0 (2026-03-05)
 
 ### Documentation
