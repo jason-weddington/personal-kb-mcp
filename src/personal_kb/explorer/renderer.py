@@ -620,15 +620,25 @@ function zoomToResults() {
   graph.zoomToFit(600, 40, n => resultNodes.has(n.id));
 }
 
+function renderMarkdown(text) {
+  // Use marked if loaded, fall back to escaped plain text
+  if (typeof marked !== 'undefined' && marked.parse) {
+    try { return marked.parse(text); }
+    catch (e) { /* fall through */ }
+  }
+  return '<p>' + escapeHtml(text).replace(/\\n/g, '<br>') + '</p>';
+}
+
 function showResponsePanel(answer) {
-  // Render markdown, then convert [kb-XXXXX] citations to clickable spans
-  const html = marked.parse(answer).replace(
+  // Replace [kb-XXXXX] citations with placeholder HTML BEFORE markdown
+  // rendering so marked doesn't consume the brackets as link references
+  const withCitations = answer.replace(
     /\\[(kb-\\d{5})\\]/g,
     function(_, id) {
       return '<span class="citation" onclick="flyToNode(\\x27' + id + '\\x27)">[' + id + ']</span>';
     }
   );
-  responseContent.innerHTML = html;
+  responseContent.innerHTML = renderMarkdown(withCitations);
   responsePanel.classList.add('visible');
 }
 
@@ -720,10 +730,11 @@ async function startQuery(question) {
         if (line.startsWith('event: ')) {
           currentEvent = line.slice(7).trim();
         } else if (line.startsWith('data: ') && currentEvent) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            handleSSEEvent(currentEvent, data);
-          } catch (e) { /* skip bad JSON */ }
+          let data;
+          try { data = JSON.parse(line.slice(6)); }
+          catch (e) { currentEvent = null; continue; }
+          try { handleSSEEvent(currentEvent, data); }
+          catch (e) { console.error('SSE handler error:', e); }
           currentEvent = null;
         }
       }
