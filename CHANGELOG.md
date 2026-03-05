@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.34.4 (2026-03-05)
+
+### Bug Fixes
+
+- Prevent silent failures in response panel rendering
+  ([`ee2b1b7`](https://github.com/jason-weddington/personal-kb-mcp/commit/ee2b1b7b091d6685d465eb99b1f58e640cfb06d0))
+
+
 ## v0.34.3 (2026-03-05)
 
 ### Bug Fixes
