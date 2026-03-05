@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.38.0 (2026-03-05)
+
+### Features
+
+- Chat panel slide transition and visual polish
+  ([`0ce8248`](https://github.com/jason-weddington/personal-kb-mcp/commit/0ce8248c43823780b9708054c38d5b4f863f985d))
+
+
 ## v0.37.0 (2026-03-05)
 
 ### Features
