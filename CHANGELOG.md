@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.34.5 (2026-03-05)
+
+### Bug Fixes
+
+- Use correct CDN path for marked.js UMD build
+  ([`15f0964`](https://github.com/jason-weddington/personal-kb-mcp/commit/15f0964e3b78e0a6e1f385533d6ccdecd844daba))
+
+
 ## v0.34.4 (2026-03-05)
 
 ### Bug Fixes
