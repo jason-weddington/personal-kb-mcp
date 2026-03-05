@@ -174,7 +174,7 @@ kb_ingest(file_path="/path/to/notes", project_ref="my-project", dry_run=True)
 
 ### `kb_explore`
 
-Open an interactive graph visualization in your browser. When web dependencies are installed (`fastapi`, `uvicorn`), it launches a local web server at `http://localhost:8765` with full query capabilities — type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Without web dependencies, it falls back to a static HTML file opened via `file://` (search nodes by name only, no query features).
+Open an interactive graph visualization in your browser. When web dependencies are installed (`fastapi`, `uvicorn`), it launches a local web server at `http://localhost:8765` with full query capabilities — type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Questions routed to `summarize` mode open a multi-turn chat panel where you can ask follow-up questions grounded in the retrieved KB entries, with iMessage-style message bubbles and clickable `[kb-XXXXX]` citations that fly to nodes in the graph. Without web dependencies, it falls back to a static HTML file opened via `file://` (search nodes by name only, no query features).
 
 ### `kb_feedback`
 

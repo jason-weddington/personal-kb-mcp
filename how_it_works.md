@@ -354,7 +354,7 @@ When the `web` optional dependency group is installed (`fastapi`, `uvicorn`), th
 
 **App factory** (`web/app.py`): Two factory functions create the FastAPI application. `create_app_with_deps(db, embedder, query_llm)` is used when the explorer is launched from the `kb_explore` MCP tool — it receives the database, embedder, and LLM client directly from the MCP lifespan context, sharing connections instead of creating new ones. `create_app()` is used by the standalone `personal-kb-web` CLI entry point — it creates its own database connection, embedder, and LLM client in a lifespan handler, mirroring the MCP server's startup sequence. Both store dependencies on `app.state`.
 
-**Routes** (`web/routes.py`): Three endpoints. `GET /` serves the explorer HTML (calls `extract_graph_data()` → `render_explorer_html()`). `GET /api/graph` returns the raw graph data as JSON (for live refresh). `POST /api/query/stream` is the SSE endpoint that streams query events.
+**Routes** (`web/routes.py`): Five endpoints. `GET /` serves the explorer HTML (calls `extract_graph_data()` → `render_explorer_html()`). `GET /api/graph` returns the raw graph data as JSON (for live refresh). `POST /api/query/stream` is the SSE endpoint that streams query events. `GET /api/entry/{entry_id}` returns full entry details (including `knowledge_details`) for on-demand loading in the info panel. `POST /api/chat/stream` handles multi-turn follow-up conversations via SSE (see Chat section below).
 
 **SSE streaming**: The `/api/query/stream` endpoint receives a JSON body with a `question` field. It first classifies the query (explore vs. summarize), then runs the appropriate retrieval function as an `asyncio.create_task`. An `asyncio.Queue` bridges the async event callback and the SSE generator — the `event_callback` pushes events to the queue, and the generator drains the queue and yields formatted SSE lines. Each agent event is translated to a human-readable status message via `event_to_status()` and sent as a `status` SSE event. When the task completes, the generator yields the final results (entry list or synthesized answer) and a `stream_end` sentinel.
 
@@ -366,11 +366,13 @@ When the `web` optional dependency group is installed (`fastapi`, `uvicorn`), th
 
 The frontend detects whether it's served by the web server (`location.protocol !== 'file:'`). When served, the search bar placeholder changes to "Search nodes or ask a question..." and pressing Enter with free-form text (containing spaces or no autocomplete matches) triggers a query instead of a node search.
 
-**Traversal animation**: As the agent explores the graph, nodes transition through visual states. Visited nodes (touched by tool calls) glow orange (`#ffaa00`) with a 20px shadow blur. Final result nodes glow green (`#00ff88`) with a 30px shadow blur and +3px radius. Labels are always shown for visited and result nodes regardless of zoom level. When results arrive, the camera smoothly zooms to fit all result nodes (`zoomToFit` filtered to the result set).
+**Traversal animation**: As the agent explores the graph, nodes transition through visual states via a staggered animation queue (250ms delay between nodes). Visited nodes (touched by tool calls) glow orange (`#ffaa00`) with a 20px shadow blur. Final result nodes glow green (`#00ff88`) with a 30px shadow blur and +3px radius. Labels are always shown for visited and result nodes regardless of zoom level. Traversal particles emit along edges from visited nodes. The camera progressively widens via `zoomToFit` on the accumulated set of visited nodes (rather than jumping node-to-node). Deactivated entries are filtered out of the visualization entirely — `extract_graph_data()` collects inactive entry IDs and excludes their nodes and any edges touching them.
 
-**Response panel**: For `summarize` queries, a panel slides in below the search bar showing the synthesized answer. `[kb-XXXXX]` citation references in the answer are converted to clickable spans that fly the camera to the cited node in the graph.
+**Info panel**: Clicking an entry node opens a panel (right side) showing metadata with bold white labels (Type, Tags, Project, Confidence, By). Confidence is displayed as a percentage (e.g., "95%"). An expandable "Full Entry..." accordion fetches the full `knowledge_details` on demand from `/api/entry/{id}` and renders it as markdown. The accordion caches fetched content to avoid re-fetching.
 
-**SSE event handling**: The frontend reads the SSE stream with `fetch()` + `ReadableStream`, parsing `event:` and `data:` lines. Status messages appear in a fixed status line below the search bar, updating in real time as the agent works ("Searching knowledge base...", "Exploring neighbors of tag:python...", "Synthesizing answer from 5 entries...").
+**Chat panel**: For `summarize` queries, the response opens a multi-turn chat panel instead of a static response panel. The chat panel appears at the search bar's position — the search bar fades out (`opacity 0.25s`, `translateY(4px)`), then the chat panel slides in with a `scaleY(0.05 → 1)` animation over 0.3s (transform-origin: top left). The panel contains the original question (right-aligned user bubble) and synthesized answer (left-aligned assistant bubble), with a text input and Send button at the bottom. Pressing Enter or clicking Send posts to `/api/chat/stream`, shows a typing indicator with animated dots, and streams the response into a new assistant bubble. The close button is a prominent 28px grey circle with a bold white X. Closing the chat reverses the animation (scaleY collapse → search bar fades back in after 300ms).
+
+**SSE event handling**: The frontend reads the SSE stream with `fetch()` + `ReadableStream`, parsing `event:` and `data:` lines. JSON parse errors and event handler errors are caught in separate try/catch blocks to prevent one from swallowing the other. Status messages appear in a fixed status line below the search bar, updating in real time as the agent works ("Searching knowledge base...", "Exploring neighbors of tag:python...", "Synthesizing answer from 5 entries...").
 
 ### kb_explore Tool Integration
 
@@ -378,7 +380,21 @@ The `kb_explore` MCP tool (`tools/kb_explore.py`) tries the web server first. It
 
 The standalone `personal-kb-web` CLI (`web/cli.py`) runs the same web app via `uvicorn.run()` on port 8765, opening the browser after a 1-second delay. This is useful for browsing the KB outside of an MCP session.
 
-See: `explorer/graph_data.py`, `explorer/renderer.py`, `web/app.py`, `web/routes.py`, `web/classifier.py`, `web/events.py`, `web/cli.py`, `tools/kb_explore.py`
+### Multi-Turn Chat
+
+When a `summarize` query completes, the frontend opens a chat panel seeded with the original question and synthesized answer. Follow-up messages are sent to `/api/chat/stream`, which maintains conversation state server-side.
+
+**ChatSession** (`web/chat.py`): Holds the conversation as a `list[Message]` (where `Message = dict[str, str]` with `role` and `content` keys). The `seed()` method initializes the conversation with the original Q+A pair and the entry IDs from the summarize result. On each `reply()`, the session: (1) appends the user message, (2) trims history if over budget, (3) runs `hybrid_search` with `limit=5` to find entries relevant to the follow-up, (4) builds a system prompt that includes `_CHAT_SYSTEM_PROMPT` plus the full `knowledge_details` of all known entries, (5) calls `llm.generate_chat(messages, system=system)`, and (6) appends the assistant response. New entry IDs discovered during retrieval are accumulated in `self.entry_ids` and reported back via the `chat_done` event so the frontend can highlight them on the graph.
+
+**Token budget**: `_MAX_CONVERSATION_CHARS = 100_000` (~25K tokens). When the total character count exceeds this, `_trim_history()` preserves the first 2 messages (the seed Q+A that grounds the conversation) and the most recent messages, dropping middle turns until the budget is met. No summarization pass — just a sliding window.
+
+**Session store**: Sessions are stored in-memory in a module-level dict keyed by UUID. `get_or_create_session()` creates a new session if no valid `session_id` is provided. Sessions are ephemeral — they don't survive server restarts.
+
+**SSE protocol**: The `/api/chat/stream` endpoint accepts `{message, session_id?, seed_question?, seed_answer?, seed_entry_ids?}`. It emits: `chat_session` (with the session ID), `chat_thinking` (before LLM call), `chat_done` (with newly discovered entry IDs), `chat_response` (with the answer text and session ID), and `stream_end`. Errors yield an `error` event with exception details.
+
+**LLMProvider.generate_chat()**: Added to the `LLMProvider` protocol alongside the existing `generate()` method. Takes `messages: list[Message]` and optional `system` prompt, returns `str | None`. Each backend implements it natively: Anthropic passes messages directly to `messages.create()`, Bedrock maps to `BRMessage` objects for the Converse API, and Ollama uses `/api/chat` (not `/api/generate`). The ReAct agent loop in `graph/agent.py` also uses `generate_chat()` — the old `_build_prompt()` function that flattened messages into a single string was deleted.
+
+See: `explorer/graph_data.py`, `explorer/renderer.py`, `web/app.py`, `web/routes.py`, `web/chat.py`, `web/classifier.py`, `web/events.py`, `web/cli.py`, `tools/kb_explore.py`
 
 ## References
 
