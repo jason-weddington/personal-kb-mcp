@@ -126,3 +126,48 @@ async def test_entity_node_labels_stripped(db, store):
     data = await extract_graph_data(db)
     tag_node = next(n for n in data["nodes"] if n["id"] == "tag:mylib")
     assert tag_node["label"] == "mylib"
+
+
+@pytest.mark.asyncio
+async def test_inactive_entries_excluded(db, store):
+    """Deactivated entries and their edges are excluded from visualization."""
+    builder = GraphBuilder(db)
+
+    e1 = await store.create_entry(
+        short_title="Active",
+        long_title="Active entry",
+        knowledge_details="Still active.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["shared"],
+    )
+    e2 = await store.create_entry(
+        short_title="Inactive",
+        long_title="Inactive entry",
+        knowledge_details="Will be deactivated.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["shared"],
+    )
+    await builder.build_for_entry(e1)
+    await builder.build_for_entry(e2)
+    await db.commit()
+
+    # Both visible before deactivation
+    data = await extract_graph_data(db)
+    node_ids = {n["id"] for n in data["nodes"]}
+    assert e1.id in node_ids
+    assert e2.id in node_ids
+
+    # Deactivate e2
+    await store.deactivate_entry(e2.id)
+
+    data = await extract_graph_data(db)
+    node_ids = {n["id"] for n in data["nodes"]}
+    edge_nodes = set()
+    for e in data["edges"]:
+        edge_nodes.add(e["source"])
+        edge_nodes.add(e["target"])
+
+    # e2 excluded from nodes and edges
+    assert e1.id in node_ids
+    assert e2.id not in node_ids
+    assert e2.id not in edge_nodes

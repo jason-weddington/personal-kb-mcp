@@ -14,7 +14,11 @@ async def extract_graph_data(db: Database) -> dict[str, Any]:
 
     Returns a dict with keys: nodes, edges, stats.
     """
-    # 1. All graph nodes with connection counts
+    # 1. Collect inactive entry IDs to exclude from visualization
+    cursor = await db.execute("SELECT id FROM knowledge_entries WHERE is_active = 0")
+    inactive_ids: set[str] = {row[0] for row in await cursor.fetchall()}
+
+    # 2. All graph nodes with connection counts
     cursor = await db.execute(
         "SELECT n.node_id, n.node_type, n.properties, "
         "(SELECT COUNT(*) FROM graph_edges WHERE source = n.node_id"
@@ -23,11 +27,11 @@ async def extract_graph_data(db: Database) -> dict[str, Any]:
     )
     raw_nodes = await cursor.fetchall()
 
-    # 2. All graph edges
+    # 3. All graph edges
     cursor = await db.execute("SELECT source, target, edge_type, properties FROM graph_edges")
     raw_edges = await cursor.fetchall()
 
-    # 3. Active entries for enrichment (entry nodes get metadata)
+    # 4. Active entries for enrichment (entry nodes get metadata)
     cursor = await db.execute(
         "SELECT id, short_title, long_title, entry_type, tags, "
         "confidence_level, contributor, project_ref "
@@ -47,13 +51,18 @@ async def extract_graph_data(db: Database) -> dict[str, Any]:
             "project_ref": row[7],
         }
 
-    # Build node list
+    # Build node list — skip inactive entries
     nodes: list[dict[str, Any]] = []
+    included_node_ids: set[str] = set()
     for row in raw_nodes:
         node_id: str = row[0]
         node_type: str = row[1]
         props_raw = row[2]
         conn_count: int = row[3]
+
+        # Skip deactivated entry nodes
+        if node_type == "entry" and node_id in inactive_ids:
+            continue
 
         props = _parse_json(props_raw)
 
@@ -67,6 +76,7 @@ async def extract_graph_data(db: Database) -> dict[str, Any]:
         else:
             label = node_id
 
+        included_node_ids.add(node_id)
         nodes.append(
             {
                 "id": node_id,
@@ -77,14 +87,18 @@ async def extract_graph_data(db: Database) -> dict[str, Any]:
             }
         )
 
-    # Build edge list
+    # Build edge list — skip edges touching excluded nodes
     edges: list[dict[str, Any]] = []
     for row in raw_edges:
+        source: str = row[0]
+        target: str = row[1]
+        if source not in included_node_ids or target not in included_node_ids:
+            continue
         props = _parse_json(row[3])
         edges.append(
             {
-                "source": row[0],
-                "target": row[1],
+                "source": source,
+                "target": target,
                 "type": row[2],
                 "properties": props,
             }
