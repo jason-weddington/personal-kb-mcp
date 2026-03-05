@@ -181,7 +181,7 @@ _TEMPLATE = """\
 <div id="stats-bar"></div>
 <div id="legend"></div>
 <script src="https://unpkg.com/force-graph"></script>
-<script src="https://unpkg.com/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
 <script>
 const GRAPH_DATA = __GRAPH_DATA__;
 const NODE_COLORS = __NODE_COLORS__;
@@ -630,15 +630,15 @@ function renderMarkdown(text) {
 }
 
 function showResponsePanel(answer) {
-  // Replace [kb-XXXXX] citations with placeholder HTML BEFORE markdown
-  // rendering so marked doesn't consume the brackets as link references
-  const withCitations = answer.replace(
+  // Render markdown first, then replace [kb-XXXXX] citations in output.
+  // Brackets survive markdown rendering (no matching link definition).
+  const html = renderMarkdown(answer).replace(
     /\\[(kb-\\d{5})\\]/g,
     function(_, id) {
       return '<span class="citation" onclick="flyToNode(\\x27' + id + '\\x27)">[' + id + ']</span>';
     }
   );
-  responseContent.innerHTML = renderMarkdown(withCitations);
+  responseContent.innerHTML = html;
   responsePanel.classList.add('visible');
 }
 
