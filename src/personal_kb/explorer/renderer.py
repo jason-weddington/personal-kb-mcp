@@ -643,22 +643,23 @@ function emitTraversalParticles(entryIds) {
   });
 }
 
-function flyToNodeAnimated(nodeId) {
-  const node = GRAPH_DATA.nodes.find(n => n.id === nodeId);
-  if (node) {
-    graph.centerAt(node.x, node.y, 400);
-    graph.zoom(3, 400);
-  }
+function zoomToVisited() {
+  // Smoothly widen view to fit all visited + result nodes so far
+  const allActive = new Set([...visitedNodes, ...resultNodes]);
+  if (allActive.size === 0) return;
+  graph.zoomToFit(500, 60, n => allActive.has(n.id));
 }
 
 function revealNodesStaggered(nodeIds, state) {
-  // Queue each node reveal as a separate animation step
+  // Queue each node reveal as a separate animation step.
+  // Instead of flying to each node, just mark + particles,
+  // then widen the view to fit all revealed nodes so far.
   const markFn = state === 'result' ? markResult : markVisited;
   nodeIds.forEach((id, i) => {
     queueAnimation(() => {
       markFn(id);
-      flyToNodeAnimated(id);
       emitTraversalParticles([id]);
+      zoomToVisited();
     });
   });
 }
@@ -709,8 +710,8 @@ function handleSSEEvent(eventType, data) {
     if (data.tool === 'graph_neighbors' && data.args?.node_id) {
       queueAnimation(() => {
         markVisited(data.args.node_id);
-        flyToNodeAnimated(data.args.node_id);
         emitTraversalParticles([data.args.node_id]);
+        zoomToVisited();
       });
     }
   } else if (eventType === 'tool_result') {
