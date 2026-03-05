@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.33.0 (2026-03-05)
+
+### Features
+
+- Query-driven graph explorer with SSE streaming
+  ([`9ec4906`](https://github.com/jason-weddington/personal-kb-mcp/commit/9ec490645a4cd28ef16a17260a47fcbf6d93bd09))
+
+
 ## v0.32.0 (2026-03-05)
 
 ### Documentation
