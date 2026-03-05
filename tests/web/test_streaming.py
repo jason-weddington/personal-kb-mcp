@@ -218,3 +218,6 @@ async def test_stream_error_yields_error_event(web_kb):
 
         assert "error" in event_types
         assert "stream_end" in event_types
+        error_evt = next(e for e in events if e[0] == "error")
+        assert "RuntimeError" in error_evt[1]["message"]
+        assert "LLM exploded" in error_evt[1]["message"]

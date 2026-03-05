@@ -117,9 +117,10 @@ def register_routes(app: Any) -> None:
             # Get final result
             try:
                 result = await task
-            except Exception:
+            except Exception as exc:
                 logger.exception("Query task failed")
-                yield sse_event("error", {"message": "Query failed"})
+                detail = f"{type(exc).__name__}: {exc}"
+                yield sse_event("error", {"message": detail})
                 yield sse_event("stream_end", {})
                 return
 
