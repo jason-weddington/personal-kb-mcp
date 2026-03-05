@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.36.0 (2026-03-05)
+
+### Features
+
+- Info panel improvements — bold labels, confidence %, entry accordion, explore results
+  ([`3ced88c`](https://github.com/jason-weddington/personal-kb-mcp/commit/3ced88ce094484a2c2d81fb3d78e518601402f09))
+
+
 ## v0.35.1 (2026-03-05)
 
 ### Bug Fixes
