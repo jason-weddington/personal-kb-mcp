@@ -332,6 +332,54 @@ When **scrubadub is not installed**, `redact_pii()` catches `ImportError` and re
 
 The overall design principle is that each component checks its own dependencies at call time, returns a neutral result (None, empty list, or unchanged input) when those dependencies are missing, and the calling code handles neutral results by skipping the dependent step. No component throws an exception for a missing optional dependency, and no step's failure prevents subsequent steps from running.
 
+## Graph Explorer Visualization
+
+The graph explorer renders the entire knowledge graph as an interactive force-directed visualization in the browser, powered by [force-graph](https://github.com/vasturiano/force-graph) (a d3-force wrapper for Canvas2D). It has two modes: a static `file://` mode that works without any web dependencies, and a query-driven mode that adds LLM-powered search via a FastAPI web server with SSE streaming.
+
+### Graph Data Extraction
+
+`explorer/graph_data.py:extract_graph_data()` runs three SQL queries to build the visualization payload: one for all rows in `graph_nodes` (id, type, label, properties), one for all rows in `graph_edges` (source, target, edge_type, properties), and one for entry metadata from `knowledge_entries` (id, short_title, entry_type, project_ref, tags, created_at, confidence). The function returns a dict with `nodes`, `edges`, and `stats` (total counts for entries, nodes, edges, and a breakdown of entries by type). Node types are preserved from the graph — `entry`, `tag`, `project`, `person`, `tool`, `concept`, `technology`, and `note`.
+
+### Renderer and Template
+
+`explorer/renderer.py:render_explorer_html()` takes the graph data dict and produces a single self-contained HTML string. The graph data is injected as a JSON literal inside a `<script>` tag — no external API calls needed for the base visualization. The template uses force-graph loaded from CDN.
+
+Each node type has a fixed color: entries are gray (`#e0e0e0`), tags are cyan (`#00bcd4`), projects are orange (`#ff9800`), people are amber (`#ffc107`), tools are green (`#4caf50`), concepts are purple (`#9c27b0`), technologies are blue (`#2196f3`), and notes are blue-gray (`#78909c`). Nodes are drawn on canvas with `nodeCanvasObject` — entry nodes display their short title as a label, while entity nodes show their human-readable label. Node radius scales with connection count. Edge colors are derived from the source node's type color at reduced opacity.
+
+The search bar (top-left) filters nodes by label with autocomplete. Selecting a node from the dropdown flies the camera to it and highlights it with a colored ring. A legend (bottom-left) shows node type colors with counts.
+
+### Web Server (Query-Driven Mode)
+
+When the `web` optional dependency group is installed (`fastapi`, `uvicorn`), the explorer gains LLM-powered query capabilities. The web infrastructure lives in `web/`.
+
+**App factory** (`web/app.py`): Two factory functions create the FastAPI application. `create_app_with_deps(db, embedder, query_llm)` is used when the explorer is launched from the `kb_explore` MCP tool — it receives the database, embedder, and LLM client directly from the MCP lifespan context, sharing connections instead of creating new ones. `create_app()` is used by the standalone `personal-kb-web` CLI entry point — it creates its own database connection, embedder, and LLM client in a lifespan handler, mirroring the MCP server's startup sequence. Both store dependencies on `app.state`.
+
+**Routes** (`web/routes.py`): Three endpoints. `GET /` serves the explorer HTML (calls `extract_graph_data()` → `render_explorer_html()`). `GET /api/graph` returns the raw graph data as JSON (for live refresh). `POST /api/query/stream` is the SSE endpoint that streams query events.
+
+**SSE streaming**: The `/api/query/stream` endpoint receives a JSON body with a `question` field. It first classifies the query (explore vs. summarize), then runs the appropriate retrieval function as an `asyncio.create_task`. An `asyncio.Queue` bridges the async event callback and the SSE generator — the `event_callback` pushes events to the queue, and the generator drains the queue and yields formatted SSE lines. Each agent event is translated to a human-readable status message via `event_to_status()` and sent as a `status` SSE event. When the task completes, the generator yields the final results (entry list or synthesized answer) and a `stream_end` sentinel.
+
+**Query classification** (`web/classifier.py`): A single Haiku LLM call routes each query to either `explore` (browse and discover — "what connects to Python?", "show me debugging entries") or `summarize` (direct answer needed — "why did we choose FastAPI?", "explain the pipeline"). The classifier defaults to `explore` on any failure — LLM unavailable, parse error, or garbage response. The `summarize` keyword is extracted even from verbose LLM responses ("The classification is: summarize") via substring matching.
+
+**Event callback pipeline**: The `event_callback` parameter threads through `retrieve_entries()` in `kb_ask.py` and `summarize_question()` in `kb_summarize.py`, down to `agentic_query()` in `graph/agent.py`. The agent emits 8 event types: `fast_path` (strong matches found, skipping agent), `agent_started` (entering ReAct loop), `thinking` (before each LLM call), `tool_call` (before dispatching a tool), `tool_result` (after a tool returns), `agent_done` (final answer), `parse_error` (LLM response couldn't be parsed), and on exhaustion (max tool calls reached). `summarize_question()` adds two more: `synthesis_started` (before calling the synthesis LLM) and `synthesis_done` (after). All existing callers pass `None` for the callback — zero behavior change to MCP tools.
+
+### Frontend Query Features
+
+The frontend detects whether it's served by the web server (`location.protocol !== 'file:'`). When served, the search bar placeholder changes to "Search nodes or ask a question..." and pressing Enter with free-form text (containing spaces or no autocomplete matches) triggers a query instead of a node search.
+
+**Traversal animation**: As the agent explores the graph, nodes transition through visual states. Visited nodes (touched by tool calls) glow orange (`#ffaa00`) with a 20px shadow blur. Final result nodes glow green (`#00ff88`) with a 30px shadow blur and +3px radius. Labels are always shown for visited and result nodes regardless of zoom level. When results arrive, the camera smoothly zooms to fit all result nodes (`zoomToFit` filtered to the result set).
+
+**Response panel**: For `summarize` queries, a panel slides in below the search bar showing the synthesized answer. `[kb-XXXXX]` citation references in the answer are converted to clickable spans that fly the camera to the cited node in the graph.
+
+**SSE event handling**: The frontend reads the SSE stream with `fetch()` + `ReadableStream`, parsing `event:` and `data:` lines. Status messages appear in a fixed status line below the search bar, updating in real time as the agent works ("Searching knowledge base...", "Exploring neighbors of tag:python...", "Synthesizing answer from 5 entries...").
+
+### kb_explore Tool Integration
+
+The `kb_explore` MCP tool (`tools/kb_explore.py`) tries the web server first. It calls `create_app_with_deps()` with the MCP lifespan's database, embedder, and LLM client, starts uvicorn as an `asyncio.create_task`, and opens the browser. A module-level `_web_server_task` variable prevents starting duplicate servers across multiple `kb_explore` calls in the same session. If web dependencies aren't installed (`ImportError`) or the port is already in use (`OSError`), it falls back to the static `file://` mode — writing a temp HTML file and opening it with `webbrowser.open()`.
+
+The standalone `personal-kb-web` CLI (`web/cli.py`) runs the same web app via `uvicorn.run()` on port 8765, opening the browser after a 1-second delay. This is useful for browsing the KB outside of an MCP session.
+
+See: `explorer/graph_data.py`, `explorer/renderer.py`, `web/app.py`, `web/routes.py`, `web/classifier.py`, `web/events.py`, `web/cli.py`, `tools/kb_explore.py`
+
 ## References
 
 [1] G. V. Cormack, C. L. A. Clarke, and S. Büttcher. "Reciprocal rank fusion outperforms Condorcet and individual rank learning methods." *SIGIR 2009*. https://dl.acm.org/doi/10.1145/1571941.1572114

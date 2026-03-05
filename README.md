@@ -172,6 +172,10 @@ kb_ingest(file_path="/path/to/notes", project_ref="my-project", dry_run=True)
 - Skips binaries, images, archives, keys, `.env` files, and other sensitive formats
 - Optional safety libraries: `uv sync --extra safety` installs `detect-secrets` and `scrubadub`
 
+### `kb_explore`
+
+Open an interactive graph visualization in your browser. When web dependencies are installed (`fastapi`, `uvicorn`), it launches a local web server at `http://localhost:8765` with full query capabilities — type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Without web dependencies, it falls back to a static HTML file opened via `file://` (search nodes by name only, no query features).
+
 ### `kb_feedback`
 
 Report when a KB query failed to help. Always available (not gated by `KB_MANAGER`). Three feedback types: `missing` (KB lacked needed knowledge), `unhelpful` (results existed but didn't help), `friction` (tool was awkward or slow).
@@ -351,9 +355,10 @@ uv sync
 uv run pytest                    # run tests
 uv run ruff check src/ tests/    # lint
 uv run personal-kb               # run server directly
+uv run personal-kb-web           # launch graph explorer web UI
 ```
 
-For Bedrock support: `uv sync --extra aws`. For secret/PII detection in `kb_ingest`: `uv sync --extra safety`. For PostgreSQL: `uv sync --extra postgres`.
+For Bedrock support: `uv sync --extra aws`. For secret/PII detection in `kb_ingest`: `uv sync --extra safety`. For PostgreSQL: `uv sync --extra postgres`. For the graph explorer web UI: `uv sync --extra web`.
 
 ## So you started with SQLite...
 
