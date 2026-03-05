@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.35.1 (2026-03-05)
+
+### Bug Fixes
+
+- Replace dizzy node-to-node jumps with smooth widening view
+  ([`1b11c63`](https://github.com/jason-weddington/personal-kb-mcp/commit/1b11c63b43cdf7b6e5f025be108dee18b4696745))
+
+
 ## v0.35.0 (2026-03-05)
 
 ### Features
