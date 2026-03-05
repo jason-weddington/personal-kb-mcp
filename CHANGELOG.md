@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.34.2 (2026-03-05)
+
+### Bug Fixes
+
+- Include exception detail in SSE error events
+  ([`05b15f0`](https://github.com/jason-weddington/personal-kb-mcp/commit/05b15f077dca61244574d9f527539cba12793c5a))
+
+
 ## v0.34.1 (2026-03-05)
 
 ### Bug Fixes
