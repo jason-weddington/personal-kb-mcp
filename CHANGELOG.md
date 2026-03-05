@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.39.0 (2026-03-05)
+
+### Documentation
+
+- Update explorer docs with multi-turn chat and animation details
+  ([`aaad08f`](https://github.com/jason-weddington/personal-kb-mcp/commit/aaad08fdbfdfe48bdc160d5c1bfdb916596d28f2))
+
+### Features
+
+- Make fastapi and uvicorn core dependencies
+  ([`2ffb18c`](https://github.com/jason-weddington/personal-kb-mcp/commit/2ffb18c9d50eca2500939c96739bc462e245f0f2))
+
+
 ## v0.38.0 (2026-03-05)
 
 ### Features
