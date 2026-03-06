@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.43.0 (2026-03-06)
+
+### Features
+
+- Entry TTL / expiry
+  ([`308b146`](https://github.com/jason-weddington/personal-kb-mcp/commit/308b14628948db374f94deae311cc5981cb6a74b))
+
+
 ## v0.42.0 (2026-03-06)
 
 ### Features
