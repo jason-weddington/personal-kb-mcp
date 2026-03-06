@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.42.0 (2026-03-06)
+
+### Features
+
+- Zoom-aware label visibility in graph explorer
+  ([`3211f07`](https://github.com/jason-weddington/personal-kb-mcp/commit/3211f07c47348ca39a836b6b45c1c63c7ac54ee2))
+
+
 ## v0.41.0 (2026-03-06)
 
 ### Features
