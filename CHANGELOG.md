@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.45.0 (2026-03-06)
+
+### Features
+
+- Bedrock retry/timeout, classifier fix, explore→chat bridge
+  ([`45ca9eb`](https://github.com/jason-weddington/personal-kb-mcp/commit/45ca9eba4841b70177dc7cdf6500e727d6431e7b))
+
+
 ## v0.44.0 (2026-03-06)
 
 ### Features
