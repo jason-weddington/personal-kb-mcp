@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.40.0 (2026-03-05)
+
+### Features
+
+- Match info panel close button and animation to chat panel
+  ([`69436ff`](https://github.com/jason-weddington/personal-kb-mcp/commit/69436ff2a2949ede01b6dc46928f786708617c4d))
+
+
 ## v0.39.0 (2026-03-05)
 
 ### Documentation
