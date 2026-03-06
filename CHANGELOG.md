@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.44.0 (2026-03-06)
+
+### Features
+
+- Explore port kill, Sonnet synthesis, metadata-only updates
+  ([`8803359`](https://github.com/jason-weddington/personal-kb-mcp/commit/88033593f58cc6214d8b1363c147415e62f9f04a))
+
+
 ## v0.43.0 (2026-03-06)
 
 ### Features
