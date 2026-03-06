@@ -61,6 +61,7 @@ class KnowledgeStore:
         contributor: str | None = None,
         team: str | None = None,
         sensitivity: Literal["internal", "restricted", "public"] | None = None,
+        expires_at: datetime | None = None,
     ) -> KnowledgeEntry:
         """Create a new knowledge entry with initial version."""
         entry_id = await next_entry_id(self.db)
@@ -82,6 +83,7 @@ class KnowledgeStore:
             hints=hints or {},
             created_at=now,
             updated_at=now,
+            expires_at=expires_at,
             version=1,
         )
         await insert_entry(self.db, entry)
@@ -113,6 +115,7 @@ class KnowledgeStore:
         hints: dict[str, object] | None = None,
         updated_by: str | None = None,
         sensitivity: Literal["internal", "restricted", "public"] | None = None,
+        expires_at: datetime | None = None,
         short_title: str | None = None,
         long_title: str | None = None,
         entry_type: EntryType | None = None,
@@ -149,6 +152,8 @@ class KnowledgeStore:
         }
         if sensitivity is not None:
             update_fields["sensitivity"] = sensitivity
+        if expires_at is not None:
+            update_fields["expires_at"] = expires_at
         if short_title is not None:
             update_fields["short_title"] = short_title
         if long_title is not None:

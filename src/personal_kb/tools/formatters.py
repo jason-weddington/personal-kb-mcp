@@ -28,6 +28,18 @@ def format_entry_meta(entry: KnowledgeEntry, stale_warning: str | None = None) -
     if entry.sensitivity and entry.sensitivity != "public":
         label = f"[{entry.sensitivity.upper()}]"
         line = f"{line}  {label}" if line else label
+    if entry.expires_at is not None:
+        now_utc = datetime.now(UTC)
+        exp = entry.expires_at if entry.expires_at.tzinfo else entry.expires_at.replace(tzinfo=UTC)
+        if now_utc >= exp:
+            expiry_badge = "[EXPIRED]"
+        else:
+            remaining = exp - now_utc
+            if remaining.days > 0:
+                expiry_badge = f"[EXPIRES {remaining.days}d]"
+            else:
+                expiry_badge = f"[EXPIRES {int(remaining.total_seconds() / 3600)}h]"
+        line = f"{line}  {expiry_badge}" if line else expiry_badge
     if stale_warning:
         line = f"{line}  [STALE]" if line else "[STALE]"
     return line

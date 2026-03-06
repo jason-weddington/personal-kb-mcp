@@ -13,6 +13,7 @@ from personal_kb.config import is_safety_skip
 from personal_kb.ingest.safety import detect_secrets_in_content
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.formatters import format_entry_compact, format_result_list
+from personal_kb.tools.ttl import compute_expires_at
 
 if TYPE_CHECKING:
     from personal_kb.graph.builder import GraphBuilder
@@ -82,6 +83,18 @@ async def batch_store_entries(
 
         sensitivity = entry_dict.get("sensitivity")
 
+        # Compute expires_at from TTL if provided
+        expires_at = None
+        raw_ttl = entry_dict.get("ttl")
+        if raw_ttl:
+            try:
+                expires_at = compute_expires_at(str(raw_ttl))
+            except ValueError as exc:
+                title = str(entry_dict.get("short_title", f"entry {i}"))
+                failed.append((i, title, str(exc)))
+                logger.warning("Invalid TTL for entry %d (%s): %s", i, title, exc)
+                continue
+
         try:
             entry = await store.create_entry(
                 short_title=entry_dict["short_title"],
@@ -96,6 +109,7 @@ async def batch_store_entries(
                 contributor=contributor,
                 team=team,
                 sensitivity=str(sensitivity) if sensitivity else None,  # type: ignore[arg-type]  # validated by tool
+                expires_at=expires_at,
             )
         except Exception as exc:
             title = str(entry_dict.get("short_title", f"entry {i}"))
@@ -174,7 +188,7 @@ def _store_batch_description(prefix: str) -> str:
         "call for graph enrichment across all entries.\n\n"
         "Each entry dict requires: short_title, long_title, knowledge_details. "
         "Optional fields: entry_type (default: factual_reference), project_ref, "
-        "source_context, confidence_level (default: 0.9), tags, hints."
+        "source_context, confidence_level (default: 0.9), tags, hints, ttl."
     )
 
 

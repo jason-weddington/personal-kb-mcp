@@ -116,6 +116,9 @@ async def apply_schema(db: Database) -> None:
     # Migration: add last_accessed column (nullable, default NULL)
     await _migrate_add_last_accessed(db)
 
+    # Migration: add expires_at column (nullable, default NULL)
+    await _migrate_add_expires_at(db)
+
     # Telemetry and feedback tables (must exist before multi-user migration)
     await apply_search_events_schema(db)
     await apply_feedback_schema(db)
@@ -267,6 +270,14 @@ async def _migrate_add_last_accessed(db: Database) -> None:
     columns = {row[1] for row in await cursor.fetchall()}
     if "last_accessed" not in columns:
         await db.execute("ALTER TABLE knowledge_entries ADD COLUMN last_accessed TEXT")
+
+
+async def _migrate_add_expires_at(db: Database) -> None:
+    """Add expires_at column to knowledge_entries if it doesn't exist."""
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "expires_at" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN expires_at TEXT")
 
 
 async def _migrate_v2_multi_user(db: Database) -> None:

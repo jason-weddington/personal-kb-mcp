@@ -17,6 +17,7 @@ from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.formatters import format_entry_compact
+from personal_kb.tools.ttl import compute_expires_at
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,16 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 ),
             ),
         ] = None,
+        ttl: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Time-to-live (e.g. '7d', '24h', '2w'). "
+                    "Entry excluded from search after expiry. "
+                    "Use for time-bounded knowledge like project status."
+                ),
+            ),
+        ] = None,
         deactivate_entry_id: Annotated[
             str | None,
             Field(
@@ -165,6 +176,13 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
             secret_err = _check_secrets(knowledge_details)
             if secret_err:
                 return secret_err
+            # Compute expires_at from TTL if provided
+            expires_at = None
+            if ttl:
+                try:
+                    expires_at = compute_expires_at(ttl)
+                except ValueError as e:
+                    return f"Error: {e}"
             entry = await store.update_entry(
                 entry_id=update_entry_id,
                 knowledge_details=knowledge_details,
@@ -174,6 +192,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 hints=hints,
                 updated_by=contributor,
                 sensitivity=sensitivity,  # type: ignore[arg-type]  # validated above
+                expires_at=expires_at,
                 short_title=short_title or None,
                 long_title=long_title or None,
                 entry_type=entry_type,
@@ -208,6 +227,14 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         if entry_type is None:
             entry_type = EntryType.FACTUAL_REFERENCE
 
+        # Compute expires_at from TTL if provided
+        expires_at = None
+        if ttl:
+            try:
+                expires_at = compute_expires_at(ttl)
+            except ValueError as e:
+                return f"Error: {e}"
+
         entry = await store.create_entry(
             short_title=short_title,
             long_title=long_title,
@@ -221,6 +248,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
             contributor=contributor,
             team=team,
             sensitivity=sensitivity,  # type: ignore[arg-type]  # validated above
+            expires_at=expires_at,
         )
 
         # Embed new entry

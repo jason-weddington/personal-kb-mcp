@@ -117,6 +117,9 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
         include_stale: Annotated[
             bool, Field(description="Include entries with very low confidence")
         ] = False,
+        include_expired: Annotated[
+            bool, Field(description="Include entries past their TTL expiry")
+        ] = False,
         contributor: Annotated[str | None, Field(description="Filter by contributor name")] = None,
         team: Annotated[str | None, Field(description="Filter by team name")] = None,
         ctx: Context | None = None,
@@ -135,6 +138,7 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
             team=team,
             limit=limit,
             include_stale=include_stale,
+            include_expired=include_expired,
         )
 
         lifespan = ctx.lifespan_context

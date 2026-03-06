@@ -80,6 +80,14 @@ async def hybrid_search(
         if entry is None or not entry.is_active:
             continue
 
+        # Filter expired entries unless requested
+        if not query.include_expired and entry.expires_at is not None:
+            exp = entry.expires_at
+            if not exp.tzinfo:
+                exp = exp.replace(tzinfo=UTC)
+            if now >= exp:
+                continue
+
         # Apply confidence decay (reset clock on updates)
         anchor = entry.updated_at or entry.created_at or now
         eff_conf = compute_effective_confidence(

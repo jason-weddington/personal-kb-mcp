@@ -358,6 +358,7 @@ class PostgresBackend:
                 team TEXT,
                 updated_by TEXT,
                 sensitivity TEXT,
+                expires_at TEXT,
                 search_vector tsvector
             )
         """)
@@ -550,6 +551,7 @@ class PostgresBackend:
             ("knowledge_entries", "team"),
             ("knowledge_entries", "updated_by"),
             ("knowledge_entries", "sensitivity"),
+            ("knowledge_entries", "expires_at"),
             ("entry_versions", "contributor"),
             ("search_events", "contributor"),
             ("agent_feedback", "contributor"),

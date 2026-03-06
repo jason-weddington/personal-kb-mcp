@@ -19,6 +19,7 @@ def row_to_entry(row: Row) -> KnowledgeEntry:
     """Convert a database row to a KnowledgeEntry."""
     col_names = row.keys()
     last_accessed_raw = row["last_accessed"] if "last_accessed" in col_names else None
+    expires_at_raw = row["expires_at"] if "expires_at" in col_names else None
     return KnowledgeEntry(
         id=row["id"],
         project_ref=row["project_ref"],
@@ -33,6 +34,7 @@ def row_to_entry(row: Row) -> KnowledgeEntry:
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         last_accessed=datetime.fromisoformat(last_accessed_raw) if last_accessed_raw else None,
+        expires_at=datetime.fromisoformat(expires_at_raw) if expires_at_raw else None,
         superseded_by=row["superseded_by"],
         is_active=bool(row["is_active"]),
         has_embedding=bool(row["has_embedding"]),
@@ -52,8 +54,8 @@ async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
         (id, project_ref, short_title, long_title, knowledge_details, entry_type,
          source_context, confidence_level, tags, hints, created_at, updated_at,
          superseded_by, is_active, has_embedding, version, contributor, team,
-         sensitivity)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         sensitivity, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             entry.id,
             entry.project_ref,
@@ -74,6 +76,7 @@ async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
             entry.contributor,
             entry.team,
             entry.sensitivity,
+            entry.expires_at.isoformat() if entry.expires_at else None,
         ),
     )
     await db.commit()
@@ -87,7 +90,7 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
         project_ref=?, short_title=?, long_title=?, knowledge_details=?, entry_type=?,
         source_context=?, confidence_level=?, tags=?, hints=?, updated_at=?,
         superseded_by=?, is_active=?, has_embedding=?, version=?, updated_by=?,
-        sensitivity=?
+        sensitivity=?, expires_at=?
         WHERE id=?""",
         (
             entry.project_ref,
@@ -106,6 +109,7 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
             entry.version,
             entry.updated_by,
             entry.sensitivity,
+            entry.expires_at.isoformat() if entry.expires_at else None,
             entry.id,
         ),
     )
