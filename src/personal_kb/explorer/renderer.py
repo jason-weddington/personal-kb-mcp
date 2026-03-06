@@ -29,13 +29,21 @@ _TEMPLATE = """\
   }
   #graph { width: 100vw; height: 100vh; }
   #info-panel {
-    display: none; position: fixed; top: 20px; right: 20px;
+    position: fixed; top: 20px; right: 20px;
     width: 340px; max-height: calc(100vh - 40px); overflow-y: auto;
     background: rgba(20, 20, 30, 0.95); border: 1px solid #333;
     border-radius: 8px; padding: 16px; z-index: 10;
     font-size: 13px; line-height: 1.5;
+    opacity: 0; pointer-events: none;
+    transform: scaleY(0.05) scaleX(1);
+    transform-origin: top right;
+    transition: opacity 0.3s ease, transform 0.3s ease;
   }
-  #info-panel.visible { display: block; }
+  #info-panel.visible {
+    display: flex; flex-direction: column;
+    opacity: 1; pointer-events: auto;
+    transform: scaleY(1) scaleX(1);
+  }
   #info-panel h2 { font-size: 15px; margin-bottom: 8px; word-break: break-word; }
   #info-panel .type-badge {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
@@ -88,11 +96,15 @@ _TEMPLATE = """\
   }
   #info-panel .conn-item:hover { color: #fff; }
   #close-btn {
-    position: absolute; top: 8px; right: 12px;
-    background: none; border: none; color: #666; cursor: pointer;
-    font-size: 18px; line-height: 1;
+    position: absolute; top: 10px; right: 10px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: rgba(80, 80, 90, 0.8); border: none;
+    color: #fff; cursor: pointer; font-size: 15px;
+    font-weight: 700; line-height: 28px; text-align: center;
+    z-index: 1; transition: background 0.15s;
+    display: flex; align-items: center; justify-content: center;
   }
-  #close-btn:hover { color: #fff; }
+  #close-btn:hover { background: rgba(120, 120, 130, 0.9); }
   #stats-bar {
     position: fixed; bottom: 12px; left: 12px;
     font-size: 12px; color: #555; z-index: 10;
