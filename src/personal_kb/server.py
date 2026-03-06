@@ -60,6 +60,24 @@ def _create_llm(provider: str) -> LLMProvider | None:
     return None
 
 
+def _create_synthesis_llm(provider: str) -> LLMProvider | None:
+    """Create a stronger LLM for human-facing synthesis (Sonnet 4.6)."""
+    if provider == "anthropic":
+        if AnthropicLLMClient is not None:
+            from personal_kb.llm.anthropic import _SONNET_MODEL
+
+            return AnthropicLLMClient(model_override=_SONNET_MODEL)
+        return None
+    if provider == "bedrock":
+        if BedrockLLMClient is not None:
+            from personal_kb.llm.bedrock import _SONNET_MODEL as _BR_SONNET
+
+            return BedrockLLMClient(model_override=_BR_SONNET)
+        return None
+    # Ollama: no Sonnet equivalent, fall back to default
+    return None
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     """Manage database connection and embedding client lifecycle."""
@@ -89,6 +107,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     extraction_llm = _create_llm(extraction_provider)
     query_llm = _create_llm(query_provider)
 
+    # Stronger LLM for human-facing synthesis (web explorer, kb_summarize via browser)
+    synthesis_llm = _create_synthesis_llm(query_provider)
+
     graph_enricher: GraphEnricher | None = None
     if extraction_llm is not None:
         graph_enricher = GraphEnricher(db, extraction_llm)
@@ -112,6 +133,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     else:
         logger.warning("Query LLM not available (%s) — query planning disabled", query_provider)
 
+    if synthesis_llm is not None:
+        logger.info("Synthesis LLM: Sonnet 4.6 (%s)", query_provider)
+    else:
+        logger.info("Synthesis LLM: using query LLM (no Sonnet override available)")
+
     contributor = get_contributor()
     team = get_team()
     if contributor:
@@ -131,10 +157,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             "llm_client": extraction_llm,
             "graph_enricher": graph_enricher,
             "query_llm": query_llm,
+            "synthesis_llm": synthesis_llm,
             "contributor": contributor,
             "team": team,
         }
     finally:
+        if synthesis_llm is not None:
+            await synthesis_llm.close()
         if query_llm is not None:
             await query_llm.close()
         if extraction_llm is not None:

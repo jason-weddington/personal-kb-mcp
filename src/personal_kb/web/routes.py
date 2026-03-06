@@ -61,6 +61,9 @@ def register_routes(app: Any) -> None:
         embedder = request.app.state.embedder
         query_llm = request.app.state.query_llm
 
+        # Use synthesis_llm (Sonnet) for human-facing summarization if available
+        synthesis_llm = getattr(request.app.state, "synthesis_llm", None)
+
         async def event_stream() -> AsyncGenerator[str]:
             # Classify query
             mode = "explore"
@@ -87,12 +90,14 @@ def register_routes(app: Any) -> None:
                     if mode == "summarize":
                         from personal_kb.tools.kb_summarize import summarize_question
 
+                        # Use Sonnet for human-facing synthesis, Haiku for retrieval
                         answer = await summarize_question(
                             db,
                             embedder,
                             query_llm,
                             question,
                             event_callback=event_callback,
+                            synthesis_llm=synthesis_llm,
                         )
                         return {
                             "type": "summarize",
@@ -199,9 +204,11 @@ def register_routes(app: Any) -> None:
         db = request.app.state.db
         embedder = request.app.state.embedder
         query_llm = request.app.state.query_llm
+        # Use Sonnet for human-facing chat if available
+        chat_llm = getattr(request.app.state, "synthesis_llm", None) or query_llm
 
         async def chat_stream() -> AsyncGenerator[str]:
-            if query_llm is None or not isinstance(query_llm, LLMProvider):
+            if chat_llm is None or not isinstance(chat_llm, LLMProvider):
                 yield sse_event("error", {"message": "LLM not available"})
                 yield sse_event("stream_end", {})
                 return
@@ -210,7 +217,7 @@ def register_routes(app: Any) -> None:
             session = get_session(session_id) if session_id else None
 
             if session is None:
-                session = get_or_create_session(None, db, embedder, query_llm)
+                session = get_or_create_session(None, db, embedder, chat_llm)
                 if seed_question and seed_answer:
                     session.seed(seed_question, seed_answer, seed_entry_ids)
 

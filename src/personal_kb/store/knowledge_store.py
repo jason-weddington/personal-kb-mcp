@@ -108,7 +108,7 @@ class KnowledgeStore:
     async def update_entry(
         self,
         entry_id: str,
-        knowledge_details: str,
+        knowledge_details: str | None = None,
         change_reason: str | None = None,
         confidence_level: float | None = None,
         tags: list[str] | None = None,
@@ -140,16 +140,25 @@ class KnowledgeStore:
         if hints:
             merged_hints.update(hints)
 
+        content_changed = knowledge_details is not None
+        effective_details = (
+            knowledge_details
+            if knowledge_details is not None
+            else (existing.knowledge_details or "")
+        )
+
         update_fields: dict[str, object] = {
-            "knowledge_details": knowledge_details,
+            "knowledge_details": effective_details,
             "confidence_level": new_confidence,
             "tags": tags if tags is not None else existing.tags,
             "hints": merged_hints,
             "updated_at": now,
             "version": new_version,
-            "has_embedding": False,  # Reset — needs re-embedding
             "updated_by": updated_by,
         }
+        # Only reset embedding flag when content actually changed
+        if content_changed:
+            update_fields["has_embedding"] = False
         if sensitivity is not None:
             update_fields["sensitivity"] = sensitivity
         if expires_at is not None:
@@ -172,7 +181,7 @@ class KnowledgeStore:
         version = EntryVersion(
             entry_id=entry_id,
             version_number=new_version,
-            knowledge_details=knowledge_details,
+            knowledge_details=effective_details,
             change_reason=change_reason,
             contributor=updated_by,
             confidence_level=new_confidence,

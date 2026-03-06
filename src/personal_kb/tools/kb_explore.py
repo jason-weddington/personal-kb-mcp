@@ -3,6 +3,8 @@
 import asyncio
 import contextlib
 import logging
+import signal
+import subprocess
 import tempfile
 import webbrowser
 from typing import Any
@@ -21,11 +23,49 @@ logger = logging.getLogger(__name__)
 # Module-level reference to avoid duplicate server starts
 _web_server_task: asyncio.Task[Any] | None = None
 
+_EXPLORER_PORT = 8765
+
+
+def _kill_port_holder(port: int) -> bool:
+    """Kill any process listening on the given TCP port. Returns True if killed.
+
+    Skips the current process to avoid self-termination when an in-process
+    server (e.g. from a previous kb_explore call) is still binding the port.
+    """
+    import os as _os
+
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["lsof", "-ti", f"tcp:{port}"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pids = result.stdout.strip()
+        if not pids:
+            return False
+        my_pid = _os.getpid()
+        killed = False
+        for pid_str in pids.splitlines():
+            pid = int(pid_str.strip())
+            if pid == my_pid:
+                continue  # Don't kill ourselves
+            logger.info("Killing existing server on port %d (pid %d)", port, pid)
+            try:
+                _os.kill(pid, signal.SIGTERM)
+                killed = True
+            except ProcessLookupError:
+                pass
+        return killed
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        return False
+
 
 async def explore_logic(
     db: Database,
     embedder: EmbeddingClient | None = None,
     query_llm: LLMProvider | None = None,
+    synthesis_llm: LLMProvider | None = None,
 ) -> tuple[str, str]:
     """Open the explorer in the browser — web server or temp file fallback.
 
@@ -39,10 +79,14 @@ async def explore_logic(
 
         need_start = _web_server_task is None or _web_server_task.done()
         if need_start:
-            app = create_app_with_deps(db, embedder, query_llm)
+            # Kill any existing server on the port (e.g. from another MCP instance)
+            if _kill_port_holder(_EXPLORER_PORT):
+                await asyncio.sleep(0.3)
+
+            app = create_app_with_deps(db, embedder, query_llm, synthesis_llm)
             import uvicorn
 
-            config = uvicorn.Config(app, host="127.0.0.1", port=8765, log_level="warning")
+            config = uvicorn.Config(app, host="127.0.0.1", port=_EXPLORER_PORT, log_level="warning")
             server = uvicorn.Server(config)
 
             async def _safe_serve() -> None:
@@ -57,13 +101,13 @@ async def explore_logic(
                 _web_server_task = None
                 raise OSError("Web server failed to start")
 
-        webbrowser.open("http://localhost:8765")
+        webbrowser.open(f"http://localhost:{_EXPLORER_PORT}")
 
         data = await extract_graph_data(db)
         stats = data["stats"]
         summary = (
             f"Explorer opened: {stats['node_count']} nodes, {stats['edge_count']} edges. "
-            f"http://localhost:8765 (query-enabled)"
+            f"http://localhost:{_EXPLORER_PORT} (query-enabled)"
         )
         return render_explorer_html(data), summary
 
@@ -109,6 +153,7 @@ def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
         db = lifespan["db"]
         embedder = lifespan.get("embedder")
         query_llm = lifespan.get("query_llm")
+        synthesis_llm = lifespan.get("synthesis_llm")
 
-        _, summary = await explore_logic(db, embedder, query_llm)
+        _, summary = await explore_logic(db, embedder, query_llm, synthesis_llm)
         return summary

@@ -13,13 +13,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_SONNET_MODEL = "claude-sonnet-4-6"
+
+
 class AnthropicLLMClient:
     """Generates text via the Anthropic Messages API."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, model_override: str | None = None) -> None:
         """Initialize with lazy client creation."""
         self._client: Any = None
         self._available: bool | None = None
+        self._model_override = model_override
 
     async def is_available(self) -> bool:
         """Check availability. Only caches success — retries on failure."""
@@ -41,6 +45,9 @@ class AnthropicLLMClient:
         except Exception:
             return False
 
+    def _model(self) -> str:
+        return self._model_override or get_anthropic_model()
+
     async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
         """Generate text from a prompt. Returns None if unavailable."""
         try:
@@ -49,7 +56,7 @@ class AnthropicLLMClient:
                 return None
 
             kwargs: dict[str, Any] = {
-                "model": get_anthropic_model(),
+                "model": self._model(),
                 "max_tokens": 4096,
                 "messages": [{"role": "user", "content": prompt}],
             }
@@ -82,7 +89,7 @@ class AnthropicLLMClient:
 
             api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
             kwargs: dict[str, Any] = {
-                "model": get_anthropic_model(),
+                "model": self._model(),
                 "max_tokens": 4096,
                 "messages": api_messages,
             }

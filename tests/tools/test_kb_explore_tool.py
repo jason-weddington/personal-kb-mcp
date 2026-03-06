@@ -107,3 +107,91 @@ async def test_html_has_node_colors(db):
     assert "NODE_COLORS" in html
     assert "#00bcd4" in html  # tag color
     assert "#ff9800" in html  # project color
+
+
+def test_kill_port_holder_no_lsof(monkeypatch):
+    """_kill_port_holder returns False when lsof is not found."""
+    import subprocess as _sp
+
+    def _fake_run(*args, **kwargs):
+        raise FileNotFoundError("lsof not found")
+
+    monkeypatch.setattr(_sp, "run", _fake_run)
+    assert kb_explore._kill_port_holder(9999) is False
+
+
+def test_kill_port_holder_no_pids(monkeypatch):
+    """_kill_port_holder returns False when no process holds the port."""
+    import subprocess as _sp
+
+    monkeypatch.setattr(
+        _sp,
+        "run",
+        lambda *a, **kw: type("R", (), {"stdout": ""})(),
+    )
+    assert kb_explore._kill_port_holder(9999) is False
+
+
+def test_kill_port_holder_skips_self(monkeypatch):
+    """_kill_port_holder skips its own PID."""
+    import os
+    import subprocess as _sp
+
+    my_pid = str(os.getpid())
+    monkeypatch.setattr(
+        _sp,
+        "run",
+        lambda *a, **kw: type("R", (), {"stdout": my_pid})(),
+    )
+    assert kb_explore._kill_port_holder(9999) is False
+
+
+def test_kill_port_holder_kills_other(monkeypatch):
+    """_kill_port_holder kills a different PID and returns True."""
+    import os as _os
+    import subprocess as _sp
+
+    killed_pids: list[int] = []
+
+    monkeypatch.setattr(
+        _sp,
+        "run",
+        lambda *a, **kw: type("R", (), {"stdout": "99999"})(),
+    )
+
+    def _fake_kill(pid, sig):
+        killed_pids.append(pid)
+
+    monkeypatch.setattr(_os, "kill", _fake_kill)
+    assert kb_explore._kill_port_holder(9999) is True
+    assert killed_pids == [99999]
+
+
+def test_kill_port_holder_process_lookup_error(monkeypatch):
+    """_kill_port_holder handles ProcessLookupError gracefully."""
+    import os as _os
+    import subprocess as _sp
+
+    monkeypatch.setattr(
+        _sp,
+        "run",
+        lambda *a, **kw: type("R", (), {"stdout": "99999"})(),
+    )
+
+    def _fake_kill(pid, sig):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(_os, "kill", _fake_kill)
+    # ProcessLookupError is caught, so no kill actually happened → False
+    assert kb_explore._kill_port_holder(9999) is False
+
+
+def test_kill_port_holder_timeout(monkeypatch):
+    """_kill_port_holder returns False on subprocess timeout."""
+    import subprocess as _sp
+
+    def _fake_run(*args, **kwargs):
+        raise _sp.TimeoutExpired(cmd="lsof", timeout=5)
+
+    monkeypatch.setattr(_sp, "run", _fake_run)
+    assert kb_explore._kill_port_holder(9999) is False

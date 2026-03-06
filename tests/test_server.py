@@ -4,7 +4,13 @@ from unittest.mock import patch
 
 from personal_kb.llm.anthropic import AnthropicLLMClient
 from personal_kb.llm.ollama import OllamaLLMClient
-from personal_kb.server import _build_instructions, _create_llm, _get_tool_prefix, create_server
+from personal_kb.server import (
+    _build_instructions,
+    _create_llm,
+    _create_synthesis_llm,
+    _get_tool_prefix,
+    create_server,
+)
 
 
 def test_create_llm_ollama():
@@ -30,6 +36,35 @@ def test_create_llm_unknown_provider():
     """Should return None for unknown providers."""
     client = _create_llm("unknown")
     assert client is None
+
+
+def test_create_synthesis_llm_anthropic():
+    """Should create AnthropicLLMClient with Sonnet model override."""
+    client = _create_synthesis_llm("anthropic")
+    assert isinstance(client, AnthropicLLMClient)
+    from personal_kb.llm.anthropic import _SONNET_MODEL
+
+    assert client._model_override == _SONNET_MODEL
+
+
+def test_create_synthesis_llm_bedrock():
+    """Should create BedrockLLMClient with Sonnet model override."""
+    from personal_kb.llm.bedrock import _SONNET_MODEL as BR_SONNET
+    from personal_kb.llm.bedrock import BedrockLLMClient
+
+    client = _create_synthesis_llm("bedrock")
+    assert isinstance(client, BedrockLLMClient)
+    assert client._model_override == BR_SONNET
+
+
+def test_create_synthesis_llm_ollama():
+    """Ollama has no Sonnet equivalent — returns None."""
+    assert _create_synthesis_llm("ollama") is None
+
+
+def test_create_synthesis_llm_unknown():
+    """Unknown provider returns None."""
+    assert _create_synthesis_llm("unknown") is None
 
 
 def test_provider_config_defaults():

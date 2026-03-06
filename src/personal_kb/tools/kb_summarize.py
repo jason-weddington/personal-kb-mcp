@@ -83,6 +83,7 @@ async def summarize_question(
     scope: str | None = None,
     limit: int = 20,
     event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    synthesis_llm: object | None = None,
 ) -> str:
     """Core summarize logic, testable without FastMCP context."""
     from personal_kb.config import is_agentic_synthesis
@@ -129,10 +130,11 @@ async def summarize_question(
             )
             entries = _merge_entries(entries, extra)
 
-    # Synthesize with LLM
-    if query_llm is not None and isinstance(query_llm, LLMProvider):
+    # Synthesize with LLM — prefer synthesis_llm (Sonnet) when available
+    synth_provider = synthesis_llm if isinstance(synthesis_llm, LLMProvider) else query_llm
+    if synth_provider is not None and isinstance(synth_provider, LLMProvider):
         await _emit({"type": "synthesis_started", "entry_count": len(entries)})
-        synthesis = await _synthesize(query_llm, question, entries)
+        synthesis = await _synthesize(synth_provider, question, entries)
         if synthesis is not None:
             await _emit({"type": "synthesis_done"})
             return synthesis

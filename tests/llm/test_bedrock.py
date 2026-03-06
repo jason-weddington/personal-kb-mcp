@@ -168,6 +168,19 @@ async def test_close_is_noop():
     await llm.close()  # Should not raise
 
 
+def test_model_override():
+    """model_override changes the model returned by _model()."""
+    llm = BedrockLLMClient(model_override="us.anthropic.claude-sonnet-4-6-20250514-v1:0")
+    assert llm._model() == "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+
+
+def test_model_default(monkeypatch):
+    """Without override, uses config default."""
+    monkeypatch.setenv("KB_BEDROCK_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+    llm = BedrockLLMClient()
+    assert llm._model() == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
 @pytest.mark.asyncio
 async def test_protocol_conformance():
     """BedrockLLMClient satisfies LLMProvider protocol."""

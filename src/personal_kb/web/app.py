@@ -17,6 +17,7 @@ def create_app_with_deps(
     db: Database,
     embedder: EmbeddingClient | None,
     query_llm: LLMProvider | None,
+    synthesis_llm: LLMProvider | None = None,
 ) -> Any:
     """Create a FastAPI app using pre-existing deps from MCP lifespan.
 
@@ -34,6 +35,7 @@ def create_app_with_deps(
     app.state.db = db
     app.state.embedder = embedder
     app.state.query_llm = query_llm
+    app.state.synthesis_llm = synthesis_llm
     register_routes(app)
     return app
 
@@ -51,7 +53,7 @@ def create_app() -> Any:
         get_query_provider,
     )
     from personal_kb.db.connection import create_connection
-    from personal_kb.server import _create_llm
+    from personal_kb.server import _create_llm, _create_synthesis_llm
     from personal_kb.web.routes import register_routes
 
     @asynccontextmanager
@@ -63,15 +65,20 @@ def create_app() -> Any:
         )
         db = await create_connection(embedding_dim=get_embedding_dim())
         embedder = EmbeddingClient(db)
-        query_llm = _create_llm(get_query_provider())
+        provider = get_query_provider()
+        query_llm = _create_llm(provider)
+        synthesis_llm = _create_synthesis_llm(provider)
 
         app.state.db = db
         app.state.embedder = embedder
         app.state.query_llm = query_llm
+        app.state.synthesis_llm = synthesis_llm
 
         try:
             yield
         finally:
+            if synthesis_llm is not None:
+                await synthesis_llm.close()
             if query_llm is not None:
                 await query_llm.close()
             await embedder.close()

@@ -129,6 +129,10 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         record preserving the full history. Entries are automatically indexed for
         full-text search and (when Ollama is available) vector search.
 
+        For metadata-only updates (tags, project_ref, sensitivity, entry_type, etc.),
+        pass update_entry_id with the fields to change — knowledge_details is optional.
+        This avoids pulling and rewriting the full entry content.
+
         Use deactivate_entry_id to soft-delete incorrect or obsolete entries.
 
         Use entry_type to classify the knowledge:
@@ -166,16 +170,15 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         # --- Update path ---
         if update_entry_id:
-            if not knowledge_details:
-                return "Error: knowledge_details is required when updating."
             # Validate sensitivity
             sens_err = _validate_sensitivity(sensitivity)
             if sens_err:
                 return sens_err
-            # Secret scanning
-            secret_err = _check_secrets(knowledge_details)
-            if secret_err:
-                return secret_err
+            # Secret scanning on content if provided
+            if knowledge_details:
+                secret_err = _check_secrets(knowledge_details)
+                if secret_err:
+                    return secret_err
             # Compute expires_at from TTL if provided
             expires_at = None
             if ttl:
@@ -185,7 +188,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     return f"Error: {e}"
             entry = await store.update_entry(
                 entry_id=update_entry_id,
-                knowledge_details=knowledge_details,
+                knowledge_details=knowledge_details or None,
                 change_reason=change_reason,
                 confidence_level=confidence_level,
                 tags=tags,

@@ -93,13 +93,17 @@ def _configure_bearer_auth(config: Any) -> None:
     config.auth_scheme_resolver.resolve_auth_scheme = patched_resolve
 
 
+_SONNET_MODEL = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+
+
 class BedrockLLMClient:
     """Generates text via the AWS Bedrock Converse API."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, model_override: str | None = None) -> None:
         """Initialize with lazy client creation."""
         self._client: Any = None
         self._available: bool | None = None
+        self._model_override = model_override
 
     async def is_available(self) -> bool:
         """Check availability. Only caches success — retries on failure."""
@@ -119,6 +123,9 @@ class BedrockLLMClient:
         except Exception:
             return False
 
+    def _model(self) -> str:
+        return self._model_override or get_bedrock_model()
+
     async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
         """Generate text from a prompt. Returns None if unavailable."""
         try:
@@ -135,7 +142,7 @@ class BedrockLLMClient:
             )
 
             converse_input = ConverseInput(
-                model_id=get_bedrock_model(),
+                model_id=self._model(),
                 messages=[
                     Message(
                         role="user",
@@ -184,7 +191,7 @@ class BedrockLLMClient:
                 for m in messages
             ]
             converse_input = ConverseInput(
-                model_id=get_bedrock_model(),
+                model_id=self._model(),
                 messages=br_messages,
                 inference_config=InferenceConfiguration(max_tokens=4096),
             )

@@ -127,6 +127,25 @@ async def test_close_noop_when_no_client():
 
 
 @pytest.mark.asyncio
+async def test_model_override(mock_anthropic_class):
+    """model_override changes the model used in API calls."""
+    llm = AnthropicLLMClient(model_override="claude-sonnet-4-6")
+    await llm.generate("test")
+    call_kwargs = mock_anthropic_class.messages.create.call_args
+    assert call_kwargs.kwargs.get("model") == "claude-sonnet-4-6"
+
+
+@pytest.mark.asyncio
+async def test_model_default(mock_anthropic_class, monkeypatch):
+    """Without override, uses config default."""
+    monkeypatch.setenv("KB_ANTHROPIC_MODEL", "claude-haiku-4-5")
+    llm = AnthropicLLMClient()
+    await llm.generate("test")
+    call_kwargs = mock_anthropic_class.messages.create.call_args
+    assert call_kwargs.kwargs.get("model") == "claude-haiku-4-5"
+
+
+@pytest.mark.asyncio
 async def test_protocol_conformance():
     """AnthropicLLMClient satisfies LLMProvider protocol."""
     from personal_kb.llm.provider import LLMProvider
