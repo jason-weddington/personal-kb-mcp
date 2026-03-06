@@ -27,6 +27,20 @@ def _is_glob(path: str) -> bool:
     return bool(_GLOB_CHARS.intersection(path))
 
 
+def _check_safety_deps() -> list[str]:
+    """Return names of missing safety dependencies."""
+    missing: list[str] = []
+    try:
+        import detect_secrets  # noqa: F401
+    except ImportError:
+        missing.append("detect-secrets")
+    try:
+        import scrubadub  # noqa: F401
+    except ImportError:
+        missing.append("scrubadub")
+    return missing
+
+
 def _tally_result(result: IngestResult, file_result: FileResult) -> None:
     """Update IngestResult counters from a single FileResult."""
     if file_result.action == "ingested":
@@ -52,10 +66,12 @@ def _format_file_result(r: FileResult) -> str:
         line += f" — {r.reason}"
     if r.entry_count > 0:
         line += f" ({r.entry_count} entries)"
-    if r.chunks_processed > 1 or r.chunks_skipped > 0:
+    if r.chunks_processed > 1 or r.chunks_skipped > 0 or r.chunks_flagged > 0:
         chunk_info = f"{r.chunks_processed} chunks"
         if r.chunks_skipped > 0:
-            chunk_info += f", {r.chunks_skipped} skipped"
+            chunk_info += f", {r.chunks_skipped} deduped"
+        if r.chunks_flagged > 0:
+            chunk_info += f", {r.chunks_flagged} redacted (secrets)"
         line += f" [{chunk_info}]"
     elif r.entry_ids:
         line += f" [{', '.join(r.entry_ids)}]"
@@ -163,6 +179,21 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
             return "Error: source_url is required when content is provided."
         if content is None and not path:
             return "Error: Either path or content (with source_url) must be provided."
+
+        # Fail closed: require safety deps for secret/PII scanning
+        from personal_kb.config import is_safety_skip
+
+        if not is_safety_skip():
+            missing = _check_safety_deps()
+            if missing:
+                return (
+                    f"Error: Safety dependencies not installed: {', '.join(missing)}. "
+                    "Secret and PII scanning cannot run without them.\n\n"
+                    "Install with:\n"
+                    "  uv sync --extra safety\n"
+                    "  # or: uvx --with 'personal-kb[safety]' personal-kb\n\n"
+                    "To bypass (not recommended): set KB_SKIP_SAFETY=TRUE"
+                )
 
         lifespan = ctx.lifespan_context
         db = lifespan["db"]

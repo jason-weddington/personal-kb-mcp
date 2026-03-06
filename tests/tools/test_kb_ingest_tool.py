@@ -1,7 +1,7 @@
 """Tests for the kb_ingest MCP tool."""
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest_asyncio
 
@@ -277,3 +277,42 @@ class TestKbIngestTool:
         )
         assert "Ingestion complete" in result
         assert "2 ingested" in result
+
+    async def test_rejects_when_safety_deps_missing(self, tool_context, tmp_path):
+        ctx, lifespan = tool_context
+        lifespan["query_llm"] = FakeLLM()
+
+        tools = _register_and_capture(MagicMock())
+
+        with patch(
+            "personal_kb.tools.kb_ingest._check_safety_deps",
+            return_value=["detect-secrets", "scrubadub"],
+        ):
+            result = await tools["kb_ingest"](
+                path=str(tmp_path / "test.md"),
+                ctx=ctx,
+            )
+        assert "Safety dependencies not installed" in result
+        assert "uv sync --extra safety" in result
+        assert "KB_SKIP_SAFETY" in result
+
+    async def test_allows_when_safety_skip_set(self, tool_context, tmp_path, monkeypatch):
+        ctx, lifespan = tool_context
+        lifespan["query_llm"] = FakeLLM()
+        monkeypatch.setenv("KB_SKIP_SAFETY", "TRUE")
+
+        f = tmp_path / "test.md"
+        f.write_text("# Test")
+
+        tools = _register_and_capture(MagicMock())
+
+        with patch(
+            "personal_kb.tools.kb_ingest._check_safety_deps",
+            return_value=["detect-secrets"],
+        ):
+            result = await tools["kb_ingest"](
+                path=str(f),
+                ctx=ctx,
+            )
+        # Should proceed past safety check (will fail on LLM, that's fine)
+        assert "Safety dependencies" not in result

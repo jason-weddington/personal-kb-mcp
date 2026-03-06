@@ -22,9 +22,9 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 - **Prompt injection via file content.** Ingested text is interpolated directly into LLM prompts. Malicious files can steer extraction. No easy fix — inherent to the architecture — but could add system prompt hardening, output validation, or content sandboxing. (audit H2)
 - **No directory restriction on kb_ingest.** Any file matching extension allowlist anywhere on filesystem is ingestible. Glob patterns traverse freely. Consider base directory allowlist for shared deployments. (audit M1)
-- **Extracted entries bypass secret scanning.** `_store_extracted_entry()` calls `create_entry()` directly, skipping `_check_secrets()`. (audit M8)
-- **Orphaned state on re-ingestion failure.** Old entries deactivated before new extraction — if extraction fails, data is lost. Deactivate after success instead. (audit M7)
-- **Warn at startup when safety deps missing.** `detect-secrets` and `scrubadub` are optional. When absent, secret/PII scanning silently passes all content with no warning. (audit M5)
+- **~~Extracted entries bypass secret scanning.~~** Fixed: per-chunk secret scanning skips chunks with secrets before LLM extraction — secrets never reach the extractor. (audit M8)
+- **~~Orphaned state on re-ingestion failure.~~** Fixed: deactivation moved to after successful extraction+storage. (audit M7)
+- **~~Fail closed when safety deps missing.~~** Fixed: kb_ingest rejects with install instructions when detect-secrets or scrubadub not installed. KB_SKIP_SAFETY=TRUE overrides. (audit M5)
 
 ### Design debt (lower urgency)
 
@@ -34,29 +34,6 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 - **Narrow `query_llm` type.** Typed as `object | None` with isinstance checks everywhere. Should be `LLMProvider | None`. (audit M20)
 - **Agent tool call deduplication.** ReAct loop doesn't detect identical repeated calls. Each duplicate burns a turn. (audit M14)
 
-## Next — Explorer Chat
-
-Multi-turn conversational chat in the graph explorer, grounded in KB data. The graph already animates during queries — now let users follow up.
-
-### Phase 1: Backend multi-turn (~120 LOC)
-- Add `generate_chat(messages)` to `LLMProvider` protocol + all 3 clients (Anthropic, Bedrock, Ollama)
-- Delete `_build_prompt()` flattening in agent.py — pass messages natively
-- `ChatSession` class: holds conversation history, has KB tools, simple token budget with sliding window (keep first turn + last N, drop middle)
-- `/api/chat/stream` SSE endpoint: accepts `{question, conversation_id}`, maintains sessions in-memory
-
-### Phase 2: Frontend chat UI (~370 LOC)
-- Transform response panel into chat panel when summarize mode completes
-- Message bubbles: user right-aligned, assistant left-aligned (iMessage style)
-- Text input with enter-to-send
-- Streaming: buffer markdown chunks, re-parse on each delta
-- Typing indicator while streaming
-- Conversation seeded with original question + summary response
-
-### Phase 3: Polish (~50 LOC)
-- Scroll-to-bottom on new messages
-- Clickable `[kb-XXXXX]` citations fly to graph nodes
-- Graph node highlighting from chat context
-
 ## Later
 
 - **Conflict detection at write time.** Multiple contributors can store contradictory information with no signal. When a new entry is stored, the enricher should search for semantically similar entries and classify the relationship (supports, refines, conflicts_with, unrelated). `conflicts_with` edges get stored in the graph with the LLM's reasoning. At read time, formatters surface a `[CONFLICTING: kb-XXXXX]` badge so agents see both sides. Resolution uses the existing `supersedes` mechanism. Cost: one extra hybrid search + a few lines in the enricher prompt per store. Needs more design work before building — edge cases around context-dependent "conflicts" (different projects, different scopes) and how to avoid false positives.
@@ -65,6 +42,7 @@ Multi-turn conversational chat in the graph explorer, grounded in KB data. The g
 
 ## Done
 
+- Explorer Chat — `generate_chat(messages)` on LLMProvider protocol + all 3 clients, `ChatSession` with token budget, `/api/chat/stream` SSE endpoint, iMessage-style chat UI with slide animation, clickable citations that fly to graph nodes.
 - Graph Explorer Phase 1-2 + animated graph — `kb_explore` MCP tool, force-graph visualization, live web server (`personal-kb-web`), SSE streaming with agent traversal animation (node glow, particles, staggered reveal, progressive camera widening), query routing (explore/summarize), markdown rendering, info panel with on-demand entry details.
 - Batch store partial failure reporting — per-entry try/except with clear error messages so agents can retry failed items. (audit H8)
 - Audit quick wins (H3, H4, H6, M2, M3, M11) — symlink rejection, URL content size limit, sensitivity enum validation, FTS quote stripping, deactivated entry post-filter, scope propagation in auto strategy.

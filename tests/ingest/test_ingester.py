@@ -346,6 +346,43 @@ class TestIngestFile:
         assert result.action == "error"
         assert "LLM" in result.reason
 
+    async def test_secrets_skip_chunk_not_file(self, ingester_deps, tmp_path, monkeypatch):
+        """File with secrets in one chunk still extracts from clean chunks."""
+        pytest.importorskip("detect_secrets")
+        # Force small chunk size so headings split into separate chunks
+        monkeypatch.setenv("KB_INGEST_CHUNK_SIZE", "60")
+        monkeypatch.setenv("KB_INGEST_CHUNK_OVERLAP", "0")
+        deps = ingester_deps
+        entries_json = [
+            {
+                "short_title": "arch-decision",
+                "long_title": "Architecture decision",
+                "knowledge_details": "We chose X because Y",
+                "entry_type": "decision",
+                "tags": "architecture",
+            }
+        ]
+        llm = _make_llm_with_responses("A mixed doc", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], llm),
+            llm,
+        )
+
+        f = tmp_path / "mixed.md"
+        f.write_text(
+            '# Architecture\n\nWe chose X because Y.\n\n# Credentials\n\npassword = "hunter2"\n'
+        )
+
+        result = await ingester.ingest_file(f, base_dir=tmp_path)
+        assert result.action == "ingested"
+        assert result.entry_count == 1
+        assert result.chunks_flagged == 1
+        assert result.chunks_processed == 1
+
 
 class TestIngestDirectory:
     async def test_ingests_multiple_files(self, ingester_deps, tmp_path):
@@ -714,7 +751,8 @@ class TestIngestContent:
         row = await cursor.fetchone()
         assert row[0] == 0
 
-    async def test_url_secrets_flagged(self, ingester_deps):
+    async def test_url_secrets_chunk_skipped(self, ingester_deps):
+        """Chunks with secrets are skipped, not the entire file."""
         pytest.importorskip("detect_secrets")
         deps = ingester_deps
         ingester = FileIngester(
@@ -730,7 +768,50 @@ class TestIngestContent:
             'password = "hunter2"',
             "https://wiki.example.com/secrets",
         )
-        assert result.action == "flagged"
+        # Single-chunk content where that chunk has secrets → ingested with 0 entries
+        assert result.action == "ingested"
+        assert result.entry_count == 0
+        assert result.chunks_flagged == 1
+
+    async def test_url_secrets_partial_extraction(self, ingester_deps, monkeypatch):
+        """Multi-chunk content: clean chunks extracted, secret chunks skipped."""
+        pytest.importorskip("detect_secrets")
+        monkeypatch.setenv("KB_INGEST_CHUNK_SIZE", "80")
+        monkeypatch.setenv("KB_INGEST_CHUNK_OVERLAP", "0")
+        deps = ingester_deps
+        entries_json = [
+            {
+                "short_title": "clean-fact",
+                "long_title": "A clean fact",
+                "knowledge_details": "Safe content",
+                "entry_type": "factual_reference",
+                "tags": "test",
+            }
+        ]
+        llm = _make_llm_with_responses("A doc with mixed content", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], llm),
+            llm,
+        )
+
+        content = (
+            "# Clean Section\n\n"
+            "This is perfectly safe content about architecture decisions.\n\n"
+            "# Secrets Section\n\n"
+            'password = "hunter2"\n'
+        )
+        result = await ingester.ingest_content(
+            content,
+            "https://wiki.example.com/mixed",
+        )
+        assert result.action == "ingested"
+        assert result.entry_count == 1
+        assert result.chunks_flagged == 1
+        assert result.chunks_processed == 1
 
     async def test_url_note_node(self, ingester_deps):
         entries_json = [

@@ -14,7 +14,7 @@ from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.ingest.chunker import chunk_content
 from personal_kb.ingest.extractor import ExtractedEntry, extract_entries, summarize_file
-from personal_kb.ingest.safety import SafetyResult, run_content_safety, run_safety_pipeline
+from personal_kb.ingest.safety import detect_secrets_in_content
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
@@ -110,6 +110,7 @@ class FileResult:
     summary: str | None = None
     chunks_processed: int = 0
     chunks_skipped: int = 0
+    chunks_flagged: int = 0
 
 
 @dataclass
@@ -230,23 +231,11 @@ class FileIngester:
         if existing and existing["content_hash"] == content_hash and existing["is_active"]:
             return FileResult(path=rel_path, action="unchanged")
 
-        # 6. Safety pipeline (secrets + PII — deny-list already checked above)
-        safety: SafetyResult = run_safety_pipeline(path, content)
-        if safety.action == "skip":
-            return FileResult(
-                path=rel_path,
-                action="skipped",
-                reason=safety.reason,
-            )
-        if safety.action == "flag":
-            return FileResult(
-                path=rel_path,
-                action="flagged",
-                reason=safety.reason,
-            )
+        # 6. PII redaction (file-level — transforms content, non-blocking)
+        # Secret detection moved to per-chunk (see chunk loop below)
+        from personal_kb.ingest.safety import redact_pii
 
-        # Use safety-processed content (may have PII redacted)
-        content = safety.content
+        content, pii_redactions = redact_pii(content)
 
         if dry_run:
             # Still run LLM calls for preview
@@ -254,7 +243,13 @@ class FileIngester:
             chunks = chunk_content(content)
             dry_entries: list[ExtractedEntry] = []
             dry_prev: list[str] = []
+            dry_flagged = 0
             for chunk in chunks:
+                secrets = detect_secrets_in_content(chunk.text)
+                if secrets:
+                    dry_flagged += 1
+                    logger.info("Chunk flagged for secrets in %s: %s", rel_path, secrets)
+                    continue
                 entries = await extract_entries(
                     self._llm,
                     rel_path,
@@ -269,12 +264,9 @@ class FileIngester:
                 action="dry_run",
                 entry_count=len(dry_entries),
                 summary=summary,
-                chunks_processed=len(chunks),
+                chunks_processed=len(chunks) - dry_flagged,
+                chunks_flagged=dry_flagged,
             )
-
-        # Handle re-ingestion: deactivate old entries
-        if existing:
-            await self._deactivate_old_entries(existing)
 
         # 7. Summarize
         summary = await summarize_file(self._llm, rel_path, content)
@@ -292,7 +284,15 @@ class FileIngester:
         all_extracted: list[ExtractedEntry] = []
         previously_extracted: list[str] = []
         chunks_skipped = 0
+        chunks_flagged = 0
         for chunk in chunks:
+            # Secret scan per-chunk — skip chunks with secrets
+            secrets = detect_secrets_in_content(chunk.text)
+            if secrets:
+                chunks_flagged += 1
+                logger.info("Chunk flagged for secrets in %s: %s", rel_path, secrets)
+                continue
+
             # Dedup check (if agent provided)
             if self._dedup_agent:
                 dedup_result = await self._dedup_agent.check_chunk(chunk, previously_extracted)
@@ -324,7 +324,11 @@ class FileIngester:
             if entry:
                 entry_ids.append(entry.id)
 
-        # 9. Create note node and edges
+        # Deactivate old entries only after new ones are stored successfully
+        if existing:
+            await self._deactivate_old_entries(existing)
+
+        # 11. Create note node and edges
         note_node_id = f"note:{rel_path}"
         await self._create_note_node(note_node_id, rel_path, summary)
         for eid in entry_ids:
@@ -348,7 +352,7 @@ class FileIngester:
                     file_size,
                     path.suffix,
                     project_ref,
-                    json.dumps(safety.redactions),
+                    json.dumps(pii_redactions),
                     self._contributor,
                     now,
                     rel_path,
@@ -370,7 +374,7 @@ class FileIngester:
                     file_size,
                     path.suffix,
                     project_ref,
-                    json.dumps(safety.redactions),
+                    json.dumps(pii_redactions),
                     self._contributor,
                     now,
                     now,
@@ -384,8 +388,9 @@ class FileIngester:
             entry_count=len(entry_ids),
             entry_ids=entry_ids,
             summary=summary,
-            chunks_processed=len(chunks) - chunks_skipped,
+            chunks_processed=len(chunks) - chunks_skipped - chunks_flagged,
             chunks_skipped=chunks_skipped,
+            chunks_flagged=chunks_flagged,
         )
 
     async def ingest_content(
@@ -399,8 +404,8 @@ class FileIngester:
         """Ingest pre-fetched content (e.g. from a URL).
 
         Skips filesystem checks (deny-list, extension, file size).
-        Runs content-only safety (secrets + PII), then the full
-        LLM extraction pipeline with dedup, graph nodes, and edges.
+        Runs PII redaction at content level and per-chunk secret
+        scanning, then the full LLM extraction pipeline.
         """
         # 1. Compute hash, skip if unchanged
         content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -408,17 +413,11 @@ class FileIngester:
         if existing and existing["content_hash"] == content_hash and existing["is_active"]:
             return FileResult(path=source_url, action="unchanged")
 
-        # 2. Content-only safety (secrets + PII — no deny-list/extension)
-        safety: SafetyResult = run_content_safety(content)
-        if safety.action == "flag":
-            return FileResult(
-                path=source_url,
-                action="flagged",
-                reason=safety.reason,
-            )
+        # 2. PII redaction (content-level — transforms content, non-blocking)
+        # Secret detection moved to per-chunk (see chunk loop below)
+        from personal_kb.ingest.safety import redact_pii
 
-        # Use safety-processed content (may have PII redacted)
-        content = safety.content
+        content, pii_redactions = redact_pii(content)
 
         # 2b. Content size limit (mirrors file size check in ingest_file)
         content_bytes = len(content.encode("utf-8"))
@@ -435,7 +434,13 @@ class FileIngester:
             chunks = chunk_content(content)
             dry_entries: list[ExtractedEntry] = []
             dry_prev: list[str] = []
+            dry_flagged = 0
             for chunk in chunks:
+                secrets = detect_secrets_in_content(chunk.text)
+                if secrets:
+                    dry_flagged += 1
+                    logger.info("Chunk flagged for secrets in %s: %s", source_url, secrets)
+                    continue
                 entries = await extract_entries(
                     self._llm,
                     source_url,
@@ -450,12 +455,9 @@ class FileIngester:
                 action="dry_run",
                 entry_count=len(dry_entries),
                 summary=summary,
-                chunks_processed=len(chunks),
+                chunks_processed=len(chunks) - dry_flagged,
+                chunks_flagged=dry_flagged,
             )
-
-        # Handle re-ingestion: deactivate old entries
-        if existing:
-            await self._deactivate_old_entries(existing)
 
         # 3. Summarize
         summary = await summarize_file(self._llm, source_url, content)
@@ -473,7 +475,15 @@ class FileIngester:
         all_extracted: list[ExtractedEntry] = []
         previously_extracted: list[str] = []
         chunks_skipped = 0
+        chunks_flagged = 0
         for chunk in chunks:
+            # Secret scan per-chunk — skip chunks with secrets
+            secrets = detect_secrets_in_content(chunk.text)
+            if secrets:
+                chunks_flagged += 1
+                logger.info("Chunk flagged for secrets in %s: %s", source_url, secrets)
+                continue
+
             if self._dedup_agent:
                 dedup_result = await self._dedup_agent.check_chunk(chunk, previously_extracted)
                 if dedup_result.action == "skip":
@@ -502,6 +512,10 @@ class FileIngester:
             entry = await self._store_extracted_entry(ext_entry, project_ref, source_url)
             if entry:
                 entry_ids.append(entry.id)
+
+        # Deactivate old entries only after new ones are stored successfully
+        if existing:
+            await self._deactivate_old_entries(existing)
 
         # 7. Create note node and edges
         note_node_id = f"note:{source_url}"
@@ -534,7 +548,7 @@ class FileIngester:
                     file_size,
                     file_extension,
                     project_ref,
-                    json.dumps(safety.redactions),
+                    json.dumps(pii_redactions),
                     self._contributor,
                     now,
                     source_url,
@@ -556,7 +570,7 @@ class FileIngester:
                     file_size,
                     file_extension,
                     project_ref,
-                    json.dumps(safety.redactions),
+                    json.dumps(pii_redactions),
                     self._contributor,
                     now,
                     now,
@@ -570,8 +584,9 @@ class FileIngester:
             entry_count=len(entry_ids),
             entry_ids=entry_ids,
             summary=summary,
-            chunks_processed=len(chunks) - chunks_skipped,
+            chunks_processed=len(chunks) - chunks_skipped - chunks_flagged,
             chunks_skipped=chunks_skipped,
+            chunks_flagged=chunks_flagged,
         )
 
     async def ingest_directory(
