@@ -347,6 +347,12 @@ _TEMPLATE = """\
 const GRAPH_DATA = __GRAPH_DATA__;
 const NODE_COLORS = __NODE_COLORS__;
 const HIGH_CONN_THRESHOLD = 5;
+const LABEL_ZOOM_MIN = 3.0;
+const LABEL_ZOOM_MAX = 5.0;
+const LABEL_ZOOM_SOLO_MIN = 1.5;
+const LABEL_ZOOM_SOLO_MAX = 3.0;
+const LABEL_TRUNCATE_SCALE = 2.0;
+const LABEL_TRUNCATE_LEN = 20;
 const isServed = location.protocol !== 'file:';
 
 // Query-driven traversal state
@@ -422,6 +428,30 @@ function selectNode(node) {
   setTimeout(() => showInfoPanel(node), 850);
 }
 
+function computeLabelOpacity(node, globalScale) {
+  if (node === hoveredNode) return 1.0;
+  if (node === highlightedNode) return 1.0;
+  const nState = nodeStates.get(node.id);
+  if (nState === 'result' || nState === 'visited') return 1.0;
+  if (focusedNode) {
+    if (node.id === focusedNode) return 1.0;
+    const nb = adjacency.get(focusedNode) || [];
+    if (nb.some(n => n.node === node.id)) return 1.0;
+  }
+  const useSolo = soloType !== null;
+  const zMin = useSolo ? LABEL_ZOOM_SOLO_MIN : LABEL_ZOOM_MIN;
+  const zMax = useSolo ? LABEL_ZOOM_SOLO_MAX : LABEL_ZOOM_MAX;
+  const t = Math.min(Math.max((globalScale - zMin) / (zMax - zMin), 0.0), 1.0);
+  return t;
+}
+
+function truncateLabel(text, globalScale) {
+  if (globalScale < LABEL_TRUNCATE_SCALE && text.length > LABEL_TRUNCATE_LEN) {
+    return text.slice(0, LABEL_TRUNCATE_LEN - 1) + '\u2026';
+  }
+  return text;
+}
+
 const graph = ForceGraph()(document.getElementById('graph'))
   .graphData({ nodes: GRAPH_DATA.nodes, links: GRAPH_DATA.edges.map(e => ({
     source: e.source, target: e.target, type: e.type
@@ -453,16 +483,28 @@ const graph = ForceGraph()(document.getElementById('graph'))
     ctx.fill();
     ctx.shadowBlur = 0;
 
-    // Show label on hover, highlight, traversal, or high-connectivity nodes
-    const showLabel = isHL || isResult || isVisited
-      || node === hoveredNode || (node.val || 0) >= HIGH_CONN_THRESHOLD;
-    if (showLabel) {
+    // Zoom-aware label rendering
+    const labelOpacity = computeLabelOpacity(node, globalScale);
+    if (labelOpacity >= 0.01) {
       const fontSize = Math.max(10 / globalScale, 2);
+      const label = truncateLabel(node.label || node.id, globalScale);
       ctx.font = `${fontSize}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
-      ctx.fillText(node.label || node.id, node.x, node.y + r + 2);
+      const textW = ctx.measureText(label).width;
+      const padX = 3 / globalScale;
+      const padY = 1.5 / globalScale;
+      const pillY = node.y + r + 2;
+      ctx.globalAlpha = labelOpacity * 0.6;
+      ctx.fillStyle = '#0a0a0f';
+      ctx.beginPath();
+      ctx.roundRect(node.x - textW / 2 - padX, pillY - padY,
+                    textW + padX * 2, fontSize + padY * 2, 3 / globalScale);
+      ctx.fill();
+      ctx.globalAlpha = labelOpacity;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, node.x, pillY);
+      ctx.globalAlpha = 1.0;
     }
   })
   .nodeCanvasObjectMode(() => 'replace')
