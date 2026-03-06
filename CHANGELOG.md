@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.41.0 (2026-03-06)
+
+### Features
+
+- Per-chunk secret scanning and ingestion hardening
+  ([`7beaa4f`](https://github.com/jason-weddington/personal-kb-mcp/commit/7beaa4fadf478c456ec64ca1c2195d1de4f63328))
+
+
 ## v0.40.0 (2026-03-05)
 
 ### Features
