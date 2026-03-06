@@ -75,8 +75,11 @@ async def test_generate_without_system_prompt(mock_bedrock_client):
 
 @pytest.mark.asyncio
 async def test_generate_failure_returns_none():
-    """Generate returns None and clears availability on failure."""
-    with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
+    """Generate returns None after exhausting retries."""
+    with (
+        patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
+        patch("personal_kb.llm.bedrock.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+    ):
         client = MagicMock()
         client.converse = AsyncMock(side_effect=Exception("AWS error"))
         mock_get.return_value = client
@@ -86,6 +89,28 @@ async def test_generate_failure_returns_none():
         result = await llm.generate("test")
         assert result is None
         assert llm._available is None
+        # 1 initial + 3 retries = 4 total calls
+        assert client.converse.call_count == 4
+        assert mock_sleep.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_on_transient_failure(mock_converse_response):
+    """Generate succeeds after transient failure on first attempt."""
+    with (
+        patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
+        patch("personal_kb.llm.bedrock.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        client = MagicMock()
+        client.converse = AsyncMock(
+            side_effect=[Exception("throttled"), mock_converse_response],
+        )
+        mock_get.return_value = client
+
+        llm = BedrockLLMClient()
+        result = await llm.generate("test")
+        assert result == "Hello from Bedrock"
+        assert client.converse.call_count == 2
 
 
 @pytest.mark.asyncio

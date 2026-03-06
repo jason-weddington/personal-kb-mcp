@@ -82,11 +82,19 @@ def _create_synthesis_llm(provider: str) -> LLMProvider | None:
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     """Manage database connection and embedding client lifecycle."""
     # Configure logging to stderr (stdout is MCP stdio transport)
-    logging.basicConfig(
-        level=getattr(logging, get_log_level()),
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-        stream=sys.stderr,
-    )
+    log_level = getattr(logging, get_log_level())
+    log_fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
+    logging.basicConfig(level=log_level, format=log_fmt, stream=sys.stderr)
+
+    # Also log to file (overwrite on each server start)
+    log_dir = os.path.join(os.path.expanduser("~"), ".local", "share", "personal_kb")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "log.txt")
+    file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(logging.Formatter(log_fmt))
+    logging.getLogger().addHandler(file_handler)
+
     logger = logging.getLogger(__name__)
 
     db_url = get_database_url()

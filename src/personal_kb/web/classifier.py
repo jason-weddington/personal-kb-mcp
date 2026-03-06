@@ -10,12 +10,19 @@ _CLASSIFIER_SYSTEM = """\
 You are a query classifier for a knowledge base explorer. Given a user question, \
 classify it as one of two modes:
 
-- explore: The user wants to browse, discover, or navigate the knowledge graph. \
-Examples: "what connects to Python?", "show me debugging entries", \
-"what's related to SQLite?", "explore the API cluster"
-- summarize: The user wants a direct answer synthesized from knowledge. \
-Examples: "why did we choose FastAPI?", "explain the deployment pipeline", \
-"what's our convention for error handling?"
+- explore: The user wants to visually navigate the knowledge graph — see \
+connections, browse clusters, or filter by node type. These are graph-centric \
+requests, not questions seeking information. \
+Examples: "show connections to Python", "explore the API cluster", \
+"what nodes link to SQLite?", "browse debugging entries"
+- summarize: The user wants information — an answer, overview, status update, \
+or explanation synthesized from knowledge entries. Any question about a topic, \
+even casually phrased, is summarize. \
+Examples: "what work is happening on X?", "why did we choose FastAPI?", \
+"tell me about the deployment pipeline", "what's related to Lightroom?", \
+"what do we know about error handling?"
+
+When in doubt, choose summarize — it's more useful for most questions.
 
 Respond with EXACTLY one word: explore or summarize\
 """

@@ -165,6 +165,12 @@ _TEMPLATE = """\
     cursor: pointer; font-size: 18px; line-height: 1;
   }
   #response-panel .close-response:hover { color: #fff; }
+  #response-panel .summarize-btn {
+    display: inline-block; margin-top: 12px; padding: 6px 14px;
+    background: #1a5276; border: none; border-radius: 6px;
+    color: #e0e8f0; cursor: pointer; font-size: 13px;
+  }
+  #response-panel .summarize-btn:hover { background: #1f6a9a; }
   /* Chat panel */
   #chat-panel {
     position: fixed; top: 12px; left: 12px;
@@ -972,17 +978,43 @@ function handleSSEEvent(eventType, data) {
   } else if (eventType === 'entries') {
     // Final entries from route handler — mark results and zoom
     if (data.entries && data.entries.length > 0) {
-      revealNodesStaggered(
-        data.entries.map(e => e.id), 'result'
-      );
-      // Show result list in response panel
+      const entryIds = data.entries.map(e => e.id);
+      revealNodesStaggered(entryIds, 'result');
+      // Store for chat seeding
+      lastExploreQuestion = lastQueryQuestion;
+      lastExploreEntryIds = entryIds;
+      // Show result list in response panel with summarize button
       let md = '**Found ' + data.entries.length + ' entries:**\\n\\n';
       data.entries.forEach(e => {
         md += '- **[' + e.id + ']** ' + e.short_title;
         if (e.context) md += ' — _' + e.context + '_';
         md += '\\n';
       });
-      queueAnimation(() => showResponsePanel(md));
+      queueAnimation(() => {
+        showResponsePanel(md);
+        // Add summarize button and follow-up input
+        const btnBar = document.createElement('div');
+        btnBar.innerHTML = '<button class="summarize-btn" '
+          + 'onclick="summarizeExploreResults()">Summarize these</button>';
+        responseContent.appendChild(btnBar);
+        // Add follow-up input bar
+        const followUp = document.createElement('div');
+        followUp.style.cssText = 'display:flex;gap:8px;margin-top:10px;';
+        followUp.innerHTML = '<input id="explore-followup" type="text" '
+          + 'placeholder="Ask a follow-up..." autocomplete="off" '
+          + 'style="flex:1;padding:8px 10px;background:rgba(30,30,40,0.9);'
+          + 'border:1px solid #444;border-radius:6px;color:#e0e0e0;'
+          + 'font-size:13px;outline:none;font-family:inherit;">'
+          + '<button class="summarize-btn" '
+          + 'onclick="startExploreChat()">Send</button>';
+        responseContent.appendChild(followUp);
+        const inp = document.getElementById('explore-followup');
+        if (inp) inp.addEventListener('keydown', e => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault(); startExploreChat();
+          }
+        });
+      });
     } else {
       queueAnimation(() => {
         setStatus('No results found');
@@ -1009,8 +1041,40 @@ function handleSSEEvent(eventType, data) {
   }
 }
 
+// Track last explore results for chat seeding
+let lastExploreQuestion = '';
+let lastExploreEntryIds = [];
+let lastQueryQuestion = '';
+
+function summarizeExploreResults() {
+  // Seed chat with the explore results and ask for a summary
+  const syntheticAnswer = 'Found ' + lastExploreEntryIds.length
+    + ' entries: ' + lastExploreEntryIds.join(', ')
+    + '. Ask me anything about these results.';
+  openChatPanel(
+    lastExploreQuestion, syntheticAnswer, lastExploreEntryIds
+  );
+  // Auto-send a summarize request
+  chatInput.value = 'Summarize these entries for me.';
+  sendChatMessage();
+}
+
+function startExploreChat() {
+  const inp = document.getElementById('explore-followup');
+  const msg = inp ? inp.value.trim() : '';
+  if (!msg) return;
+  const syntheticAnswer = 'Found ' + lastExploreEntryIds.length
+    + ' entries: ' + lastExploreEntryIds.join(', ') + '.';
+  openChatPanel(
+    lastExploreQuestion, syntheticAnswer, lastExploreEntryIds
+  );
+  chatInput.value = msg;
+  sendChatMessage();
+}
+
 async function startQuery(question) {
   resetTraversalState();
+  lastQueryQuestion = question;
   setStatus('Classifying query...');
 
   // Reset focus/solo mode

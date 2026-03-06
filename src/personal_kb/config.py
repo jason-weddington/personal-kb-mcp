@@ -82,7 +82,7 @@ def get_bedrock_region() -> str:
 
 def get_bedrock_timeout() -> float:
     """Return the Bedrock timeout in seconds from KB_BEDROCK_TIMEOUT."""
-    return float(os.environ.get("KB_BEDROCK_TIMEOUT", "30.0"))
+    return float(os.environ.get("KB_BEDROCK_TIMEOUT", "60.0"))
 
 
 def get_database_url() -> str | None:

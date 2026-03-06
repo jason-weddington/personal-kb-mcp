@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -93,7 +94,10 @@ def _configure_bearer_auth(config: Any) -> None:
     config.auth_scheme_resolver.resolve_auth_scheme = patched_resolve
 
 
-_SONNET_MODEL = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+_SONNET_MODEL = "us.anthropic.claude-sonnet-4-6"
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0  # seconds — exponential: 1s, 2s, 4s
 
 
 class BedrockLLMClient:
@@ -154,10 +158,7 @@ class BedrockLLMClient:
             if system is not None:
                 converse_input.system = [SystemContentBlockText(value=system)]
 
-            response = await client.converse(converse_input)
-            result: str = response.output.value.content[0].value
-            self._available = True
-            return result
+            return await self._converse_with_retry(client, converse_input)
         except Exception:
             logger.warning("Bedrock generation failed", exc_info=True)
             self._available = None
@@ -198,14 +199,34 @@ class BedrockLLMClient:
             if system is not None:
                 converse_input.system = [SystemContentBlockText(value=system)]
 
-            response = await client.converse(converse_input)
-            result: str = response.output.value.content[0].value
-            self._available = True
-            return result
+            return await self._converse_with_retry(client, converse_input)
         except Exception:
             logger.warning("Bedrock chat generation failed", exc_info=True)
             self._available = None
             return None
+
+    async def _converse_with_retry(self, client: Any, converse_input: Any) -> str:
+        """Call client.converse with exponential-backoff retries."""
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = await client.converse(converse_input)
+                result: str = response.output.value.content[0].value
+                self._available = True
+                return result
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _MAX_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2**attempt)
+                    logger.warning(
+                        "Bedrock converse attempt %d/%d failed, retrying in %.1fs: %s",
+                        attempt + 1,
+                        _MAX_RETRIES + 1,
+                        delay,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
 
     def _get_client(self) -> Any:
         """Lazily create the BedrockRuntimeClient. Returns None if SDK missing."""
