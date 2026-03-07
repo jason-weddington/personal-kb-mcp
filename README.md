@@ -345,6 +345,56 @@ Most team members want both a **shared team KB** (decisions, architecture, patte
 
 Environment variables in each `env` block are scoped to that server process — no collisions.
 
+## Steering Your Agents
+
+The MCP server ships with built-in instructions that teach agents *what* each tool does. But agents need additional guidance in your system prompt (e.g. `CLAUDE.md`, Cursor rules, Windsurf rules) to develop good KB habits — searching before acting, storing knowledge as they work, and not letting insights evaporate at session end.
+
+Add something like this to your agent's system prompt:
+
+```markdown
+## Knowledge Base
+
+A personal-kb MCP server is available. This is the primary place for
+durable knowledge — not memory files or scratchpads.
+
+### Query before you act — not after you fail
+Search the KB BEFORE guessing or asking the user. Concrete triggers:
+
+- Starting a task in an unfamiliar project → kb_search(project_ref="X")
+- Debugging an error you haven't seen → kb_search the error message
+- Making an architectural or library choice → kb_ask("decisions about X")
+- Deployment, infrastructure, operational procedures → kb_search first
+
+The cost of a failed kb_search is one second. The cost of not searching
+is minutes of wasted fumbling.
+
+### Capture while you still have context
+Knowledge evaporates when a session ends. Store entries as you work,
+not as an afterthought. If you just debugged something tricky, made a
+decision, or discovered a non-obvious behavior — kb_store it immediately.
+
+### What belongs in the KB
+- Decisions and their rationale ("chose X because Y")
+- Lessons learned from debugging, fixes with non-obvious root causes
+- Patterns, conventions, project-specific gotchas
+- Factual references: API behaviors, config values, version constraints
+
+### What does NOT belong
+- Trivial or temporary info (session state, in-progress work)
+- Well-known public knowledge (stdlib docs, basic git usage)
+- Duplicates — always kb_search before storing; use update_entry_id if
+  an entry already exists
+
+### Good practices
+- Use tags for discoverability and project_ref for scoping
+- Use hints to build the knowledge graph: {"supersedes": "kb-XXXXX"},
+  {"tool": "sqlite"}, {"person": "jason"}
+- Use kb_store_batch when capturing multiple related entries
+- When a previous entry is wrong or outdated, update or deactivate it
+```
+
+The server instructions handle tool mechanics (which tool to use when, parameter formats, entry types). The system prompt guidance above handles *behavior* — when to search, when to store, and what's worth keeping. Both layers together produce agents that actively use the KB without being told.
+
 ## Development
 
 ```bash
