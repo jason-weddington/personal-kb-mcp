@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v0.53.0 (2026-03-07)
+
+### Chores
+
+- Move trafilatura from optional web extra to core dependency
+  ([`120d021`](https://github.com/jason-weddington/personal-kb-mcp/commit/120d0215f98ecb28a1ad2ee6b84ffd7b61074f0b))
+
+### Documentation
+
+- Add agent steering guide to README
+  ([`3211f27`](https://github.com/jason-weddington/personal-kb-mcp/commit/3211f271fab14a0754bae20a63ecc2fc508f5db2))
+
+### Features
+
+- Auto-start explorer web server on MCP server startup
+  ([`46b8730`](https://github.com/jason-weddington/personal-kb-mcp/commit/46b87306a6ee38b80fd181112226b7b78ceccc30))
+
+
 ## v0.52.4 (2026-03-07)
 
 ### Bug Fixes
