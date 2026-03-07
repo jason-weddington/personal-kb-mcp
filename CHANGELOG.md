@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.49.0 (2026-03-07)
+
+### Features
+
+- Add get_entry read tool to explorer chat
+  ([`9b35ed3`](https://github.com/jason-weddington/personal-kb-mcp/commit/9b35ed39775d3f9362c5cb233ed3bd0dd75af448))
+
+
 ## v0.48.0 (2026-03-07)
 
 ### Features
