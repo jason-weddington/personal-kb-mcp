@@ -12,6 +12,7 @@ dependencies = [
     "anthropic>=0.40",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
+    "trafilatura>=2.0",
 ]
 
 [project.scripts]
@@ -32,9 +33,6 @@ safety = [
 ]
 iam = [
     "boto3>=1.28",
-]
-web = [
-    "trafilatura>=2.0",
 ]
 
 [dependency-groups]

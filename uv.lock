@@ -1540,6 +1540,7 @@ dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "sqlite-vec" },
+    { name = "trafilatura" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1557,9 +1558,6 @@ postgres = [
 safety = [
     { name = "detect-secrets" },
     { name = "scrubadub" },
-]
-web = [
-    { name = "trafilatura" },
 ]
 
 [package.dev-dependencies]
@@ -1589,10 +1587,10 @@ requires-dist = [
     { name = "scrubadub", marker = "extra == 'safety'", specifier = ">=2.0" },
     { name = "smithy-json", marker = "extra == 'aws'", git = "https://github.com/jason-weddington/smithy-python.git?subdirectory=packages%2Fsmithy-json&rev=fix%2Fjson-control-char-escaping" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
-    { name = "trafilatura", marker = "extra == 'web'", specifier = ">=2.0" },
+    { name = "trafilatura", specifier = ">=2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
-provides-extras = ["aws", "postgres", "safety", "iam", "web"]
+provides-extras = ["aws", "postgres", "safety", "iam"]
 
 [package.metadata.requires-dev]
 dev = [

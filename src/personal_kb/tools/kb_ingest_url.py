@@ -51,24 +51,12 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
         text-heavy pages. May fail on JavaScript-rendered SPAs or pages with
         no extractable article content.
 
-        Requires the 'web' optional dependency: uv sync --extra web
         """
         if ctx is None:
             raise RuntimeError("Context not injected")
 
         if not url:
             return "Error: url is required."
-
-        # Check trafilatura availability
-        try:
-            import trafilatura  # noqa: F401
-        except ImportError:
-            return (
-                "Error: trafilatura not installed — required for URL ingestion.\n\n"
-                "Install with:\n"
-                "  uv sync --extra web\n"
-                "  # or: uvx --with 'personal-kb[web]' personal-kb"
-            )
 
         # Fail closed: require safety deps for secret/PII scanning
         from personal_kb.config import is_safety_skip
