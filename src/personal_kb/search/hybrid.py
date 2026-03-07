@@ -156,7 +156,7 @@ async def _filter_only_search(
     creation date (newest first).
     """
     sql = "SELECT id FROM knowledge_entries WHERE is_active = 1"
-    params: list[str] = []
+    params: list[str | int] = []
 
     if query.project_ref:
         sql += " AND project_ref = ?"
@@ -176,7 +176,7 @@ async def _filter_only_search(
         params.append(query.team)
 
     sql += " ORDER BY created_at DESC LIMIT ?"
-    params.append(str(query.limit))
+    params.append(query.limit)
 
     cursor = await db.execute(sql, tuple(params))
     rows = await cursor.fetchall()
