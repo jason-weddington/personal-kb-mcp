@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.52.2 (2026-03-07)
+
+### Bug Fixes
+
+- Show query status in search box placeholder instead of status line
+  ([`71b7561`](https://github.com/jason-weddington/personal-kb-mcp/commit/71b7561be28b1e48cab093a40a65cb740ba68a02))
+
+
 ## v0.52.1 (2026-03-07)
 
 ### Bug Fixes
