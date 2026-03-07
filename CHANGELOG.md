@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.46.0 (2026-03-06)
+
+### Features
+
+- Explorer UX polish — chat header, copy, maximize, textareas, zoom cap
+  ([`8f9c259`](https://github.com/jason-weddington/personal-kb-mcp/commit/8f9c25942d193812b5e7d37cc86f8d0db099cd71))
+
+
 ## v0.45.0 (2026-03-06)
 
 ### Features
