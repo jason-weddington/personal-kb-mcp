@@ -223,11 +223,10 @@ _TEMPLATE = """\
     width: 100%; padding: 6px 10px; box-sizing: border-box; margin-top: 8px;
     background: rgba(15, 15, 25, 0.9); border: 1px solid #555;
     border-radius: 4px; color: #e0e0e0; font-size: 12px;
-    font-family: inherit; outline: none; cursor: pointer;
-    padding-right: 10px;
+    font-family: inherit; outline: none;
   }
   #ingest-project-input:focus { border-color: #777; }
-  #ingest-project-input option { background: #1a1a2a; color: #e0e0e0; }
+  #ingest-project-input::placeholder { color: #555; }
   #ingest-progress {
     display: none; margin-top: 10px;
   }
@@ -540,9 +539,9 @@ _TEMPLATE = """\
         accept=".txt,.md" onchange="updateFileList()" />
       <div id="ingest-file-list"></div>
     </div>
-    <select id="ingest-project-input">
-      <option value="">No project</option>
-    </select>
+    <input id="ingest-project-input" list="ingest-project-list"
+      placeholder="Project (optional)" autocomplete="off" />
+    <datalist id="ingest-project-list"></datalist>
     <div id="ingest-progress">
       <div id="ingest-progress-bar"><div id="ingest-progress-fill"></div></div>
       <div id="ingest-progress-text"></div>
@@ -1747,29 +1746,23 @@ const ingestFileList = document.getElementById('ingest-file-list');
 let activeIngestTab = 'url';
 
 async function populateProjectDropdown() {
+  const dl = document.getElementById('ingest-project-list');
+  let projects = [];
   try {
     const resp = await fetch('/api/projects');
-    const projects = await resp.json();
-    ingestProjectInput.innerHTML = '<option value="">No project</option>';
-    projects.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p;
-      opt.textContent = p;
-      ingestProjectInput.appendChild(opt);
-    });
+    projects = await resp.json();
   } catch (e) {
-    const projects = GRAPH_DATA.nodes
+    projects = GRAPH_DATA.nodes
       .filter(n => n.type === 'project')
       .map(n => n.id.replace(/^project:/, ''))
       .sort();
-    ingestProjectInput.innerHTML = '<option value="">No project</option>';
-    projects.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p;
-      opt.textContent = p;
-      ingestProjectInput.appendChild(opt);
-    });
   }
+  dl.innerHTML = '';
+  projects.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    dl.appendChild(opt);
+  });
 }
 
 function switchIngestTab(tab) {
@@ -1809,6 +1802,7 @@ function openIngestModal(tab) {
     + ' autocomplete="off" /></div>';
   ingestFileInput.value = '';
   ingestFileList.innerHTML = '';
+  ingestProjectInput.value = '';
   populateProjectDropdown();
   ingestStatus.textContent = '';
   ingestStatus.className = '';
