@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.51.0 (2026-03-07)
+
+### Features
+
+- Add explorer ingest URL button, project dropdown, and filter-only search
+  ([`0ddf48c`](https://github.com/jason-weddington/personal-kb-mcp/commit/0ddf48ce7566f203a8157f72fd5cac828cb1dcb4))
+
+
 ## v0.50.0 (2026-03-07)
 
 ### Features
