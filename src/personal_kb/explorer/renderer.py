@@ -135,6 +135,8 @@ _TEMPLATE = """\
     background: rgba(20, 20, 30, 0.9);
     border: 1px solid #333; border-radius: 6px;
     color: #e0e0e0; font-size: 14px; outline: none;
+    font-family: inherit; resize: none; overflow: hidden;
+    line-height: 1.4; max-height: 120px;
   }
   #search-input:focus { border-color: #555; }
   #search-input::placeholder { color: #555; }
@@ -152,7 +154,7 @@ _TEMPLATE = """\
   }
   #status-line.hidden { opacity: 0; }
   #response-panel {
-    display: none; position: fixed; top: 80px; left: 12px;
+    display: none; position: fixed; top: 12px; left: 12px;
     width: 420px; max-height: calc(100vh - 120px); overflow-y: auto;
     background: rgba(20, 20, 30, 0.95); border: 1px solid #333;
     border-radius: 8px; padding: 16px; z-index: 10;
@@ -171,6 +173,19 @@ _TEMPLATE = """\
     color: #e0e8f0; cursor: pointer; font-size: 13px;
   }
   #response-panel .summarize-btn:hover { background: #1f6a9a; }
+  #response-panel { overflow-wrap: break-word; word-break: break-word; }
+  #response-content table, .chat-msg table {
+    width: 100%; border-collapse: collapse; margin: 8px 0;
+    font-size: 12px; table-layout: fixed; word-break: break-word;
+  }
+  #response-content th, #response-content td,
+  .chat-msg th, .chat-msg td {
+    border: 1px solid #444; padding: 4px 8px; text-align: left;
+    overflow-wrap: break-word;
+  }
+  #response-content th, .chat-msg th {
+    background: rgba(255,255,255,0.06); font-weight: 600; color: #eee;
+  }
   /* Chat panel */
   #chat-panel {
     position: fixed; top: 12px; left: 12px;
@@ -183,14 +198,41 @@ _TEMPLATE = """\
     opacity: 0; pointer-events: none;
     transform: scaleY(0.05) scaleX(1);
     transform-origin: top left;
-    transition: opacity 0.3s ease, transform 0.3s ease;
+    transition: opacity 0.3s ease, transform 0.3s ease,
+      width 0.3s ease, left 0.3s ease;
   }
   #chat-panel.visible {
     opacity: 1; pointer-events: auto;
     transform: scaleY(1) scaleX(1);
   }
+  #chat-panel.maximized {
+    width: min(60vw, 900px);
+    left: calc((100vw - min(60vw, 900px)) / 2);
+  }
+  #chat-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 76px 10px 14px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+  }
+  #chat-header .chat-mode-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    flex-shrink: 0;
+  }
+  #chat-header .chat-mode-badge.summarize {
+    background: #1a5276; color: #a8d8f0;
+  }
+  #chat-header .chat-mode-badge.explore {
+    background: #4a3520; color: #f0c878;
+  }
+  #chat-header .chat-query {
+    font-size: 12px; color: #999;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1; min-width: 0;
+  }
   #chat-panel .chat-close {
-    position: absolute; top: 10px; right: 10px;
+    position: absolute; top: 8px; right: 10px;
     width: 28px; height: 28px; border-radius: 50%;
     background: rgba(80, 80, 90, 0.8); border: none;
     color: #fff; cursor: pointer; font-size: 15px;
@@ -199,6 +241,15 @@ _TEMPLATE = """\
     display: flex; align-items: center; justify-content: center;
   }
   #chat-panel .chat-close:hover { background: rgba(120, 120, 130, 0.9); }
+  #chat-panel .chat-maximize {
+    position: absolute; top: 8px; right: 42px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: rgba(80, 80, 90, 0.8); border: none;
+    color: #fff; cursor: pointer;
+    z-index: 1; transition: background 0.15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #chat-panel .chat-maximize:hover { background: rgba(120, 120, 130, 0.9); }
   #chat-messages {
     flex: 1; overflow-y: auto; padding: 16px;
     display: flex; flex-direction: column; gap: 10px;
@@ -207,7 +258,7 @@ _TEMPLATE = """\
   .chat-msg {
     max-width: 85%; padding: 8px 12px;
     border-radius: 12px; font-size: 13px;
-    line-height: 1.5; word-wrap: break-word;
+    line-height: 1.5; overflow-wrap: break-word; word-break: break-word;
   }
   .chat-msg.user {
     align-self: flex-end; background: #1a5276;
@@ -216,7 +267,18 @@ _TEMPLATE = """\
   .chat-msg.assistant {
     align-self: flex-start; background: #2a2a3a;
     color: #ddd; border-bottom-left-radius: 4px;
+    position: relative;
   }
+  .chat-msg .copy-btn {
+    position: absolute; top: 6px; right: 6px;
+    padding: 3px 5px; background: rgba(60, 60, 70, 0.8); border: none;
+    border-radius: 4px; color: #888; cursor: pointer;
+    opacity: 0; transition: opacity 0.15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .chat-msg:hover .copy-btn { opacity: 1; }
+  .chat-msg .copy-btn:hover { color: #fff; background: rgba(100, 100, 110, 0.9); }
+  .chat-msg .copy-btn.copied { opacity: 1; color: #00ff88; }
   .chat-msg h1, .chat-msg h2, .chat-msg h3 {
     font-size: 14px; font-weight: 600;
     margin: 8px 0 4px; color: #eee;
@@ -258,7 +320,8 @@ _TEMPLATE = """\
     background: rgba(30, 30, 40, 0.9);
     border: 1px solid #444; border-radius: 6px;
     color: #e0e0e0; font-size: 13px; outline: none;
-    font-family: inherit;
+    font-family: inherit; resize: none; overflow: hidden;
+    line-height: 1.4; max-height: 120px;
   }
   #chat-input:focus { border-color: #666; }
   #chat-input::placeholder { color: #555; }
@@ -322,8 +385,8 @@ _TEMPLATE = """\
 </head>
 <body>
 <div id="search-bar">
-  <input id="search-input" type="text"
-    placeholder="Search nodes or ask a question..." autocomplete="off">
+  <textarea id="search-input" rows="1"
+    placeholder="Search nodes or ask a question..." autocomplete="off"></textarea>
   <div id="search-results"></div>
 </div>
 <div id="status-line" class="hidden"></div>
@@ -332,11 +395,16 @@ _TEMPLATE = """\
   <div id="response-content"></div>
 </div>
 <div id="chat-panel">
+  <button id="chat-maximize-btn" class="chat-maximize" onclick="toggleMaximize()"></button>
   <button class="chat-close" onclick="hideChatPanel()">&times;</button>
+  <div id="chat-header">
+    <span id="chat-mode-badge" class="chat-mode-badge"></span>
+    <span id="chat-query" class="chat-query"></span>
+  </div>
   <div id="chat-messages"></div>
   <div id="chat-input-bar">
-    <input id="chat-input" type="text"
-      placeholder="Ask a follow-up..." autocomplete="off">
+    <textarea id="chat-input" rows="1"
+      placeholder="Ask a follow-up..." autocomplete="off"></textarea>
     <button id="chat-send" onclick="sendChatMessage()">Send</button>
   </div>
 </div>
@@ -360,6 +428,63 @@ const LABEL_ZOOM_SOLO_MAX = 3.0;
 const LABEL_TRUNCATE_SCALE = 2.0;
 const LABEL_TRUNCATE_LEN = 20;
 const isServed = location.protocol !== 'file:';
+
+// Auto-resize textarea to fit content (up to CSS max-height)
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+  // Switch to scroll if we hit the cap
+  el.style.overflow = el.scrollHeight > el.offsetHeight ? 'auto' : 'hidden';
+}
+
+// Icon SVGs
+const copySvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
+  + 'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+  + 'stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" '
+  + 'rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 '
+  + '2v1"/></svg>';
+const expandSvg = '<svg width="14" height="14" viewBox="0 0 24 24" '
+  + 'fill="none" stroke="currentColor" stroke-width="2" '
+  + 'stroke-linecap="round" stroke-linejoin="round">'
+  + '<polyline points="15 3 21 3 21 9"/>'
+  + '<polyline points="9 21 3 21 3 15"/>'
+  + '<line x1="21" y1="3" x2="14" y2="10"/>'
+  + '<line x1="3" y1="21" x2="10" y2="14"/></svg>';
+const shrinkSvg = '<svg width="14" height="14" viewBox="0 0 24 24" '
+  + 'fill="none" stroke="currentColor" stroke-width="2" '
+  + 'stroke-linecap="round" stroke-linejoin="round">'
+  + '<polyline points="4 14 10 14 10 20"/>'
+  + '<polyline points="20 10 14 10 14 4"/>'
+  + '<line x1="14" y1="10" x2="21" y2="3"/>'
+  + '<line x1="3" y1="21" x2="10" y2="14"/></svg>';
+
+// Initialize maximize button icon
+document.getElementById('chat-maximize-btn').innerHTML = expandSvg;
+
+// Copy message text to clipboard
+function copyMsgText(btn) {
+  const msg = btn.closest('.chat-msg');
+  const clone = msg.cloneNode(true);
+  const cb = clone.querySelector('.copy-btn');
+  if (cb) cb.remove();
+  navigator.clipboard.writeText(clone.innerText).then(() => {
+    btn.innerHTML = '\\u2713';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.innerHTML = copySvg;
+      btn.classList.remove('copied');
+    }, 1500);
+  });
+}
+
+// Maximize / restore chat panel
+let chatMaximized = false;
+function toggleMaximize() {
+  chatMaximized = !chatMaximized;
+  chatPanel.classList.toggle('maximized', chatMaximized);
+  document.getElementById('chat-maximize-btn').innerHTML =
+    chatMaximized ? shrinkSvg : expandSvg;
+}
 
 // Query-driven traversal state
 let queryMode = null;       // 'explore' | 'summarize' | null
@@ -458,11 +583,14 @@ function truncateLabel(text, globalScale) {
   return text;
 }
 
+const MAX_AUTO_ZOOM = 6;
+
 const graph = ForceGraph()(document.getElementById('graph'))
   .graphData({ nodes: GRAPH_DATA.nodes, links: GRAPH_DATA.edges.map(e => ({
     source: e.source, target: e.target, type: e.type
   }))})
   .backgroundColor('#0a0a0f')
+  .maxZoom(12)
   .nodeId('id')
   .nodeVal('val')
   .nodeColor(n => NODE_COLORS[n.type] || '#666')
@@ -534,7 +662,10 @@ const graph = ForceGraph()(document.getElementById('graph'))
       .linkVisibility(linkVisible);
     document.getElementById('info-panel')
       .classList.remove('visible');
-    setTimeout(() => graph.zoomToFit(400, 40, connected), 100);
+    setTimeout(() => {
+      graph.zoomToFit(400, 40, connected);
+      setTimeout(clampZoom, 450);
+    }, 100);
   });
 
 // Edge labels on hover
@@ -544,6 +675,7 @@ graph.linkLabel(link => `${link.type}`);
 setTimeout(() => {
   if (!focusedNode && navHistory.length === 0) {
     graph.zoomToFit(400, 40, connected);
+    setTimeout(clampZoom, 450);
   }
 }, 1500);
 
@@ -563,7 +695,10 @@ function toggleSolo(type) {
   });
   graph.nodeVisibility(nodeVisible)
     .linkVisibility(linkVisible);
-  setTimeout(() => graph.zoomToFit(400, 40, connected), 100);
+  setTimeout(() => {
+    graph.zoomToFit(400, 40, connected);
+    setTimeout(clampZoom, 450);
+  }, 100);
 }
 
 // Info panel
@@ -663,6 +798,7 @@ document.addEventListener('keydown', e => {
     document.getElementById('info-panel')
       .classList.remove('visible');
     graph.zoomToFit(400, 40, connected);
+    setTimeout(clampZoom, 450);
     return;
   }
   if (e.key !== 'ArrowLeft') return;
@@ -688,6 +824,7 @@ if (isServed) {
 }
 
 searchInput.addEventListener('input', () => {
+  autoResize(searchInput);
   const q = searchInput.value.trim().toLowerCase();
   searchIdx = -1;
   if (!q) {
@@ -755,7 +892,8 @@ searchInput.addEventListener('keydown', e => {
     e.preventDefault();
     searchIdx = Math.max(searchIdx - 1, 0);
     updateSearchHL(items);
-  } else if (e.key === 'Enter') {
+  } else if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
     // If user selected an autocomplete item, fly to it
     if (searchIdx >= 0 && items[searchIdx]) {
       flyToNode(items[searchIdx].dataset.id);
@@ -787,6 +925,7 @@ function updateSearchHL(items) {
 
 function clearSearch() {
   searchInput.value = '';
+  searchInput.style.height = 'auto';
   searchResultsEl.classList.remove('visible');
   searchResultsEl.innerHTML = '';
   searchIdx = -1;
@@ -894,11 +1033,17 @@ function emitTraversalParticles(entryIds) {
   });
 }
 
+function clampZoom() {
+  // After zoomToFit, cap zoom to avoid over-zooming on small clusters
+  if (graph.zoom() > MAX_AUTO_ZOOM) graph.zoom(MAX_AUTO_ZOOM, 300);
+}
+
 function zoomToVisited() {
   // Smoothly widen view to fit all visited + result nodes so far
   const allActive = new Set([...visitedNodes, ...resultNodes]);
   if (allActive.size === 0) return;
   graph.zoomToFit(500, 60, n => allActive.has(n.id));
+  setTimeout(clampZoom, 550);
 }
 
 function revealNodesStaggered(nodeIds, state) {
@@ -920,6 +1065,7 @@ function zoomToResults() {
   // Queue the zoom after any pending animations
   queueAnimation(() => {
     graph.zoomToFit(600, 40, n => resultNodes.has(n.id));
+    setTimeout(clampZoom, 650);
   });
 }
 
@@ -945,9 +1091,12 @@ function showResponsePanel(answer) {
   responsePanel.classList.add('visible');
 }
 
-function hideResponsePanel() {
+function hideResponsePanel(keepSearchHidden) {
   responsePanel.classList.remove('visible');
   responseContent.innerHTML = '';
+  if (!keepSearchHidden) {
+    document.getElementById('search-bar').classList.remove('hidden-for-chat');
+  }
 }
 
 function handleSSEEvent(eventType, data) {
@@ -980,6 +1129,8 @@ function handleSSEEvent(eventType, data) {
     if (data.entries && data.entries.length > 0) {
       const entryIds = data.entries.map(e => e.id);
       revealNodesStaggered(entryIds, 'result');
+      // Hide search bar — response panel takes its place
+      document.getElementById('search-bar').classList.add('hidden-for-chat');
       // Store for chat seeding
       lastExploreQuestion = lastQueryQuestion;
       lastExploreEntryIds = entryIds;
@@ -1000,20 +1151,24 @@ function handleSSEEvent(eventType, data) {
         // Add follow-up input bar
         const followUp = document.createElement('div');
         followUp.style.cssText = 'display:flex;gap:8px;margin-top:10px;';
-        followUp.innerHTML = '<input id="explore-followup" type="text" '
+        followUp.innerHTML = '<textarea id="explore-followup" rows="1" '
           + 'placeholder="Ask a follow-up..." autocomplete="off" '
           + 'style="flex:1;padding:8px 10px;background:rgba(30,30,40,0.9);'
           + 'border:1px solid #444;border-radius:6px;color:#e0e0e0;'
-          + 'font-size:13px;outline:none;font-family:inherit;">'
+          + 'font-size:13px;outline:none;font-family:inherit;resize:none;'
+          + 'overflow:hidden;line-height:1.4;max-height:120px;"></textarea>'
           + '<button class="summarize-btn" '
           + 'onclick="startExploreChat()">Send</button>';
         responseContent.appendChild(followUp);
         const inp = document.getElementById('explore-followup');
-        if (inp) inp.addEventListener('keydown', e => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault(); startExploreChat();
-          }
-        });
+        if (inp) {
+          inp.addEventListener('input', () => autoResize(inp));
+          inp.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault(); startExploreChat();
+            }
+          });
+        }
       });
     } else {
       queueAnimation(() => {
@@ -1027,7 +1182,7 @@ function handleSSEEvent(eventType, data) {
       queueAnimation(() => {
         openChatPanel(
           data.question || '', data.answer,
-          data.entry_ids || []
+          data.entry_ids || [], 'summarize'
         );
       });
     }
@@ -1052,7 +1207,8 @@ function summarizeExploreResults() {
     + ' entries: ' + lastExploreEntryIds.join(', ')
     + '. Ask me anything about these results.';
   openChatPanel(
-    lastExploreQuestion, syntheticAnswer, lastExploreEntryIds
+    lastExploreQuestion, syntheticAnswer, lastExploreEntryIds,
+    'explore'
   );
   // Auto-send a summarize request
   chatInput.value = 'Summarize these entries for me.';
@@ -1066,7 +1222,8 @@ function startExploreChat() {
   const syntheticAnswer = 'Found ' + lastExploreEntryIds.length
     + ' entries: ' + lastExploreEntryIds.join(', ') + '.';
   openChatPanel(
-    lastExploreQuestion, syntheticAnswer, lastExploreEntryIds
+    lastExploreQuestion, syntheticAnswer, lastExploreEntryIds,
+    'explore'
   );
   chatInput.value = msg;
   sendChatMessage();
@@ -1149,6 +1306,13 @@ function appendChatMsg(role, contentHtml) {
   const div = document.createElement('div');
   div.className = 'chat-msg ' + role;
   div.innerHTML = addChatCitation(contentHtml);
+  if (role === 'assistant') {
+    const btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.innerHTML = copySvg;
+    btn.onclick = function() { copyMsgText(this); };
+    div.appendChild(btn);
+  }
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
   return div;
@@ -1168,12 +1332,21 @@ function removeTypingIndicator() {
   if (el) el.remove();
 }
 
-function openChatPanel(question, answer, entryIds) {
+function openChatPanel(question, answer, entryIds, mode) {
   chatSessionId = null;
   chatSeedQuestion = question;
   chatSeedAnswer = answer;
   chatSeedEntryIds = entryIds || [];
   chatMessages.innerHTML = '';
+
+  // Populate header
+  const badge = document.getElementById('chat-mode-badge');
+  const queryEl = document.getElementById('chat-query');
+  const chatMode = mode || queryMode || 'summarize';
+  badge.textContent = chatMode;
+  badge.className = 'chat-mode-badge ' + chatMode;
+  queryEl.textContent = question || '';
+  queryEl.title = question || '';
 
   // Seed with original Q + A
   if (question) {
@@ -1181,7 +1354,7 @@ function openChatPanel(question, answer, entryIds) {
   }
   appendChatMsg('assistant', renderMarkdown(answer));
 
-  hideResponsePanel();
+  hideResponsePanel(true);  // keep search hidden — chat panel manages it
   // Hide search bar, then reveal chat panel
   const searchBar = document.getElementById('search-bar');
   searchBar.classList.add('hidden-for-chat');
@@ -1193,6 +1366,9 @@ function openChatPanel(question, answer, entryIds) {
 }
 
 function hideChatPanel() {
+  chatMaximized = false;
+  chatPanel.classList.remove('maximized');
+  document.getElementById('chat-maximize-btn').innerHTML = expandSvg;
   chatPanel.classList.remove('visible');
   // After chat panel collapses, show search bar
   setTimeout(() => {
@@ -1213,6 +1389,7 @@ async function sendChatMessage() {
   const msg = chatInput.value.trim();
   if (!msg || chatBusy) return;
   chatInput.value = '';
+  chatInput.style.height = 'auto';
   setChatBusy(true);
 
   appendChatMsg('user', '<p>' + escapeHtml(msg) + '</p>');
@@ -1296,6 +1473,7 @@ async function sendChatMessage() {
   }
 }
 
+chatInput.addEventListener('input', () => autoResize(chatInput));
 chatInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
