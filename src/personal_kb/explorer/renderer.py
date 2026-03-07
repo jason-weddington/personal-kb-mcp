@@ -1938,16 +1938,24 @@ async function submitIngest() {
               : 'Created ' + n + ' entries: ' + allEntryIds.join(', ');
             ingestStatus.className = n > 0 ? 'success' : '';
 
-            // Highlight new entries on graph
-            allEntryIds.forEach(id => markResult(id));
-            if (allEntryIds.length > 0) {
-              emitTraversalParticles(allEntryIds);
-              setTimeout(() => {
-                graph.zoomToFit(500, 60, n => allEntryIds.includes(n.id));
-                setTimeout(clampZoom, 550);
-              }, 300);
+            // Reload graph data then highlight new entries
+            if (n > 0) {
+              fetch('/api/graph').then(r => r.json()).then(gd => {
+                const links = gd.edges.map(e => ({
+                  source: e.source, target: e.target, type: e.type
+                }));
+                graph.graphData({ nodes: gd.nodes, links: links });
+                setTimeout(() => {
+                  allEntryIds.forEach(id => markResult(id));
+                  emitTraversalParticles(allEntryIds);
+                  setTimeout(() => {
+                    graph.zoomToFit(500, 60, nd => allEntryIds.includes(nd.id));
+                    setTimeout(clampZoom, 550);
+                  }, 300);
+                }, 200);
+              });
             }
-            setTimeout(closeIngestModal, 2000);
+            setTimeout(closeIngestModal, 4000);
           } else if (eventType === 'error') {
             ingestStatus.textContent = data.message || 'Error';
             ingestStatus.className = 'error';
