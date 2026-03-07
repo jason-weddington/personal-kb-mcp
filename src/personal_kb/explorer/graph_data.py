@@ -64,6 +64,10 @@ async def extract_graph_data(db: Database) -> dict[str, Any]:
         if node_type == "entry" and node_id in inactive_ids:
             continue
 
+        # Skip non-entry nodes with no edges (orphans)
+        if node_type != "entry" and conn_count == 0:
+            continue
+
         props = _parse_json(props_raw)
 
         # Label: strip type prefix for entity nodes, use short_title for entries
