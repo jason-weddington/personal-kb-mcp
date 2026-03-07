@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.52.3 (2026-03-07)
+
+### Bug Fixes
+
+- Replace project dropdown with editable combo box in ingest modal
+  ([`711ffea`](https://github.com/jason-weddington/personal-kb-mcp/commit/711ffea3029fdbe0aa03a376d7791b0b3840e0f6))
+
+
 ## v0.52.2 (2026-03-07)
 
 ### Bug Fixes
