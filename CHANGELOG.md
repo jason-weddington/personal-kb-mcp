@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.48.0 (2026-03-07)
+
+### Features
+
+- Explorer chat write-back — update_entry and ingest_url tools
+  ([`fbbefe3`](https://github.com/jason-weddington/personal-kb-mcp/commit/fbbefe3c4e61235794e3996c2382d4c4c8e468b8))
+
+
 ## v0.47.0 (2026-03-07)
 
 ### Features
