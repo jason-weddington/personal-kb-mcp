@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.46.1 (2026-03-07)
+
+### Bug Fixes
+
+- Filter orphan nodes from graph explorer visualization
+  ([`474f802`](https://github.com/jason-weddington/personal-kb-mcp/commit/474f8025e4a03770cbf8306a4404991324894cb9))
+
+
 ## v0.46.0 (2026-03-06)
 
 ### Features
