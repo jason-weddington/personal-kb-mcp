@@ -113,33 +113,13 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
         path: Annotated[
             str,
             Field(
-                default="",
                 description=(
                     "File, directory, or glob pattern to ingest. "
                     "Accepts absolute paths, relative paths, ~ paths, "
-                    "and glob patterns (e.g. *.md, docs/**/*.txt). "
-                    "Not required when content is provided."
+                    "and glob patterns (e.g. *.md, docs/**/*.txt)."
                 ),
             ),
         ] = "",
-        content: Annotated[
-            str | None,
-            Field(
-                description=(
-                    "Pre-fetched content to ingest (e.g. from a URL). "
-                    "When provided, source_url is required and path is ignored."
-                ),
-            ),
-        ] = None,
-        source_url: Annotated[
-            str | None,
-            Field(
-                description=(
-                    "Source URL for attribution and dedup when ingesting "
-                    "pre-fetched content. Required when content is provided."
-                ),
-            ),
-        ] = None,
         project_ref: Annotated[
             str | None,
             Field(description="Project tag for extracted entries"),
@@ -154,7 +134,7 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
         ] = True,
         ctx: Context | None = None,
     ) -> str:
-        """Ingest files from disk or pre-fetched content into the KB.
+        """Ingest files from disk into the KB.
 
         This is intelligent extraction, not raw dumping. An LLM reads the source,
         identifies distinct knowledge entries (decisions, patterns, facts, lessons),
@@ -165,20 +145,15 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         Also runs secret detection and PII redaction before extraction.
 
-        Two modes:
-        - File mode: provide path (file, directory, or glob). Runs deny-list and
-          extension checks. Supports .md, .txt, .py, .js, .ts, .yaml, .json, .toml, etc.
-        - Content mode: provide content + source_url. Skips filesystem checks.
-          Use for pre-fetched web pages, wiki articles, or any text with a URL.
+        Supports .md, .txt, .py, .js, .ts, .yaml, .json, .toml, etc.
+
+        For URLs, use kb_ingest_url instead — it handles fetching and HTML extraction.
         """
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        # Validate parameters
-        if content is not None and not source_url:
-            return "Error: source_url is required when content is provided."
-        if content is None and not path:
-            return "Error: Either path or content (with source_url) must be provided."
+        if not path:
+            return "Error: path is required. For URLs, use kb_ingest_url."
 
         # Fail closed: require safety deps for secret/PII scanning
         from personal_kb.config import is_safety_skip
@@ -230,20 +205,6 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
             contributor=contributor,
             team=team,
         )
-
-        # Content mode: ingest pre-fetched content with URL attribution
-        if content is not None:
-            file_result = await ingester.ingest_content(
-                content,
-                source_url,  # type: ignore[arg-type]  # validated above
-                project_ref=project_ref,
-                dry_run=dry_run,
-            )
-            prefix = "[DRY RUN] " if dry_run else ""
-            line = f"{prefix}{_format_file_result(file_result)}"
-            if file_result.summary:
-                line += f"\n  Summary: {file_result.summary}"
-            return line
 
         # Glob pattern: expand and ingest each matched file
         if _is_glob(path):

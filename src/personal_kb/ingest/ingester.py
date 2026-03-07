@@ -393,7 +393,47 @@ class FileIngester:
             chunks_flagged=chunks_flagged,
         )
 
-    async def ingest_content(
+    async def ingest_url(
+        self,
+        url: str,
+        *,
+        project_ref: str | None = None,
+        dry_run: bool = False,
+    ) -> FileResult:
+        """Fetch a URL, extract clean content, and ingest it.
+
+        Steps:
+        1. Fetch HTML via httpx
+        2. Extract article content via trafilatura
+        3. Safety checks (PII, secrets)
+        4. LLM extraction pipeline (same as file ingestion)
+        """
+        import httpx
+
+        from personal_kb.ingest.html_extract import extract_content
+
+        # 1. Fetch URL
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                raw_html = resp.text
+        except httpx.HTTPError as e:
+            return FileResult(path=url, action="error", reason=f"Failed to fetch: {e}")
+
+        # 2. Extract clean content from HTML
+        content = extract_content(raw_html, url=url)
+        if not content:
+            return FileResult(
+                path=url,
+                action="error",
+                reason="Could not extract content (trafilatura returned empty). "
+                "The page may require JavaScript or have no article content.",
+            )
+
+        return await self._ingest_content(content, url, project_ref=project_ref, dry_run=dry_run)
+
+    async def _ingest_content(
         self,
         content: str,
         source_url: str,
@@ -401,11 +441,10 @@ class FileIngester:
         project_ref: str | None = None,
         dry_run: bool = False,
     ) -> FileResult:
-        """Ingest pre-fetched content (e.g. from a URL).
+        """Ingest clean text content with URL attribution.
 
-        Skips filesystem checks (deny-list, extension, file size).
-        Runs PII redaction at content level and per-chunk secret
-        scanning, then the full LLM extraction pipeline.
+        Internal method — callers should use ingest_url() which handles
+        fetching and HTML extraction.
         """
         # 1. Compute hash, skip if unchanged
         content_hash = hashlib.sha256(content.encode()).hexdigest()

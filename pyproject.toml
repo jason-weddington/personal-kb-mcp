@@ -33,6 +33,9 @@ safety = [
 iam = [
     "boto3>=1.28",
 ]
+web = [
+    "trafilatura>=2.0",
+]
 
 [dependency-groups]
 dev = [

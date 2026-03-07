@@ -604,7 +604,7 @@ class TestIngestContent:
         )
 
         url = "https://wiki.example.com/team/patterns"
-        result = await ingester.ingest_content(
+        result = await ingester._ingest_content(
             "# Team Patterns\n\nUseful patterns from the wiki.",
             url,
             project_ref="test",
@@ -642,7 +642,7 @@ class TestIngestContent:
             GraphEnricher(deps["db"], FakeLLM()),
             llm1,
         )
-        result1 = await ingester1.ingest_content(content, url)
+        result1 = await ingester1._ingest_content(content, url)
         assert result1.action == "ingested"
 
         # Second ingest — same content → unchanged
@@ -655,7 +655,7 @@ class TestIngestContent:
             GraphEnricher(deps["db"], FakeLLM()),
             llm2,
         )
-        result2 = await ingester2.ingest_content(content, url)
+        result2 = await ingester2._ingest_content(content, url)
         assert result2.action == "unchanged"
 
     async def test_url_reingestion(self, ingester_deps):
@@ -680,7 +680,7 @@ class TestIngestContent:
             GraphEnricher(deps["db"], FakeLLM()),
             llm1,
         )
-        result1 = await ingester1.ingest_content("# V1 content", url)
+        result1 = await ingester1._ingest_content("# V1 content", url)
         assert result1.action == "ingested"
         old_entry_id = result1.entry_ids[0]
 
@@ -703,7 +703,7 @@ class TestIngestContent:
             GraphEnricher(deps["db"], FakeLLM()),
             llm2,
         )
-        result2 = await ingester2.ingest_content("# V2 updated content", url)
+        result2 = await ingester2._ingest_content("# V2 updated content", url)
         assert result2.action == "ingested"
         assert result2.entry_ids[0] != old_entry_id
 
@@ -733,7 +733,7 @@ class TestIngestContent:
             llm,
         )
 
-        result = await ingester.ingest_content(
+        result = await ingester._ingest_content(
             "# Dry run content",
             "https://wiki.example.com/dry",
             dry_run=True,
@@ -764,7 +764,7 @@ class TestIngestContent:
             deps["llm"],
         )
 
-        result = await ingester.ingest_content(
+        result = await ingester._ingest_content(
             'password = "hunter2"',
             "https://wiki.example.com/secrets",
         )
@@ -804,7 +804,7 @@ class TestIngestContent:
             "# Secrets Section\n\n"
             'password = "hunter2"\n'
         )
-        result = await ingester.ingest_content(
+        result = await ingester._ingest_content(
             content,
             "https://wiki.example.com/mixed",
         )
@@ -835,7 +835,7 @@ class TestIngestContent:
             llm,
         )
 
-        await ingester.ingest_content("# Node test\n\nContent.", url)
+        await ingester._ingest_content("# Node test\n\nContent.", url)
 
         # Verify note node with URL in properties
         cursor = await deps["db"].execute(
@@ -871,7 +871,7 @@ class TestIngestContent:
             llm,
         )
 
-        result = await ingester.ingest_content("# Edge test\n\nContent.", url)
+        result = await ingester._ingest_content("# Edge test\n\nContent.", url)
 
         # Verify extracted_from edge points to note:{url}
         cursor = await deps["db"].execute(
@@ -894,7 +894,7 @@ class TestIngestContent:
             deps["llm"],
         )
 
-        result = await ingester.ingest_content(
+        result = await ingester._ingest_content(
             "x" * 100,
             "https://wiki.example.com/large",
         )

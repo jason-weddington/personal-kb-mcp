@@ -33,6 +33,7 @@ from personal_kb.tools.kb_explore import register_kb_explore
 from personal_kb.tools.kb_feedback import register_kb_feedback
 from personal_kb.tools.kb_get import register_kb_get
 from personal_kb.tools.kb_ingest import register_kb_ingest
+from personal_kb.tools.kb_ingest_url import register_kb_ingest_url
 from personal_kb.tools.kb_list import (
     register_kb_list_contributors,
     register_kb_list_projects,
@@ -234,12 +235,13 @@ and team — you do not need to specify who is storing.
 DON'T capture trivial info, temporary session context, or duplicates. \
 SEARCH before storing — if a relevant entry exists, use update_entry_id.
 
-INGESTING — extend the KB from files or pre-fetched content:
-- kb_ingest: Intelligent extraction, not raw dumping. An LLM reads the source \
+INGESTING — extend the KB from files or URLs:
+- kb_ingest: Intelligent extraction from local files. An LLM reads the source \
 and creates multiple properly structured KB entries (decisions, patterns, facts). \
 Deduplicates against existing entries — safe to ingest overlapping files. \
-Accepts file paths, directories, glob patterns (e.g. *.md, docs/**/*.txt), \
-or pre-fetched content with a source URL (content + source_url).
+Accepts file paths, directories, glob patterns (e.g. *.md, docs/**/*.txt).
+- kb_ingest_url: Fetch a URL, extract article content from HTML, and ingest it. \
+Handles boilerplate removal automatically — just provide the URL.
 
 Entry types: factual_reference, decision, pattern_convention, lesson_learned.
 Use tags for discoverability. Use project_ref for project-specific knowledge.
@@ -267,6 +269,7 @@ _TOOL_BASES = [
     "ask",
     "summarize",
     "ingest",
+    "ingest_url",
     "explore",
     "feedback",
     "maintain",
@@ -320,6 +323,7 @@ def create_server() -> FastMCP:
     register_kb_ask(mcp, prefix)
     register_kb_summarize(mcp, prefix)
     register_kb_ingest(mcp, prefix)
+    register_kb_ingest_url(mcp, prefix)
     register_kb_feedback(mcp, prefix)
     register_kb_explore(mcp, prefix)
 

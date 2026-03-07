@@ -339,22 +339,8 @@ class ChatSession:
         if not url:
             return _ToolResult(tool="ingest_url", success=False, message="url is required")
 
-        import httpx
-
         from personal_kb.ingest.ingester import FileIngester
 
-        # Fetch URL content
-        try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                content = resp.text
-        except httpx.HTTPError as e:
-            return _ToolResult(
-                tool="ingest_url", success=False, message=f"Failed to fetch URL: {e}"
-            )
-
-        # Run ingestion pipeline
         extraction_llm = self.write_deps.extraction_llm
         if extraction_llm is None:
             return _ToolResult(
@@ -374,17 +360,16 @@ class ChatSession:
             team=self.write_deps.team,
         )
 
-        result = await ingester.ingest_content(
-            content=content,
-            source_url=url,
+        result = await ingester.ingest_url(
+            url,
             project_ref=args.get("project_ref"),
         )
 
-        if result.action == "skipped":
+        if result.action in ("skipped", "error"):
             return _ToolResult(
                 tool="ingest_url",
                 success=False,
-                message=f"Skipped: {result.reason}",
+                message=f"{result.action}: {result.reason}",
             )
 
         entry_ids = result.entry_ids or []
