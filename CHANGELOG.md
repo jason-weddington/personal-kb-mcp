@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.51.2 (2026-03-07)
+
+### Bug Fixes
+
+- Improve kb_list_projects description to prevent project_ref duplication
+  ([`028fbf2`](https://github.com/jason-weddington/personal-kb-mcp/commit/028fbf2919f271afc22cd7c6e795488c50101fdb))
+
+
 ## v0.51.1 (2026-03-07)
 
 ### Bug Fixes
