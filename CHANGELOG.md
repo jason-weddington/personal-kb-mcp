@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.50.0 (2026-03-07)
+
+### Features
+
+- Split kb_ingest into file and URL tools with HTML extraction
+  ([`ee1c950`](https://github.com/jason-weddington/personal-kb-mcp/commit/ee1c9508edc6c478fe8214cadcadc99df4f19de4))
+
+
 ## v0.49.0 (2026-03-07)
 
 ### Features
