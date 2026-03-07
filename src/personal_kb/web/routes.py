@@ -31,6 +31,18 @@ def register_routes(app: Any) -> None:
         data = await extract_graph_data(request.app.state.db)
         return JSONResponse(content=data)
 
+    @app.get("/api/projects")
+    async def api_projects(request: Request) -> JSONResponse:
+        """Return distinct project_ref values from active entries."""
+        db = request.app.state.db
+        cursor = await db.execute(
+            "SELECT DISTINCT project_ref FROM knowledge_entries"
+            " WHERE is_active = 1 AND project_ref IS NOT NULL"
+            " ORDER BY project_ref"
+        )
+        rows = await cursor.fetchall()
+        return JSONResponse([row[0] for row in rows])
+
     @app.get("/api/entry/{entry_id}")
     async def api_entry(entry_id: str, request: Request) -> JSONResponse:
         """Return full entry details by ID."""
@@ -284,4 +296,58 @@ def register_routes(app: Any) -> None:
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
             },
+        )
+
+    @app.post("/api/ingest_url")
+    async def api_ingest_url(request: Request) -> JSONResponse:
+        """Ingest a URL into the KB."""
+        body = await request.json()
+        url = body.get("url", "").strip()
+        project_ref = body.get("project_ref")
+
+        if not url:
+            return JSONResponse({"error": "url is required"}, status_code=400)
+
+        store = getattr(request.app.state, "store", None)
+        extraction_llm = getattr(request.app.state, "extraction_llm", None)
+        graph_builder = getattr(request.app.state, "graph_builder", None)
+        if store is None or extraction_llm is None or graph_builder is None:
+            return JSONResponse(
+                {"error": "Ingestion not available (missing dependencies)"},
+                status_code=503,
+            )
+
+        db = request.app.state.db
+        embedder = request.app.state.embedder
+        graph_enricher = getattr(request.app.state, "graph_enricher", None)
+        contributor = getattr(request.app.state, "contributor", None)
+        team = getattr(request.app.state, "team", None)
+
+        from personal_kb.ingest.ingester import FileIngester
+
+        ingester = FileIngester(
+            db=db,
+            store=store,
+            embedder=embedder,
+            graph_builder=graph_builder,
+            graph_enricher=graph_enricher,
+            llm=extraction_llm,
+            contributor=contributor,
+            team=team,
+        )
+
+        try:
+            result = await ingester.ingest_url(url, project_ref=project_ref)
+        except Exception as exc:
+            logger.exception("Ingest URL failed: %s", url)
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+        return JSONResponse(
+            {
+                "action": result.action,
+                "reason": result.reason,
+                "entry_count": result.entry_count,
+                "entry_ids": result.entry_ids,
+                "summary": result.summary,
+            }
         )

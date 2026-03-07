@@ -30,6 +30,18 @@ async def hybrid_search(
     Returns (results, filtered_count) where filtered_count is the number
     of candidates removed by the relative score threshold.
     """
+    # Filter-only path: no meaningful query text, just metadata filters
+    query_text = query.query.strip()
+    if not query_text or query_text == "*":
+        if _has_filters(query):
+            filter_results = await _filter_only_search(db, query)
+            await _record_search_event(
+                db, query.query, len(filter_results), None, "filter", contributor
+            )
+            return filter_results, 0
+        # No query and no filters — nothing to search
+        return [], 0
+
     fetch_limit = query.limit * 3  # Over-fetch for re-ranking
 
     # Always run FTS
@@ -80,6 +92,10 @@ async def hybrid_search(
         if entry is None or not entry.is_active:
             continue
 
+        # Hard filter by project_ref (vector search doesn't scope by project)
+        if query.project_ref and entry.project_ref != query.project_ref:
+            continue
+
         # Filter expired entries unless requested
         if not query.include_expired and entry.expires_at is not None:
             exp = entry.expires_at
@@ -121,6 +137,89 @@ async def hybrid_search(
     )
 
     return results, filtered_count
+
+
+def _has_filters(query: SearchQuery) -> bool:
+    """Check if the query has any metadata filters set."""
+    return bool(
+        query.project_ref or query.entry_type or query.tags or query.contributor or query.team
+    )
+
+
+async def _filter_only_search(
+    db: Database,
+    query: SearchQuery,
+) -> list[SearchResult]:
+    """List entries matching metadata filters without text search.
+
+    Used when no query text is provided — returns entries ordered by
+    creation date (newest first).
+    """
+    sql = "SELECT id FROM knowledge_entries WHERE is_active = 1"
+    params: list[str] = []
+
+    if query.project_ref:
+        sql += " AND project_ref = ?"
+        params.append(query.project_ref)
+    if query.entry_type:
+        sql += " AND entry_type = ?"
+        params.append(query.entry_type.value)
+    if query.tags:
+        for tag in query.tags:
+            sql += " AND (' ' || tags || ' ') LIKE ?"
+            params.append(f"% {tag} %")
+    if query.contributor:
+        sql += " AND contributor = ?"
+        params.append(query.contributor)
+    if query.team:
+        sql += " AND team = ?"
+        params.append(query.team)
+
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(str(query.limit))
+
+    cursor = await db.execute(sql, tuple(params))
+    rows = await cursor.fetchall()
+
+    now = datetime.now(UTC)
+    results: list[SearchResult] = []
+    for row in rows:
+        entry = await get_entry(db, row[0])
+        if entry is None:
+            continue
+
+        # Filter expired entries unless requested
+        if not query.include_expired and entry.expires_at is not None:
+            exp = entry.expires_at
+            if not exp.tzinfo:
+                exp = exp.replace(tzinfo=UTC)
+            if now >= exp:
+                continue
+
+        anchor = entry.updated_at or entry.created_at or now
+        eff_conf = compute_effective_confidence(
+            entry.confidence_level,
+            entry.entry_type,
+            anchor,
+            now,
+            last_accessed=entry.last_accessed,
+        )
+
+        if not query.include_stale and eff_conf < 0.3:
+            continue
+
+        warning = staleness_warning(eff_conf, entry.entry_type)
+        results.append(
+            SearchResult(
+                entry=entry,
+                score=0.0,
+                effective_confidence=eff_conf,
+                staleness_warning=warning,
+                match_source="filter",
+            )
+        )
+
+    return results
 
 
 async def _record_search_event(

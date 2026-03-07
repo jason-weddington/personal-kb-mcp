@@ -371,6 +371,117 @@ async def test_hybrid_team_filter(db, store):
 
 
 @pytest.mark.asyncio
+async def test_filter_only_by_project(db, store):
+    """Empty query with project_ref returns all entries for that project."""
+    await store.create_entry(
+        short_title="Alpha entry",
+        long_title="Alpha project entry",
+        knowledge_details="Part of alpha project.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="alpha",
+    )
+    await store.create_entry(
+        short_title="Beta entry",
+        long_title="Beta project entry",
+        knowledge_details="Part of beta project.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="beta",
+    )
+    await store.create_entry(
+        short_title="Alpha second",
+        long_title="Another alpha entry",
+        knowledge_details="Also alpha.",
+        entry_type=EntryType.DECISION,
+        project_ref="alpha",
+    )
+
+    query = SearchQuery(project_ref="alpha")
+    results, filtered = await hybrid_search(db, None, query)
+    assert len(results) == 2
+    assert all(r.entry.project_ref == "alpha" for r in results)
+    assert filtered == 0
+    assert results[0].match_source == "filter"
+
+
+@pytest.mark.asyncio
+async def test_filter_only_by_tags(db, store):
+    """Empty query with tags filter returns matching entries."""
+    await store.create_entry(
+        short_title="Tagged entry",
+        long_title="Entry with python tag",
+        knowledge_details="Has python tag.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["python", "testing"],
+    )
+    await store.create_entry(
+        short_title="Other entry",
+        long_title="Entry with docker tag",
+        knowledge_details="Has docker tag.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["docker"],
+    )
+
+    query = SearchQuery(tags=["python"])
+    results, _ = await hybrid_search(db, None, query)
+    assert len(results) == 1
+    assert results[0].entry.id == "kb-00001"
+
+
+@pytest.mark.asyncio
+async def test_filter_only_star_query(db, store):
+    """Star query with project_ref works as filter-only."""
+    await store.create_entry(
+        short_title="Star test",
+        long_title="Star query test",
+        knowledge_details="Testing star query.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="myproj",
+    )
+
+    query = SearchQuery(query="*", project_ref="myproj")
+    results, _ = await hybrid_search(db, None, query)
+    assert len(results) == 1
+    assert results[0].entry.project_ref == "myproj"
+
+
+@pytest.mark.asyncio
+async def test_filter_only_empty_no_filters(db, store):
+    """Empty query with no filters returns nothing."""
+    await store.create_entry(
+        short_title="Orphan",
+        long_title="No filter match",
+        knowledge_details="Should not appear.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    query = SearchQuery()
+    results, filtered = await hybrid_search(db, None, query)
+    assert results == []
+    assert filtered == 0
+
+
+@pytest.mark.asyncio
+async def test_filter_only_records_telemetry(db, store):
+    """Filter-only search records a search event with match_source=filter."""
+    await store.create_entry(
+        short_title="Telemetry filter",
+        long_title="Filter telemetry test",
+        knowledge_details="Testing telemetry for filter path.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="tel-proj",
+    )
+
+    query = SearchQuery(project_ref="tel-proj")
+    await hybrid_search(db, None, query)
+
+    cursor = await db.execute("SELECT * FROM search_events")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["match_source"] == "filter"
+    assert rows[0]["top_score"] is None
+
+
+@pytest.mark.asyncio
 async def test_search_telemetry_failure_does_not_break_search(db, store, monkeypatch):
     """Telemetry failure should not break the search results."""
     await store.create_entry(

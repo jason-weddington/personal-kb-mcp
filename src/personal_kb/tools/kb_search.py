@@ -90,6 +90,9 @@ def _search_description(prefix: str) -> str:
         "Best for quick lookups: checking if an entry exists, finding by keywords, "
         f"filtering by tags/project/type. For exploring related knowledge, use {prefix}ask. "
         f"For a synthesized answer to a question, use {prefix}summarize.\n\n"
+        "The query parameter is optional. To list all entries for a project, "
+        "omit query and pass project_ref. Filters (project_ref, entry_type, tags, "
+        "contributor, team) can be combined with or without a text query.\n\n"
         "Returns compact summaries (titles + metadata, no knowledge_details). "
         f"Use {prefix}get with entry IDs to read the full content of interesting results."
     )
@@ -100,7 +103,14 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
 
     @mcp.tool(name=f"{prefix}search", description=_search_description(prefix))
     async def kb_search(
-        query: Annotated[str, Field(description="Search query (natural language or keywords)")],
+        query: Annotated[
+            str,
+            Field(
+                description="Search query (natural language or keywords). "
+                "Optional — omit or leave empty to list entries by filters alone "
+                "(e.g. all entries for a project)."
+            ),
+        ] = "",
         project_ref: Annotated[
             str | None, Field(description="Filter to a specific project")
         ] = None,

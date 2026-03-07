@@ -39,7 +39,7 @@
       "top_k": 5,
       "result_count": 3,
       "turns_used": 1,
-      "reasoning": "kb-00009 is a direct decision entry comparing FastAPI vs Flask with a clear choice made. kb-00010 and kb-00011 provide supporting context on REST API conventions and FastAPI-specific authentication patterns that informed the framework choice. These three entries together answer the question of choosing between the frameworks and show how the decision was implemented."
+      "reasoning": "kb-00009 is a direct decision entry comparing FastAPI vs Flask with a clear choice rationale. kb-00010 and kb-00011 provide supporting context on REST API conventions and FastAPI-specific patterns that inform the framework choice. These three entries together address the core question of choosing between the two frameworks and practical implications of that choice."
     },
     "q05-rest-auth": {
       "mrr": 1.0,
@@ -48,7 +48,7 @@
       "top_k": 5,
       "result_count": 3,
       "turns_used": 1,
-      "reasoning": "kb-00011 (jwt-auth-middleware) is the strongest match - directly addresses JWT authentication for REST APIs with FastAPI. kb-00010 (rest-api-conventions) provides relevant context on REST API design patterns. kb-00009 (fastapi-vs-flask-decision) establishes the technical foundation (FastAPI choice) relevant to the authentication implementation context. These three entries together cover JWT token authentication, REST API design, and the chosen framework."
+      "reasoning": "The question asks about REST API authentication with JWT tokens. kb-00011 (jwt-auth-middleware) is a direct match covering JWT authentication middleware for FastAPI with security tags. kb-00010 (rest-api-conventions) provides REST API design context needed for authentication implementation. kb-00009 (fastapi-vs-flask-decision) gives the technology choice context. These three entries provide comprehensive coverage of JWT authentication in a REST API context."
     },
     "q06-cors-setup": {
       "mrr": 1.0,
@@ -57,7 +57,7 @@
       "top_k": 5,
       "result_count": 1,
       "turns_used": 1,
-      "reasoning": "kb-00012 'cors-config-pattern' is a direct match for CORS configuration and allow origins middleware. The tags (#api #cors #security #web) and description explicitly cover the user's question about CORS configuration. This is the most relevant entry among the results."
+      "reasoning": "Direct match: kb-00012 is explicitly about CORS configuration pattern for FastAPI applications, which directly addresses the user's question about CORS configuration allow origins middleware. Score of 0.0156 with 90% confidence and tags #cors #security #web confirm relevance."
     },
     "q07-docker-setup": {
       "mrr": 1.0,
@@ -84,7 +84,7 @@
       "top_k": 5,
       "result_count": 3,
       "turns_used": 1,
-      "reasoning": "Three strong matches directly addressing the question. kb-00026 explicitly covers asyncio race conditions with aiosqlite/database locking. kb-00029 covers database deadlocks in concurrent SQLite access (closely related to locking issues). kb-00030 covers async event loop issues that cause test flakes, relevant to race condition detection. All three are tagged with async/concurrency/debugging and directly relate to the intersection of asyncio, race conditions, and database locking."
+      "reasoning": "The question asks about asyncio race conditions and database locking. kb-00026 directly addresses 'Debugging asyncio race conditions in aiosqlite' which is the exact intersection of asyncio, race conditions, and database (SQLite) locking. kb-00029 covers 'Debugging database deadlocks in concurrent SQLite access' which relates to database locking in concurrent scenarios. kb-00030 addresses 'Investigating test flakes caused by event loop reuse' which is relevant to asyncio concurrency issues. These three entries provide comprehensive coverage of the topic from different angles (race conditions, deadlocks, and async event loop issues)."
     },
     "q10-encoding-bug": {
       "mrr": 1.0,
@@ -93,7 +93,7 @@
       "top_k": 5,
       "result_count": 1,
       "turns_used": 1,
-      "reasoning": "The user is asking about UTF-8 JSON encoding unicode errors. Entry kb-00027 'encoding-utf8-gotcha' is a direct match - it specifically addresses UTF-8 encoding gotcha with JSON serialization in Python, which is exactly what the question asks about. The tags (#python #json #encoding #debugging) align perfectly with the query. This is the most relevant entry from the initial results."
+      "reasoning": "The question asks about UTF-8 JSON encoding unicode errors. Entry kb-00027 is a direct match with title 'UTF-8 encoding gotcha with JSON serialization in Python' and tags #python #json #encoding #debugging. This entry is highly relevant to the specific problem of UTF-8 encoding issues with JSON. While kb-00026 covers debugging and kb-00028-00030 cover other debugging topics, kb-00027 is the clear best match for the user's question about JSON encoding unicode errors."
     },
     "q11-project-filter": {
       "mrr": 1.0,

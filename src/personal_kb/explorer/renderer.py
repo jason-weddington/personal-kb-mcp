@@ -130,25 +130,91 @@ _TEMPLATE = """\
   #search-bar.hidden-for-chat {
     opacity: 0; pointer-events: none; transform: translateY(4px);
   }
-  #search-input {
-    width: 420px; padding: 8px 12px;
-    background: rgba(20, 20, 30, 0.9);
+  #search-container {
+    width: 420px; background: rgba(20, 20, 30, 0.9);
     border: 1px solid #333; border-radius: 6px;
+    overflow: hidden;
+  }
+  #search-container:focus-within { border-color: #555; }
+  #search-input {
+    width: 100%; padding: 8px 12px; box-sizing: border-box;
+    background: transparent; border: none;
     color: #e0e0e0; font-size: 14px; outline: none;
     font-family: inherit; resize: none; overflow: hidden;
     line-height: 1.4; max-height: 120px;
   }
-  #search-input:focus { border-color: #555; }
   #search-input::placeholder { color: #555; }
+  #search-toolbar {
+    display: flex; gap: 4px; padding: 4px 8px 6px;
+    border-top: 1px solid #2a2a3a;
+  }
+  .toolbar-btn {
+    padding: 2px 8px; font-size: 11px;
+    background: transparent; border: 1px solid #3a3a4a;
+    border-radius: 3px; color: #777; cursor: pointer;
+    font-family: inherit; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .toolbar-btn:hover { background: rgba(50, 50, 70, 0.6); color: #bbb; border-color: #555; }
+  .toolbar-btn:disabled { opacity: 0.4; cursor: default; }
+  #ingest-modal {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  #ingest-modal.visible { display: flex; }
+  #ingest-modal-content {
+    background: rgba(25, 25, 35, 0.98); border: 1px solid #444;
+    border-radius: 8px; padding: 20px; width: 440px;
+    color: #ddd; font-size: 13px;
+  }
+  #ingest-modal-content h3 {
+    margin: 0 0 12px 0; font-size: 15px; color: #e0e0e0;
+  }
+  #ingest-url-input {
+    width: 100%; padding: 8px 10px; box-sizing: border-box;
+    background: rgba(15, 15, 25, 0.9); border: 1px solid #555;
+    border-radius: 4px; color: #e0e0e0; font-size: 13px;
+    font-family: inherit; outline: none;
+  }
+  #ingest-url-input:focus { border-color: #777; }
+  #ingest-url-input::placeholder { color: #555; }
+  #ingest-project-input {
+    width: 100%; padding: 6px 10px; box-sizing: border-box; margin-top: 8px;
+    background: rgba(15, 15, 25, 0.9); border: 1px solid #555;
+    border-radius: 4px; color: #e0e0e0; font-size: 12px;
+    font-family: inherit; outline: none; cursor: pointer;
+    padding-right: 10px;
+  }
+  #ingest-project-input:focus { border-color: #777; }
+  #ingest-project-input option { background: #1a1a2a; color: #e0e0e0; }
+  #ingest-modal-btns {
+    display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end;
+  }
+  #ingest-modal-btns button {
+    padding: 6px 16px; border-radius: 4px; font-size: 12px;
+    cursor: pointer; font-family: inherit; border: 1px solid #555;
+  }
+  .ingest-cancel { background: transparent; color: #aaa; }
+  .ingest-cancel:hover { color: #ddd; }
+  .ingest-submit { background: #1a5276; color: #a8d8f0; border-color: #1a5276 !important; }
+  .ingest-submit:hover { background: #21689a; }
+  .ingest-submit:disabled { opacity: 0.4; cursor: default; }
+  #ingest-status {
+    margin-top: 10px; font-size: 12px; color: #888;
+    min-height: 16px;
+  }
+  #ingest-status.error { color: #e57373; }
+  #ingest-status.success { color: #81c784; }
   #search-results {
-    display: none; width: 420px; max-height: 300px;
+    display: none; width: 100%; max-height: 300px;
     overflow-y: auto; margin-top: 4px;
     background: rgba(20, 20, 30, 0.95);
     border: 1px solid #333; border-radius: 6px;
+    box-sizing: border-box;
   }
   #search-results.visible { display: block; }
   #status-line {
-    position: fixed; top: 52px; left: 12px;
+    position: fixed; top: 80px; left: 12px;
     font-size: 12px; color: #888; z-index: 10;
     transition: opacity 0.3s;
   }
@@ -385,9 +451,29 @@ _TEMPLATE = """\
 </head>
 <body>
 <div id="search-bar">
-  <textarea id="search-input" rows="1"
-    placeholder="Search nodes or ask a question..." autocomplete="off"></textarea>
+  <div id="search-container">
+    <textarea id="search-input" rows="1"
+      placeholder="Search nodes or ask a question..." autocomplete="off"></textarea>
+    <div id="search-toolbar">
+      <button class="toolbar-btn" onclick="openIngestModal()">+URL</button>
+    </div>
+  </div>
   <div id="search-results"></div>
+</div>
+<div id="ingest-modal">
+  <div id="ingest-modal-content">
+    <h3>Ingest URL (must be publicly accessible)</h3>
+    <input id="ingest-url-input" type="url" placeholder="https://example.com/article"
+      autocomplete="off" />
+    <select id="ingest-project-input">
+      <option value="">No project</option>
+    </select>
+    <div id="ingest-status"></div>
+    <div id="ingest-modal-btns">
+      <button class="ingest-cancel" onclick="closeIngestModal()">Cancel</button>
+      <button class="ingest-submit" id="ingest-submit-btn" onclick="submitIngest()">Ingest</button>
+    </div>
+  </div>
 </div>
 <div id="status-line" class="hidden"></div>
 <div id="response-panel">
@@ -1563,6 +1649,125 @@ chatInput.addEventListener('keydown', e => {
     sendChatMessage();
   }
 });
+
+// --- Ingest URL modal ---
+const ingestModal = document.getElementById('ingest-modal');
+const ingestUrlInput = document.getElementById('ingest-url-input');
+const ingestProjectInput = document.getElementById('ingest-project-input');
+const ingestStatus = document.getElementById('ingest-status');
+const ingestSubmitBtn = document.getElementById('ingest-submit-btn');
+
+async function populateProjectDropdown() {
+  try {
+    const resp = await fetch('/api/projects');
+    const projects = await resp.json();
+    ingestProjectInput.innerHTML = '<option value="">No project</option>';
+    projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      ingestProjectInput.appendChild(opt);
+    });
+  } catch (e) {
+    // Fall back to graph data
+    const projects = GRAPH_DATA.nodes
+      .filter(n => n.type === 'project')
+      .map(n => n.id.replace(/^project:/, ''))
+      .sort();
+    ingestProjectInput.innerHTML = '<option value="">No project</option>';
+    projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      ingestProjectInput.appendChild(opt);
+    });
+  }
+}
+
+function openIngestModal() {
+  if (!isServed) return;
+  ingestUrlInput.value = '';
+  populateProjectDropdown();
+  ingestStatus.textContent = '';
+  ingestStatus.className = '';
+  ingestSubmitBtn.disabled = false;
+  ingestModal.classList.add('visible');
+  ingestUrlInput.focus();
+}
+
+function closeIngestModal() {
+  ingestModal.classList.remove('visible');
+}
+
+ingestModal.addEventListener('click', e => {
+  if (e.target === ingestModal) closeIngestModal();
+});
+
+ingestUrlInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); submitIngest(); }
+  if (e.key === 'Escape') closeIngestModal();
+});
+
+async function submitIngest() {
+  const url = ingestUrlInput.value.trim();
+  if (!url) { ingestUrlInput.focus(); return; }
+
+  ingestSubmitBtn.disabled = true;
+  ingestStatus.textContent = 'Ingesting...';
+  ingestStatus.className = '';
+
+  try {
+    const payload = {url};
+    const project = ingestProjectInput.value.trim();
+    if (project) payload.project_ref = project;
+
+    const resp = await fetch('/api/ingest_url', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      ingestStatus.textContent = data.error || 'Ingest failed';
+      ingestStatus.className = 'error';
+      ingestSubmitBtn.disabled = false;
+      return;
+    }
+
+    if (data.action === 'error') {
+      ingestStatus.textContent = data.reason || 'Extraction failed';
+      ingestStatus.className = 'error';
+      ingestSubmitBtn.disabled = false;
+      return;
+    }
+
+    // Success
+    const ids = data.entry_ids || [];
+    ingestStatus.textContent = data.action === 'unchanged'
+      ? 'Already ingested (unchanged)'
+      : 'Created ' + ids.length + ' entries: ' + ids.join(', ');
+    ingestStatus.className = 'success';
+
+    // Highlight new entries on graph if they exist
+    ids.forEach(id => markResult(id));
+    if (ids.length > 0) {
+      emitTraversalParticles(ids);
+      setTimeout(() => {
+        graph.zoomToFit(500, 60, n => ids.includes(n.id));
+        setTimeout(clampZoom, 550);
+      }, 300);
+    }
+
+    // Auto-close after a moment
+    setTimeout(closeIngestModal, 2000);
+  } catch (err) {
+    ingestStatus.textContent = 'Error: ' + err.message;
+    ingestStatus.className = 'error';
+    ingestSubmitBtn.disabled = false;
+  }
+}
 </script>
 </body>
 </html>
