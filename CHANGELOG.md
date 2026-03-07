@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.52.4 (2026-03-07)
+
+### Bug Fixes
+
+- Reload graph data after ingestion and extend modal dismiss delay
+  ([`43efe32`](https://github.com/jason-weddington/personal-kb-mcp/commit/43efe3237a5a9cecf388beab78cd8ac2dfa2c177))
+
+
 ## v0.52.3 (2026-03-07)
 
 ### Bug Fixes
