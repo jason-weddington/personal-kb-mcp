@@ -66,6 +66,13 @@ async def explore_logic(
     embedder: EmbeddingClient | None = None,
     query_llm: LLMProvider | None = None,
     synthesis_llm: LLMProvider | None = None,
+    *,
+    store: Any | None = None,
+    graph_builder: Any | None = None,
+    graph_enricher: Any | None = None,
+    extraction_llm: LLMProvider | None = None,
+    contributor: str | None = None,
+    team: str | None = None,
 ) -> tuple[str, str]:
     """Open the explorer in the browser — web server or temp file fallback.
 
@@ -83,7 +90,18 @@ async def explore_logic(
             if _kill_port_holder(_EXPLORER_PORT):
                 await asyncio.sleep(0.3)
 
-            app = create_app_with_deps(db, embedder, query_llm, synthesis_llm)
+            app = create_app_with_deps(
+                db,
+                embedder,
+                query_llm,
+                synthesis_llm,
+                store=store,
+                graph_builder=graph_builder,
+                graph_enricher=graph_enricher,
+                extraction_llm=extraction_llm,
+                contributor=contributor,
+                team=team,
+            )
             import uvicorn
 
             config = uvicorn.Config(app, host="127.0.0.1", port=_EXPLORER_PORT, log_level="warning")
@@ -155,5 +173,16 @@ def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
         query_llm = lifespan.get("query_llm")
         synthesis_llm = lifespan.get("synthesis_llm")
 
-        _, summary = await explore_logic(db, embedder, query_llm, synthesis_llm)
+        _, summary = await explore_logic(
+            db,
+            embedder,
+            query_llm,
+            synthesis_llm,
+            store=lifespan.get("store"),
+            graph_builder=lifespan.get("graph_builder"),
+            graph_enricher=lifespan.get("graph_enricher"),
+            extraction_llm=lifespan.get("llm_client"),
+            contributor=lifespan.get("contributor"),
+            team=lifespan.get("team"),
+        )
         return summary

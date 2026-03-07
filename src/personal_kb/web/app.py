@@ -18,6 +18,13 @@ def create_app_with_deps(
     embedder: EmbeddingClient | None,
     query_llm: LLMProvider | None,
     synthesis_llm: LLMProvider | None = None,
+    *,
+    store: Any | None = None,
+    graph_builder: Any | None = None,
+    graph_enricher: Any | None = None,
+    extraction_llm: LLMProvider | None = None,
+    contributor: str | None = None,
+    team: str | None = None,
 ) -> Any:
     """Create a FastAPI app using pre-existing deps from MCP lifespan.
 
@@ -36,6 +43,12 @@ def create_app_with_deps(
     app.state.embedder = embedder
     app.state.query_llm = query_llm
     app.state.synthesis_llm = synthesis_llm
+    app.state.store = store
+    app.state.graph_builder = graph_builder
+    app.state.graph_enricher = graph_enricher
+    app.state.extraction_llm = extraction_llm
+    app.state.contributor = contributor
+    app.state.team = team
     register_routes(app)
     return app
 

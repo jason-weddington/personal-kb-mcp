@@ -191,7 +191,7 @@ def register_routes(app: Any) -> None:
     @app.post("/api/chat/stream")
     async def api_chat_stream(request: Request) -> StreamingResponse:
         """Stream a follow-up chat response via SSE."""
-        from personal_kb.web.chat import get_or_create_session, get_session
+        from personal_kb.web.chat import WriteDeps, get_or_create_session, get_session
 
         body = await request.json()
         session_id = body.get("session_id")
@@ -207,6 +207,19 @@ def register_routes(app: Any) -> None:
         # Use Sonnet for human-facing chat if available
         chat_llm = getattr(request.app.state, "synthesis_llm", None) or query_llm
 
+        # Build write deps if store is available
+        write_deps: WriteDeps | None = None
+        store = getattr(request.app.state, "store", None)
+        if store is not None:
+            write_deps = WriteDeps(
+                store=store,
+                graph_builder=getattr(request.app.state, "graph_builder", None),
+                graph_enricher=getattr(request.app.state, "graph_enricher", None),
+                extraction_llm=getattr(request.app.state, "extraction_llm", None),
+                contributor=getattr(request.app.state, "contributor", None),
+                team=getattr(request.app.state, "team", None),
+            )
+
         async def chat_stream() -> AsyncGenerator[str]:
             if chat_llm is None or not isinstance(chat_llm, LLMProvider):
                 yield sse_event("error", {"message": "LLM not available"})
@@ -217,7 +230,7 @@ def register_routes(app: Any) -> None:
             session = get_session(session_id) if session_id else None
 
             if session is None:
-                session = get_or_create_session(None, db, embedder, chat_llm)
+                session = get_or_create_session(None, db, embedder, chat_llm, write_deps=write_deps)
                 if seed_question and seed_answer:
                     session.seed(seed_question, seed_answer, seed_entry_ids)
 
