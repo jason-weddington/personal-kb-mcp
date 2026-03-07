@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.52.1 (2026-03-07)
+
+### Bug Fixes
+
+- Rename +URL toolbar button to +URL(s)
+  ([`1a78f60`](https://github.com/jason-weddington/personal-kb-mcp/commit/1a78f60988f1421c9b1a339494df4d7f51b20ec4))
+
+
 ## v0.52.0 (2026-03-07)
 
 ### Features
