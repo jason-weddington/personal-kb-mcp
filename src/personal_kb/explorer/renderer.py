@@ -391,12 +391,12 @@ _TEMPLATE = """\
 </div>
 <div id="status-line" class="hidden"></div>
 <div id="response-panel">
-  <button class="close-response" onclick="hideResponsePanel()">&times;</button>
+  <button class="close-response" onclick="closeConversation()">&times;</button>
   <div id="response-content"></div>
 </div>
 <div id="chat-panel">
   <button id="chat-maximize-btn" class="chat-maximize" onclick="toggleMaximize()"></button>
-  <button class="chat-close" onclick="hideChatPanel()">&times;</button>
+  <button class="chat-close" onclick="closeConversation()">&times;</button>
   <div id="chat-header">
     <span id="chat-mode-badge" class="chat-mode-badge"></span>
     <span id="chat-query" class="chat-query"></span>
@@ -491,6 +491,32 @@ let queryMode = null;       // 'explore' | 'summarize' | null
 const visitedNodes = new Set();
 const resultNodes = new Set();
 const nodeStates = new Map();  // node_id -> 'visited' | 'result'
+const pulseNodes = new Map();  // node_id -> start_time (ms)
+const PULSE_DURATION = 600;
+
+function triggerPulse(nodeId) {
+  pulseNodes.set(nodeId, performance.now());
+}
+
+function getPulseRadius(nodeId) {
+  const start = pulseNodes.get(nodeId);
+  if (!start) return 0;
+  const elapsed = performance.now() - start;
+  if (elapsed > PULSE_DURATION) {
+    pulseNodes.delete(nodeId);
+    return 0;
+  }
+  const t = elapsed / PULSE_DURATION;
+  return (1 - t) * 6;
+}
+
+function isActiveLink(link) {
+  const s = link.source.id || link.source;
+  const t = link.target.id || link.target;
+  const sA = visitedNodes.has(s) || resultNodes.has(s);
+  const tA = visitedNodes.has(t) || resultNodes.has(t);
+  return { either: sA || tA, both: sA && tA };
+}
 
 // Build legend (clickable for solo mode)
 const legend = document.getElementById('legend');
@@ -564,6 +590,7 @@ function computeLabelOpacity(node, globalScale) {
   if (node === highlightedNode) return 1.0;
   const nState = nodeStates.get(node.id);
   if (nState === 'result' || nState === 'visited') return 1.0;
+  if (queryMode !== null) return 0;
   if (focusedNode) {
     if (node.id === focusedNode) return 1.0;
     const nb = adjacency.get(focusedNode) || [];
@@ -599,23 +626,37 @@ const graph = ForceGraph()(document.getElementById('graph'))
     const nState = nodeStates.get(node.id);
     const isResult = nState === 'result';
     const isVisited = nState === 'visited';
+    const isActive = isResult || isVisited || isHL;
+    // 1-hop neighbors of active nodes get their original color back
+    let isNeighbor = false;
+    if (queryMode !== null && !isActive) {
+      const nb = adjacency.get(node.id);
+      if (nb) isNeighbor = nb.some(n =>
+        visitedNodes.has(n.node) || resultNodes.has(n.node));
+    }
+    const isDimmed = queryMode !== null && !isActive && !isNeighbor;
+    const pulseR = getPulseRadius(node.id);
     const extraR = isResult ? 3 : (isHL ? 6 : 0);
-    const r = Math.sqrt(node.val || 1) * 2.5 + extraR;
+    const r = Math.sqrt(node.val || 1) * 2.5 + extraR + pulseR;
     let color = NODE_COLORS[node.type] || '#666';
 
     // Traversal state overrides
     if (isResult) color = '#00ff88';
     else if (isVisited) color = '#ffaa00';
 
-    if (isHL || isResult || isVisited) {
+    if (isActive) {
       ctx.shadowColor = color;
       ctx.shadowBlur = isResult ? 30 : (isVisited ? 20 : 25);
     }
+    if (isDimmed) ctx.globalAlpha = 0.15;
+
     ctx.beginPath();
     ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
-    ctx.fillStyle = color;
+    ctx.fillStyle = isDimmed ? '#555' : color;
     ctx.fill();
     ctx.shadowBlur = 0;
+
+    if (isDimmed) { ctx.globalAlpha = 1.0; return; }
 
     // Zoom-aware label rendering
     const labelOpacity = computeLabelOpacity(node, globalScale);
@@ -642,12 +683,31 @@ const graph = ForceGraph()(document.getElementById('graph'))
     }
   })
   .nodeCanvasObjectMode(() => 'replace')
-  .linkColor(() => 'rgba(255,255,255,0.08)')
-  .linkWidth(0.5)
+  .linkColor(link => {
+    if (queryMode === null) return 'rgba(255,255,255,0.08)';
+    const a = isActiveLink(link);
+    if (a.both) return 'rgba(0,255,136,0.5)';
+    if (a.either) return 'rgba(0,255,136,0.25)';
+    return 'rgba(255,255,255,0.03)';
+  })
+  .linkWidth(link => {
+    if (queryMode === null) return 0.5;
+    return isActiveLink(link).either ? 1.5 : 0.3;
+  })
   .linkDirectionalParticles(2)
-  .linkDirectionalParticleWidth(1.5)
-  .linkDirectionalParticleColor(() => 'rgba(255,255,255,0.3)')
-  .linkDirectionalParticleSpeed(0.003)
+  .linkDirectionalParticleWidth(link => {
+    if (queryMode === null) return 1.5;
+    return isActiveLink(link).either ? 2.5 : 0;
+  })
+  .linkDirectionalParticleColor(link => {
+    if (queryMode === null) return 'rgba(255,255,255,0.3)';
+    return isActiveLink(link).either
+      ? 'rgba(0,255,136,0.6)' : 'rgba(0,0,0,0)';
+  })
+  .linkDirectionalParticleSpeed(link => {
+    if (queryMode === null) return 0.003;
+    return isActiveLink(link).either ? 0.006 : 0.003;
+  })
   .nodeVisibility(nodeVisible)
   .linkVisibility(linkVisible)
   .onNodeHover(node => { hoveredNode = node; })
@@ -790,6 +850,7 @@ const searchInput = document.getElementById('search-input');
 document.addEventListener('keydown', e => {
   if (document.activeElement === searchInput) return;
   if (e.key === 'Escape') {
+    if (queryMode !== null) { closeConversation(); return; }
     focusedNode = null;
     highlightedNode = null;
     navHistory.length = 0;
@@ -972,6 +1033,7 @@ function resetTraversalState() {
   visitedNodes.clear();
   resultNodes.clear();
   nodeStates.clear();
+  pulseNodes.clear();
   animQueue.length = 0;
   animRunning = false;
   hideResponsePanel();
@@ -988,11 +1050,13 @@ function markVisited(nodeId) {
   if (!nodeStates.has(nodeId) || nodeStates.get(nodeId) !== 'result') {
     nodeStates.set(nodeId, 'visited');
   }
+  triggerPulse(nodeId);
 }
 
 function markResult(nodeId) {
   resultNodes.add(nodeId);
   nodeStates.set(nodeId, 'result');
+  triggerPulse(nodeId);
 }
 
 // Animation queue — stagger node reveals for a traversal feel
@@ -1231,6 +1295,7 @@ function startExploreChat() {
 
 async function startQuery(question) {
   resetTraversalState();
+  queryMode = 'pending';
   lastQueryQuestion = question;
   setStatus('Classifying query...');
 
@@ -1365,18 +1430,36 @@ function openChatPanel(question, answer, entryIds, mode) {
   }, 100);
 }
 
-function hideChatPanel() {
+function closeConversation() {
+  // Clear traversal visuals
+  queryMode = null;
+  visitedNodes.clear();
+  resultNodes.clear();
+  nodeStates.clear();
+  pulseNodes.clear();
+  animQueue.length = 0;
+  animRunning = false;
+  setStatus('');
+  // Hide panels
+  responsePanel.classList.remove('visible');
+  responseContent.innerHTML = '';
   chatMaximized = false;
-  chatPanel.classList.remove('maximized');
+  chatPanel.classList.remove('maximized', 'visible');
   document.getElementById('chat-maximize-btn').innerHTML = expandSvg;
-  chatPanel.classList.remove('visible');
-  // After chat panel collapses, show search bar
-  setTimeout(() => {
-    const searchBar = document.getElementById('search-bar');
-    searchBar.classList.remove('hidden-for-chat');
-    chatSessionId = null;
-    chatMessages.innerHTML = '';
-  }, 300);
+  chatSessionId = null;
+  chatMessages.innerHTML = '';
+  document.getElementById('info-panel').classList.remove('visible');
+  // Show search bar
+  document.getElementById('search-bar').classList.remove('hidden-for-chat');
+  // Reset graph to fresh state
+  focusedNode = null;
+  highlightedNode = null;
+  soloType = null;
+  navHistory.length = 0;
+  legendItems.forEach(el => el.classList.remove('inactive'));
+  graph.nodeVisibility(nodeVisible).linkVisibility(linkVisible);
+  graph.zoomToFit(400, 40, connected);
+  setTimeout(clampZoom, 450);
 }
 
 function setChatBusy(busy) {

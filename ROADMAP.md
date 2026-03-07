@@ -8,7 +8,17 @@ Problems worth solving, in priority order. Not specs — the "how" gets figured 
 
 Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — whatever's best right now. MCP makes personal-kb agent-agnostic: your decisions, patterns, and debugging insights follow you. The KB compounds over time regardless of which tool you're using today.
 
-## Now — Audit Fixes
+## Now — Explorer Write-Back
+
+The explorer is becoming a first-class human interface into the KB (see kb-00547). Humans and agents access the same KB, each through an interface suited to how they work. Agents create entries (schema-aware); humans correct, update, and ingest.
+
+- **Chat agent tool dispatch.** Give the explorer chat agent internal tools for write operations: `update_entry`, `ingest_url`, `update_metadata`. ~150 LOC in chat.py. The chat session already has DB/embedder/LLM access. All safety checks (secret scanning) apply through the same code path.
+- **Update entries via chat.** "That's outdated, update kb-00042 to say..." — user provides the correction, agent validates and writes. Low risk: existing schema/tags/hints preserved.
+- **Ingest URLs via chat.** "Add this article to the KB: https://..." — agent fetches content, calls `FileIngester.ingest_content()`. kb_ingest is fully self-contained; no agent pre-processing needed.
+- **Metadata tweaks via chat.** "Mark kb-00042 as expires in 30d", "add tag 'postgres' to kb-00042" — simple field updates, no re-embedding needed.
+- **Entry creation stays in agent-land.** Do NOT add kb_store creation to the explorer. Schema-aware entry composition (EntryType, graph-aware tags, supersedes hints) requires the full KB context that MCP tool descriptions provide to Opus/Sonnet in Claude Code.
+
+## Next — Audit Fixes
 
 Findings from the [March 2026 code audit](audit.md). Ordered by impact and effort.
 
