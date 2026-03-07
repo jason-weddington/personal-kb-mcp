@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.52.0 (2026-03-07)
+
+### Features
+
+- Add file upload, multi-URL, and progress streaming to explorer ingest
+  ([`a0d61fc`](https://github.com/jason-weddington/personal-kb-mcp/commit/a0d61fcf5183f5d71c46e819e225ea5cca15df3b))
+
+
 ## v0.51.2 (2026-03-07)
 
 ### Bug Fixes
