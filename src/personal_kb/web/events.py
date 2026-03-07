@@ -50,4 +50,30 @@ def event_to_status(event: dict[str, Any]) -> str | None:
     if etype == "fast_path":
         return "Found strong matches..."
 
+    if etype == "ingest_summarizing":
+        source = event.get("source", "")
+        return f"Summarizing {source}..."
+
+    if etype == "ingest_start":
+        total = event.get("total_chunks", 1)
+        return f"Extracting entries ({total} chunk{'s' if total != 1 else ''})..."
+
+    if etype == "ingest_chunk_start":
+        ci = event.get("chunk_index", 0)
+        total = event.get("total_chunks", 1)
+        return f"Extracting chunk {ci + 1}/{total}..."
+
+    if etype == "ingest_chunk_done":
+        ci = event.get("chunk_index", 0)
+        total = event.get("total_chunks", 1)
+        n = event.get("entries_extracted", 0)
+        return f"Chunk {ci + 1}/{total} done ({n} entries)"
+
+    if etype == "ingest_done":
+        n = event.get("entry_count", 0)
+        return f"Done — {n} entries created"
+
+    if etype == "ingest_error":
+        return str(event.get("error", "Ingestion error"))
+
     return None

@@ -3,10 +3,11 @@
 import hashlib
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from personal_kb.config import get_ingest_max_file_size
 from personal_kb.db.backend import Database
@@ -24,6 +25,9 @@ if TYPE_CHECKING:
     from personal_kb.ingest.dedup_agent import DedupAgent
 
 logger = logging.getLogger(__name__)
+
+# Optional async callback for progress events during ingestion
+ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 # Extensions we can meaningfully ingest as text
 _ALLOWED_EXTENSIONS: set[str] = {
@@ -153,6 +157,17 @@ class FileIngester:
         self._contributor = contributor
         self._team = team
 
+    async def _emit(
+        self,
+        cb: ProgressCallback | None,
+        event_type: str,
+        source: str,
+        **extra: object,
+    ) -> None:
+        """Emit a progress event if callback is set."""
+        if cb:
+            await cb({"type": event_type, "source": source, **extra})
+
     async def ingest_file(
         self,
         path: Path,
@@ -160,6 +175,7 @@ class FileIngester:
         project_ref: str | None = None,
         base_dir: Path | None = None,
         dry_run: bool = False,
+        progress_callback: ProgressCallback | None = None,
     ) -> FileResult:
         """Ingest a single file through the full pipeline.
 
@@ -269,8 +285,16 @@ class FileIngester:
             )
 
         # 7. Summarize
+        pc = progress_callback
+        await self._emit(pc, "ingest_summarizing", rel_path)
         summary = await summarize_file(self._llm, rel_path, content)
         if summary is None:
+            await self._emit(
+                pc,
+                "ingest_error",
+                rel_path,
+                error="LLM unavailable for summarization",
+            )
             return FileResult(
                 path=rel_path,
                 action="error",
@@ -279,33 +303,53 @@ class FileIngester:
 
         # 8. Chunk content
         chunks = chunk_content(content)
+        await self._emit(
+            pc,
+            "ingest_start",
+            rel_path,
+            total_chunks=len(chunks),
+        )
 
         # 9. Extract entries per chunk with running context
         all_extracted: list[ExtractedEntry] = []
         previously_extracted: list[str] = []
         chunks_skipped = 0
         chunks_flagged = 0
-        for chunk in chunks:
+        for ci, chunk in enumerate(chunks):
             # Secret scan per-chunk — skip chunks with secrets
             secrets = detect_secrets_in_content(chunk.text)
             if secrets:
                 chunks_flagged += 1
-                logger.info("Chunk flagged for secrets in %s: %s", rel_path, secrets)
+                logger.info(
+                    "Chunk flagged for secrets in %s: %s",
+                    rel_path,
+                    secrets,
+                )
                 continue
 
             # Dedup check (if agent provided)
             if self._dedup_agent:
-                dedup_result = await self._dedup_agent.check_chunk(chunk, previously_extracted)
+                dedup_result = await self._dedup_agent.check_chunk(
+                    chunk,
+                    previously_extracted,
+                )
                 if dedup_result.action == "skip":
                     chunks_skipped += 1
                     continue
-                # "partial" → inject existing_titles into context
                 if dedup_result.action == "partial":
                     combined_context = previously_extracted + dedup_result.existing_titles
                 else:
                     combined_context = previously_extracted
             else:
                 combined_context = previously_extracted
+
+            await self._emit(
+                pc,
+                "ingest_chunk_start",
+                rel_path,
+                chunk_index=ci,
+                total_chunks=len(chunks),
+            )
 
             extracted = await extract_entries(
                 self._llm,
@@ -316,6 +360,15 @@ class FileIngester:
             )
             all_extracted.extend(extracted)
             previously_extracted.extend(e.short_title for e in extracted)
+
+            await self._emit(
+                pc,
+                "ingest_chunk_done",
+                rel_path,
+                chunk_index=ci,
+                total_chunks=len(chunks),
+                entries_extracted=len(extracted),
+            )
 
         # 10. Store entries through the full pipeline
         entry_ids: list[str] = []
@@ -382,7 +435,7 @@ class FileIngester:
             )
         await self._db.commit()
 
-        return FileResult(
+        result = FileResult(
             path=rel_path,
             action="ingested",
             entry_count=len(entry_ids),
@@ -392,6 +445,15 @@ class FileIngester:
             chunks_skipped=chunks_skipped,
             chunks_flagged=chunks_flagged,
         )
+        await self._emit(
+            pc,
+            "ingest_done",
+            rel_path,
+            action="ingested",
+            entry_count=len(entry_ids),
+            entry_ids=entry_ids,
+        )
+        return result
 
     async def ingest_url(
         self,
@@ -399,6 +461,7 @@ class FileIngester:
         *,
         project_ref: str | None = None,
         dry_run: bool = False,
+        progress_callback: ProgressCallback | None = None,
     ) -> FileResult:
         """Fetch a URL, extract clean content, and ingest it.
 
@@ -419,19 +482,98 @@ class FileIngester:
                 resp.raise_for_status()
                 raw_html = resp.text
         except httpx.HTTPError as e:
-            return FileResult(path=url, action="error", reason=f"Failed to fetch: {e}")
+            reason = f"Failed to fetch: {e}"
+            await self._emit(
+                progress_callback,
+                "ingest_error",
+                url,
+                error=reason,
+            )
+            return FileResult(
+                path=url,
+                action="error",
+                reason=reason,
+            )
 
         # 2. Extract clean content from HTML
         content = extract_content(raw_html, url=url)
         if not content:
+            reason = (
+                "Could not extract content (trafilatura returned"
+                " empty). The page may require JavaScript or"
+                " have no article content."
+            )
+            await self._emit(
+                progress_callback,
+                "ingest_error",
+                url,
+                error=reason,
+            )
             return FileResult(
                 path=url,
                 action="error",
-                reason="Could not extract content (trafilatura returned empty). "
-                "The page may require JavaScript or have no article content.",
+                reason=reason,
             )
 
-        return await self._ingest_content(content, url, project_ref=project_ref, dry_run=dry_run)
+        return await self._ingest_content(
+            content,
+            url,
+            project_ref=project_ref,
+            dry_run=dry_run,
+            progress_callback=progress_callback,
+        )
+
+    async def ingest_text(
+        self,
+        content: str,
+        source_name: str,
+        *,
+        project_ref: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> FileResult:
+        """Ingest raw text content (e.g. from a file upload in the explorer).
+
+        Validates extension from source_name against the allowlist and checks
+        content size, then delegates to _ingest_content().
+        """
+        ext = Path(source_name).suffix.lower()
+        name = Path(source_name).name
+        if ext not in _ALLOWED_EXTENSIONS and name not in _ALLOWED_NAMES:
+            reason = f"Unsupported file type: {ext or name}"
+            await self._emit(
+                progress_callback,
+                "ingest_error",
+                source_name,
+                error=reason,
+            )
+            return FileResult(
+                path=source_name,
+                action="skipped",
+                reason=reason,
+            )
+
+        content_bytes = len(content.encode("utf-8"))
+        max_size = get_ingest_max_file_size()
+        if content_bytes > max_size:
+            reason = f"File too large: {content_bytes:,} bytes (max {max_size:,})"
+            await self._emit(
+                progress_callback,
+                "ingest_error",
+                source_name,
+                error=reason,
+            )
+            return FileResult(
+                path=source_name,
+                action="skipped",
+                reason=reason,
+            )
+
+        return await self._ingest_content(
+            content,
+            source_name,
+            project_ref=project_ref,
+            progress_callback=progress_callback,
+        )
 
     async def _ingest_content(
         self,
@@ -440,6 +582,7 @@ class FileIngester:
         *,
         project_ref: str | None = None,
         dry_run: bool = False,
+        progress_callback: ProgressCallback | None = None,
     ) -> FileResult:
         """Ingest clean text content with URL attribution.
 
@@ -499,8 +642,16 @@ class FileIngester:
             )
 
         # 3. Summarize
+        pc = progress_callback
+        await self._emit(pc, "ingest_summarizing", source_url)
         summary = await summarize_file(self._llm, source_url, content)
         if summary is None:
+            await self._emit(
+                pc,
+                "ingest_error",
+                source_url,
+                error="LLM unavailable for summarization",
+            )
             return FileResult(
                 path=source_url,
                 action="error",
@@ -509,22 +660,35 @@ class FileIngester:
 
         # 4. Chunk content
         chunks = chunk_content(content)
+        await self._emit(
+            pc,
+            "ingest_start",
+            source_url,
+            total_chunks=len(chunks),
+        )
 
         # 5. Extract entries per chunk with running context
         all_extracted: list[ExtractedEntry] = []
         previously_extracted: list[str] = []
         chunks_skipped = 0
         chunks_flagged = 0
-        for chunk in chunks:
+        for ci, chunk in enumerate(chunks):
             # Secret scan per-chunk — skip chunks with secrets
             secrets = detect_secrets_in_content(chunk.text)
             if secrets:
                 chunks_flagged += 1
-                logger.info("Chunk flagged for secrets in %s: %s", source_url, secrets)
+                logger.info(
+                    "Chunk flagged for secrets in %s: %s",
+                    source_url,
+                    secrets,
+                )
                 continue
 
             if self._dedup_agent:
-                dedup_result = await self._dedup_agent.check_chunk(chunk, previously_extracted)
+                dedup_result = await self._dedup_agent.check_chunk(
+                    chunk,
+                    previously_extracted,
+                )
                 if dedup_result.action == "skip":
                     chunks_skipped += 1
                     continue
@@ -535,6 +699,14 @@ class FileIngester:
             else:
                 combined_context = previously_extracted
 
+            await self._emit(
+                pc,
+                "ingest_chunk_start",
+                source_url,
+                chunk_index=ci,
+                total_chunks=len(chunks),
+            )
+
             extracted = await extract_entries(
                 self._llm,
                 source_url,
@@ -544,6 +716,15 @@ class FileIngester:
             )
             all_extracted.extend(extracted)
             previously_extracted.extend(e.short_title for e in extracted)
+
+            await self._emit(
+                pc,
+                "ingest_chunk_done",
+                source_url,
+                chunk_index=ci,
+                total_chunks=len(chunks),
+                entries_extracted=len(extracted),
+            )
 
         # 6. Store entries
         entry_ids: list[str] = []
@@ -617,7 +798,7 @@ class FileIngester:
             )
         await self._db.commit()
 
-        return FileResult(
+        result = FileResult(
             path=source_url,
             action="ingested",
             entry_count=len(entry_ids),
@@ -627,6 +808,15 @@ class FileIngester:
             chunks_skipped=chunks_skipped,
             chunks_flagged=chunks_flagged,
         )
+        await self._emit(
+            pc,
+            "ingest_done",
+            source_url,
+            action="ingested",
+            entry_count=len(entry_ids),
+            entry_ids=entry_ids,
+        )
+        return result
 
     async def ingest_directory(
         self,

@@ -351,3 +351,152 @@ def register_routes(app: Any) -> None:
                 "summary": result.summary,
             }
         )
+
+    @app.post("/api/ingest/stream", response_model=None)
+    async def api_ingest_stream(request: Request) -> StreamingResponse | JSONResponse:
+        """Stream ingestion progress for URLs and/or file content via SSE."""
+        body = await request.json()
+        items = body.get("items", [])
+        project_ref = body.get("project_ref")
+
+        if not items:
+            return JSONResponse({"error": "items is required"}, status_code=400)
+
+        store = getattr(request.app.state, "store", None)
+        extraction_llm = getattr(request.app.state, "extraction_llm", None)
+        graph_builder = getattr(request.app.state, "graph_builder", None)
+        if store is None or extraction_llm is None or graph_builder is None:
+            return JSONResponse(
+                {"error": "Ingestion not available (missing dependencies)"},
+                status_code=503,
+            )
+
+        db = request.app.state.db
+        embedder = request.app.state.embedder
+        graph_enricher = getattr(request.app.state, "graph_enricher", None)
+        contributor = getattr(request.app.state, "contributor", None)
+        team = getattr(request.app.state, "team", None)
+
+        from personal_kb.ingest.ingester import FileIngester
+
+        ingester = FileIngester(
+            db=db,
+            store=store,
+            embedder=embedder,
+            graph_builder=graph_builder,
+            graph_enricher=graph_enricher,
+            llm=extraction_llm,
+            contributor=contributor,
+            team=team,
+        )
+
+        async def event_stream() -> AsyncGenerator[str]:
+            queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+            all_entry_ids: list[str] = []
+            total_entries = 0
+
+            async def progress_cb(event: dict[str, Any]) -> None:
+                await queue.put(event)
+
+            async def run_batch() -> None:
+                try:
+                    for idx, item in enumerate(items):
+                        item_type = item.get("type", "")
+                        if item_type == "url":
+                            source = item.get("value", "").strip()
+                        else:
+                            source = item.get("name", "file")
+                        await queue.put(
+                            {
+                                "type": "batch_progress",
+                                "batch_index": idx,
+                                "batch_total": len(items),
+                                "source": source,
+                            }
+                        )
+                        try:
+                            if item_type == "url":
+                                result = await ingester.ingest_url(
+                                    source,
+                                    project_ref=project_ref,
+                                    progress_callback=progress_cb,
+                                )
+                            elif item_type == "file":
+                                result = await ingester.ingest_text(
+                                    item.get("content", ""),
+                                    item.get("name", "file"),
+                                    project_ref=project_ref,
+                                    progress_callback=progress_cb,
+                                )
+                            else:
+                                await queue.put(
+                                    {
+                                        "type": "ingest_error",
+                                        "source": source,
+                                        "error": f"Unknown item type: {item_type}",
+                                    }
+                                )
+                                continue
+                        except Exception as exc:
+                            logger.exception("Ingest item failed: %s", source)
+                            await queue.put(
+                                {
+                                    "type": "ingest_error",
+                                    "source": source,
+                                    "error": f"{type(exc).__name__}: {exc}",
+                                }
+                            )
+                            continue
+
+                        await queue.put(
+                            {
+                                "type": "item_done",
+                                "source": source,
+                                "action": result.action,
+                                "reason": result.reason,
+                                "entry_count": result.entry_count,
+                                "entry_ids": result.entry_ids,
+                            }
+                        )
+                        all_entry_ids.extend(result.entry_ids)
+                        nonlocal total_entries
+                        total_entries += result.entry_count
+
+                    await queue.put(
+                        {
+                            "type": "batch_done",
+                            "total_entries": total_entries,
+                            "entry_ids": all_entry_ids,
+                        }
+                    )
+                finally:
+                    await queue.put(None)
+
+            task = asyncio.create_task(run_batch())
+
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield sse_event(event["type"], event)
+                status = event_to_status(event)
+                if status:
+                    yield sse_event("status", {"message": status})
+
+            try:
+                await task
+            except Exception as exc:
+                logger.exception("Ingest batch task failed")
+                yield sse_event("error", {"message": f"{type(exc).__name__}: {exc}"})
+
+            yield sse_event("stream_end", {})
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )

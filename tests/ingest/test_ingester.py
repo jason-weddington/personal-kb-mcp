@@ -900,3 +900,153 @@ class TestIngestContent:
         )
         assert result.action == "skipped"
         assert "too large" in result.reason
+
+
+class TestProgressCallback:
+    """Tests for progress_callback on ingest methods."""
+
+    async def test_ingest_file_emits_progress(self, ingester_deps, tmp_path):
+        """ingest_file fires summarizing, start, chunk_start, chunk_done, done."""
+        f = tmp_path / "notes.md"
+        f.write_text("# Notes\n\nSome content about testing.")
+
+        entries_json = [
+            {
+                "short_title": "test note",
+                "long_title": "A note about testing",
+                "knowledge_details": "Details here.",
+                "entry_type": "factual_reference",
+                "tags": ["test"],
+            }
+        ]
+        deps = ingester_deps
+        llm = _make_llm_with_responses("Notes about testing.", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+        )
+
+        events: list[dict] = []
+
+        async def cb(event: dict) -> None:
+            events.append(event)
+
+        result = await ingester.ingest_file(f, base_dir=tmp_path, progress_callback=cb)
+        assert result.action == "ingested"
+
+        types = [e["type"] for e in events]
+        assert "ingest_summarizing" in types
+        assert "ingest_start" in types
+        assert "ingest_chunk_start" in types
+        assert "ingest_chunk_done" in types
+        assert "ingest_done" in types
+
+    async def test_ingest_file_none_callback(self, ingester_deps, tmp_path):
+        """None callback does not raise."""
+        f = tmp_path / "notes.md"
+        f.write_text("# Notes\n\nContent.")
+
+        entries_json = [
+            {
+                "short_title": "n",
+                "long_title": "Note",
+                "knowledge_details": "D",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        deps = ingester_deps
+        llm = _make_llm_with_responses("Summary.", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+        )
+
+        result = await ingester.ingest_file(f, base_dir=tmp_path, progress_callback=None)
+        assert result.action == "ingested"
+
+
+class TestIngestText:
+    """Tests for the public ingest_text() method."""
+
+    async def test_rejects_unsupported_extension(self, ingester_deps):
+        deps = ingester_deps
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            deps["enricher"],
+            deps["llm"],
+        )
+        result = await ingester.ingest_text("data", "image.xyz")
+        assert result.action == "skipped"
+        assert "Unsupported" in result.reason
+
+    async def test_rejects_oversized_content(self, ingester_deps, monkeypatch):
+        monkeypatch.setenv("KB_INGEST_MAX_FILE_SIZE", "50")
+        deps = ingester_deps
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            deps["enricher"],
+            deps["llm"],
+        )
+        result = await ingester.ingest_text("x" * 100, "notes.md")
+        assert result.action == "skipped"
+        assert "too large" in result.reason
+
+    async def test_accepts_valid_text(self, ingester_deps):
+        entries_json = [
+            {
+                "short_title": "test",
+                "long_title": "Test entry",
+                "knowledge_details": "Details",
+                "entry_type": "factual_reference",
+                "tags": [],
+            }
+        ]
+        deps = ingester_deps
+        llm = _make_llm_with_responses("Summary.", entries_json)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+        )
+        result = await ingester.ingest_text("# Test\nContent here.", "notes.md")
+        assert result.action == "ingested"
+        assert result.entry_count == 1
+
+    async def test_emits_error_on_bad_extension(self, ingester_deps):
+        """Progress callback receives ingest_error on bad extension."""
+        deps = ingester_deps
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            deps["enricher"],
+            deps["llm"],
+        )
+
+        events: list[dict] = []
+
+        async def cb(event: dict) -> None:
+            events.append(event)
+
+        await ingester.ingest_text("data", "image.xyz", progress_callback=cb)
+        assert len(events) == 1
+        assert events[0]["type"] == "ingest_error"

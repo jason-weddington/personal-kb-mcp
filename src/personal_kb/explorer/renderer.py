@@ -164,20 +164,61 @@ _TEMPLATE = """\
   #ingest-modal.visible { display: flex; }
   #ingest-modal-content {
     background: rgba(25, 25, 35, 0.98); border: 1px solid #444;
-    border-radius: 8px; padding: 20px; width: 440px;
+    border-radius: 8px; padding: 20px; width: 480px;
     color: #ddd; font-size: 13px;
   }
   #ingest-modal-content h3 {
     margin: 0 0 12px 0; font-size: 15px; color: #e0e0e0;
   }
-  #ingest-url-input {
-    width: 100%; padding: 8px 10px; box-sizing: border-box;
+  .ingest-tabs {
+    display: flex; gap: 0; margin-bottom: 12px;
+    border-bottom: 1px solid #3a3a4a;
+  }
+  .ingest-tab {
+    padding: 6px 16px; font-size: 12px; cursor: pointer;
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    color: #888; font-family: inherit; transition: color 0.15s, border-color 0.15s;
+  }
+  .ingest-tab:hover { color: #bbb; }
+  .ingest-tab.active { color: #a8d8f0; border-bottom-color: #1a5276; }
+  .ingest-tab-body { display: none; }
+  .ingest-tab-body.active { display: block; }
+  .ingest-url-row {
+    display: flex; gap: 6px; margin-bottom: 6px; align-items: center;
+  }
+  .ingest-url-row input {
+    flex: 1; padding: 7px 10px; box-sizing: border-box;
     background: rgba(15, 15, 25, 0.9); border: 1px solid #555;
     border-radius: 4px; color: #e0e0e0; font-size: 13px;
     font-family: inherit; outline: none;
   }
-  #ingest-url-input:focus { border-color: #777; }
-  #ingest-url-input::placeholder { color: #555; }
+  .ingest-url-row input:focus { border-color: #777; }
+  .ingest-url-row input::placeholder { color: #555; }
+  .ingest-url-remove {
+    background: transparent; border: none; color: #666; cursor: pointer;
+    font-size: 16px; padding: 0 4px; line-height: 1;
+  }
+  .ingest-url-remove:hover { color: #e57373; }
+  .ingest-url-add {
+    background: transparent; border: 1px dashed #3a3a4a; border-radius: 4px;
+    color: #666; cursor: pointer; padding: 4px 12px; font-size: 12px;
+    font-family: inherit; margin-bottom: 4px;
+  }
+  .ingest-url-add:hover { border-color: #555; color: #999; }
+  #ingest-file-input { display: none; }
+  .ingest-file-pick {
+    display: inline-block; padding: 8px 16px; cursor: pointer;
+    background: rgba(15, 15, 25, 0.9); border: 1px dashed #555;
+    border-radius: 4px; color: #888; font-size: 12px;
+    font-family: inherit; text-align: center; width: 100%;
+    box-sizing: border-box;
+  }
+  .ingest-file-pick:hover { border-color: #777; color: #bbb; }
+  #ingest-file-list {
+    margin-top: 8px; font-size: 12px; color: #aaa;
+    max-height: 100px; overflow-y: auto;
+  }
+  #ingest-file-list div { padding: 2px 0; }
   #ingest-project-input {
     width: 100%; padding: 6px 10px; box-sizing: border-box; margin-top: 8px;
     background: rgba(15, 15, 25, 0.9); border: 1px solid #555;
@@ -187,6 +228,21 @@ _TEMPLATE = """\
   }
   #ingest-project-input:focus { border-color: #777; }
   #ingest-project-input option { background: #1a1a2a; color: #e0e0e0; }
+  #ingest-progress {
+    display: none; margin-top: 10px;
+  }
+  #ingest-progress.visible { display: block; }
+  #ingest-progress-bar {
+    width: 100%; height: 4px; background: #2a2a3a; border-radius: 2px;
+    overflow: hidden;
+  }
+  #ingest-progress-fill {
+    height: 100%; width: 0%; background: #1a5276;
+    transition: width 0.3s ease;
+  }
+  #ingest-progress-text {
+    margin-top: 4px; font-size: 11px; color: #888;
+  }
   #ingest-modal-btns {
     display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end;
   }
@@ -455,19 +511,41 @@ _TEMPLATE = """\
     <textarea id="search-input" rows="1"
       placeholder="Search nodes or ask a question..." autocomplete="off"></textarea>
     <div id="search-toolbar">
-      <button class="toolbar-btn" onclick="openIngestModal()">+URL</button>
+      <button class="toolbar-btn" onclick="openIngestModal('url')">+URL</button>
+      <button class="toolbar-btn" onclick="openIngestModal('file')">+File(s)</button>
     </div>
   </div>
   <div id="search-results"></div>
 </div>
 <div id="ingest-modal">
   <div id="ingest-modal-content">
-    <h3>Ingest URL (must be publicly accessible)</h3>
-    <input id="ingest-url-input" type="url" placeholder="https://example.com/article"
-      autocomplete="off" />
+    <h3>Ingest</h3>
+    <div class="ingest-tabs">
+      <button class="ingest-tab active" data-tab="url"
+        onclick="switchIngestTab('url')">URLs</button>
+      <button class="ingest-tab" data-tab="file" onclick="switchIngestTab('file')">Files</button>
+    </div>
+    <div id="ingest-tab-url" class="ingest-tab-body active">
+      <div id="ingest-url-rows">
+        <div class="ingest-url-row">
+          <input type="url" placeholder="https://example.com/article" autocomplete="off" />
+        </div>
+      </div>
+      <button class="ingest-url-add" onclick="addUrlRow()">+ Add URL</button>
+    </div>
+    <div id="ingest-tab-file" class="ingest-tab-body">
+      <label class="ingest-file-pick" for="ingest-file-input">Choose .txt or .md files...</label>
+      <input id="ingest-file-input" type="file" multiple
+        accept=".txt,.md" onchange="updateFileList()" />
+      <div id="ingest-file-list"></div>
+    </div>
     <select id="ingest-project-input">
       <option value="">No project</option>
     </select>
+    <div id="ingest-progress">
+      <div id="ingest-progress-bar"><div id="ingest-progress-fill"></div></div>
+      <div id="ingest-progress-text"></div>
+    </div>
     <div id="ingest-status"></div>
     <div id="ingest-modal-btns">
       <button class="ingest-cancel" onclick="closeIngestModal()">Cancel</button>
@@ -1650,12 +1728,18 @@ chatInput.addEventListener('keydown', e => {
   }
 });
 
-// --- Ingest URL modal ---
+// --- Ingest modal ---
 const ingestModal = document.getElementById('ingest-modal');
-const ingestUrlInput = document.getElementById('ingest-url-input');
 const ingestProjectInput = document.getElementById('ingest-project-input');
 const ingestStatus = document.getElementById('ingest-status');
 const ingestSubmitBtn = document.getElementById('ingest-submit-btn');
+const ingestProgress = document.getElementById('ingest-progress');
+const ingestProgressFill = document.getElementById('ingest-progress-fill');
+const ingestProgressText = document.getElementById('ingest-progress-text');
+const ingestUrlRows = document.getElementById('ingest-url-rows');
+const ingestFileInput = document.getElementById('ingest-file-input');
+const ingestFileList = document.getElementById('ingest-file-list');
+let activeIngestTab = 'url';
 
 async function populateProjectDropdown() {
   try {
@@ -1669,7 +1753,6 @@ async function populateProjectDropdown() {
       ingestProjectInput.appendChild(opt);
     });
   } catch (e) {
-    // Fall back to graph data
     const projects = GRAPH_DATA.nodes
       .filter(n => n.type === 'project')
       .map(n => n.id.replace(/^project:/, ''))
@@ -1684,15 +1767,55 @@ async function populateProjectDropdown() {
   }
 }
 
-function openIngestModal() {
+function switchIngestTab(tab) {
+  activeIngestTab = tab;
+  document.querySelectorAll('.ingest-tab').forEach(
+    t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.getElementById('ingest-tab-url').classList.toggle('active', tab === 'url');
+  document.getElementById('ingest-tab-file').classList.toggle('active', tab === 'file');
+}
+
+function addUrlRow() {
+  const row = document.createElement('div');
+  row.className = 'ingest-url-row';
+  row.innerHTML = '<input type="url" placeholder="https://..."'
+    + ' autocomplete="off" />'
+    + '<button class="ingest-url-remove"'
+    + ' onclick="this.parentElement.remove()">&times;</button>';
+  ingestUrlRows.appendChild(row);
+  row.querySelector('input').focus();
+}
+
+function updateFileList() {
+  const files = ingestFileInput.files;
+  ingestFileList.innerHTML = '';
+  for (const f of files) {
+    const d = document.createElement('div');
+    d.textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
+    ingestFileList.appendChild(d);
+  }
+}
+
+function openIngestModal(tab) {
   if (!isServed) return;
-  ingestUrlInput.value = '';
+  // Reset URL rows to single empty row
+  ingestUrlRows.innerHTML = '<div class="ingest-url-row">'
+    + '<input type="url" placeholder="https://..."'
+    + ' autocomplete="off" /></div>';
+  ingestFileInput.value = '';
+  ingestFileList.innerHTML = '';
   populateProjectDropdown();
   ingestStatus.textContent = '';
   ingestStatus.className = '';
+  ingestProgress.classList.remove('visible');
+  ingestProgressFill.style.width = '0%';
+  ingestProgressText.textContent = '';
   ingestSubmitBtn.disabled = false;
+  switchIngestTab(tab || 'url');
   ingestModal.classList.add('visible');
-  ingestUrlInput.focus();
+  if (activeIngestTab === 'url') {
+    ingestUrlRows.querySelector('input').focus();
+  }
 }
 
 function closeIngestModal() {
@@ -1703,65 +1826,138 @@ ingestModal.addEventListener('click', e => {
   if (e.target === ingestModal) closeIngestModal();
 });
 
-ingestUrlInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); submitIngest(); }
+ingestModal.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeIngestModal();
+  if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); submitIngest(); }
 });
 
+async function collectIngestItems() {
+  const items = [];
+  if (activeIngestTab === 'url') {
+    const inputs = ingestUrlRows.querySelectorAll('input');
+    for (const inp of inputs) {
+      const v = inp.value.trim();
+      if (v) items.push({type: 'url', value: v});
+    }
+  } else {
+    const files = ingestFileInput.files;
+    for (const f of files) {
+      const text = await f.text();
+      items.push({type: 'file', name: f.name, content: text});
+    }
+  }
+  return items;
+}
+
 async function submitIngest() {
-  const url = ingestUrlInput.value.trim();
-  if (!url) { ingestUrlInput.focus(); return; }
+  const items = await collectIngestItems();
+  if (items.length === 0) {
+    ingestStatus.textContent = activeIngestTab === 'url'
+      ? 'Enter at least one URL' : 'Select at least one file';
+    ingestStatus.className = 'error';
+    return;
+  }
 
   ingestSubmitBtn.disabled = true;
-  ingestStatus.textContent = 'Ingesting...';
+  ingestStatus.textContent = '';
   ingestStatus.className = '';
+  ingestProgress.classList.add('visible');
+  ingestProgressFill.style.width = '0%';
+  ingestProgressText.textContent = 'Starting...';
+
+  const payload = {items};
+  const project = ingestProjectInput.value.trim();
+  if (project) payload.project_ref = project;
 
   try {
-    const payload = {url};
-    const project = ingestProjectInput.value.trim();
-    if (project) payload.project_ref = project;
-
-    const resp = await fetch('/api/ingest_url', {
+    const resp = await fetch('/api/ingest/stream', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
     });
 
-    const data = await resp.json();
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let batchTotal = items.length;
+    let batchIndex = 0;
+    let chunksDone = 0;
+    let chunksTotal = 1;
+    let allEntryIds = [];
 
-    if (!resp.ok) {
-      ingestStatus.textContent = data.error || 'Ingest failed';
-      ingestStatus.className = 'error';
-      ingestSubmitBtn.disabled = false;
-      return;
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      const lines = buffer.split('\\n');
+      buffer = lines.pop();
+
+      let eventType = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ') && eventType) {
+          const data = JSON.parse(line.slice(6));
+          if (eventType === 'batch_progress') {
+            batchIndex = data.batch_index;
+            batchTotal = data.batch_total;
+            chunksDone = 0;
+            chunksTotal = 1;
+            const label = batchTotal > 1 ? (batchIndex + 1) + '/' + batchTotal + ': ' : '';
+            ingestProgressText.textContent = label + 'Starting ' + data.source + '...';
+          } else if (eventType === 'ingest_summarizing') {
+            const label = batchTotal > 1 ? (batchIndex + 1) + '/' + batchTotal + ': ' : '';
+            ingestProgressText.textContent = label + 'Summarizing...';
+          } else if (eventType === 'ingest_start') {
+            chunksTotal = data.total_chunks || 1;
+            chunksDone = 0;
+          } else if (eventType === 'ingest_chunk_start') {
+            chunksTotal = data.total_chunks || 1;
+            const ci = data.chunk_index || 0;
+            const label = batchTotal > 1 ? (batchIndex + 1) + '/' + batchTotal + ': ' : '';
+            ingestProgressText.textContent = label
+              + 'Extracting chunk ' + (ci+1) + '/' + chunksTotal + '...';
+          } else if (eventType === 'ingest_chunk_done') {
+            chunksDone = (data.chunk_index || 0) + 1;
+            const itemFrac = chunksDone / chunksTotal;
+            const overallPct = ((batchIndex + itemFrac) / batchTotal * 100).toFixed(0);
+            ingestProgressFill.style.width = overallPct + '%';
+          } else if (eventType === 'item_done') {
+            const ids = data.entry_ids || [];
+            allEntryIds.push(...ids);
+            ingestProgressFill.style.width = ((batchIndex + 1) / batchTotal * 100).toFixed(0) + '%';
+          } else if (eventType === 'ingest_error') {
+            const label = batchTotal > 1 ? (batchIndex + 1) + '/' + batchTotal + ': ' : '';
+            ingestProgressText.textContent = label + (data.error || 'Error');
+          } else if (eventType === 'batch_done') {
+            allEntryIds = data.entry_ids || allEntryIds;
+            const n = data.total_entries || 0;
+            ingestProgressFill.style.width = '100%';
+            ingestStatus.textContent = n === 0
+              ? 'No entries created'
+              : 'Created ' + n + ' entries: ' + allEntryIds.join(', ');
+            ingestStatus.className = n > 0 ? 'success' : '';
+
+            // Highlight new entries on graph
+            allEntryIds.forEach(id => markResult(id));
+            if (allEntryIds.length > 0) {
+              emitTraversalParticles(allEntryIds);
+              setTimeout(() => {
+                graph.zoomToFit(500, 60, n => allEntryIds.includes(n.id));
+                setTimeout(clampZoom, 550);
+              }, 300);
+            }
+            setTimeout(closeIngestModal, 2000);
+          } else if (eventType === 'error') {
+            ingestStatus.textContent = data.message || 'Error';
+            ingestStatus.className = 'error';
+            ingestSubmitBtn.disabled = false;
+          }
+          eventType = '';
+        }
+      }
     }
-
-    if (data.action === 'error') {
-      ingestStatus.textContent = data.reason || 'Extraction failed';
-      ingestStatus.className = 'error';
-      ingestSubmitBtn.disabled = false;
-      return;
-    }
-
-    // Success
-    const ids = data.entry_ids || [];
-    ingestStatus.textContent = data.action === 'unchanged'
-      ? 'Already ingested (unchanged)'
-      : 'Created ' + ids.length + ' entries: ' + ids.join(', ');
-    ingestStatus.className = 'success';
-
-    // Highlight new entries on graph if they exist
-    ids.forEach(id => markResult(id));
-    if (ids.length > 0) {
-      emitTraversalParticles(ids);
-      setTimeout(() => {
-        graph.zoomToFit(500, 60, n => ids.includes(n.id));
-        setTimeout(clampZoom, 550);
-      }, 300);
-    }
-
-    // Auto-close after a moment
-    setTimeout(closeIngestModal, 2000);
   } catch (err) {
     ingestStatus.textContent = 'Error: ' + err.message;
     ingestStatus.className = 'error';

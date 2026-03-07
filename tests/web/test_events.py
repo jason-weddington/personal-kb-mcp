@@ -50,3 +50,37 @@ class TestEventToStatus:
     def test_tool_call_unknown_tool(self):
         event = {"type": "tool_call", "tool": "custom_tool", "args": {}}
         assert event_to_status(event) == "Running custom_tool..."
+
+    def test_ingest_summarizing(self):
+        event = {"type": "ingest_summarizing", "source": "notes.md"}
+        assert event_to_status(event) == "Summarizing notes.md..."
+
+    def test_ingest_start(self):
+        event = {"type": "ingest_start", "total_chunks": 3}
+        assert "3 chunks" in event_to_status(event)
+
+    def test_ingest_start_single(self):
+        event = {"type": "ingest_start", "total_chunks": 1}
+        result = event_to_status(event)
+        assert "1 chunk)" in result
+
+    def test_ingest_chunk_start(self):
+        event = {"type": "ingest_chunk_start", "chunk_index": 1, "total_chunks": 3}
+        assert event_to_status(event) == "Extracting chunk 2/3..."
+
+    def test_ingest_chunk_done(self):
+        event = {
+            "type": "ingest_chunk_done",
+            "chunk_index": 0,
+            "total_chunks": 2,
+            "entries_extracted": 3,
+        }
+        assert event_to_status(event) == "Chunk 1/2 done (3 entries)"
+
+    def test_ingest_done(self):
+        event = {"type": "ingest_done", "entry_count": 5}
+        assert event_to_status(event) == "Done — 5 entries created"
+
+    def test_ingest_error(self):
+        event = {"type": "ingest_error", "error": "Failed to fetch"}
+        assert event_to_status(event) == "Failed to fetch"
