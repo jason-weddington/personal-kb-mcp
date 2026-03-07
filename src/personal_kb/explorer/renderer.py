@@ -273,6 +273,7 @@ _TEMPLATE = """\
     position: fixed; top: 80px; left: 12px;
     font-size: 12px; color: #888; z-index: 10;
     transition: opacity 0.3s;
+    display: none;
   }
   #status-line.hidden { opacity: 0; }
   #response-panel {
@@ -1181,14 +1182,18 @@ function escapeAttr(s) {
 const statusLine = document.getElementById('status-line');
 const responsePanel = document.getElementById('response-panel');
 const responseContent = document.getElementById('response-content');
+const defaultPlaceholder = isServed
+  ? 'Search nodes or ask a question...' : 'Search nodes...';
 
 function setStatus(msg) {
   if (!msg) {
     statusLine.classList.add('hidden');
     statusLine.textContent = '';
+    searchInput.placeholder = defaultPlaceholder;
   } else {
     statusLine.textContent = msg;
     statusLine.classList.remove('hidden');
+    searchInput.placeholder = msg;
   }
 }
 
