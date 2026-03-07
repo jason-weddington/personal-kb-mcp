@@ -25,8 +25,17 @@ Rules:
 - Cite entry IDs in [kb-XXXXX] format when referencing specific entries.
 - If entries contain conflicting information, note the conflict and cite both.
 - Be concise. Prefer bullet points for multi-part answers.
-- You can use the retrieve tool to search for more entries when needed.
-- On follow-up questions, use context from the conversation history.\
+- On follow-up questions, use context from the conversation history.
+
+You have a read tool. To fetch a specific entry by ID, output a JSON block:
+```json
+{"tool": "get_entry", "args": {"entry_id": "kb-00042"}}
+```
+
+Available read tools:
+- get_entry: Fetch a KB entry by ID and add it to context. Args: entry_id (required)
+
+Use get_entry when a user references a specific entry ID that is not in your context.\
 """
 
 _WRITE_TOOLS_PROMPT = """
@@ -162,8 +171,8 @@ class ChatSession:
                 await event_callback({"type": "chat_done", "new_entries": new_entries})
             return response
 
-        # Check for tool call in the response (only when write deps available)
-        tool_call = _parse_tool_call(response) if self.write_deps else None
+        # Check for tool call in the response
+        tool_call = _parse_tool_call(response)
 
         if tool_call is not None:
             # Execute the tool
@@ -209,6 +218,8 @@ class ChatSession:
         tool_name = tool_call.get("tool", "")
         args = tool_call.get("args", {})
 
+        if tool_name == "get_entry":
+            return await self._tool_get_entry(args)
         if tool_name == "update_entry":
             return await self._tool_update_entry(args)
         if tool_name == "ingest_url":
@@ -219,6 +230,32 @@ class ChatSession:
             success=False,
             message=f"Unknown tool: {tool_name}",
         )
+
+    async def _tool_get_entry(self, args: dict[str, Any]) -> _ToolResult:
+        """Fetch a KB entry by ID and add it to context."""
+        from personal_kb.db.queries import get_entry
+
+        entry_id = args.get("entry_id")
+        if not entry_id:
+            return _ToolResult(tool="get_entry", success=False, message="entry_id is required")
+
+        entry = await get_entry(self.db, entry_id)
+        if entry is None:
+            return _ToolResult(
+                tool="get_entry", success=False, message=f"Entry {entry_id} not found"
+            )
+
+        # Add to context so it appears in system prompt on next LLM call
+        if entry_id not in self.entry_ids:
+            self.entry_ids.append(entry_id)
+
+        tags = " ".join(f"#{t}" for t in entry.tags) if entry.tags else ""
+        message = (
+            f"[{entry.id}] {entry.short_title} {tags}\n"
+            f"Type: {entry.entry_type.value if entry.entry_type else 'unknown'}\n"
+            f"{entry.knowledge_details}"
+        )
+        return _ToolResult(tool="get_entry", success=True, message=message, entry_ids=[entry_id])
 
     async def _tool_update_entry(self, args: dict[str, Any]) -> _ToolResult:
         """Execute the update_entry tool."""

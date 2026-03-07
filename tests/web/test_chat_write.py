@@ -113,6 +113,90 @@ async def test_reply_passthrough_with_write_deps(db, embedder, write_deps):
     assert len(session.messages) == 4  # seed Q+A + follow-up Q+A
 
 
+# --- get_entry tool ---
+
+
+@pytest.mark.asyncio
+async def test_get_entry_by_id(db, embedder, store):
+    """Chat can fetch a specific entry by ID and add it to context."""
+    from personal_kb.models.entry import EntryType
+    from personal_kb.web.chat import ChatSession
+
+    entry = await store.create_entry(
+        short_title="Flickr Missing APIs",
+        long_title="Flickr APIs not available in cleanr",
+        knowledge_details="flickr.photos.getNotInSet and flickr.photos.recentlyUpdated.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["flickr", "api"],
+    )
+
+    # LLM produces a get_entry tool call, then uses the result
+    tool_response = (
+        f"Let me look that up.\n```json\n"
+        f'{{"tool": "get_entry", "args": {{"entry_id": "{entry.id}"}}}}\n```'
+    )
+    llm = ScriptedLLM(
+        responses=[tool_response, f"Here's what [{entry.id}] says: missing APIs are..."]
+    )
+    session = ChatSession(db, embedder, llm)
+    session.seed("Q", "A", [])
+
+    reply = await session.reply(f"What's in {entry.id}?")
+    assert entry.id in reply
+    assert entry.id in session.entry_ids
+
+
+@pytest.mark.asyncio
+async def test_get_entry_not_found(db, embedder):
+    """get_entry with nonexistent ID returns error."""
+    from personal_kb.web.chat import ChatSession
+
+    tool_response = '```json\n{"tool": "get_entry", "args": {"entry_id": "kb-99999"}}\n```'
+    llm = ScriptedLLM(responses=[tool_response, "That entry doesn't exist."])
+    session = ChatSession(db, embedder, llm)
+    session.seed("Q", "A", [])
+
+    reply = await session.reply("Show me kb-99999")
+    assert reply is not None
+
+
+@pytest.mark.asyncio
+async def test_get_entry_missing_id(db, embedder):
+    """get_entry without entry_id arg returns error."""
+    from personal_kb.web.chat import ChatSession
+
+    tool_response = '```json\n{"tool": "get_entry", "args": {}}\n```'
+    llm = ScriptedLLM(responses=[tool_response, "Missing ID."])
+    session = ChatSession(db, embedder, llm)
+    session.seed("Q", "A", [])
+
+    reply = await session.reply("Get entry")
+    assert reply is not None
+
+
+@pytest.mark.asyncio
+async def test_get_entry_no_write_deps_needed(db, embedder, store):
+    """get_entry works without write deps — it's a read-only tool."""
+    from personal_kb.models.entry import EntryType
+    from personal_kb.web.chat import ChatSession
+
+    entry = await store.create_entry(
+        short_title="Test",
+        long_title="Test entry",
+        knowledge_details="Some details.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
+    tool_response = f'```json\n{{"tool": "get_entry", "args": {{"entry_id": "{entry.id}"}}}}\n```'
+    llm = ScriptedLLM(responses=[tool_response, f"Got it: [{entry.id}]"])
+    # No write_deps!
+    session = ChatSession(db, embedder, llm)
+    session.seed("Q", "A", [])
+
+    await session.reply(f"Look up {entry.id}")
+    assert entry.id in session.entry_ids
+
+
 # --- update_entry tool ---
 
 
@@ -306,7 +390,7 @@ async def test_system_prompt_includes_write_tools(db, embedder, write_deps):
 
 @pytest.mark.asyncio
 async def test_system_prompt_excludes_write_tools_without_deps(db, embedder):
-    """Without write deps, system prompt does not include tool descriptions."""
+    """Without write deps, system prompt has get_entry but not write tools."""
     from personal_kb.web.chat import ChatSession
 
     llm = FakeLLM(response="Just a response.")
@@ -316,4 +400,5 @@ async def test_system_prompt_excludes_write_tools_without_deps(db, embedder):
     await session.reply("Hello")
 
     assert llm.last_system is not None
+    assert "get_entry" in llm.last_system
     assert "update_entry" not in llm.last_system
