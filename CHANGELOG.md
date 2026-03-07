@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.47.0 (2026-03-07)
+
+### Features
+
+- Explorer thinking visuals — dim/glow/pulse during agent search
+  ([`7567c23`](https://github.com/jason-weddington/personal-kb-mcp/commit/7567c23a3a01ef57899c0a7a750062fe8e54d9c2))
+
+
 ## v0.46.1 (2026-03-07)
 
 ### Bug Fixes
