@@ -54,7 +54,12 @@ def register_kb_list_projects(mcp: FastMCP, prefix: str = "kb_") -> None:
 
     @mcp.tool(
         name=f"{prefix}list_projects",
-        description="List all projects in the knowledge base with entry counts.",
+        description=(
+            "List all projects in the knowledge base with entry counts. "
+            "Call this BEFORE storing or searching with a project_ref to check "
+            "existing project names and avoid duplicates (e.g. 'agent_gtd' vs "
+            "'agent-gtd'). Use the exact project_ref values returned here."
+        ),
     )
     async def kb_list_projects(ctx: Context) -> str:
         db = ctx.lifespan_context["db"]
