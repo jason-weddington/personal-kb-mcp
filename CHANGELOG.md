@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.51.1 (2026-03-07)
+
+### Bug Fixes
+
+- Pass limit as int in filter-only search SQL params
+  ([`eed73bc`](https://github.com/jason-weddington/personal-kb-mcp/commit/eed73bc0da1a9c2e3b4b862d7a03bc76e3766b1f))
+
+
 ## v0.51.0 (2026-03-07)
 
 ### Features
