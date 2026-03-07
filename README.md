@@ -209,6 +209,8 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
 | `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for `kb_ask` auto strategy |
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in the agentic query loop |
+| `KB_AUTO_EXPLORE` | `TRUE` | Auto-start the graph explorer web server on MCP server startup |
+| `KB_EXPLORE_PORT` | `8765` | Port for the explorer web server |
 | **Multi-user** | | |
 | `KB_CONTRIBUTOR` | _(unset)_ | Your name — attached to entries, versions, search events, and audit trail |
 | `KB_TEAM` | _(unset)_ | Your team — attached to entries alongside contributor |
@@ -314,6 +316,7 @@ Most team members want both a **shared team KB** (decisions, architecture, patte
         "KB_CONTRIBUTOR": "jason",
         "KB_TEAM": "platform",
         "KB_INSTANCE_ROLE": "team",
+        "KB_EXPLORE_PORT": "8766",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     },
@@ -329,6 +332,8 @@ Most team members want both a **shared team KB** (decisions, architecture, patte
   }
 }
 ```
+
+The explorer auto-starts on both instances. Personal gets the default port (`8765`), team gets `8766`. Bookmark both — or use `kb_explore` to swap which KB is on which port at any time.
 
 `KB_INSTANCE_ROLE` controls two things:
 

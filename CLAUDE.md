@@ -113,6 +113,8 @@ Format: `type(optional-scope): description`
 | `KB_PG_REGION` | `us-east-1` | AWS region for RDS IAM token signing |
 | `KB_SKIP_SAFETY` | (unset) | Set `TRUE` to bypass secret scanning on store |
 | `KB_INSTANCE_ROLE` | (unset) | `personal` or `team` — prepends role-specific instructions and prefixes tool names (`personal` → `personal_kb_*`, `team` → `team_kb_*`) |
+| `KB_AUTO_EXPLORE` | `TRUE` | Auto-start explorer web server on MCP server startup |
+| `KB_EXPLORE_PORT` | `8765` | Port for the explorer web server |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
 
 ## Agent Feedback Loop

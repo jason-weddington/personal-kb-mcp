@@ -11,7 +11,11 @@ from personal_kb.explorer.renderer import render_explorer_html
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.models.entry import EntryType
 from personal_kb.tools import kb_explore
-from personal_kb.tools.kb_explore import explore_logic
+from personal_kb.tools.kb_explore import (
+    _is_explorer_healthy,
+    explore_logic,
+    start_explorer_server,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -195,3 +199,40 @@ def test_kill_port_holder_timeout(monkeypatch):
 
     monkeypatch.setattr(_sp, "run", _fake_run)
     assert kb_explore._kill_port_holder(9999) is False
+
+
+@pytest.mark.asyncio
+async def test_is_explorer_healthy_returns_false_on_no_server():
+    """_is_explorer_healthy returns False when nothing is listening."""
+    assert await _is_explorer_healthy(19999) is False
+
+
+@pytest.mark.asyncio
+async def test_start_explorer_server_starts_and_returns_true(db, monkeypatch):
+    """start_explorer_server starts a server and returns True."""
+    port = 18765
+    monkeypatch.setenv("KB_EXPLORE_PORT", str(port))
+    result = await start_explorer_server(db, port=port)
+    assert result is True
+    assert await _is_explorer_healthy(port) is True
+
+
+@pytest.mark.asyncio
+async def test_start_explorer_server_skips_when_healthy(db, monkeypatch):
+    """start_explorer_server with kill_existing=False skips if port is healthy."""
+    port = 18766
+    assert await start_explorer_server(db, port=port) is True
+    # Clear module-level task to simulate a different process
+    old_task = kb_explore._web_server_task
+    kb_explore._web_server_task = None
+    result = await start_explorer_server(db, port=port, kill_existing=False)
+    assert result is True
+    kb_explore._web_server_task = old_task
+
+
+@pytest.mark.asyncio
+async def test_start_explorer_server_idempotent(db):
+    """Calling start_explorer_server twice returns True both times."""
+    port = 18767
+    assert await start_explorer_server(db, port=port) is True
+    assert await start_explorer_server(db, port=port) is True

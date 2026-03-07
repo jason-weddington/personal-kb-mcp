@@ -159,6 +159,16 @@ def is_safety_skip() -> bool:
     return os.environ.get("KB_SKIP_SAFETY", "").upper() == "TRUE"
 
 
+def is_auto_explore() -> bool:
+    """Return True if KB_AUTO_EXPLORE is set to TRUE (default: TRUE)."""
+    return os.environ.get("KB_AUTO_EXPLORE", "TRUE").upper() == "TRUE"
+
+
+def get_explore_port() -> int:
+    """Return the explorer web server port from KB_EXPLORE_PORT (default: 8765)."""
+    return int(os.environ.get("KB_EXPLORE_PORT", "8765"))
+
+
 def is_pg_iam_auth() -> bool:
     """Return True if KB_PG_IAM_AUTH is set to TRUE (RDS/Aurora IAM auth)."""
     return os.environ.get("KB_PG_IAM_AUTH", "").upper() == "TRUE"

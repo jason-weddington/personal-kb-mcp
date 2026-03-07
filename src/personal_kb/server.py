@@ -14,10 +14,12 @@ from personal_kb.config import (
     get_database_url,
     get_db_path,
     get_embedding_dim,
+    get_explore_port,
     get_extraction_provider,
     get_log_level,
     get_query_provider,
     get_team,
+    is_auto_explore,
     is_manager_mode,
 )
 from personal_kb.db.connection import create_connection
@@ -156,6 +158,30 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             "KB_CONTRIBUTOR not set — entries will have no attribution. "
             "Set KB_CONTRIBUTOR for multi-user provenance."
         )
+
+    # Auto-start explorer web server
+    if is_auto_explore():
+        from personal_kb.tools.kb_explore import start_explorer_server
+
+        port = get_explore_port()
+        started = await start_explorer_server(
+            db,
+            embedder,
+            query_llm,
+            synthesis_llm,
+            store=store,
+            graph_builder=graph_builder,
+            graph_enricher=graph_enricher,
+            extraction_llm=extraction_llm,
+            contributor=contributor,
+            team=team,
+            port=port,
+            kill_existing=False,
+        )
+        if started:
+            logger.info("Explorer auto-started on http://127.0.0.1:%d", port)
+        else:
+            logger.info("Explorer auto-start skipped (port %d in use)", port)
 
     try:
         yield {

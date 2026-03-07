@@ -12,6 +12,7 @@ from typing import Any
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
+from personal_kb.config import get_explore_port
 from personal_kb.db.backend import Database
 from personal_kb.explorer.graph_data import extract_graph_data
 from personal_kb.explorer.renderer import render_explorer_html
@@ -22,8 +23,6 @@ logger = logging.getLogger(__name__)
 
 # Module-level reference to avoid duplicate server starts
 _web_server_task: asyncio.Task[Any] | None = None
-
-_EXPLORER_PORT = 8765
 
 
 def _kill_port_holder(port: int) -> bool:
@@ -61,6 +60,95 @@ def _kill_port_holder(port: int) -> bool:
         return False
 
 
+async def _is_explorer_healthy(port: int) -> bool:
+    """Check if a healthy KB explorer is already running on the port."""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"http://127.0.0.1:{port}/api/graph")
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
+async def start_explorer_server(
+    db: Database,
+    embedder: EmbeddingClient | None = None,
+    query_llm: LLMProvider | None = None,
+    synthesis_llm: LLMProvider | None = None,
+    *,
+    store: Any | None = None,
+    graph_builder: Any | None = None,
+    graph_enricher: Any | None = None,
+    extraction_llm: LLMProvider | None = None,
+    contributor: str | None = None,
+    team: str | None = None,
+    port: int | None = None,
+    kill_existing: bool = True,
+) -> bool:
+    """Start the explorer web server in the background.
+
+    Returns True if a server is running on the port (started or already healthy).
+    Does not open a browser.
+    """
+    global _web_server_task
+
+    if port is None:
+        port = get_explore_port()
+
+    # Already running in this process?
+    if _web_server_task is not None and not _web_server_task.done():
+        return True
+
+    # Another process already serving a healthy explorer?
+    if await _is_explorer_healthy(port):
+        if not kill_existing:
+            logger.info("Explorer already running on port %d — skipping", port)
+            return True
+        # Explicit kb_explore call — take over the port
+        _kill_port_holder(port)
+        await asyncio.sleep(0.3)
+    elif kill_existing:
+        # Port may be held by a dead/non-explorer process
+        if _kill_port_holder(port):
+            await asyncio.sleep(0.3)
+
+    try:
+        from personal_kb.web.app import create_app_with_deps
+
+        app = create_app_with_deps(
+            db,
+            embedder,
+            query_llm,
+            synthesis_llm,
+            store=store,
+            graph_builder=graph_builder,
+            graph_enricher=graph_enricher,
+            extraction_llm=extraction_llm,
+            contributor=contributor,
+            team=team,
+        )
+        import uvicorn
+
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        server = uvicorn.Server(config)
+
+        async def _safe_serve() -> None:
+            with contextlib.suppress(SystemExit):
+                await server.serve()
+
+        _web_server_task = asyncio.create_task(_safe_serve())
+        await asyncio.sleep(0.3)
+        if _web_server_task.done():
+            _web_server_task = None
+            return False
+        return True
+    except (OSError, SystemExit):
+        logger.debug("Web server failed to start on port %d", port)
+        return False
+
+
 async def explore_logic(
     db: Database,
     embedder: EmbeddingClient | None = None,
@@ -78,59 +166,32 @@ async def explore_logic(
 
     Returns (html_content, summary_message).
     """
-    global _web_server_task
+    port = get_explore_port()
+    started = await start_explorer_server(
+        db,
+        embedder,
+        query_llm,
+        synthesis_llm,
+        store=store,
+        graph_builder=graph_builder,
+        graph_enricher=graph_enricher,
+        extraction_llm=extraction_llm,
+        contributor=contributor,
+        team=team,
+        port=port,
+        kill_existing=True,
+    )
 
-    # Try web server mode
-    try:
-        from personal_kb.web.app import create_app_with_deps
-
-        need_start = _web_server_task is None or _web_server_task.done()
-        if need_start:
-            # Kill any existing server on the port (e.g. from another MCP instance)
-            if _kill_port_holder(_EXPLORER_PORT):
-                await asyncio.sleep(0.3)
-
-            app = create_app_with_deps(
-                db,
-                embedder,
-                query_llm,
-                synthesis_llm,
-                store=store,
-                graph_builder=graph_builder,
-                graph_enricher=graph_enricher,
-                extraction_llm=extraction_llm,
-                contributor=contributor,
-                team=team,
-            )
-            import uvicorn
-
-            config = uvicorn.Config(app, host="127.0.0.1", port=_EXPLORER_PORT, log_level="warning")
-            server = uvicorn.Server(config)
-
-            async def _safe_serve() -> None:
-                with contextlib.suppress(SystemExit):
-                    await server.serve()
-
-            _web_server_task = asyncio.create_task(_safe_serve())
-            # Brief wait for the server to start; check for early failure
-            await asyncio.sleep(0.3)
-            if _web_server_task.done():
-                # Server failed to start (port in use, etc.) — fall through to temp file
-                _web_server_task = None
-                raise OSError("Web server failed to start")
-
-        webbrowser.open(f"http://localhost:{_EXPLORER_PORT}")
-
+    if started:
+        webbrowser.open(f"http://localhost:{port}")
         data = await extract_graph_data(db)
         stats = data["stats"]
         summary = (
-            f"Explorer opened: {stats['node_count']} nodes, {stats['edge_count']} edges. "
-            f"http://localhost:{_EXPLORER_PORT} (query-enabled)"
+            f"Explorer opened: {stats['node_count']} nodes, "
+            f"{stats['edge_count']} edges. "
+            f"http://localhost:{port} (query-enabled)"
         )
         return render_explorer_html(data), summary
-
-    except (OSError, SystemExit):
-        logger.debug("Web server failed to start, falling back to temp file mode")
 
     # Fallback: static temp file (no query support)
     data = await extract_graph_data(db)
