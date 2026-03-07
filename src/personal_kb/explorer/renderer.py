@@ -511,7 +511,7 @@ _TEMPLATE = """\
     <textarea id="search-input" rows="1"
       placeholder="Search nodes or ask a question..." autocomplete="off"></textarea>
     <div id="search-toolbar">
-      <button class="toolbar-btn" onclick="openIngestModal('url')">+URL</button>
+      <button class="toolbar-btn" onclick="openIngestModal('url')">+URL(s)</button>
       <button class="toolbar-btn" onclick="openIngestModal('file')">+File(s)</button>
     </div>
   </div>
