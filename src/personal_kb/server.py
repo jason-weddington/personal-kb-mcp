@@ -159,6 +159,16 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             "Set KB_CONTRIBUTOR for multi-user provenance."
         )
 
+    # Inject project context from working directory
+    from personal_kb.preflight import build_preflight_context
+
+    preflight_text = await build_preflight_context(db, os.getcwd())
+    if preflight_text:
+        server.instructions = (server.instructions or "") + preflight_text
+        logger.info("Preflight: injected project context (%d chars)", len(preflight_text))
+    else:
+        logger.debug("Preflight: no matching project for %s", os.getcwd())
+
     # Auto-start explorer web server
     if is_auto_explore():
         from personal_kb.tools.kb_explore import start_explorer_server
