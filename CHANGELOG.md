@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.55.4 (2026-03-08)
+
+### Bug Fixes
+
+- Ignore Enter during IME composition in explorer inputs
+  ([`7fc3f21`](https://github.com/jason-weddington/personal-kb-mcp/commit/7fc3f218bfefbe91b6190bb6871a84a3c15f69e6))
+
+
 ## v0.55.3 (2026-03-08)
 
 ### Bug Fixes
