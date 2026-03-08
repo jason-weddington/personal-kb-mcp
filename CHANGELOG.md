@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.55.2 (2026-03-08)
+
+### Bug Fixes
+
+- Standalone explorer missing ingestion deps, read prompt in piped script
+  ([`b4e150f`](https://github.com/jason-weddington/personal-kb-mcp/commit/b4e150fa8f6aee8a256f4089ee8b27b6d0ff0f47))
+
+
 ## v0.55.1 (2026-03-08)
 
 ### Bug Fixes
