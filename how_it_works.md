@@ -109,6 +109,18 @@ Two thresholds govern how decay affects results. At 50% effective confidence, a 
 
 See: `confidence/decay.py`, `db/queries.py` (`touch_accessed`)
 
+## Entry TTL / Expiry
+
+Entries can have an expiration date via the `ttl` parameter on `kb_store` and `kb_store_batch`. The `parse_ttl()` function in `tools/ttl.py` accepts `Nh`, `Nd`, or `Nw` (hours, days, weeks) and returns a `timedelta`. `compute_expires_at()` adds this to the current UTC time to produce an absolute `expires_at` datetime stored on the entry.
+
+Expiry is a hard filter, independent of confidence decay. In `search/hybrid.py`, expired entries are filtered out after the `is_active` check and before confidence decay is applied. An entry can be expired but high-confidence, or stale but unexpired — the two mechanisms don't interact. `kb_search` accepts `include_expired=True` to override the filter. `kb_get` always returns expired entries (with a badge warning).
+
+The formatter in `tools/formatters.py` renders three badge variants: `[EXPIRED]` if past expiry, `[EXPIRES Nd]` if more than a day remains, `[EXPIRES Nh]` if less than a day. Badge order in output is: sensitivity → expiry → staleness.
+
+Updates preserve the existing `expires_at` unless a new `ttl` is explicitly provided, following the same pattern as sensitivity.
+
+See: `tools/ttl.py`, `tools/formatters.py`, `search/hybrid.py`
+
 ## The Knowledge Graph
 
 The knowledge graph is stored in two tables: `graph_nodes` and `graph_edges`. Nodes have a text primary key (`node_id`), a type, JSON properties, and a creation timestamp. Edges have a source, target, edge type, JSON properties, and a unique constraint on `(source, target, edge_type)` to prevent duplicate edges.
@@ -284,21 +296,21 @@ The `kb_ingest` tool reads files from disk and converts them into knowledge entr
 
 **Re-ingestion** is handled automatically. If a file was previously ingested but its hash has changed, the old entries are deactivated (soft-deleted), old graph edges are removed, and the file goes through the full pipeline again. The `ingested_files` record is updated in place rather than recreated.
 
-### URL Ingestion
+### URL Ingestion (kb_ingest_url)
 
-The `kb_ingest` tool also accepts pre-fetched content with a source URL, enabling ingestion of web pages, wiki articles, and other text fetched by the calling agent. The tool accepts two additional parameters: `content` (the pre-fetched text) and `source_url` (the URL for attribution and dedup). When `content` is provided, `source_url` is required and `path` is ignored.
+The `kb_ingest_url` tool ingests web pages by URL. It fetches the HTML via httpx (30s timeout, redirects followed), then extracts the article text using [trafilatura](https://trafilatura.readthedocs.io/) — a core dependency that handles boilerplate removal, table extraction, and precision-mode content isolation (`favor_precision=True`). The extracted text is passed to `FileIngester.ingest_url()`, which delegates to the internal `_ingest_content()` pipeline.
 
-The content path calls `ingest_content()` on `FileIngester`, which runs a pipeline parallel to `ingest_file()` but skips all filesystem-specific steps: no deny-list check, no extension allowlist, and no file size check (the content is already in memory). Safety runs through `run_content_safety()` in `ingest/safety.py`, which performs secret detection and PII redaction without the deny-list check — a function extracted from `run_safety_pipeline()` so that file-mode ingestion still calls the full pipeline while content-mode calls only the content-relevant subset.
+The content pipeline skips all filesystem-specific steps (deny-list, extension allowlist, file size check) since the content is already in memory. Safety runs through `run_content_safety()` in `ingest/safety.py`, which performs secret detection and PII redaction without the deny-list check. The rest of the pipeline is identical to file ingestion: SHA-256 hash for dedup (keyed on the URL in the `ingested_files` table's `relative_path` column), LLM summarization, chunking, dedup agent, extraction with running context, entry storage, and graph construction. The note node uses `note:{source_url}` as its ID, with `{"url": source_url, "summary": summary}` in properties (compared to `{"path": rel_path, "summary": summary}` for file-sourced notes).
 
-The rest of the pipeline is identical: SHA-256 hash for dedup (keyed on `source_url` in the `ingested_files` table's `relative_path` column), LLM summarization, chunking, dedup agent, extraction with running context, entry storage, and graph construction. The note node uses `note:{source_url}` as its ID, with `{"url": source_url, "summary": summary}` in properties (compared to `{"path": rel_path, "summary": summary}` for file-sourced notes). The file extension is derived from the URL path via `urllib.parse.urlparse` and `Path.suffix`, defaulting to an empty string when the URL has no path extension. File size is computed as `len(content.encode())` rather than a filesystem stat call.
-
-See: `ingest/safety.py`, `ingest/extractor.py`, `ingest/chunker.py`, `ingest/dedup_agent.py`, `ingest/ingester.py`, `tools/kb_ingest.py`
+See: `ingest/html_extract.py`, `ingest/ingester.py`, `tools/kb_ingest_url.py`
 
 ## Dual LLM Architecture
 
-The server uses two independent LLM slots: one for extraction (graph enrichment during storage) and one for queries (planning in `kb_ask` and synthesis in `kb_summarize`). Each slot can be independently configured to use Anthropic, Bedrock, or Ollama as its backend, controlled by the `KB_EXTRACTION_PROVIDER` and `KB_QUERY_PROVIDER` environment variables (values: `anthropic`, `bedrock`, or `ollama`). Both default to `anthropic`.
+The server uses three LLM slots: one for extraction (graph enrichment during storage), one for queries (planning in `kb_ask`), and one for synthesis (human-facing prose in `kb_summarize` and the explorer chat). The extraction and query slots can be independently configured via `KB_EXTRACTION_PROVIDER` and `KB_QUERY_PROVIDER` (values: `anthropic`, `bedrock`, or `ollama`; both default to `anthropic`).
 
-This separation exists because the two use cases have different performance characteristics. Extraction runs on every store operation and produces structured JSON — it benefits from a fast, inexpensive model. Query planning and synthesis are interactive and user-facing — they benefit from a more capable model. Running both on Anthropic (Claude Haiku) works well for most setups, but you could run extraction on a local Ollama model to reduce API costs while keeping Anthropic for queries, or use Bedrock for both in an AWS environment.
+The synthesis slot is not independently configurable — it automatically upgrades the query provider's model to Claude Sonnet 4.6 for higher-quality prose output. `_create_synthesis_llm()` in `server.py` creates a client with `model_override` set to `claude-sonnet-4-6` (Anthropic API) or `us.anthropic.claude-sonnet-4-6` (Bedrock). For Ollama there is no Sonnet equivalent, so synthesis falls back to the query LLM. The `kb_summarize` tool and explorer chat both prefer `synthesis_llm` when available, falling back to `query_llm` if not.
+
+This separation exists because the three use cases have different performance characteristics. Extraction runs on every store operation and produces structured JSON — it benefits from a fast, inexpensive model (Haiku). Query planning is interactive but generates structured tool calls — Haiku is sufficient. Synthesis produces user-facing prose answers — it benefits from a more capable model (Sonnet). Running extraction and queries on Haiku while synthesis uses Sonnet gives a good cost/quality tradeoff.
 
 All three backends implement the `LLMProvider` protocol defined in `llm/provider.py`: `is_available()` checks if the backend is reachable, `generate()` sends a prompt with an optional system message and returns the response text or None, and `close()` releases resources. The protocol is decorated with `@runtime_checkable` so it can be used with `isinstance()` checks at runtime.
 
@@ -354,7 +366,7 @@ The web infrastructure lives in `web/`.
 
 **App factory** (`web/app.py`): Two factory functions create the FastAPI application. `create_app_with_deps(db, embedder, query_llm)` is used when the explorer is launched from the `kb_explore` MCP tool — it receives the database, embedder, and LLM client directly from the MCP lifespan context, sharing connections instead of creating new ones. `create_app()` is used by the standalone `personal-kb-web` CLI entry point — it creates its own database connection, embedder, and LLM client in a lifespan handler, mirroring the MCP server's startup sequence. Both store dependencies on `app.state`.
 
-**Routes** (`web/routes.py`): Five endpoints. `GET /` serves the explorer HTML (calls `extract_graph_data()` → `render_explorer_html()`). `GET /api/graph` returns the raw graph data as JSON (for live refresh). `POST /api/query/stream` is the SSE endpoint that streams query events. `GET /api/entry/{entry_id}` returns full entry details (including `knowledge_details`) for on-demand loading in the info panel. `POST /api/chat/stream` handles multi-turn follow-up conversations via SSE (see Chat section below).
+**Routes** (`web/routes.py`): Seven endpoints. `GET /` serves the explorer HTML. `GET /api/graph` returns raw graph data as JSON (used by the frontend to reload after ingestion). `GET /api/projects` returns distinct project_ref values for the ingest modal's combo box. `POST /api/query/stream` streams query events via SSE. `GET /api/entry/{entry_id}` returns full entry details for the info panel. `POST /api/chat/stream` handles multi-turn chat via SSE. `POST /api/ingest/stream` handles file upload and multi-URL ingestion with SSE progress events — it processes a batch of items (URLs and/or file content) sequentially, emitting `batch_progress`, `ingest_summarizing`, `ingest_chunk_start`, `item_done`, and `batch_done` events. Error isolation ensures one failing item doesn't stop the batch.
 
 **SSE streaming**: The `/api/query/stream` endpoint receives a JSON body with a `question` field. It first classifies the query (explore vs. summarize), then runs the appropriate retrieval function as an `asyncio.create_task`. An `asyncio.Queue` bridges the async event callback and the SSE generator — the `event_callback` pushes events to the queue, and the generator drains the queue and yields formatted SSE lines. Each agent event is translated to a human-readable status message via `event_to_status()` and sent as a `status` SSE event. When the task completes, the generator yields the final results (entry list or synthesized answer) and a `stream_end` sentinel.
 
@@ -374,9 +386,11 @@ The frontend detects whether it's served by the web server (`location.protocol !
 
 **SSE event handling**: The frontend reads the SSE stream with `fetch()` + `ReadableStream`, parsing `event:` and `data:` lines. JSON parse errors and event handler errors are caught in separate try/catch blocks to prevent one from swallowing the other. Status messages appear in a fixed status line below the search bar, updating in real time as the agent works ("Searching knowledge base...", "Exploring neighbors of tag:python...", "Synthesizing answer from 5 entries...").
 
-### kb_explore Tool Integration
+### Auto-Start and kb_explore Tool Integration
 
-The `kb_explore` MCP tool (`tools/kb_explore.py`) tries the web server first. It calls `create_app_with_deps()` with the MCP lifespan's database, embedder, and LLM client, starts uvicorn as an `asyncio.create_task`, and opens the browser. A module-level `_web_server_task` variable prevents starting duplicate servers across multiple `kb_explore` calls in the same session. If the port is already in use (`OSError`), it falls back to the static `file://` mode — writing a temp HTML file and opening it with `webbrowser.open()`.
+The explorer web server auto-starts during MCP server lifespan when `KB_AUTO_EXPLORE` is `TRUE` (the default). The lifespan calls `start_explorer_server()` with `kill_existing=False`, which first checks `_is_explorer_healthy(port)` — an httpx GET to `/api/graph` with a 2-second timeout. If a healthy explorer is already running (e.g. from another MCP instance), auto-start skips silently. If the port is free, it starts uvicorn as an `asyncio.create_task`. The port is configurable via `KB_EXPLORE_PORT` (default 8765), enabling dual-KB setups where personal and team explorers run on different ports.
+
+The `kb_explore` MCP tool calls `start_explorer_server()` with `kill_existing=True` — if another process holds the port, it kills it via `_kill_port_holder()` (lsof + SIGTERM, skipping own PID) and takes over. If the server is already running in the same process (`_web_server_task` is alive), it returns immediately. After ensuring the server is up, the tool opens the browser. If the server fails to start, it falls back to static `file://` mode — writing a temp HTML file and opening it with `webbrowser.open()`.
 
 The standalone `personal-kb-web` CLI (`web/cli.py`) runs the same web app via `uvicorn.run()` on port 8765, opening the browser after a 1-second delay. This is useful for browsing the KB outside of an MCP session.
 
@@ -385,6 +399,8 @@ The standalone `personal-kb-web` CLI (`web/cli.py`) runs the same web app via `u
 When a `summarize` query completes, the frontend opens a chat panel seeded with the original question and synthesized answer. Follow-up messages are sent to `/api/chat/stream`, which maintains conversation state server-side.
 
 **ChatSession** (`web/chat.py`): Holds the conversation as a `list[Message]` (where `Message = dict[str, str]` with `role` and `content` keys). The `seed()` method initializes the conversation with the original Q+A pair and the entry IDs from the summarize result. On each `reply()`, the session: (1) appends the user message, (2) trims history if over budget, (3) runs `hybrid_search` with `limit=5` to find entries relevant to the follow-up, (4) builds a system prompt that includes `_CHAT_SYSTEM_PROMPT` plus the full `knowledge_details` of all known entries, (5) calls `llm.generate_chat(messages, system=system)`, and (6) appends the assistant response. New entry IDs discovered during retrieval are accumulated in `self.entry_ids` and reported back via the `chat_done` event so the frontend can highlight them on the graph.
+
+**Write tools**: When `WriteDeps` (a dataclass holding store, graph_builder, graph_enricher, extraction_llm, contributor, team) is provided, the chat session gains a mini-ReAct loop with three tools: `get_entry` (fetch full entry details), `update_entry` (modify an existing entry), and `ingest_url` (fetch and ingest a URL). The LLM emits tool calls as `{"tool": "...", "args": {...}}` JSON blocks, which `_parse_tool_call()` extracts from the response. `_dispatch_tool()` executes the tool, injects the result as a user message, and re-queries the LLM for a follow-up response. `get_entry` is always available (read-only); `update_entry` and `ingest_url` require write deps.
 
 **Token budget**: `_MAX_CONVERSATION_CHARS = 100_000` (~25K tokens). When the total character count exceeds this, `_trim_history()` preserves the first 2 messages (the seed Q+A that grounds the conversation) and the most recent messages, dropping middle turns until the budget is met. No summarization pass — just a sliding window.
 

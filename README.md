@@ -124,7 +124,7 @@ ollama pull qwen3:4b               # only if using Ollama as LLM provider
 
 ### `kb_store`
 
-Store or update a knowledge entry. Each entry has a short title, long title, full content, entry type, optional tags, and optional project reference. Updates create version records preserving full history. Graph edges and embeddings are built automatically on store.
+Store or update a knowledge entry. Each entry has a short title, long title, full content, entry type, optional tags, and optional project reference. Updates create version records preserving full history. Graph edges and embeddings are built automatically on store. An optional `ttl` parameter (e.g. `'7d'`, `'24h'`, `'2w'`) sets an expiration date after which the entry is excluded from search results.
 
 ### `kb_store_batch`
 
@@ -132,7 +132,7 @@ Store multiple entries in a single call (max 10). More efficient than repeated `
 
 ### `kb_search`
 
-Hybrid search combining BM25 full-text search with vector similarity (when Ollama is available). Returns compact summaries (no `knowledge_details`). Supports filtering by project, entry type, tags, contributor, and team. Results include confidence scores with staleness decay and `@contributor/team` attribution badges.
+Hybrid search combining BM25 full-text search with vector similarity (when Ollama is available). Returns compact summaries (no `knowledge_details`). Supports filtering by project, entry type, tags, contributor, and team. Results include confidence scores with staleness decay and `@contributor/team` attribution badges. Set `include_expired=True` to include entries past their TTL expiration in results (excluded by default).
 
 ### `kb_get`
 
@@ -172,9 +172,13 @@ kb_ingest(file_path="/path/to/notes", project_ref="my-project", dry_run=True)
 - Skips binaries, images, archives, keys, `.env` files, and other sensitive formats
 - Optional safety libraries: `uv sync --extra safety` installs `detect-secrets` and `scrubadub`
 
+### `kb_ingest_url`
+
+Ingest a web page into the knowledge base (only available when `KB_MANAGER=TRUE`). Uses [trafilatura](https://trafilatura.readthedocs.io/) for HTML-to-text extraction, then runs the same LLM summarize/extract pipeline as `kb_ingest`. Accepts `url`, `project_ref`, `tags`, and `dry_run`.
+
 ### `kb_explore`
 
-Open an interactive graph visualization in your browser. Launches a local web server at `http://localhost:8765` with full query capabilities — type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Questions routed to `summarize` mode open a multi-turn chat panel where you can ask follow-up questions grounded in the retrieved KB entries, with iMessage-style message bubbles and clickable `[kb-XXXXX]` citations that fly to nodes in the graph.
+Open an interactive graph visualization in your browser. The explorer auto-starts on MCP server startup (available at `http://localhost:8765` immediately, no tool call needed — use the tool to relaunch or change ports). Type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Questions routed to `summarize` mode open a multi-turn chat panel where you can ask follow-up questions grounded in the retrieved KB entries, with iMessage-style message bubbles and clickable `[kb-XXXXX]` citations that fly to nodes in the graph. The chat panel supports write-back tools — update entries or ingest URLs directly from the conversation. The toolbar also provides file upload and multi-URL ingestion for bulk import without leaving the browser.
 
 ### `kb_feedback`
 
