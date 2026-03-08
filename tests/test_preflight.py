@@ -298,3 +298,124 @@ class TestBuildPreflightContext:
         result = await build_preflight_context(preflight_db, "/home/user/my_project")
         # 5 entries: 2 expiring + 2 recent + 1 convention
         assert "5 entries" in result
+
+
+# ---------------------------------------------------------------------------
+# Team filtering
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+async def team_db():
+    """DB with entries across multiple teams for the same project."""
+    from personal_kb.db.connection import create_connection
+
+    db = await create_connection(":memory:", embedding_dim=64)
+
+    now = datetime.now(UTC)
+
+    entries = [
+        # team-alpha decision
+        (
+            "kb-00010",
+            "shared-proj",
+            "Alpha decision",
+            "Alpha chose X",
+            "details",
+            "decision",
+            "team-alpha",
+        ),
+        # team-beta decision
+        (
+            "kb-00011",
+            "shared-proj",
+            "Beta decision",
+            "Beta chose Y",
+            "details",
+            "decision",
+            "team-beta",
+        ),
+        # No-team decision (global)
+        (
+            "kb-00012",
+            "shared-proj",
+            "Global decision",
+            "Everyone agreed on Z",
+            "details",
+            "decision",
+            None,
+        ),
+        # team-alpha convention
+        (
+            "kb-00013",
+            "shared-proj",
+            "Alpha style",
+            "Alpha code style",
+            "details",
+            "pattern_convention",
+            "team-alpha",
+        ),
+        # team-beta convention
+        (
+            "kb-00014",
+            "shared-proj",
+            "Beta style",
+            "Beta code style",
+            "details",
+            "pattern_convention",
+            "team-beta",
+        ),
+        # team-alpha expiring
+        (
+            "kb-00015",
+            "shared-proj",
+            "Alpha deadline",
+            "Alpha sprint deadline",
+            "details",
+            "factual_reference",
+            "team-alpha",
+        ),
+    ]
+
+    for e in entries:
+        expires_at = (now + timedelta(days=3)).isoformat() if e[0] == "kb-00015" else None
+        await db.execute(
+            "INSERT INTO knowledge_entries "
+            "(id, project_ref, short_title, long_title, knowledge_details, "
+            "entry_type, team, created_at, updated_at, expires_at, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            [*e, now.isoformat(), now.isoformat(), expires_at],
+        )
+    await db.commit()
+
+    yield db
+    await db.close()
+
+
+class TestTeamFiltering:
+    async def test_no_team_returns_all(self, team_db) -> None:
+        """Without team filter, all entries from all teams appear."""
+        result = await build_preflight_context(team_db, "/home/user/shared-proj")
+        assert "kb-00010" in result  # alpha
+        assert "kb-00011" in result  # beta
+        assert "kb-00012" in result  # global
+
+    async def test_team_alpha_sees_own_and_global(self, team_db) -> None:
+        """team-alpha sees alpha entries + global, not beta."""
+        result = await build_preflight_context(team_db, "/home/user/shared-proj", team="team-alpha")
+        assert "kb-00010" in result  # alpha decision
+        assert "kb-00012" in result  # global decision
+        assert "kb-00013" in result  # alpha convention
+        assert "kb-00015" in result  # alpha expiring
+        assert "kb-00011" not in result  # beta decision
+        assert "kb-00014" not in result  # beta convention
+
+    async def test_team_beta_sees_own_and_global(self, team_db) -> None:
+        """team-beta sees beta entries + global, not alpha."""
+        result = await build_preflight_context(team_db, "/home/user/shared-proj", team="team-beta")
+        assert "kb-00011" in result  # beta decision
+        assert "kb-00012" in result  # global decision
+        assert "kb-00014" in result  # beta convention
+        assert "kb-00010" not in result  # alpha decision
+        assert "kb-00013" not in result  # alpha convention
+        assert "kb-00015" not in result  # alpha expiring

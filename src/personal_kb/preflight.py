@@ -76,34 +76,51 @@ def detect_project(cwd: str, known_projects: list[str]) -> list[str]:
 # SQL queries (pure SQL, no LLM)
 # ---------------------------------------------------------------------------
 
-_EXPIRING_SQL = (
-    "SELECT id, entry_type, short_title, expires_at "
-    "FROM knowledge_entries "
-    "WHERE is_active = 1 AND project_ref = ? "
-    "AND expires_at IS NOT NULL "
-    "AND expires_at > ? "
-    "AND expires_at < ? "
-    "ORDER BY expires_at ASC "
-    "LIMIT 5"
-)
+_TEAM_CLAUSE = " AND (team = ? OR team IS NULL)"
 
-_RECENT_SQL = (
-    "SELECT id, entry_type, short_title "
-    "FROM knowledge_entries "
-    "WHERE is_active = 1 AND project_ref = ? "
-    "AND entry_type IN ('decision', 'lesson_learned') "
-    "ORDER BY created_at DESC "
-    "LIMIT 5"
-)
 
-_CONVENTIONS_SQL = (
-    "SELECT id, entry_type, short_title "
-    "FROM knowledge_entries "
-    "WHERE is_active = 1 AND project_ref = ? "
-    "AND entry_type = 'pattern_convention' "
-    "ORDER BY created_at DESC "
-    "LIMIT 5"
-)
+def _expiring_sql(team: str | None) -> tuple[str, bool]:
+    """Build expiring entries SQL. Returns (sql, has_team_param)."""
+    sql = (
+        "SELECT id, entry_type, short_title, expires_at "
+        "FROM knowledge_entries "
+        "WHERE is_active = 1 AND project_ref = ? "
+        "AND expires_at IS NOT NULL "
+        "AND expires_at > ? "
+        "AND expires_at < ? "
+    )
+    if team:
+        sql += _TEAM_CLAUSE
+    sql += "ORDER BY expires_at ASC LIMIT 5"
+    return sql, team is not None
+
+
+def _recent_sql(team: str | None) -> tuple[str, bool]:
+    """Build recent decisions/lessons SQL. Returns (sql, has_team_param)."""
+    sql = (
+        "SELECT id, entry_type, short_title "
+        "FROM knowledge_entries "
+        "WHERE is_active = 1 AND project_ref = ? "
+        "AND entry_type IN ('decision', 'lesson_learned') "
+    )
+    if team:
+        sql += _TEAM_CLAUSE
+    sql += "ORDER BY created_at DESC LIMIT 5"
+    return sql, team is not None
+
+
+def _conventions_sql(team: str | None) -> tuple[str, bool]:
+    """Build conventions SQL. Returns (sql, has_team_param)."""
+    sql = (
+        "SELECT id, entry_type, short_title "
+        "FROM knowledge_entries "
+        "WHERE is_active = 1 AND project_ref = ? "
+        "AND entry_type = 'pattern_convention' "
+    )
+    if team:
+        sql += _TEAM_CLAUSE
+    sql += "ORDER BY created_at DESC LIMIT 5"
+    return sql, team is not None
 
 
 async def _get_known_projects(db: Database) -> list[str]:
@@ -150,20 +167,39 @@ def _format_toc_line(row: object, include_expiry: bool = False) -> str:
     return line
 
 
-async def _build_project_section(db: Database, project_ref: str) -> str | None:
+async def _build_project_section(
+    db: Database, project_ref: str, *, team: str | None = None
+) -> str | None:
     """Build the ToC section for one project. Returns None if empty."""
     now = datetime.now(UTC)
     grace_start = (now - timedelta(days=7)).isoformat()
     horizon_end = (now + timedelta(days=30)).isoformat()
 
+    # Build SQL with optional team filter
+    exp_sql, exp_has_team = _expiring_sql(team)
+    rec_sql, rec_has_team = _recent_sql(team)
+    conv_sql, conv_has_team = _conventions_sql(team)
+
+    exp_params: list[str] = [project_ref, grace_start, horizon_end]
+    if exp_has_team:
+        exp_params.append(team)  # type: ignore[arg-type]
+
+    rec_params: list[str] = [project_ref]
+    if rec_has_team:
+        rec_params.append(team)  # type: ignore[arg-type]
+
+    conv_params: list[str] = [project_ref]
+    if conv_has_team:
+        conv_params.append(team)  # type: ignore[arg-type]
+
     # Run all three queries
-    exp_cursor = await db.execute(_EXPIRING_SQL, [project_ref, grace_start, horizon_end])
+    exp_cursor = await db.execute(exp_sql, exp_params)
     expiring = await exp_cursor.fetchall()
 
-    rec_cursor = await db.execute(_RECENT_SQL, [project_ref])
+    rec_cursor = await db.execute(rec_sql, rec_params)
     recent = await rec_cursor.fetchall()
 
-    conv_cursor = await db.execute(_CONVENTIONS_SQL, [project_ref])
+    conv_cursor = await db.execute(conv_sql, conv_params)
     conventions = await conv_cursor.fetchall()
 
     if not expiring and not recent and not conventions:
@@ -195,8 +231,11 @@ async def _build_project_section(db: Database, project_ref: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-async def build_preflight_context(db: Database, cwd: str) -> str:
+async def build_preflight_context(db: Database, cwd: str, *, team: str | None = None) -> str:
     """Build compact project context from the working directory.
+
+    When *team* is set, results are scoped to that team's entries (plus
+    entries with no team set). This filters out entries from other teams.
 
     Returns a string to append to server instructions, or empty string
     if no matching project is found.
@@ -217,7 +256,7 @@ async def build_preflight_context(db: Database, cwd: str) -> str:
     sections: list[str] = []
     for proj in matches:
         try:
-            section = await _build_project_section(db, proj)
+            section = await _build_project_section(db, proj, team=team)
             if section:
                 sections.append(section)
         except Exception:
