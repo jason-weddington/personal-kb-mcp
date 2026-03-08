@@ -8,15 +8,33 @@ Problems worth solving, in priority order. Not specs — the "how" gets figured 
 
 Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — whatever's best right now. MCP makes personal-kb agent-agnostic: your decisions, patterns, and debugging insights follow you. The KB compounds over time regardless of which tool you're using today.
 
-## Now — Explorer Write-Back
+## Now — Just-In-Time Context (Preflight)
 
-The explorer is becoming a first-class human interface into the KB (see kb-00547). Humans and agents access the same KB, each through an interface suited to how they work. Agents create entries (schema-aware); humans correct, update, and ingest.
+Agents get context from static files (CLAUDE.md, memory) or explicit search (kb_search, kb_ask). Both fail on **unknown unknowns** — the convention the agent doesn't know exists, the expiring entry it can't search for. Preflight closes this gap by pushing relevant context to the agent automatically, before it starts thinking.
 
-- **Chat agent tool dispatch.** Give the explorer chat agent internal tools for write operations: `update_entry`, `ingest_url`, `update_metadata`. ~150 LOC in chat.py. The chat session already has DB/embedder/LLM access. All safety checks (secret scanning) apply through the same code path.
-- **Update entries via chat.** "That's outdated, update kb-00042 to say..." — user provides the correction, agent validates and writes. Low risk: existing schema/tags/hints preserved.
-- **Ingest URLs via chat.** "Add this article to the KB: https://..." — agent fetches content, calls `FileIngester.ingest_content()`. kb_ingest is fully self-contained; no agent pre-processing needed.
-- **Metadata tweaks via chat.** "Mark kb-00042 as expires in 30d", "add tag 'postgres' to kb-00042" — simple field updates, no re-embedding needed.
-- **Entry creation stays in agent-land.** Do NOT add kb_store creation to the explorer. Schema-aware entry composition (EntryType, graph-aware tags, supersedes hints) requires the full KB context that MCP tool descriptions provide to Opus/Sonnet in Claude Code.
+### CWD-based project context injection (MVP)
+
+The MCP server subprocess inherits the client's CWD. If the agent launched from `/Users/jason/git/my-project`, the server knows the project. No tool call needed, no agent cooperation, no parsing task descriptions.
+
+**Signal**: `os.getcwd()` at lifespan startup.
+
+**Fuzzy matching**: The directory name won't always match `project_ref` exactly. `personal_kb` vs `personal-kb`, `my-cool-project` vs `cool-project`, monorepo subdirectories. Need robust matching: normalize separators (underscores ↔ hyphens), try parent dirs, check against all known project_ref values in the DB. This matching logic is the make-or-break piece — bad matches inject wrong context, no match means no value.
+
+**What to inject** (appended to server instructions, ~500 tokens max):
+- Expiring soon + recently expired (7-day grace window) — max 3. The highest-value signal: agents can't discover these on their own.
+- Recent decisions + lessons learned (last 14 days) — max 5. What happened lately in this project.
+- Active conventions (pattern_convention, confidence >= 0.7) — max 3. How things are done here.
+- Compact format: entry ID + type + short title + age/expiry badge. No knowledge_details (agent uses kb_get if interested).
+
+**What NOT to build**: task-type detection, configurable thresholds, LLM calls in the preflight path. Hard-code sensible defaults. Keep it pure SQL against indexed columns.
+
+### kb_preflight tool (complement, not replacement)
+
+For cases CWD injection can't handle: cross-project work, explicit scope override, mid-session project switch. Agent calls it with the user's raw message + optional scope. Same retrieval logic as CWD injection but triggered on demand. Lower priority — build after CWD injection proves the concept.
+
+### Steering guide update
+
+Replace "search before acting" with "review the project briefing above, then search for specifics." The briefing is already there; the agent just needs to know to use it.
 
 ## Next — Audit Fixes
 
@@ -52,6 +70,7 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 ## Done
 
+- Explorer write-back — chat agent tools (update_entry, ingest_url, get_entry), file upload + multi-URL ingest with SSE progress, project combo box, auto-start web server (KB_AUTO_EXPLORE, KB_EXPLORE_PORT).
 - Explorer Chat — `generate_chat(messages)` on LLMProvider protocol + all 3 clients, `ChatSession` with token budget, `/api/chat/stream` SSE endpoint, iMessage-style chat UI with slide animation, clickable citations that fly to graph nodes.
 - Graph Explorer Phase 1-2 + animated graph — `kb_explore` MCP tool, force-graph visualization, live web server (`personal-kb-web`), SSE streaming with agent traversal animation (node glow, particles, staggered reveal, progressive camera widening), query routing (explore/summarize), markdown rendering, info panel with on-demand entry details.
 - Batch store partial failure reporting — per-entry try/except with clear error messages so agents can retry failed items. (audit H8)
