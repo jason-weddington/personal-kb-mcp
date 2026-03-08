@@ -122,7 +122,7 @@ else
     echo "  and AI-powered synthesis. The KB works without it (Ollama-only mode)"
     echo "  but these features significantly improve quality."
     echo ""
-    read -rp "  Enter your Anthropic API key (or press Enter to skip): " api_key
+    read -rp "  Enter your Anthropic API key (or press Enter to skip): " api_key < /dev/tty
     if [ -n "$api_key" ]; then
         export ANTHROPIC_API_KEY="$api_key"
         ok "ANTHROPIC_API_KEY set for this session"

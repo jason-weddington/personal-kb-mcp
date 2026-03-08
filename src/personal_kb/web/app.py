@@ -71,6 +71,15 @@ def create_app() -> Any:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        from personal_kb.config import (
+            get_contributor,
+            get_extraction_provider,
+            get_team,
+        )
+        from personal_kb.graph.builder import GraphBuilder
+        from personal_kb.graph.enricher import GraphEnricher
+        from personal_kb.store.knowledge_store import KnowledgeStore
+
         logging.basicConfig(
             level=getattr(logging, get_log_level()),
             format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -78,14 +87,29 @@ def create_app() -> Any:
         )
         db = await create_connection(embedding_dim=get_embedding_dim())
         embedder = EmbeddingClient(db)
-        provider = get_query_provider()
-        query_llm = _create_llm(provider)
-        synthesis_llm = _create_synthesis_llm(provider)
+        store = KnowledgeStore(db)
+        graph_builder = GraphBuilder(db)
+
+        query_provider = get_query_provider()
+        query_llm = _create_llm(query_provider)
+        synthesis_llm = _create_synthesis_llm(query_provider)
+
+        extraction_provider = get_extraction_provider()
+        extraction_llm = _create_llm(extraction_provider)
+        graph_enricher: GraphEnricher | None = None
+        if extraction_llm is not None:
+            graph_enricher = GraphEnricher(db, extraction_llm)
 
         app.state.db = db
         app.state.embedder = embedder
         app.state.query_llm = query_llm
         app.state.synthesis_llm = synthesis_llm
+        app.state.store = store
+        app.state.graph_builder = graph_builder
+        app.state.graph_enricher = graph_enricher
+        app.state.extraction_llm = extraction_llm
+        app.state.contributor = get_contributor()
+        app.state.team = get_team()
 
         try:
             yield
@@ -94,6 +118,8 @@ def create_app() -> Any:
                 await synthesis_llm.close()
             if query_llm is not None:
                 await query_llm.close()
+            if extraction_llm is not None and extraction_llm is not query_llm:
+                await extraction_llm.close()
             await embedder.close()
             await db.close()
 
