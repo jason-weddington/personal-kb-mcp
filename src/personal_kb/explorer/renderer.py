@@ -1117,7 +1117,7 @@ searchInput.addEventListener('keydown', e => {
     e.preventDefault();
     searchIdx = Math.max(searchIdx - 1, 0);
     updateSearchHL(items);
-  } else if (e.key === 'Enter' && !e.shiftKey) {
+  } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     // If user selected an autocomplete item, fly to it
     if (searchIdx >= 0 && items[searchIdx]) {
@@ -1396,7 +1396,7 @@ function handleSSEEvent(eventType, data) {
         if (inp) {
           inp.addEventListener('input', () => autoResize(inp));
           inp.addEventListener('keydown', e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
               e.preventDefault(); startExploreChat();
             }
           });
@@ -1726,7 +1726,7 @@ async function sendChatMessage() {
 
 chatInput.addEventListener('input', () => autoResize(chatInput));
 chatInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     sendChatMessage();
   }
@@ -1827,7 +1827,9 @@ ingestModal.addEventListener('click', e => {
 
 ingestModal.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeIngestModal();
-  if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); submitIngest(); }
+  if (e.key === 'Enter' && !e.isComposing && e.target.tagName === 'INPUT') {
+    e.preventDefault(); submitIngest();
+  }
 });
 
 async function collectIngestItems() {
