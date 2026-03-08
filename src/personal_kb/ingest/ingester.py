@@ -477,7 +477,15 @@ class FileIngester:
 
         # 1. Fetch URL
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            _headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:137.0) "
+                    "Gecko/20100101 Firefox/137.0"
+                ),
+            }
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=30.0, headers=_headers
+            ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 raw_html = resp.text
