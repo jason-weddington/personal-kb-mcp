@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.55.3 (2026-03-08)
+
+### Bug Fixes
+
+- Send Firefox user-agent on URL ingestion to avoid 403s
+  ([`ad2cd31`](https://github.com/jason-weddington/personal-kb-mcp/commit/ad2cd31fbb257e92393f43025e915b54df8f5ecc))
+
+
 ## v0.55.2 (2026-03-08)
 
 ### Bug Fixes
