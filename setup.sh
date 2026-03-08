@@ -18,6 +18,24 @@ step() { echo -e "\n${BOLD}$1${NC}"; }
 
 echo -e "\n${BOLD}Personal Knowledge MCP Server — Setup${NC}"
 
+# ── Xcode Command Line Tools (macOS only) ─────────────────────────
+
+if [ "$(uname)" = "Darwin" ]; then
+    step "Checking Xcode Command Line Tools..."
+    if xcode-select -p &>/dev/null; then
+        ok "Xcode CLT installed"
+    else
+        echo "  Installing Xcode Command Line Tools (required for git)..."
+        echo "  A system dialog may appear — click Install and wait for it to finish."
+        xcode-select --install 2>/dev/null || true
+        # Wait for the install to complete
+        until xcode-select -p &>/dev/null; do
+            sleep 5
+        done
+        ok "Xcode CLT installed"
+    fi
+fi
+
 # ── uv ─────────────────────────────────────────────────────────────
 
 step "Checking uv..."
