@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v0.54.0 (2026-03-07)
+
+### Documentation
+
+- Add preflight context injection to roadmap
+  ([`7ef219c`](https://github.com/jason-weddington/personal-kb-mcp/commit/7ef219c2b5191f0edc25c919fe63cf4014011948))
+
+- Document kb_ingest_url, entry TTL, Sonnet synthesis, explorer auto-start and write tools
+  ([`1d8c251`](https://github.com/jason-weddington/personal-kb-mcp/commit/1d8c251f4abe9417ab41bc3a515f0a86ee10ae30))
+
+### Features
+
+- CWD-based preflight context injection
+  ([`a50f598`](https://github.com/jason-weddington/personal-kb-mcp/commit/a50f598339f2a15b51404b8ff24192922d945472))
+
+
 ## v0.53.0 (2026-03-07)
 
 ### Chores
