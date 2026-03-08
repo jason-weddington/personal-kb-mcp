@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.55.0 (2026-03-07)
+
+### Features
+
+- Team-scoped preflight context injection
+  ([`1c4bea2`](https://github.com/jason-weddington/personal-kb-mcp/commit/1c4bea234b2a31e74857daa29e7f3ed8267f22d0))
+
+
 ## v0.54.0 (2026-03-07)
 
 ### Documentation
