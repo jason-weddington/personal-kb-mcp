@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v0.55.1 (2026-03-08)
+
+### Bug Fixes
+
+- Check for Xcode CLT on macOS before proceeding with setup
+  ([`8e158c3`](https://github.com/jason-weddington/personal-kb-mcp/commit/8e158c3d8723827d50bd1da8806c4a55b63054ef))
+
+### Chores
+
+- Add setup script for guided install on macOS and Linux
+  ([`f83899a`](https://github.com/jason-weddington/personal-kb-mcp/commit/f83899a6911ca3a31fbe2e311c18b693a6b5309f))
+
+- Remove outdated install and setup scripts
+  ([`e97f7a4`](https://github.com/jason-weddington/personal-kb-mcp/commit/e97f7a4a7416e7834b80e88fdb1540b625483c03))
+
+
 ## v0.55.0 (2026-03-07)
 
 ### Features
