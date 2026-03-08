@@ -41,6 +41,14 @@ At minimum, you get a fully functional knowledge store with full-text search and
 
 ## Quick Start
 
+### One-liner setup
+
+Installs all prerequisites (uv, Python 3.13, Ollama, embedding model), prompts for an optional Anthropic API key, and launches the knowledge explorer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jason-weddington/personal-kb-mcp/main/setup.sh | bash
+```
+
 ### With Anthropic (simplest)
 
 Add this to your MCP client config — Claude Code (`~/.claude/mcp.json`), Claude Desktop (`claude_desktop_config.json`), etc.:
