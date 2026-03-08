@@ -16,6 +16,8 @@ warn() { echo -e "  ${YELLOW}!${NC} $1"; }
 fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 step() { echo -e "\n${BOLD}$1${NC}"; }
 
+PKG="git+https://github.com/jason-weddington/personal-kb-mcp.git[safety]"
+
 echo -e "\n${BOLD}Personal Knowledge MCP Server — Setup${NC}"
 
 # ── Xcode Command Line Tools (macOS only) ─────────────────────────
@@ -126,26 +128,87 @@ else
     if [ -n "$api_key" ]; then
         export ANTHROPIC_API_KEY="$api_key"
         ok "ANTHROPIC_API_KEY set for this session"
-        echo ""
-        echo "  To make it permanent, add to your shell profile:"
-        echo "    export ANTHROPIC_API_KEY='$api_key'"
     else
         warn "Skipped — running in Ollama-only mode"
     fi
 fi
 
-# ── Launch explorer ────────────────────────────────────────────────
+# ── MCP config ─────────────────────────────────────────────────────
 
-step "Launching the Knowledge Explorer..."
-echo ""
-echo "  The explorer will open at http://127.0.0.1:8765"
-echo "  Press Ctrl+C to stop."
-echo ""
+step "Setup complete!"
 
-EXPLORER_CMD="uvx --from 'git+https://github.com/jason-weddington/personal-kb-mcp.git[safety]' personal-kb-web"
-
+# Build the MCP config JSON
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" uvx --from "git+https://github.com/jason-weddington/personal-kb-mcp.git[safety]" personal-kb-web
+    MCP_JSON=$(cat <<ENDJSON
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "$PKG", "personal-kb"],
+      "env": {
+        "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY"
+      }
+    }
+  }
+}
+ENDJSON
+)
 else
-    uvx --from "git+https://github.com/jason-weddington/personal-kb-mcp.git[safety]" personal-kb-web
+    MCP_JSON=$(cat <<ENDJSON
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "$PKG", "personal-kb"],
+      "env": {
+        "KB_EXTRACTION_PROVIDER": "ollama",
+        "KB_QUERY_PROVIDER": "ollama"
+      }
+    }
+  }
+}
+ENDJSON
+)
+fi
+
+echo ""
+echo "  Add this to your MCP client config:"
+echo "    Claude Code  → ~/.claude.json"
+echo "    Claude Desktop → claude_desktop_config.json"
+echo ""
+echo -e "${BOLD}$MCP_JSON${NC}"
+echo ""
+
+# Try to copy to clipboard
+if command -v pbcopy &>/dev/null; then
+    echo "$MCP_JSON" | pbcopy
+    ok "Copied to clipboard"
+elif command -v xclip &>/dev/null; then
+    echo "$MCP_JSON" | xclip -selection clipboard
+    ok "Copied to clipboard"
+elif command -v xsel &>/dev/null; then
+    echo "$MCP_JSON" | xsel --clipboard
+    ok "Copied to clipboard"
+else
+    echo "  (Copy the JSON above manually)"
+fi
+
+# ── Optional: launch explorer ─────────────────────────────────────
+
+echo ""
+read -rp "  Launch the knowledge explorer in your browser? [Y/n] " launch < /dev/tty
+if [ "${launch,,}" != "n" ]; then
+    echo ""
+    echo "  Opening http://127.0.0.1:8765 ..."
+    echo "  Press Ctrl+C to stop."
+    echo ""
+    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            uvx --from "$PKG" personal-kb-web
+    else
+        KB_EXTRACTION_PROVIDER=ollama KB_QUERY_PROVIDER=ollama \
+            uvx --from "$PKG" personal-kb-web
+    fi
 fi
