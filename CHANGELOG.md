@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.56.0 (2026-03-09)
+
+### Features
+
+- Add kb_preflight tool with 2-hop graph expansion
+  ([`c5d363b`](https://github.com/jason-weddington/personal-kb-mcp/commit/c5d363b1d1efcdbcc75b183adb7916aa83cb9ca3))
+
+
 ## v0.55.5 (2026-03-09)
 
 ### Bug Fixes
