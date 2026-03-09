@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.55.5 (2026-03-09)
+
+### Bug Fixes
+
+- Log preflight CWD at WARNING level for debugging
+  ([`955f437`](https://github.com/jason-weddington/personal-kb-mcp/commit/955f4371ef33d9f81561c863cdd9204dcfa3d696))
+
+### Chores
+
+- Rework setup script to output MCP config, explorer optional
+  ([`39b67b8`](https://github.com/jason-weddington/personal-kb-mcp/commit/39b67b8efe229c5b87a42351c80c536a53552ca3))
+
+
 ## v0.55.4 (2026-03-08)
 
 ### Bug Fixes
