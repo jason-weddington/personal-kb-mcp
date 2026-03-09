@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.57.2 (2026-03-09)
+
+### Bug Fixes
+
+- Set StaticCredentialsResolver for profile-based Bedrock auth
+  ([`5fe37d0`](https://github.com/jason-weddington/personal-kb-mcp/commit/5fe37d0f908fdbac05a2102382d6f33e11039fe1))
+
+
 ## v0.57.1 (2026-03-09)
 
 ### Bug Fixes
