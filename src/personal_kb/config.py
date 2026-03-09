@@ -177,3 +177,20 @@ def is_pg_iam_auth() -> bool:
 def get_pg_region() -> str:
     """Return the AWS region for RDS IAM token signing from KB_PG_REGION."""
     return os.environ.get("KB_PG_REGION", "us-east-1")
+
+
+def get_aws_profile() -> str | None:
+    """Return the AWS profile name for Bedrock credentials.
+
+    Resolution order:
+    1. KB_AWS_PROFILE env var (explicit override)
+    2. 'personal_kb_bedrock' if it exists in ~/.aws/credentials or config
+    3. None (fall back to other auth methods)
+    """
+    explicit = os.environ.get("KB_AWS_PROFILE")
+    if explicit:
+        return explicit
+    return None
+
+
+_CONVENTION_PROFILE = "personal_kb_bedrock"

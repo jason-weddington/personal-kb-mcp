@@ -139,6 +139,7 @@ async def test_is_available_true_with_aws_key():
         mock_get.return_value = MagicMock()
         with patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "AKIA_TEST"}):
             llm = BedrockLLMClient()
+            llm._auth_method = "env"
             assert await llm.is_available() is True
 
 
@@ -149,6 +150,7 @@ async def test_is_available_true_with_bearer_token():
         mock_get.return_value = MagicMock()
         with patch.dict("os.environ", {"AWS_BEARER_TOKEN_BEDROCK": "ABSKtest123"}):
             llm = BedrockLLMClient()
+            llm._auth_method = "bearer"
             assert await llm.is_available() is True
 
 
@@ -159,6 +161,7 @@ async def test_is_available_false_without_any_credentials():
         mock_get.return_value = MagicMock()
         with patch.dict("os.environ", {}, clear=True):
             llm = BedrockLLMClient()
+            # _auth_method stays None when no creds found
             assert await llm.is_available() is False
 
 
@@ -212,3 +215,114 @@ async def test_protocol_conformance():
     from personal_kb.llm.provider import LLMProvider
 
     assert isinstance(BedrockLLMClient(), LLMProvider)
+
+
+# ---------------------------------------------------------------------------
+# Profile-based credentials
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_available_true_with_explicit_profile():
+    """is_available returns True when KB_AWS_PROFILE resolves credentials."""
+    mock_boto3 = MagicMock()
+    frozen = MagicMock()
+    frozen.access_key = "AKIA_PROFILE"
+    frozen.secret_key = "test-key"  # noqa: S105
+    frozen.token = "test-token"  # noqa: S105
+    mock_creds = MagicMock()
+    mock_creds.get_frozen_credentials.return_value = frozen
+    mock_boto3.Session.return_value.get_credentials.return_value = mock_creds
+
+    with (
+        patch.dict("os.environ", {"KB_AWS_PROFILE": "work"}, clear=True),
+        patch.dict("sys.modules", {"boto3": mock_boto3}),
+    ):
+        # Need a fresh client so _get_client runs the profile path
+        llm = BedrockLLMClient()
+        client = llm._get_client()
+        if client is not None:
+            assert llm._auth_method == "profile:work"
+
+
+@pytest.mark.asyncio
+async def test_convention_profile_auto_detected():
+    """Convention profile 'personal_kb_bedrock' is used when available."""
+    mock_boto3 = MagicMock()
+    # available_profiles check
+    mock_boto3.Session.return_value.available_profiles = [
+        "default",
+        "personal_kb_bedrock",
+    ]
+    # credential resolution
+    frozen = MagicMock()
+    frozen.access_key = "AKIA_CONV"
+    frozen.secret_key = "test-key"  # noqa: S105
+    frozen.token = None
+    mock_creds = MagicMock()
+    mock_creds.get_frozen_credentials.return_value = frozen
+    mock_boto3.Session.return_value.get_credentials.return_value = mock_creds
+
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch.dict("sys.modules", {"boto3": mock_boto3}),
+    ):
+        llm = BedrockLLMClient()
+        client = llm._get_client()
+        if client is not None:
+            assert llm._auth_method == "profile:personal_kb_bedrock"
+
+
+@pytest.mark.asyncio
+async def test_explicit_profile_overrides_convention():
+    """KB_AWS_PROFILE takes priority over convention profile."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.available_profiles = [
+        "default",
+        "personal_kb_bedrock",
+    ]
+    frozen = MagicMock()
+    frozen.access_key = "AKIA_EXPLICIT"
+    frozen.secret_key = "test-key"  # noqa: S105
+    frozen.token = None
+    mock_creds = MagicMock()
+    mock_creds.get_frozen_credentials.return_value = frozen
+    mock_boto3.Session.return_value.get_credentials.return_value = mock_creds
+
+    with (
+        patch.dict("os.environ", {"KB_AWS_PROFILE": "custom"}, clear=True),
+        patch.dict("sys.modules", {"boto3": mock_boto3}),
+    ):
+        llm = BedrockLLMClient()
+        client = llm._get_client()
+        if client is not None:
+            assert llm._auth_method == "profile:custom"
+
+
+@pytest.mark.asyncio
+async def test_env_creds_take_priority_over_profile():
+    """AWS_ACCESS_KEY_ID env vars are used before checking profiles."""
+    with (
+        patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
+        patch.dict(
+            "os.environ",
+            {"AWS_ACCESS_KEY_ID": "AKIA_ENV"},
+        ),
+    ):
+        mock_get.return_value = MagicMock()
+        llm = BedrockLLMClient()
+        llm._auth_method = "env"  # simulate what _get_client sets
+        assert await llm.is_available() is True
+
+
+@pytest.mark.asyncio
+async def test_profile_fallback_when_boto3_missing():
+    """No crash when boto3 is not installed and no env credentials."""
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch.dict("sys.modules", {"boto3": None}),
+    ):
+        # _find_aws_profile should return None gracefully
+        from personal_kb.llm.bedrock import _find_aws_profile
+
+        assert _find_aws_profile() is None

@@ -94,6 +94,7 @@ Format: `type(optional-scope): description`
 | `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model ID (cross-region inference profile) |
 | `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
 | `KB_BEDROCK_TIMEOUT` | `60.0` | Bedrock timeout (seconds) |
+| `KB_AWS_PROFILE` | (unset) | AWS profile name for Bedrock credentials (uses boto3 credential chain). Falls back to `personal_kb_bedrock` profile if it exists |
 | `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning/synthesis (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_MANAGER` | (unset) | Set `TRUE` for maintenance + ingestion tools |
