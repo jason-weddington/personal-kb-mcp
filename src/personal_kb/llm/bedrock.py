@@ -179,8 +179,8 @@ class BedrockLLMClient:
                 return False
             if self._auth_method is None:
                 logger.warning(
-                    "No AWS credentials found (checked %s, AWS_ACCESS_KEY_ID, "
-                    "KB_AWS_PROFILE, personal_kb_bedrock profile) — Bedrock LLM disabled",
+                    "No AWS credentials found (checked KB_AWS_PROFILE, "
+                    "personal_kb_bedrock profile, %s, AWS_ACCESS_KEY_ID) — Bedrock LLM disabled",
                     _BEARER_TOKEN_ENV,
                 )
                 return False
@@ -298,28 +298,27 @@ class BedrockLLMClient:
 
                 config = Config(region=get_bedrock_region())
 
-                # Wire up auth — priority: bearer token > env vars > profile
-                if _has_bearer_token():
+                # Wire up auth — priority: profile > bearer token > env vars
+                profile = _find_aws_profile()
+                if profile:
+                    creds = _resolve_profile_credentials(profile)
+                    if creds:
+                        config.aws_access_key_id = creds["access_key"]
+                        config.aws_secret_access_key = creds["secret_key"]
+                        if "token" in creds:
+                            config.aws_session_token = creds["token"]
+                        self._auth_method = f"profile:{profile}"
+                        logger.info("Bedrock: using SigV4 auth (profile '%s')", profile)
+                if self._auth_method is None and _has_bearer_token():
                     _configure_bearer_auth(config)
                     self._auth_method = "bearer"
                     logger.info("Bedrock: using bearer token auth")
-                elif _has_aws_credentials():
+                elif self._auth_method is None and _has_aws_credentials():
                     from smithy_aws_core.identity import EnvironmentCredentialsResolver
 
                     config.aws_credentials_identity_resolver = EnvironmentCredentialsResolver()  # type: ignore[no-untyped-call]
                     self._auth_method = "env"
                     logger.info("Bedrock: using SigV4 auth (env vars)")
-                else:
-                    profile = _find_aws_profile()
-                    if profile:
-                        creds = _resolve_profile_credentials(profile)
-                        if creds:
-                            config.aws_access_key_id = creds["access_key"]
-                            config.aws_secret_access_key = creds["secret_key"]
-                            if "token" in creds:
-                                config.aws_session_token = creds["token"]
-                            self._auth_method = f"profile:{profile}"
-                            logger.info("Bedrock: using SigV4 auth (profile '%s')", profile)
 
                 self._client = BedrockRuntimeClient(config)
             except ImportError:

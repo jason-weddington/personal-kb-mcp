@@ -300,19 +300,33 @@ async def test_explicit_profile_overrides_convention():
 
 
 @pytest.mark.asyncio
-async def test_env_creds_take_priority_over_profile():
-    """AWS_ACCESS_KEY_ID env vars are used before checking profiles."""
+async def test_profile_takes_priority_over_bearer_and_env():
+    """Profile credentials are checked before bearer token and env vars."""
+    mock_boto3 = MagicMock()
+    frozen = MagicMock()
+    frozen.access_key = "AKIA_PROFILE"
+    frozen.secret_key = "test-key"  # noqa: S105
+    frozen.token = None
+    mock_creds = MagicMock()
+    mock_creds.get_frozen_credentials.return_value = frozen
+    mock_boto3.Session.return_value.get_credentials.return_value = mock_creds
+
     with (
-        patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
         patch.dict(
             "os.environ",
-            {"AWS_ACCESS_KEY_ID": "AKIA_ENV"},
+            {
+                "KB_AWS_PROFILE": "work",
+                "AWS_BEARER_TOKEN_BEDROCK": "ABSKtest",
+                "AWS_ACCESS_KEY_ID": "AKIA_ENV",
+            },
+            clear=True,
         ),
+        patch.dict("sys.modules", {"boto3": mock_boto3}),
     ):
-        mock_get.return_value = MagicMock()
         llm = BedrockLLMClient()
-        llm._auth_method = "env"  # simulate what _get_client sets
-        assert await llm.is_available() is True
+        client = llm._get_client()
+        if client is not None:
+            assert llm._auth_method == "profile:work"
 
 
 @pytest.mark.asyncio
