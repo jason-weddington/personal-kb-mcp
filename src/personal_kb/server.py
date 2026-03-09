@@ -162,12 +162,14 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     # Inject project context from working directory
     from personal_kb.preflight import build_preflight_context
 
-    preflight_text = await build_preflight_context(db, os.getcwd(), team=team)
+    cwd = os.getcwd()
+    logger.warning("Preflight: CWD is %s", cwd)
+    preflight_text = await build_preflight_context(db, cwd, team=team)
     if preflight_text:
         server.instructions = (server.instructions or "") + preflight_text
-        logger.info("Preflight: injected project context (%d chars)", len(preflight_text))
+        logger.warning("Preflight: injected context for %s (%d chars)", cwd, len(preflight_text))
     else:
-        logger.debug("Preflight: no matching project for %s", os.getcwd())
+        logger.warning("Preflight: no matching project for %s", cwd)
 
     # Auto-start explorer web server
     if is_auto_explore():
