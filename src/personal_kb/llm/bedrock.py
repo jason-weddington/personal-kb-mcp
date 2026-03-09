@@ -303,10 +303,13 @@ class BedrockLLMClient:
                 if profile:
                     creds = _resolve_profile_credentials(profile)
                     if creds:
+                        from smithy_aws_core.identity.static import StaticCredentialsResolver
+
                         config.aws_access_key_id = creds["access_key"]
                         config.aws_secret_access_key = creds["secret_key"]
                         if "token" in creds:
                             config.aws_session_token = creds["token"]
+                        config.aws_credentials_identity_resolver = StaticCredentialsResolver()  # type: ignore[no-untyped-call]
                         self._auth_method = f"profile:{profile}"
                         logger.info("Bedrock: using SigV4 auth (profile '%s')", profile)
                 if self._auth_method is None and _has_bearer_token():
