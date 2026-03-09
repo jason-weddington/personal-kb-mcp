@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.57.1 (2026-03-09)
+
+### Bug Fixes
+
+- Profile credentials take priority over bearer token and env vars
+  ([`ee264af`](https://github.com/jason-weddington/personal-kb-mcp/commit/ee264afe30f464a7abdfc928eae4287d1514c8e3))
+
+
 ## v0.57.0 (2026-03-09)
 
 ### Features
