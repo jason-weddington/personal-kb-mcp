@@ -42,6 +42,7 @@ from personal_kb.tools.kb_list import (
     register_kb_list_teams,
 )
 from personal_kb.tools.kb_maintain import register_kb_maintain
+from personal_kb.tools.kb_preflight import register_kb_preflight
 from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
 from personal_kb.tools.kb_store_batch import register_kb_store_batch
@@ -159,18 +160,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             "Set KB_CONTRIBUTOR for multi-user provenance."
         )
 
-    # Inject project context from working directory
-    from personal_kb.preflight import build_preflight_context
-
-    cwd = os.getcwd()
-    logger.warning("Preflight: CWD is %s", cwd)
-    preflight_text = await build_preflight_context(db, cwd, team=team)
-    if preflight_text:
-        server.instructions = (server.instructions or "") + preflight_text
-        logger.warning("Preflight: injected context for %s (%d chars)", cwd, len(preflight_text))
-    else:
-        logger.warning("Preflight: no matching project for %s", cwd)
-
     # Auto-start explorer web server
     if is_auto_explore():
         from personal_kb.tools.kb_explore import start_explorer_server
@@ -247,11 +236,15 @@ or asking the user:
 One failed kb_search costs a second. Not searching costs minutes of fumbling.
 
 QUERYING — pick the right tool:
+- kb_preflight: Get a project context primer at session start. Returns a \
+compact table-of-contents of expiring entries, recent decisions/lessons, \
+and active conventions. Use 'since' to narrow to a time window (e.g. '7d', \
+'2w'). Call this when you start working on a project to see what's relevant.
 - kb_search: Quick lookup by keywords or filters. Returns compact summaries \
 (no details). Use for duplicate checking, finding entries, or filtering by \
 tags/project/type.
 - kb_get: Retrieve full details for specific entries by ID. Use after \
-kb_search to read the complete content of interesting results.
+kb_search or kb_preflight to read the complete content of interesting results.
 - kb_ask: Explore related knowledge via graph traversal. Use when you need \
 to discover connections, trace decision history, or find everything related \
 to a concept. Returns full details.
@@ -314,6 +307,7 @@ _TOOL_BASES = [
     "list_projects",
     "list_contributors",
     "list_teams",
+    "preflight",
 ]
 
 
@@ -363,6 +357,7 @@ def create_server() -> FastMCP:
     register_kb_ingest(mcp, prefix)
     register_kb_ingest_url(mcp, prefix)
     register_kb_feedback(mcp, prefix)
+    register_kb_preflight(mcp, prefix)
     register_kb_explore(mcp, prefix)
 
     if is_manager_mode():

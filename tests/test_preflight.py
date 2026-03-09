@@ -1,4 +1,4 @@
-"""Tests for CWD-based project context injection (preflight)."""
+"""Tests for project context primer (preflight)."""
 
 from __future__ import annotations
 
@@ -8,88 +8,8 @@ import pytest
 
 from personal_kb.preflight import (
     _format_expiry_badge,
-    _get_known_projects,
-    build_preflight_context,
-    detect_project,
+    build_project_context,
 )
-
-# ---------------------------------------------------------------------------
-# detect_project — fuzzy matching
-# ---------------------------------------------------------------------------
-
-
-class TestDetectProject:
-    """Fuzzy matching of CWD leaf directory to project_refs."""
-
-    def test_exact_match(self) -> None:
-        assert detect_project("/home/user/personal-kb", ["personal-kb"]) == ["personal-kb"]
-
-    def test_separator_normalization(self) -> None:
-        """personal_kb directory matches personal-kb project_ref."""
-        assert detect_project("/home/user/personal_kb", ["personal-kb"]) == ["personal-kb"]
-
-    def test_case_insensitive(self) -> None:
-        assert detect_project("/home/user/PersonalKB", ["personal-kb"]) == ["personal-kb"]
-
-    def test_mixed_separators_and_case(self) -> None:
-        assert detect_project("/home/user/Personal_KB", ["personal-kb"]) == ["personal-kb"]
-
-    def test_no_match(self) -> None:
-        assert detect_project("/home/user/unrelated-project", ["personal-kb"]) == []
-
-    def test_short_substring_rejected(self) -> None:
-        """'kb' alone should NOT match 'personal-kb' (length ratio too low)."""
-        assert detect_project("/home/user/kb", ["personal-kb"]) == []
-
-    def test_substring_match_with_good_ratio(self) -> None:
-        """'personal-kb' matches 'personal-kb-v2' (ratio 10/14 > 0.5)."""
-        assert detect_project("/home/user/personal-kb", ["personal-kb-v2"]) == ["personal-kb-v2"]
-
-    def test_substring_match_reverse(self) -> None:
-        """'personal-kb-v2' directory matches 'personal-kb' project."""
-        assert detect_project("/home/user/personal-kb-v2", ["personal-kb"]) == ["personal-kb"]
-
-    def test_fuzzy_typo(self) -> None:
-        """Minor typo caught by SequenceMatcher."""
-        assert detect_project("/home/user/personl-kb", ["personal-kb"]) == ["personal-kb"]
-
-    def test_multiple_matches(self) -> None:
-        """CWD can match multiple projects."""
-        projects = ["personal-kb", "personal-kb-team"]
-        matches = detect_project("/home/user/personal-kb", projects)
-        assert "personal-kb" in matches
-        assert "personal-kb-team" in matches
-
-    def test_empty_cwd(self) -> None:
-        assert detect_project("", ["personal-kb"]) == []
-
-    def test_root_cwd(self) -> None:
-        assert detect_project("/", ["personal-kb"]) == []
-
-    def test_no_known_projects(self) -> None:
-        assert detect_project("/home/user/personal-kb", []) == []
-
-    def test_dot_separator(self) -> None:
-        """Dots treated as separators."""
-        assert detect_project("/home/user/personal.kb", ["personal-kb"]) == ["personal-kb"]
-
-    def test_trailing_slash(self) -> None:
-        """Trailing slash doesn't break leaf extraction."""
-        assert detect_project("/home/user/personal-kb/", ["personal-kb"]) == ["personal-kb"]
-
-    def test_very_short_dissimilar_rejected(self) -> None:
-        """Short dissimilar strings rejected even with substring check."""
-        assert detect_project("/home/user/zz", ["personal-kb"]) == []
-
-    def test_three_char_substring_accepted(self) -> None:
-        """Three-char substring with good ratio accepted."""
-        assert detect_project("/home/user/abc", ["abcd"]) == ["abcd"]
-
-    def test_very_short_similar_matches_via_fuzzy(self) -> None:
-        """Short similar strings can match via SequenceMatcher (bias toward recall)."""
-        # "ab" vs "abc" has ratio 0.8 >= 0.75
-        assert detect_project("/home/user/ab", ["abc"]) == ["abc"]
-
 
 # ---------------------------------------------------------------------------
 # _format_expiry_badge
@@ -248,17 +168,10 @@ async def preflight_db():
     await db.close()
 
 
-class TestGetKnownProjects:
-    async def test_returns_distinct_projects(self, preflight_db) -> None:
-        projects = await _get_known_projects(preflight_db)
-        assert sorted(projects) == ["my-project", "other-project"]
-
-
-class TestBuildPreflightContext:
+class TestBuildProjectContext:
     async def test_matching_project(self, preflight_db) -> None:
-        """CWD 'my_project' matches 'my-project' and returns ToC."""
-        result = await build_preflight_context(preflight_db, "/home/user/my_project")
-        assert "# Project Context" in result
+        """Explicit project_ref returns ToC for that project."""
+        result = await build_project_context(preflight_db, "my-project")
         assert "my-project" in result
         # Expiring entries
         assert "kb-00001" in result
@@ -277,27 +190,132 @@ class TestBuildPreflightContext:
         assert "kb-00007" not in result  # beyond grace window
         assert "kb-00008" not in result  # deactivated
 
-    async def test_no_matching_project(self, preflight_db) -> None:
-        result = await build_preflight_context(preflight_db, "/home/user/unrelated")
-        assert result == ""
+    async def test_no_entries_for_project(self, preflight_db) -> None:
+        result = await build_project_context(preflight_db, "nonexistent")
+        assert "No entries found" in result
 
     async def test_section_structure(self, preflight_db) -> None:
-        result = await build_preflight_context(preflight_db, "/home/user/my_project")
+        result = await build_project_context(preflight_db, "my-project")
         assert "Expiring:" in result
         assert "Recent decisions & lessons:" in result
         assert "Conventions:" in result
         assert "kb_get" in result  # instruction to use kb_get
 
     async def test_other_project(self, preflight_db) -> None:
-        """Exact match for other-project returns only its entries."""
-        result = await build_preflight_context(preflight_db, "/home/user/other-project")
+        """other-project returns only its entries."""
+        result = await build_project_context(preflight_db, "other-project")
         assert "kb-00006" in result
         assert "kb-00001" not in result
 
     async def test_entry_count_in_header(self, preflight_db) -> None:
-        result = await build_preflight_context(preflight_db, "/home/user/my_project")
+        result = await build_project_context(preflight_db, "my-project")
         # 5 entries: 2 expiring + 2 recent + 1 convention
         assert "5 entries" in result
+
+
+# ---------------------------------------------------------------------------
+# since parameter
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+async def since_db():
+    """DB with entries at different ages for testing since filter."""
+    from personal_kb.db.connection import create_connection
+
+    db = await create_connection(":memory:", embedding_dim=64)
+
+    now = datetime.now(UTC)
+
+    entries = [
+        # Created 2 days ago
+        (
+            "kb-00020",
+            "proj",
+            "Recent decision",
+            "Made 2 days ago",
+            "details",
+            "decision",
+            (now - timedelta(days=2)).isoformat(),
+        ),
+        # Created 10 days ago
+        (
+            "kb-00021",
+            "proj",
+            "Older decision",
+            "Made 10 days ago",
+            "details",
+            "decision",
+            (now - timedelta(days=10)).isoformat(),
+        ),
+        # Created 30 days ago
+        (
+            "kb-00022",
+            "proj",
+            "Old lesson",
+            "Made 30 days ago",
+            "details",
+            "lesson_learned",
+            (now - timedelta(days=30)).isoformat(),
+        ),
+        # Convention (always shown regardless of since)
+        (
+            "kb-00023",
+            "proj",
+            "Style guide",
+            "Code style",
+            "details",
+            "pattern_convention",
+            (now - timedelta(days=60)).isoformat(),
+        ),
+    ]
+
+    for e in entries:
+        await db.execute(
+            "INSERT INTO knowledge_entries "
+            "(id, project_ref, short_title, long_title, knowledge_details, "
+            "entry_type, created_at, updated_at, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            [*e, e[6]],  # updated_at = created_at
+        )
+    await db.commit()
+
+    yield db
+    await db.close()
+
+
+class TestSinceFilter:
+    async def test_since_7d_shows_recent_only(self, since_db) -> None:
+        """since=7d shows only the 2-day-old decision, not older ones."""
+        result = await build_project_context(since_db, "proj", since=timedelta(days=7))
+        assert "kb-00020" in result  # 2 days ago
+        assert "kb-00021" not in result  # 10 days ago
+        assert "kb-00022" not in result  # 30 days ago
+        # Convention always shown
+        assert "kb-00023" in result
+
+    async def test_since_2w_shows_recent_two(self, since_db) -> None:
+        """since=14d shows both recent entries."""
+        result = await build_project_context(since_db, "proj", since=timedelta(days=14))
+        assert "kb-00020" in result
+        assert "kb-00021" in result
+        assert "kb-00022" not in result
+
+    async def test_no_since_shows_all(self, since_db) -> None:
+        """Without since, all decisions/lessons shown (up to limit)."""
+        result = await build_project_context(since_db, "proj")
+        assert "kb-00020" in result
+        assert "kb-00021" in result
+        assert "kb-00022" in result
+
+    async def test_since_label_in_header(self, since_db) -> None:
+        """Section header shows the time window."""
+        result = await build_project_context(since_db, "proj", since=timedelta(days=7))
+        assert "last 1w" in result
+
+    async def test_since_weeks_label(self, since_db) -> None:
+        result = await build_project_context(since_db, "proj", since=timedelta(weeks=2))
+        assert "last 2w" in result
 
 
 # ---------------------------------------------------------------------------
@@ -395,14 +413,14 @@ async def team_db():
 class TestTeamFiltering:
     async def test_no_team_returns_all(self, team_db) -> None:
         """Without team filter, all entries from all teams appear."""
-        result = await build_preflight_context(team_db, "/home/user/shared-proj")
+        result = await build_project_context(team_db, "shared-proj")
         assert "kb-00010" in result  # alpha
         assert "kb-00011" in result  # beta
         assert "kb-00012" in result  # global
 
     async def test_team_alpha_sees_own_and_global(self, team_db) -> None:
         """team-alpha sees alpha entries + global, not beta."""
-        result = await build_preflight_context(team_db, "/home/user/shared-proj", team="team-alpha")
+        result = await build_project_context(team_db, "shared-proj", team="team-alpha")
         assert "kb-00010" in result  # alpha decision
         assert "kb-00012" in result  # global decision
         assert "kb-00013" in result  # alpha convention
@@ -412,10 +430,226 @@ class TestTeamFiltering:
 
     async def test_team_beta_sees_own_and_global(self, team_db) -> None:
         """team-beta sees beta entries + global, not alpha."""
-        result = await build_preflight_context(team_db, "/home/user/shared-proj", team="team-beta")
+        result = await build_project_context(team_db, "shared-proj", team="team-beta")
         assert "kb-00011" in result  # beta decision
         assert "kb-00012" in result  # global decision
         assert "kb-00014" in result  # beta convention
         assert "kb-00010" not in result  # alpha decision
         assert "kb-00013" not in result  # alpha convention
         assert "kb-00015" not in result  # alpha expiring
+
+
+# ---------------------------------------------------------------------------
+# Graph expansion (2-hop via shared tags)
+# ---------------------------------------------------------------------------
+
+
+async def _insert_entry(db, entry_id, project_ref, short_title, entry_type, *, now):
+    """Helper to insert an entry + its graph node."""
+    await db.execute(
+        "INSERT INTO knowledge_entries "
+        "(id, project_ref, short_title, long_title, knowledge_details, "
+        "entry_type, created_at, updated_at, is_active) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        [
+            entry_id,
+            project_ref,
+            short_title,
+            short_title,
+            "details",
+            entry_type,
+            now.isoformat(),
+            now.isoformat(),
+        ],
+    )
+    # graph_edges has FK to graph_nodes — entry must exist as a node
+    await db.execute(
+        "INSERT OR IGNORE INTO graph_nodes (node_id, node_type, created_at) VALUES (?, 'entry', ?)",
+        [entry_id, now.isoformat()],
+    )
+
+
+async def _add_tag_edge(db, entry_id, tag_name, *, now):
+    """Helper to create tag node + edge."""
+    node_id = f"tag:{tag_name}"
+    await db.execute(
+        "INSERT OR IGNORE INTO graph_nodes (node_id, node_type, created_at) VALUES (?, 'tag', ?)",
+        [node_id, now.isoformat()],
+    )
+    await db.execute(
+        "INSERT OR IGNORE INTO graph_edges "
+        "(source, target, edge_type, created_at) "
+        "VALUES (?, ?, 'has_tag', ?)",
+        [entry_id, node_id, now.isoformat()],
+    )
+
+
+@pytest.fixture()
+async def graph_db():
+    """DB with cross-project graph connections via shared tags.
+
+    Project "alpha":
+      kb-00030 decision  — tagged #api, #auth
+      kb-00031 lesson    — tagged #api, #auth
+      kb-00032 convention — tagged #api
+
+    Project "beta":
+      kb-00033 decision  — tagged #api, #auth  (should appear: shares 2+ tags with alpha)
+      kb-00034 lesson    — tagged #api          (should appear: #api on 3 alpha entries)
+      kb-00035 convention — tagged #api, #auth  (should NOT appear: wrong entry_type)
+
+    Project "gamma":
+      kb-00036 decision  — tagged #unrelated    (should NOT appear: no shared tags)
+    """
+    from personal_kb.db.connection import create_connection
+
+    db = await create_connection(":memory:", embedding_dim=64)
+    now = datetime.now(UTC)
+
+    # Alpha project entries
+    await _insert_entry(db, "kb-00030", "alpha", "Alpha API decision", "decision", now=now)
+    await _insert_entry(db, "kb-00031", "alpha", "Alpha auth lesson", "lesson_learned", now=now)
+    await _insert_entry(
+        db,
+        "kb-00032",
+        "alpha",
+        "Alpha API convention",
+        "pattern_convention",
+        now=now,
+    )
+
+    # Beta project entries
+    await _insert_entry(db, "kb-00033", "beta", "Beta API+auth decision", "decision", now=now)
+    await _insert_entry(db, "kb-00034", "beta", "Beta API-only lesson", "lesson_learned", now=now)
+    await _insert_entry(db, "kb-00035", "beta", "Beta convention", "pattern_convention", now=now)
+
+    # Gamma project entries
+    await _insert_entry(db, "kb-00036", "gamma", "Gamma unrelated", "decision", now=now)
+
+    # Tag edges — alpha entries
+    await _add_tag_edge(db, "kb-00030", "api", now=now)
+    await _add_tag_edge(db, "kb-00030", "auth", now=now)
+    await _add_tag_edge(db, "kb-00031", "api", now=now)
+    await _add_tag_edge(db, "kb-00031", "auth", now=now)
+    await _add_tag_edge(db, "kb-00032", "api", now=now)
+
+    # Tag edges — beta entries
+    await _add_tag_edge(db, "kb-00033", "api", now=now)
+    await _add_tag_edge(db, "kb-00033", "auth", now=now)
+    await _add_tag_edge(db, "kb-00034", "api", now=now)
+    await _add_tag_edge(db, "kb-00035", "api", now=now)
+    await _add_tag_edge(db, "kb-00035", "auth", now=now)
+
+    # Tag edges — gamma (no shared tags)
+    await _add_tag_edge(db, "kb-00036", "unrelated", now=now)
+
+    await db.commit()
+    yield db
+    await db.close()
+
+
+class TestGraphExpansion:
+    async def test_cross_project_decision_via_shared_tags(self, graph_db) -> None:
+        """Beta decision with shared tags appears in alpha preflight."""
+        result = await build_project_context(graph_db, "alpha")
+        assert "Related (via graph):" in result
+        assert "kb-00033" in result  # beta decision, shares #api + #auth
+
+    async def test_excludes_wrong_entry_type(self, graph_db) -> None:
+        """Conventions from other projects are excluded."""
+        result = await build_project_context(graph_db, "alpha")
+        assert "kb-00035" not in result  # convention, not decision/lesson
+
+    async def test_excludes_unrelated_projects(self, graph_db) -> None:
+        """Entries with no shared tags don't appear."""
+        result = await build_project_context(graph_db, "alpha")
+        assert "kb-00036" not in result  # gamma, no shared tags
+
+    async def test_shows_via_tag_label(self, graph_db) -> None:
+        """Related entries show which tag connected them."""
+        result = await build_project_context(graph_db, "alpha")
+        # Should show "(via #api)" or "(via #auth)"
+        assert "(via #" in result
+
+    async def test_no_graph_section_without_shared_tags(self, graph_db) -> None:
+        """Gamma has no shared tags — no Related section."""
+        result = await build_project_context(graph_db, "gamma")
+        assert "Related (via graph):" not in result
+
+    async def test_related_included_in_total_count(self, graph_db) -> None:
+        """Total entry count includes graph-expanded entries."""
+        result = await build_project_context(graph_db, "alpha")
+        # alpha has: 2 decisions/lessons + 1 convention + graph entries
+        # kb-00033 from beta via graph, kb-00034 via #api (if #api has 2+ alpha entries)
+        lines = result.split("\n")
+        header = lines[0]
+        # Extract count from "alpha (N entries)"
+        count = int(header.split("(")[1].split(" ")[0])
+        assert count > 3  # at least the 3 alpha entries + some graph
+
+    async def test_tag_needs_two_plus_project_entries(self) -> None:
+        """A tag on only 1 project entry doesn't trigger expansion."""
+        from personal_kb.db.connection import create_connection
+
+        db = await create_connection(":memory:", embedding_dim=64)
+        now = datetime.now(UTC)
+
+        # Project with 1 entry tagged #rare
+        await _insert_entry(db, "kb-00040", "solo", "Solo decision", "decision", now=now)
+        await _add_tag_edge(db, "kb-00040", "rare", now=now)
+
+        # Another project with entry tagged #rare
+        await _insert_entry(db, "kb-00041", "other", "Other decision", "decision", now=now)
+        await _add_tag_edge(db, "kb-00041", "rare", now=now)
+
+        await db.commit()
+
+        result = await build_project_context(db, "solo")
+        # #rare only on 1 solo entry — no expansion
+        assert "Related (via graph):" not in result
+        assert "kb-00041" not in result
+
+        await db.close()
+
+    async def test_deactivated_entries_excluded(self) -> None:
+        """Deactivated entries from other projects don't appear in graph."""
+        from personal_kb.db.connection import create_connection
+
+        db = await create_connection(":memory:", embedding_dim=64)
+        now = datetime.now(UTC)
+
+        await _insert_entry(db, "kb-00050", "proj-a", "A1", "decision", now=now)
+        await _insert_entry(db, "kb-00051", "proj-a", "A2", "lesson_learned", now=now)
+        await _add_tag_edge(db, "kb-00050", "shared", now=now)
+        await _add_tag_edge(db, "kb-00051", "shared", now=now)
+
+        # Deactivated entry in other project with shared tag
+        await db.execute(
+            "INSERT INTO knowledge_entries "
+            "(id, project_ref, short_title, long_title, knowledge_details, "
+            "entry_type, created_at, updated_at, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            [
+                "kb-00052",
+                "proj-b",
+                "Deactivated",
+                "Deactivated",
+                "details",
+                "decision",
+                now.isoformat(),
+                now.isoformat(),
+            ],
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO graph_nodes (node_id, node_type, created_at) "
+            "VALUES (?, 'entry', ?)",
+            ["kb-00052", now.isoformat()],
+        )
+        await _add_tag_edge(db, "kb-00052", "shared", now=now)
+
+        await db.commit()
+
+        result = await build_project_context(db, "proj-a")
+        assert "kb-00052" not in result
+
+        await db.close()
