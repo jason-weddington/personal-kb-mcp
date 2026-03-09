@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.57.0 (2026-03-09)
+
+### Features
+
+- Add AWS profile-based credentials for Bedrock
+  ([`bbe8b63`](https://github.com/jason-weddington/personal-kb-mcp/commit/bbe8b63715bffa87c71597ec87d1caed738b584e))
+
+
 ## v0.56.0 (2026-03-09)
 
 ### Features
