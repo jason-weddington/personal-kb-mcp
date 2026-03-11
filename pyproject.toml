@@ -45,6 +45,7 @@ dev = [
     "pre-commit>=4",
     "python-semantic-release>=10.5",
     "personal-kb[aws,postgres,safety,iam]",
+    "vulture>=2.15",
 ]
 
 [tool.pytest.ini_options]

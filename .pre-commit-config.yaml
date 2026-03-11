@@ -38,6 +38,14 @@ repos:
         always_run: true
         stages: [post-commit]
 
+      - id: vulture
+        name: vulture
+        entry: uv run --frozen vulture
+        language: system
+        types: [python]
+        args: [src/personal_kb/, vulture_allowlist.py, --min-confidence, '80']
+        pass_filenames: false
+
       - id: mypy
         name: mypy
         entry: uv run --frozen mypy
