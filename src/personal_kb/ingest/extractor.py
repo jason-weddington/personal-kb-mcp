@@ -1,10 +1,9 @@
 """LLM-based file summarization and structured entry extraction."""
 
-import json
 import logging
-import re
 from dataclasses import dataclass
 
+from personal_kb.llm.json_parser import parse_json_array
 from personal_kb.llm.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -64,9 +63,6 @@ _PROSE_EXTENSIONS: set[str] = {
     ".tex",
     ".html",
 }
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 _SUMMARIZE_SYSTEM = """\
 You are a knowledge base assistant. The reader of your summaries is an AI \
@@ -269,24 +265,9 @@ async def extract_entries(
 
 def _parse_entries(raw: str) -> list[ExtractedEntry]:
     """Parse LLM response into validated ExtractedEntry objects."""
-    # Strip markdown fences if present
-    fence_match = _FENCE_RE.search(raw)
-    if fence_match:
-        raw = fence_match.group(1)
-
-    # Find JSON array
-    array_match = _JSON_ARRAY_RE.search(raw)
-    if not array_match:
+    data = parse_json_array(raw)
+    if data is None:
         logger.warning("No JSON array found in extraction response")
-        return []
-
-    try:
-        data = json.loads(array_match.group(0))
-    except json.JSONDecodeError:
-        logger.warning("Malformed JSON in extraction response")
-        return []
-
-    if not isinstance(data, list):
         return []
 
     results: list[ExtractedEntry] = []

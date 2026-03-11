@@ -56,7 +56,7 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 ### Design debt (lower urgency)
 
-- **Shared LLM JSON parser.** The `_FENCE_RE → _JSON_OBJECT_RE → json.loads()` pattern is copy-pasted across 6 files with greedy regex that fails on multi-object responses. Extract to shared `parse_llm_json()` using `json.JSONDecoder().raw_decode()`. (audit M15, L22)
+- **~~Shared LLM JSON parser.~~** Extracted to `llm/json_parser.py` using `json.JSONDecoder().raw_decode()`. (audit M15, L22)
 - **Deduplicate ingester code.** `ingest_file` and `ingest_content` share ~175 lines of nearly identical extraction/storage/graph logic. (audit M19)
 - **~~Delete dead VersionStore.~~** Deleted. (audit L20)
 - **~~Narrow `query_llm` type.~~** Now `LLMProvider | None` everywhere; isinstance checks removed. (audit M20)

@@ -1,17 +1,13 @@
 """Lightweight coverage assessment for synthesis retrieval."""
 
-import json
 import logging
-import re
 from dataclasses import dataclass
 
+from personal_kb.llm.json_parser import parse_json_object
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import KnowledgeEntry
 
 logger = logging.getLogger(__name__)
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _COVERAGE_SYSTEM_PROMPT = """\
 You are a retrieval quality checker. Given a user question and a list of \
@@ -83,24 +79,10 @@ async def _do_assess(
 
 def _parse_coverage_response(raw: str) -> CoverageResult:
     """Parse LLM JSON response into CoverageResult."""
-    # Strip markdown fences if present
-    fence_match = _FENCE_RE.search(raw)
-    if fence_match:
-        raw = fence_match.group(1)
-
-    obj_match = _JSON_OBJECT_RE.search(raw)
-    if not obj_match:
+    data = parse_json_object(raw)
+    if data is None:
         logger.warning("No JSON object in coverage response")
         return CoverageResult(has_gaps=False, reason="malformed response")
-
-    try:
-        data = json.loads(obj_match.group(0))
-    except json.JSONDecodeError:
-        logger.warning("Malformed JSON in coverage response")
-        return CoverageResult(has_gaps=False, reason="malformed JSON")
-
-    if not isinstance(data, dict):
-        return CoverageResult(has_gaps=False, reason="response not a dict")
 
     has_gaps = bool(data.get("has_gaps", False))
     suggested_query = data.get("suggested_query")

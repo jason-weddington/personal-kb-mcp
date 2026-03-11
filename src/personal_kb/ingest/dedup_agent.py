@@ -1,20 +1,16 @@
 """KB-aware dedup agent for ingestion — checks chunks against existing KB."""
 
-import json
 import logging
-import re
 from dataclasses import dataclass, field
 
 from personal_kb.config import get_ingest_dedup_threshold
 from personal_kb.db.backend import Database
 from personal_kb.ingest.chunker import Chunk
+from personal_kb.llm.json_parser import parse_json_object
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
 
 logger = logging.getLogger(__name__)
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _DEDUP_SYSTEM_PROMPT = """\
 You are a dedup checker for a knowledge base ingestion pipeline.
@@ -147,25 +143,10 @@ class DedupAgent:
 
 def _parse_dedup_response(raw: str) -> DedupResult:
     """Parse LLM JSON response into DedupResult."""
-    # Strip markdown fences if present
-    fence_match = _FENCE_RE.search(raw)
-    if fence_match:
-        raw = fence_match.group(1)
-
-    # Find JSON object
-    obj_match = _JSON_OBJECT_RE.search(raw)
-    if not obj_match:
+    data = parse_json_object(raw)
+    if data is None:
         logger.warning("No JSON object in dedup response")
         return DedupResult(action="extract", reason="malformed response")
-
-    try:
-        data = json.loads(obj_match.group(0))
-    except json.JSONDecodeError:
-        logger.warning("Malformed JSON in dedup response")
-        return DedupResult(action="extract", reason="malformed JSON")
-
-    if not isinstance(data, dict):
-        return DedupResult(action="extract", reason="response not a dict")
 
     verdict = data.get("verdict", "extract")
     if verdict not in ("extract", "skip", "partial"):

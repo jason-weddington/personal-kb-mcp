@@ -18,6 +18,7 @@ from personal_kb.graph.queries import (
     get_neighbors,
     supersedes_chain,
 )
+from personal_kb.llm.json_parser import parse_json_object
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.search import SearchQuery, SearchResult
 from personal_kb.search.embeddings import EmbeddingClient
@@ -26,8 +27,6 @@ from personal_kb.tools.formatters import format_entry_compact
 
 logger = logging.getLogger(__name__)
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 _ENTRY_ID_RE = re.compile(r"kb-\d{5}")
 
 # If the fast-path top result scores above this, skip the agent loop entirely
@@ -112,21 +111,8 @@ def _format_search_results(results: list[SearchResult]) -> str:
 
 def _parse_response(raw: str) -> _ToolCall | _FinalAnswer | None:
     """Parse LLM response into a tool call or final answer."""
-    # Strip markdown fences
-    fence_match = _FENCE_RE.search(raw)
-    if fence_match:
-        raw = fence_match.group(1)
-
-    obj_match = _JSON_OBJECT_RE.search(raw)
-    if not obj_match:
-        return None
-
-    try:
-        data = json.loads(obj_match.group(0))
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(data, dict):
+    data = parse_json_object(raw)
+    if data is None:
         return None
 
     tool = data.get("tool")

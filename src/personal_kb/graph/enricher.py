@@ -2,11 +2,11 @@
 
 import json
 import logging
-import re
 from difflib import SequenceMatcher
 
 from personal_kb.db.backend import Database
 from personal_kb.graph.queries import get_graph_vocabulary
+from personal_kb.llm.json_parser import parse_json_array, parse_json_object
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import KnowledgeEntry
 
@@ -50,8 +50,6 @@ Example output:
 }\
 """
 
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
-
 _SYSTEM_PROMPT = """\
 You are a knowledge graph builder. Given a knowledge entry, extract entities \
 and their relationships to this entry.
@@ -87,9 +85,6 @@ Example output:
   {"entity": "async-http", "entity_type": "concept", "relationship": "implements"}
 ]\
 """
-
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
 class GraphEnricher:
@@ -185,24 +180,9 @@ class GraphEnricher:
 
         Returns None if the JSON object cannot be parsed (triggers fallback).
         """
-        # Strip markdown fences if present
-        fence_match = _FENCE_RE.search(raw)
-        if fence_match:
-            raw = fence_match.group(1)
-
-        # Find JSON object in response
-        obj_match = _JSON_OBJECT_RE.search(raw)
-        if not obj_match:
+        data = parse_json_object(raw)
+        if data is None:
             logger.warning("No JSON object found in batch LLM response")
-            return None
-
-        try:
-            data = json.loads(obj_match.group(0))
-        except json.JSONDecodeError:
-            logger.warning("Malformed JSON in batch LLM response")
-            return None
-
-        if not isinstance(data, dict):
             return None
 
         result: dict[str, list[dict[str, str]]] = {}
@@ -248,24 +228,9 @@ class GraphEnricher:
 
     def _parse_relationships(self, raw: str) -> list[dict[str, str]]:
         """Parse LLM response into validated relationship dicts."""
-        # Strip markdown fences if present
-        fence_match = _FENCE_RE.search(raw)
-        if fence_match:
-            raw = fence_match.group(1)
-
-        # Find JSON array in response
-        array_match = _JSON_ARRAY_RE.search(raw)
-        if not array_match:
+        data = parse_json_array(raw)
+        if data is None:
             logger.warning("No JSON array found in LLM response")
-            return []
-
-        try:
-            data = json.loads(array_match.group(0))
-        except json.JSONDecodeError:
-            logger.warning("Malformed JSON in LLM response")
-            return []
-
-        if not isinstance(data, list):
             return []
 
         results: list[dict[str, str]] = []

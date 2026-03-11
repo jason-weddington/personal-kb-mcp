@@ -1,6 +1,5 @@
 """Multi-turn chat session grounded in KB data."""
 
-import json
 import logging
 import re
 import uuid
@@ -8,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from personal_kb.db.backend import Database
+from personal_kb.llm.json_parser import parse_json_object
 from personal_kb.llm.provider import LLMProvider, Message
 from personal_kb.search.embeddings import EmbeddingClient
 
@@ -55,9 +55,7 @@ Rules:
 - Never create new entries — only update existing ones
 - Always confirm what you did after the tool completes"""
 
-# Reuse the same parsing patterns from graph/agent.py
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 @dataclass
@@ -85,26 +83,16 @@ def _parse_tool_call(text: str) -> dict[str, Any] | None:
 
     Returns dict with 'tool' and 'args' keys, or None if no tool call found.
     """
-    # Try fenced code blocks first
+    # Try fenced code blocks first — may contain non-tool JSON, so iterate
     for m in _FENCE_RE.finditer(text):
-        inner = m.group(1).strip()
-        obj_match = _JSON_OBJECT_RE.search(inner)
-        if obj_match:
-            try:
-                parsed: dict[str, Any] = json.loads(obj_match.group())
-                if "tool" in parsed:
-                    return parsed
-            except json.JSONDecodeError:
-                continue
+        parsed = parse_json_object(m.group(1))
+        if parsed is not None and "tool" in parsed:
+            return parsed
 
     # Fallback: bare JSON object in text (only if it has "tool" key)
-    for m in _JSON_OBJECT_RE.finditer(text):
-        try:
-            parsed_bare: dict[str, Any] = json.loads(m.group())
-            if "tool" in parsed_bare:
-                return parsed_bare
-        except json.JSONDecodeError:
-            continue
+    parsed = parse_json_object(text)
+    if parsed is not None and "tool" in parsed:
+        return parsed
 
     return None
 

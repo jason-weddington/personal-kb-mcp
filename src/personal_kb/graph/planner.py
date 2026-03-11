@@ -2,20 +2,17 @@
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 
 from personal_kb.db.backend import Database
 from personal_kb.db.queries import get_db_stats
 from personal_kb.graph.queries import get_graph_vocabulary
+from personal_kb.llm.json_parser import parse_json_object
 from personal_kb.llm.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
 _VALID_STRATEGIES = {"auto", "decision_trace", "timeline", "related", "connection"}
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _SYSTEM_PROMPT = """\
 You are a knowledge graph query planner. Given a natural language question and \
@@ -112,24 +109,9 @@ class QueryPlanner:
 
     def _parse_plan(self, raw: str) -> QueryPlan | None:
         """Parse LLM response into a QueryPlan."""
-        # Strip markdown fences if present
-        fence_match = _FENCE_RE.search(raw)
-        if fence_match:
-            raw = fence_match.group(1)
-
-        # Find JSON object
-        obj_match = _JSON_OBJECT_RE.search(raw)
-        if not obj_match:
+        data = parse_json_object(raw)
+        if data is None:
             logger.warning("No JSON object found in planner response")
-            return None
-
-        try:
-            data = json.loads(obj_match.group(0))
-        except json.JSONDecodeError:
-            logger.warning("Malformed JSON in planner response")
-            return None
-
-        if not isinstance(data, dict):
             return None
 
         strategy = data.get("strategy", "auto")
