@@ -58,9 +58,9 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 - **Shared LLM JSON parser.** The `_FENCE_RE → _JSON_OBJECT_RE → json.loads()` pattern is copy-pasted across 6 files with greedy regex that fails on multi-object responses. Extract to shared `parse_llm_json()` using `json.JSONDecoder().raw_decode()`. (audit M15, L22)
 - **Deduplicate ingester code.** `ingest_file` and `ingest_content` share ~175 lines of nearly identical extraction/storage/graph logic. (audit M19)
-- **Delete dead VersionStore.** Entirely unused — version history queried via raw SQL in `kb_maintain`. (audit L20)
-- **Narrow `query_llm` type.** Typed as `object | None` with isinstance checks everywhere. Should be `LLMProvider | None`. (audit M20)
-- **Agent tool call deduplication.** ReAct loop doesn't detect identical repeated calls. Each duplicate burns a turn. (audit M14)
+- **~~Delete dead VersionStore.~~** Deleted. (audit L20)
+- **~~Narrow `query_llm` type.~~** Now `LLMProvider | None` everywhere; isinstance checks removed. (audit M20)
+- **~~Agent tool call deduplication.~~** ReAct loop skips identical repeated calls with error feedback. (audit M14)
 
 ## Later
 

@@ -21,6 +21,7 @@ from personal_kb.graph.queries import (
     get_neighbors,
     supersedes_chain,
 )
+from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.models.search import SearchQuery
 from personal_kb.search.embeddings import EmbeddingClient
@@ -109,7 +110,7 @@ def register_kb_ask(mcp: FastMCP, prefix: str = "kb_") -> None:
 async def retrieve_entries(
     db: Database,
     embedder: EmbeddingClient | None,
-    query_llm: object | None,
+    query_llm: LLMProvider | None,
     question: str,
     scope: str | None = None,
     include_graph_context: bool = True,
@@ -122,10 +123,9 @@ async def retrieve_entries(
     Used by both kb_ask (formatted output) and kb_summarize (structured).
     """
     from personal_kb.config import is_agentic_query
-    from personal_kb.llm.provider import LLMProvider
 
     # --- Agentic path ---
-    if query_llm is not None and isinstance(query_llm, LLMProvider) and is_agentic_query():
+    if query_llm is not None and is_agentic_query():
         from personal_kb.graph.agent import AgentResult, agentic_query
 
         agent_result = await agentic_query(
@@ -149,7 +149,7 @@ async def retrieve_entries(
     # Use planner to refine query, but always retrieve via auto search
     # (non-auto strategies produce formatted strings, not structured entries).
     search_query = question
-    if query_llm is not None and isinstance(query_llm, LLMProvider):
+    if query_llm is not None:
         planner = QueryPlanner(db, query_llm)
         plan = await planner.plan(question)
         logger.debug("Query plan: %s", plan)
@@ -170,7 +170,7 @@ async def retrieve_entries(
 async def _strategy_auto_with_planner(
     db: Database,
     embedder: EmbeddingClient | None,
-    query_llm: object | None,
+    query_llm: LLMProvider | None,
     question: str,
     scope: str | None,
     include_graph_context: bool,
@@ -183,10 +183,9 @@ async def _strategy_auto_with_planner(
     to the single-shot planner when agentic query is disabled.
     """
     from personal_kb.config import is_agentic_query
-    from personal_kb.llm.provider import LLMProvider
 
     # --- Agentic path ---
-    if query_llm is not None and isinstance(query_llm, LLMProvider) and is_agentic_query():
+    if query_llm is not None and is_agentic_query():
         from personal_kb.graph.agent import agentic_query
 
         agent_result = await agentic_query(db, embedder, query_llm, question)
@@ -194,7 +193,7 @@ async def _strategy_auto_with_planner(
 
     # --- Single-shot planner path ---
     plan = None
-    if query_llm is not None and isinstance(query_llm, LLMProvider):
+    if query_llm is not None:
         planner = QueryPlanner(db, query_llm)
         plan = await planner.plan(question)
         logger.debug("Query plan: %s", plan)

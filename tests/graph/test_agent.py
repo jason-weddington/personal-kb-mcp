@@ -346,6 +346,35 @@ async def test_agent_unknown_tool(agent_kb):
 
 
 @pytest.mark.asyncio
+async def test_agent_dedup_skips_repeated_tool_call(agent_kb):
+    """Identical tool calls are skipped with an error message to the LLM."""
+    db, embedder, ids = agent_kb
+    target_id = ids["aiosqlite-async"]
+
+    # LLM makes the same search twice, then gives up
+    llm = ScriptedLLM(
+        [
+            _tool_call("hybrid_search", query="sqlite async"),
+            _tool_call("hybrid_search", query="sqlite async"),  # duplicate
+            _done([target_id], "Found it"),
+        ]
+    )
+
+    result = await agentic_query(
+        db,
+        embedder,
+        llm,
+        "obscure query xyz123",
+        max_tool_calls=4,
+    )
+
+    assert result.turns_used == 3
+    assert any(eid == target_id for eid, _ in result.entries)
+    # All 3 LLM calls happened (dedup doesn't skip LLM, just dispatch)
+    assert len(llm.calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_toggle_off_uses_single_shot(monkeypatch):
     """KB_AGENTIC_QUERY=FALSE → config returns False."""
     monkeypatch.setenv("KB_AGENTIC_QUERY", "FALSE")

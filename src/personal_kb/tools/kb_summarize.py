@@ -78,12 +78,12 @@ def register_kb_summarize(mcp: FastMCP, prefix: str = "kb_") -> None:
 async def summarize_question(
     db: Database,
     embedder: EmbeddingClient | None,
-    query_llm: object | None,
+    query_llm: LLMProvider | None,
     question: str,
     scope: str | None = None,
     limit: int = 20,
     event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-    synthesis_llm: object | None = None,
+    synthesis_llm: LLMProvider | None = None,
 ) -> str:
     """Core summarize logic, testable without FastMCP context."""
     from personal_kb.config import is_agentic_synthesis
@@ -110,12 +110,7 @@ async def summarize_question(
 
     # Coverage check: only when agentic synthesis enabled, LLM available,
     # and retrieval wasn't fast-path (agent_turns > 0 means agent did work)
-    if (
-        is_agentic_synthesis()
-        and query_llm is not None
-        and isinstance(query_llm, LLMProvider)
-        and agent_turns > 0
-    ):
+    if is_agentic_synthesis() and query_llm is not None and agent_turns > 0:
         from personal_kb.tools.coverage import assess_coverage
 
         coverage = await assess_coverage(query_llm, question, entries)
@@ -131,8 +126,8 @@ async def summarize_question(
             entries = _merge_entries(entries, extra)
 
     # Synthesize with LLM — prefer synthesis_llm (Sonnet) when available
-    synth_provider = synthesis_llm if isinstance(synthesis_llm, LLMProvider) else query_llm
-    if synth_provider is not None and isinstance(synth_provider, LLMProvider):
+    synth_provider = synthesis_llm if synthesis_llm is not None else query_llm
+    if synth_provider is not None:
         await _emit({"type": "synthesis_started", "entry_count": len(entries)})
         synthesis = await _synthesize(synth_provider, question, entries)
         if synthesis is not None:

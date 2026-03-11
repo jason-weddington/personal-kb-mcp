@@ -314,6 +314,7 @@ async def agentic_query(
     )
 
     # --- Agent loop ---
+    seen_calls: set[str] = set()
     for turn_num in range(max_tool_calls):
         # Build prompt from messages
         await _emit({"type": "thinking", "turn": turn_num + 1})
@@ -362,6 +363,28 @@ async def agentic_query(
 
         # Tool call
         turns_used += 1
+
+        # Dedup: skip identical tool calls (same name + args)
+        call_key = json.dumps({"tool": parsed.tool, "args": parsed.args}, sort_keys=True)
+        if call_key in seen_calls:
+            logger.debug("Agent repeated tool call %s — skipping", parsed.tool)
+            await _emit(
+                {
+                    "type": "tool_dedup",
+                    "turn": turn_num + 1,
+                    "tool": parsed.tool,
+                }
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "ERROR: You already made this exact tool call. "
+                    "Use a different query or call done() with your results.",
+                }
+            )
+            continue
+        seen_calls.add(call_key)
+
         await _emit(
             {
                 "type": "tool_call",

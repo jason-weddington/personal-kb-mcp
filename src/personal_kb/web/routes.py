@@ -7,7 +7,6 @@ from typing import Any
 
 from personal_kb.explorer.graph_data import extract_graph_data
 from personal_kb.explorer.renderer import render_explorer_html
-from personal_kb.llm.provider import LLMProvider
 from personal_kb.web.events import event_to_status, sse_event
 
 logger = logging.getLogger(__name__)
@@ -79,7 +78,7 @@ def register_routes(app: Any) -> None:
         async def event_stream() -> AsyncGenerator[str]:
             # Classify query
             mode = "explore"
-            if query_llm is not None and isinstance(query_llm, LLMProvider):
+            if query_llm is not None:
                 from personal_kb.web.classifier import classify_query
 
                 mode = await classify_query(query_llm, question)
@@ -233,7 +232,7 @@ def register_routes(app: Any) -> None:
             )
 
         async def chat_stream() -> AsyncGenerator[str]:
-            if chat_llm is None or not isinstance(chat_llm, LLMProvider):
+            if chat_llm is None:
                 yield sse_event("error", {"message": "LLM not available"})
                 yield sse_event("stream_end", {})
                 return
