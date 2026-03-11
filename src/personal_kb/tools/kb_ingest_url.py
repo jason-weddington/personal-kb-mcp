@@ -31,6 +31,18 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
                 description="URL to fetch and ingest into the KB.",
             ),
         ],
+        content: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Pre-fetched content for the URL. When provided, "
+                    "skips fetching and HTML extraction — ingests this "
+                    "text directly. Use when you already have the page "
+                    "content (e.g. from authenticated sites, WebFetch, "
+                    "or JavaScript-rendered pages)."
+                ),
+            ),
+        ] = None,
         project_ref: Annotated[
             str | None,
             Field(description="Project tag for extracted entries"),
@@ -41,15 +53,16 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
         ] = False,
         ctx: Context | None = None,
     ) -> str:
-        """Fetch a URL and ingest its content into the KB.
+        """Ingest a URL's content into the KB.
 
-        Fetches the page, extracts article content from HTML (strips navigation,
-        ads, and boilerplate), then runs the standard ingestion pipeline:
-        PII redaction, secret scanning, LLM extraction, and deduplication.
+        By default, fetches the page and extracts article content from HTML
+        (strips navigation, ads, and boilerplate). If ``content`` is provided,
+        skips fetching and uses the supplied text directly — useful for
+        authenticated pages, intranet sites, or JS-rendered SPAs where the
+        agent has already retrieved the content.
 
-        Works with articles, blog posts, documentation, wiki pages, and similar
-        text-heavy pages. May fail on JavaScript-rendered SPAs or pages with
-        no extractable article content.
+        Runs the standard ingestion pipeline: PII redaction, secret scanning,
+        LLM extraction, and deduplication.
 
         """
         if ctx is None:
@@ -108,11 +121,20 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
             team=team,
         )
 
-        file_result = await ingester.ingest_url(
-            url,
-            project_ref=project_ref,
-            dry_run=dry_run,
-        )
+        if content is not None:
+            # Agent provided pre-fetched content — skip fetch/extraction
+            file_result = await ingester._ingest_content(
+                content,
+                url,
+                project_ref=project_ref,
+                dry_run=dry_run,
+            )
+        else:
+            file_result = await ingester.ingest_url(
+                url,
+                project_ref=project_ref,
+                dry_run=dry_run,
+            )
 
         dry_prefix = "[DRY RUN] " if dry_run else ""
         line = f"{dry_prefix}{_format_file_result(file_result)}"

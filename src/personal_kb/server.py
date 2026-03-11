@@ -272,7 +272,9 @@ and creates multiple properly structured KB entries (decisions, patterns, facts)
 Deduplicates against existing entries — safe to ingest overlapping files. \
 Accepts file paths, directories, glob patterns (e.g. *.md, docs/**/*.txt).
 - kb_ingest_url: Fetch a URL, extract article content from HTML, and ingest it. \
-Handles boilerplate removal automatically — just provide the URL.
+Handles boilerplate removal automatically — just provide the URL. \
+If you already have the page content (e.g. from authenticated sites or WebFetch), \
+pass it via the `content` parameter to skip fetching.
 
 Entry types: factual_reference, decision, pattern_convention, lesson_learned.
 Use tags for discoverability. Use project_ref for project-specific knowledge.
