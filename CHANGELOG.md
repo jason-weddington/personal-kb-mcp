@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.58.0 (2026-03-11)
+
+### Documentation
+
+- Add graph explorer research reports from initial design phase
+  ([`cf01d9c`](https://github.com/jason-weddington/personal-kb-mcp/commit/cf01d9c478b7c3373c16efb0167e3ce0954876ed))
+
+### Features
+
+- Add content param to kb_ingest_url for pre-fetched content
+  ([`3135525`](https://github.com/jason-weddington/personal-kb-mcp/commit/31355250bffadcfa6ab67a6c2a343d1f86a572d9))
+
+
 ## v0.57.2 (2026-03-09)
 
 ### Bug Fixes
