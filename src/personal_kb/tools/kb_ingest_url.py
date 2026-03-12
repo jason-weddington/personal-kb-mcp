@@ -55,11 +55,13 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
     ) -> str:
         """Ingest a URL's content into the KB.
 
-        By default, fetches the page and extracts article content from HTML
-        (strips navigation, ads, and boilerplate). If ``content`` is provided,
-        skips fetching and uses the supplied text directly — useful for
-        authenticated pages, intranet sites, or JS-rendered SPAs where the
-        agent has already retrieved the content.
+        Two modes:
+        - **url only**: fetches the page and extracts article text from HTML.
+          Works for public sites; will fail on internal/corporate sites behind
+          SSO, OAuth, or VPN — use ``content`` for those.
+        - **url + content**: skips fetching; ingests the supplied text directly.
+          Use when you already have the content (e.g. from an internal wiki
+          fetched via another tool).
 
         Runs the standard ingestion pipeline: PII redaction, secret scanning,
         LLM extraction, and deduplication.
