@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.58.2 (2026-03-12)
+
+### Bug Fixes
+
+- Expand ingestion deny list with common secret patterns
+  ([`ebfbefa`](https://github.com/jason-weddington/personal-kb-mcp/commit/ebfbefab1fe44fbc97665b28a5355209e3076dd7))
+
+### Documentation
+
+- Fix 6 factual errors and add missing features to how_it_works
+  ([`7ac3a69`](https://github.com/jason-weddington/personal-kb-mcp/commit/7ac3a69f6922cea43da0905d8ca944de06057ace))
+
+
 ## v0.58.1 (2026-03-12)
 
 ### Bug Fixes
