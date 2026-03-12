@@ -1,10 +1,16 @@
-"""Tests for new config functions."""
+"""Tests for config functions."""
+
+import pytest
 
 from personal_kb.config import (
     get_contributor,
+    get_embedding_dim,
+    get_extraction_provider,
+    get_ollama_timeout,
     get_pg_pool_max,
     get_pg_pool_min,
     get_pg_region,
+    get_query_provider,
     get_team,
     is_pg_iam_auth,
     is_safety_skip,
@@ -102,3 +108,48 @@ def test_get_pg_region_default():
 def test_get_pg_region_set(monkeypatch):
     monkeypatch.setenv("KB_PG_REGION", "eu-west-1")
     assert get_pg_region() == "eu-west-1"
+
+
+# -- Numeric validation --
+
+
+def test_int_validation_rejects_non_numeric(monkeypatch):
+    monkeypatch.setenv("KB_EMBEDDING_DIM", "abc")
+    with pytest.raises(ValueError, match="KB_EMBEDDING_DIM='abc' is not a valid integer"):
+        get_embedding_dim()
+
+
+def test_float_validation_rejects_non_numeric(monkeypatch):
+    monkeypatch.setenv("KB_OLLAMA_TIMEOUT", "not-a-number")
+    with pytest.raises(ValueError, match="KB_OLLAMA_TIMEOUT='not-a-number' is not a valid number"):
+        get_ollama_timeout()
+
+
+def test_int_validation_accepts_valid(monkeypatch):
+    monkeypatch.setenv("KB_EMBEDDING_DIM", "512")
+    assert get_embedding_dim() == 512
+
+
+def test_float_validation_accepts_valid(monkeypatch):
+    monkeypatch.setenv("KB_OLLAMA_TIMEOUT", "5.5")
+    assert get_ollama_timeout() == 5.5
+
+
+# -- Provider validation --
+
+
+def test_provider_rejects_unknown(monkeypatch):
+    monkeypatch.setenv("KB_EXTRACTION_PROVIDER", "openai")
+    with pytest.raises(ValueError, match="KB_EXTRACTION_PROVIDER='openai' is not valid"):
+        get_extraction_provider()
+
+
+def test_provider_accepts_valid(monkeypatch):
+    for provider in ("anthropic", "bedrock", "ollama"):
+        monkeypatch.setenv("KB_QUERY_PROVIDER", provider)
+        assert get_query_provider() == provider
+
+
+def test_provider_case_insensitive(monkeypatch):
+    monkeypatch.setenv("KB_EXTRACTION_PROVIDER", "Anthropic")
+    assert get_extraction_provider() == "anthropic"

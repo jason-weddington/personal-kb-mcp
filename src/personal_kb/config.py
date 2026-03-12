@@ -3,6 +3,37 @@
 import os
 from pathlib import Path
 
+_VALID_PROVIDERS = {"anthropic", "bedrock", "ollama"}
+
+
+def _parse_int(env_var: str, default: str) -> int:
+    """Parse an integer env var with a clear error on bad values."""
+    raw = os.environ.get(env_var, default)
+    try:
+        return int(raw)
+    except ValueError:
+        msg = f"{env_var}={raw!r} is not a valid integer"
+        raise ValueError(msg) from None
+
+
+def _parse_float(env_var: str, default: str) -> float:
+    """Parse a float env var with a clear error on bad values."""
+    raw = os.environ.get(env_var, default)
+    try:
+        return float(raw)
+    except ValueError:
+        msg = f"{env_var}={raw!r} is not a valid number"
+        raise ValueError(msg) from None
+
+
+def _parse_provider(env_var: str, default: str) -> str:
+    """Parse and validate a provider env var."""
+    raw = os.environ.get(env_var, default).lower()
+    if raw not in _VALID_PROVIDERS:
+        msg = f"{env_var}={raw!r} is not valid. Choose from: {', '.join(sorted(_VALID_PROVIDERS))}"
+        raise ValueError(msg)
+    return raw
+
 
 def get_db_path() -> Path:
     """Return the database file path from KB_DB_PATH."""
@@ -22,7 +53,7 @@ def get_embedding_model() -> str:
 
 def get_ollama_timeout() -> float:
     """Return the Ollama timeout in seconds from KB_OLLAMA_TIMEOUT."""
-    return float(os.environ.get("KB_OLLAMA_TIMEOUT", "10.0"))
+    return _parse_float("KB_OLLAMA_TIMEOUT", "10.0")
 
 
 def is_manager_mode() -> bool:
@@ -32,7 +63,7 @@ def is_manager_mode() -> bool:
 
 def get_embedding_dim() -> int:
     """Return the embedding vector dimensions from KB_EMBEDDING_DIM."""
-    return int(os.environ.get("KB_EMBEDDING_DIM", "1024"))
+    return _parse_int("KB_EMBEDDING_DIM", "1024")
 
 
 def get_llm_model() -> str:
@@ -42,7 +73,7 @@ def get_llm_model() -> str:
 
 def get_llm_timeout() -> float:
     """Return the Ollama LLM timeout in seconds from KB_OLLAMA_LLM_TIMEOUT."""
-    return float(os.environ.get("KB_OLLAMA_LLM_TIMEOUT", "120.0"))
+    return _parse_float("KB_OLLAMA_LLM_TIMEOUT", "120.0")
 
 
 def get_anthropic_model() -> str:
@@ -52,17 +83,17 @@ def get_anthropic_model() -> str:
 
 def get_anthropic_timeout() -> float:
     """Return the Anthropic timeout in seconds from KB_ANTHROPIC_TIMEOUT."""
-    return float(os.environ.get("KB_ANTHROPIC_TIMEOUT", "30.0"))
+    return _parse_float("KB_ANTHROPIC_TIMEOUT", "30.0")
 
 
 def get_extraction_provider() -> str:
     """Return the LLM provider for graph extraction from KB_EXTRACTION_PROVIDER."""
-    return os.environ.get("KB_EXTRACTION_PROVIDER", "anthropic")
+    return _parse_provider("KB_EXTRACTION_PROVIDER", "anthropic")
 
 
 def get_query_provider() -> str:
     """Return the LLM provider for query planning from KB_QUERY_PROVIDER."""
-    return os.environ.get("KB_QUERY_PROVIDER", "anthropic")
+    return _parse_provider("KB_QUERY_PROVIDER", "anthropic")
 
 
 def get_log_level() -> str:
@@ -82,7 +113,7 @@ def get_bedrock_region() -> str:
 
 def get_bedrock_timeout() -> float:
     """Return the Bedrock timeout in seconds from KB_BEDROCK_TIMEOUT."""
-    return float(os.environ.get("KB_BEDROCK_TIMEOUT", "60.0"))
+    return _parse_float("KB_BEDROCK_TIMEOUT", "60.0")
 
 
 def get_database_url() -> str | None:
@@ -96,17 +127,17 @@ def get_database_url() -> str | None:
 
 def get_ingest_max_file_size() -> int:
     """Return max file size in bytes for ingestion from KB_INGEST_MAX_FILE_SIZE."""
-    return int(os.environ.get("KB_INGEST_MAX_FILE_SIZE", str(5 * 1024 * 1024)))
+    return _parse_int("KB_INGEST_MAX_FILE_SIZE", str(5 * 1024 * 1024))
 
 
 def get_ingest_chunk_size() -> int:
     """Return chunk size in chars for ingestion from KB_INGEST_CHUNK_SIZE."""
-    return int(os.environ.get("KB_INGEST_CHUNK_SIZE", "16000"))
+    return _parse_int("KB_INGEST_CHUNK_SIZE", "16000")
 
 
 def get_ingest_chunk_overlap() -> int:
     """Return chunk overlap in chars for ingestion from KB_INGEST_CHUNK_OVERLAP."""
-    return int(os.environ.get("KB_INGEST_CHUNK_OVERLAP", "600"))
+    return _parse_int("KB_INGEST_CHUNK_OVERLAP", "600")
 
 
 def is_agentic_ingest() -> bool:
@@ -116,7 +147,7 @@ def is_agentic_ingest() -> bool:
 
 def get_ingest_dedup_threshold() -> float:
     """Return the hybrid search score threshold for dedup from KB_INGEST_DEDUP_THRESHOLD."""
-    return float(os.environ.get("KB_INGEST_DEDUP_THRESHOLD", "0.06"))
+    return _parse_float("KB_INGEST_DEDUP_THRESHOLD", "0.06")
 
 
 def is_agentic_query() -> bool:
@@ -126,7 +157,7 @@ def is_agentic_query() -> bool:
 
 def get_agentic_max_tool_calls() -> int:
     """Return max tool calls for agentic query loop from KB_AGENTIC_MAX_CALLS."""
-    return int(os.environ.get("KB_AGENTIC_MAX_CALLS", "4"))
+    return _parse_int("KB_AGENTIC_MAX_CALLS", "4")
 
 
 def is_agentic_synthesis() -> bool:
@@ -146,12 +177,12 @@ def get_team() -> str | None:
 
 def get_pg_pool_min() -> int:
     """Return the Postgres connection pool minimum size from KB_PG_POOL_MIN."""
-    return int(os.environ.get("KB_PG_POOL_MIN", "1"))
+    return _parse_int("KB_PG_POOL_MIN", "1")
 
 
 def get_pg_pool_max() -> int:
     """Return the Postgres connection pool maximum size from KB_PG_POOL_MAX."""
-    return int(os.environ.get("KB_PG_POOL_MAX", "5"))
+    return _parse_int("KB_PG_POOL_MAX", "5")
 
 
 def is_safety_skip() -> bool:
@@ -166,7 +197,7 @@ def is_auto_explore() -> bool:
 
 def get_explore_port() -> int:
     """Return the explorer web server port from KB_EXPLORE_PORT (default: 8765)."""
-    return int(os.environ.get("KB_EXPLORE_PORT", "8765"))
+    return _parse_int("KB_EXPLORE_PORT", "8765")
 
 
 def is_pg_iam_auth() -> bool:

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from personal_kb.config import get_ingest_max_file_size
 from personal_kb.db.backend import Database
@@ -179,18 +180,8 @@ class FileIngester:
     ) -> FileResult:
         """Ingest a single file through the full pipeline.
 
-        Steps:
-        1. Check deny-list (security boundary)
-        2. Check extension allowlist
-        3. Check file size
-        4. Read content
-        5. Compute hash, skip if unchanged
-        6. Run safety pipeline (secrets, PII)
-        7. Summarize file (LLM call 1)
-        8. Extract entries (LLM call 2)
-        9. Store entries through kb_store pipeline
-        10. Create note node and edges
-        11. Record in ingested_files table
+        Handles filesystem-specific checks (deny-list, extension, symlink,
+        size), then delegates to _run_pipeline() for extraction and storage.
         """
         rel_path = str(path.relative_to(base_dir)) if base_dir else path.name
 
@@ -248,212 +239,24 @@ class FileIngester:
             return FileResult(path=rel_path, action="unchanged")
 
         # 6. PII redaction (file-level — transforms content, non-blocking)
-        # Secret detection moved to per-chunk (see chunk loop below)
         from personal_kb.ingest.safety import redact_pii
 
         content, pii_redactions = redact_pii(content)
 
-        if dry_run:
-            # Still run LLM calls for preview
-            summary = await summarize_file(self._llm, rel_path, content)
-            chunks = chunk_content(content)
-            dry_entries: list[ExtractedEntry] = []
-            dry_prev: list[str] = []
-            dry_flagged = 0
-            for chunk in chunks:
-                secrets = detect_secrets_in_content(chunk.text)
-                if secrets:
-                    dry_flagged += 1
-                    logger.info("Chunk flagged for secrets in %s: %s", rel_path, secrets)
-                    continue
-                entries = await extract_entries(
-                    self._llm,
-                    rel_path,
-                    chunk.text,
-                    previously_extracted=dry_prev or None,
-                    chunk_heading=chunk.heading,
-                )
-                dry_entries.extend(entries)
-                dry_prev.extend(e.short_title for e in entries)
-            return FileResult(
-                path=rel_path,
-                action="dry_run",
-                entry_count=len(dry_entries),
-                summary=summary,
-                chunks_processed=len(chunks) - dry_flagged,
-                chunks_flagged=dry_flagged,
-            )
-
-        # 7. Summarize
-        pc = progress_callback
-        await self._emit(pc, "ingest_summarizing", rel_path)
-        summary = await summarize_file(self._llm, rel_path, content)
-        if summary is None:
-            await self._emit(
-                pc,
-                "ingest_error",
-                rel_path,
-                error="LLM unavailable for summarization",
-            )
-            return FileResult(
-                path=rel_path,
-                action="error",
-                reason="LLM unavailable for summarization",
-            )
-
-        # 8. Chunk content
-        chunks = chunk_content(content)
-        await self._emit(
-            pc,
-            "ingest_start",
-            rel_path,
-            total_chunks=len(chunks),
+        return await self._run_pipeline(
+            content=content,
+            source=rel_path,
+            content_hash=content_hash,
+            pii_redactions=pii_redactions,
+            existing=existing,
+            file_size=file_size,
+            file_extension=path.suffix,
+            note_node_id=f"note:{rel_path}",
+            note_props={"path": rel_path},
+            project_ref=project_ref,
+            dry_run=dry_run,
+            progress_callback=progress_callback,
         )
-
-        # 9. Extract entries per chunk with running context
-        all_extracted: list[ExtractedEntry] = []
-        previously_extracted: list[str] = []
-        chunks_skipped = 0
-        chunks_flagged = 0
-        for ci, chunk in enumerate(chunks):
-            # Secret scan per-chunk — skip chunks with secrets
-            secrets = detect_secrets_in_content(chunk.text)
-            if secrets:
-                chunks_flagged += 1
-                logger.info(
-                    "Chunk flagged for secrets in %s: %s",
-                    rel_path,
-                    secrets,
-                )
-                continue
-
-            # Dedup check (if agent provided)
-            if self._dedup_agent:
-                dedup_result = await self._dedup_agent.check_chunk(
-                    chunk,
-                    previously_extracted,
-                )
-                if dedup_result.action == "skip":
-                    chunks_skipped += 1
-                    continue
-                if dedup_result.action == "partial":
-                    combined_context = previously_extracted + dedup_result.existing_titles
-                else:
-                    combined_context = previously_extracted
-            else:
-                combined_context = previously_extracted
-
-            await self._emit(
-                pc,
-                "ingest_chunk_start",
-                rel_path,
-                chunk_index=ci,
-                total_chunks=len(chunks),
-            )
-
-            extracted = await extract_entries(
-                self._llm,
-                rel_path,
-                chunk.text,
-                previously_extracted=combined_context or None,
-                chunk_heading=chunk.heading,
-            )
-            all_extracted.extend(extracted)
-            previously_extracted.extend(e.short_title for e in extracted)
-
-            await self._emit(
-                pc,
-                "ingest_chunk_done",
-                rel_path,
-                chunk_index=ci,
-                total_chunks=len(chunks),
-                entries_extracted=len(extracted),
-            )
-
-        # 10. Store entries through the full pipeline
-        entry_ids: list[str] = []
-        for ext_entry in all_extracted:
-            entry = await self._store_extracted_entry(ext_entry, project_ref, rel_path)
-            if entry:
-                entry_ids.append(entry.id)
-
-        # Deactivate old entries only after new ones are stored successfully
-        if existing:
-            await self._deactivate_old_entries(existing)
-
-        # 11. Create note node and edges
-        note_node_id = f"note:{rel_path}"
-        await self._create_note_node(note_node_id, rel_path, summary)
-        for eid in entry_ids:
-            await self._add_extracted_from_edge(eid, note_node_id)
-        await self._db.commit()
-
-        # 10. Record in ingested_files
-        now = datetime.now(UTC).isoformat()
-        if existing:
-            await self._db.execute(
-                "UPDATE ingested_files SET content_hash = ?, note_node_id = ?, "
-                "entry_ids = ?, summary = ?, file_size = ?, file_extension = ?, "
-                "project_ref = ?, redactions = ?, contributor = ?, "
-                "updated_at = ?, is_active = 1 "
-                "WHERE relative_path = ?",
-                (
-                    content_hash,
-                    note_node_id,
-                    json.dumps(entry_ids),
-                    summary,
-                    file_size,
-                    path.suffix,
-                    project_ref,
-                    json.dumps(pii_redactions),
-                    self._contributor,
-                    now,
-                    rel_path,
-                ),
-            )
-        else:
-            await self._db.execute(
-                "INSERT INTO ingested_files "
-                "(relative_path, content_hash, note_node_id, entry_ids, summary, "
-                "file_size, file_extension, project_ref, redactions, contributor, "
-                "ingested_at, updated_at, is_active) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
-                (
-                    rel_path,
-                    content_hash,
-                    note_node_id,
-                    json.dumps(entry_ids),
-                    summary,
-                    file_size,
-                    path.suffix,
-                    project_ref,
-                    json.dumps(pii_redactions),
-                    self._contributor,
-                    now,
-                    now,
-                ),
-            )
-        await self._db.commit()
-
-        result = FileResult(
-            path=rel_path,
-            action="ingested",
-            entry_count=len(entry_ids),
-            entry_ids=entry_ids,
-            summary=summary,
-            chunks_processed=len(chunks) - chunks_skipped - chunks_flagged,
-            chunks_skipped=chunks_skipped,
-            chunks_flagged=chunks_flagged,
-        )
-        await self._emit(
-            pc,
-            "ingest_done",
-            rel_path,
-            action="ingested",
-            entry_count=len(entry_ids),
-            entry_ids=entry_ids,
-        )
-        return result
 
     async def ingest_url(
         self,
@@ -594,8 +397,8 @@ class FileIngester:
     ) -> FileResult:
         """Ingest clean text content with URL attribution.
 
-        Internal method — callers should use ingest_url() which handles
-        fetching and HTML extraction.
+        Handles content-specific checks (hash, PII, size limit), then
+        delegates to _run_pipeline() for extraction and storage.
         """
         # 1. Compute hash, skip if unchanged
         content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -604,7 +407,6 @@ class FileIngester:
             return FileResult(path=source_url, action="unchanged")
 
         # 2. PII redaction (content-level — transforms content, non-blocking)
-        # Secret detection moved to per-chunk (see chunk loop below)
         from personal_kb.ingest.safety import redact_pii
 
         content, pii_redactions = redact_pii(content)
@@ -619,8 +421,48 @@ class FileIngester:
                 reason=f"Content too large: {content_bytes:,} bytes (max {max_size:,})",
             )
 
+        # Derive extension from URL path, or empty string
+        url_path = urlparse(source_url).path
+        file_extension = Path(url_path).suffix if url_path else ""
+
+        return await self._run_pipeline(
+            content=content,
+            source=source_url,
+            content_hash=content_hash,
+            pii_redactions=pii_redactions,
+            existing=existing,
+            file_size=content_bytes,
+            file_extension=file_extension,
+            note_node_id=f"note:{source_url}",
+            note_props={"url": source_url},
+            project_ref=project_ref,
+            dry_run=dry_run,
+            progress_callback=progress_callback,
+        )
+
+    async def _run_pipeline(
+        self,
+        *,
+        content: str,
+        source: str,
+        content_hash: str,
+        pii_redactions: list[str],
+        existing: dict[str, object] | None,
+        file_size: int,
+        file_extension: str,
+        note_node_id: str,
+        note_props: dict[str, str],
+        project_ref: str | None = None,
+        dry_run: bool = False,
+        progress_callback: ProgressCallback | None = None,
+    ) -> FileResult:
+        """Shared extraction/storage pipeline for file and content ingestion.
+
+        Both ingest_file() and _ingest_content() delegate here after their
+        own preamble (filesystem checks vs content checks).
+        """
         if dry_run:
-            summary = await summarize_file(self._llm, source_url, content)
+            summary = await summarize_file(self._llm, source, content)
             chunks = chunk_content(content)
             dry_entries: list[ExtractedEntry] = []
             dry_prev: list[str] = []
@@ -629,11 +471,11 @@ class FileIngester:
                 secrets = detect_secrets_in_content(chunk.text)
                 if secrets:
                     dry_flagged += 1
-                    logger.info("Chunk flagged for secrets in %s: %s", source_url, secrets)
+                    logger.info("Chunk flagged for secrets in %s: %s", source, secrets)
                     continue
                 entries = await extract_entries(
                     self._llm,
-                    source_url,
+                    source,
                     chunk.text,
                     previously_extracted=dry_prev or None,
                     chunk_heading=chunk.heading,
@@ -641,7 +483,7 @@ class FileIngester:
                 dry_entries.extend(entries)
                 dry_prev.extend(e.short_title for e in entries)
             return FileResult(
-                path=source_url,
+                path=source,
                 action="dry_run",
                 entry_count=len(dry_entries),
                 summary=summary,
@@ -649,33 +491,33 @@ class FileIngester:
                 chunks_flagged=dry_flagged,
             )
 
-        # 3. Summarize
+        # 1. Summarize
         pc = progress_callback
-        await self._emit(pc, "ingest_summarizing", source_url)
-        summary = await summarize_file(self._llm, source_url, content)
+        await self._emit(pc, "ingest_summarizing", source)
+        summary = await summarize_file(self._llm, source, content)
         if summary is None:
             await self._emit(
                 pc,
                 "ingest_error",
-                source_url,
+                source,
                 error="LLM unavailable for summarization",
             )
             return FileResult(
-                path=source_url,
+                path=source,
                 action="error",
                 reason="LLM unavailable for summarization",
             )
 
-        # 4. Chunk content
+        # 2. Chunk content
         chunks = chunk_content(content)
         await self._emit(
             pc,
             "ingest_start",
-            source_url,
+            source,
             total_chunks=len(chunks),
         )
 
-        # 5. Extract entries per chunk with running context
+        # 3. Extract entries per chunk with running context
         all_extracted: list[ExtractedEntry] = []
         previously_extracted: list[str] = []
         chunks_skipped = 0
@@ -687,11 +529,12 @@ class FileIngester:
                 chunks_flagged += 1
                 logger.info(
                     "Chunk flagged for secrets in %s: %s",
-                    source_url,
+                    source,
                     secrets,
                 )
                 continue
 
+            # Dedup check (if agent provided)
             if self._dedup_agent:
                 dedup_result = await self._dedup_agent.check_chunk(
                     chunk,
@@ -710,14 +553,14 @@ class FileIngester:
             await self._emit(
                 pc,
                 "ingest_chunk_start",
-                source_url,
+                source,
                 chunk_index=ci,
                 total_chunks=len(chunks),
             )
 
             extracted = await extract_entries(
                 self._llm,
-                source_url,
+                source,
                 chunk.text,
                 previously_extracted=combined_context or None,
                 chunk_heading=chunk.heading,
@@ -728,16 +571,16 @@ class FileIngester:
             await self._emit(
                 pc,
                 "ingest_chunk_done",
-                source_url,
+                source,
                 chunk_index=ci,
                 total_chunks=len(chunks),
                 entries_extracted=len(extracted),
             )
 
-        # 6. Store entries
+        # 4. Store entries through the full pipeline
         entry_ids: list[str] = []
         for ext_entry in all_extracted:
-            entry = await self._store_extracted_entry(ext_entry, project_ref, source_url)
+            entry = await self._store_extracted_entry(ext_entry, project_ref, source)
             if entry:
                 entry_ids.append(entry.id)
 
@@ -745,21 +588,14 @@ class FileIngester:
         if existing:
             await self._deactivate_old_entries(existing)
 
-        # 7. Create note node and edges
-        note_node_id = f"note:{source_url}"
-        await self._create_note_node_for_url(note_node_id, source_url, summary)
+        # 5. Create note node and edges
+        full_props = {**note_props, "summary": summary}
+        await self._upsert_note_node(note_node_id, full_props)
         for eid in entry_ids:
             await self._add_extracted_from_edge(eid, note_node_id)
         await self._db.commit()
 
-        # 8. Record in ingested_files
-        file_size = len(content.encode())
-        # Derive extension from URL path, or empty string
-        from urllib.parse import urlparse
-
-        url_path = urlparse(source_url).path
-        file_extension = Path(url_path).suffix if url_path else ""
-
+        # 6. Record in ingested_files
         now = datetime.now(UTC).isoformat()
         if existing:
             await self._db.execute(
@@ -779,7 +615,7 @@ class FileIngester:
                     json.dumps(pii_redactions),
                     self._contributor,
                     now,
-                    source_url,
+                    source,
                 ),
             )
         else:
@@ -790,7 +626,7 @@ class FileIngester:
                 "ingested_at, updated_at, is_active) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                 (
-                    source_url,
+                    source,
                     content_hash,
                     note_node_id,
                     json.dumps(entry_ids),
@@ -807,7 +643,7 @@ class FileIngester:
         await self._db.commit()
 
         result = FileResult(
-            path=source_url,
+            path=source,
             action="ingested",
             entry_count=len(entry_ids),
             entry_ids=entry_ids,
@@ -819,7 +655,7 @@ class FileIngester:
         await self._emit(
             pc,
             "ingest_done",
-            source_url,
+            source,
             action="ingested",
             entry_count=len(entry_ids),
             entry_ids=entry_ids,
@@ -970,28 +806,15 @@ class FileIngester:
 
         return entry
 
-    async def _create_note_node(self, node_id: str, rel_path: str, summary: str) -> None:
+    async def _upsert_note_node(self, node_id: str, props: dict[str, str]) -> None:
         """Create or update a note node in the graph."""
         now = datetime.now(UTC).isoformat()
-        props = json.dumps({"path": rel_path, "summary": summary})
         await self._db.execute(
             """INSERT INTO graph_nodes (node_id, node_type, properties, created_at)
                VALUES (?, 'note', ?, ?)
                ON CONFLICT(node_id) DO UPDATE SET
                    properties = excluded.properties""",
-            (node_id, props, now),
-        )
-
-    async def _create_note_node_for_url(self, node_id: str, source_url: str, summary: str) -> None:
-        """Create or update a note node for a URL source."""
-        now = datetime.now(UTC).isoformat()
-        props = json.dumps({"url": source_url, "summary": summary})
-        await self._db.execute(
-            """INSERT INTO graph_nodes (node_id, node_type, properties, created_at)
-               VALUES (?, 'note', ?, ?)
-               ON CONFLICT(node_id) DO UPDATE SET
-                   properties = excluded.properties""",
-            (node_id, props, now),
+            (node_id, json.dumps(props), now),
         )
 
     async def _add_extracted_from_edge(self, entry_id: str, note_node_id: str) -> None:

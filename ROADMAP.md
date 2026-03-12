@@ -44,7 +44,7 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 - **Postgres transaction wrapper.** asyncpg auto-commits per `execute()` on separate pool connections. Multi-step ops (create_entry, delete_cascade) aren't atomic. Need a `transaction()` context manager. (audit M4)
 - **~~String-literal-aware placeholder translation.~~** (audit H5) → Done
-- **Config validation.** Bare `int()`/`float()` on env vars produces unhelpful errors. Unknown provider values silently return None. (audit M18)
+- **~~Config validation.~~** `_parse_int`/`_parse_float`/`_parse_provider` helpers with clear error messages. (audit M18)
 
 ### Ingestion hardening
 
@@ -57,7 +57,7 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 ### Design debt (lower urgency)
 
 - **~~Shared LLM JSON parser.~~** Extracted to `llm/json_parser.py` using `json.JSONDecoder().raw_decode()`. (audit M15, L22)
-- **Deduplicate ingester code.** `ingest_file` and `ingest_content` share ~175 lines of nearly identical extraction/storage/graph logic. (audit M19)
+- **~~Deduplicate ingester code.~~** Extracted `_run_pipeline()` shared by `ingest_file` and `_ingest_content`. (audit M19)
 - **~~Delete dead VersionStore.~~** Deleted. (audit L20)
 - **~~Narrow `query_llm` type.~~** Now `LLMProvider | None` everywhere; isinstance checks removed. (audit M20)
 - **~~Agent tool call deduplication.~~** ReAct loop skips identical repeated calls with error feedback. (audit M14)
