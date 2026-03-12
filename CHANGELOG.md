@@ -2,6 +2,27 @@
 
 <!-- version list -->
 
+## v0.58.1 (2026-03-12)
+
+### Bug Fixes
+
+- Add config validation and deduplicate ingester pipeline
+  ([`77220b3`](https://github.com/jason-weddington/personal-kb-mcp/commit/77220b398240f00ea35ec6d3e19bf166d2e2fa18))
+
+### Chores
+
+- Add vulture dead code detection to pre-commit
+  ([`5464e94`](https://github.com/jason-weddington/personal-kb-mcp/commit/5464e94ae4868595b861194de549ece14e1f4010))
+
+### Refactoring
+
+- Delete dead VersionStore, narrow query_llm type, add agent dedup
+  ([`0f3255d`](https://github.com/jason-weddington/personal-kb-mcp/commit/0f3255d03bef3d5ca59f35eb37ec7dcdcacc5e00))
+
+- Extract shared LLM JSON parser from 7 files
+  ([`4b71957`](https://github.com/jason-weddington/personal-kb-mcp/commit/4b7195748e36f63a965c49fbb2e01970b68a7e0c))
+
+
 ## v0.58.0 (2026-03-11)
 
 ### Documentation
