@@ -27,13 +27,22 @@ _DENY_PATTERNS: list[str] = [
     ".env",
     ".env.*",
     "*.env",
+    ".envrc",
+    ".envrc.*",
+    # Auth / credentials
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    "credentials",
+    "credentials.json",
+    "token.json",
+    "*.secret",
+    "*.secrets",
     # VPN / WireGuard
     "wg*.conf",
     # Password / credential files
     "*.keychain",
     "*.keychain-db",
-    "credentials.json",
-    "token.json",
     # Binary / image / archive (not useful text)
     "*.zip",
     "*.tar",

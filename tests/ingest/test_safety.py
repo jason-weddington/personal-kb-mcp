@@ -52,6 +52,27 @@ class TestCheckDenyList:
     def test_denies_case_insensitive(self):
         assert check_deny_list(Path("IMAGE.PNG")) == "*.png"
 
+    def test_denies_envrc(self):
+        assert check_deny_list(Path(".envrc")) == ".envrc"
+
+    def test_denies_envrc_secrets(self):
+        assert check_deny_list(Path(".envrc.secrets")) == ".envrc.*"
+
+    def test_denies_netrc(self):
+        assert check_deny_list(Path(".netrc")) == ".netrc"
+
+    def test_denies_npmrc(self):
+        assert check_deny_list(Path(".npmrc")) == ".npmrc"
+
+    def test_denies_pypirc(self):
+        assert check_deny_list(Path(".pypirc")) == ".pypirc"
+
+    def test_denies_bare_credentials(self):
+        assert check_deny_list(Path("credentials")) == "credentials"
+
+    def test_denies_secrets_extension(self):
+        assert check_deny_list(Path("app.secrets")) == "*.secrets"
+
     def test_allows_python(self):
         assert check_deny_list(Path("script.py")) is None
 
