@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.58.3 (2026-03-13)
+
+### Bug Fixes
+
+- Validate supersedes hints match kb-XXXXX format
+  ([`d6e1da8`](https://github.com/jason-weddington/personal-kb-mcp/commit/d6e1da8a194907c3413b1f743269733b71a513c4))
+
+### Documentation
+
+- Clarify kb_ingest_url modes for internal vs public sites
+  ([`17e5c67`](https://github.com/jason-weddington/personal-kb-mcp/commit/17e5c67f0525498069dfd20f6c1b5e05cb0dfea5))
+
+
 ## v0.58.2 (2026-03-12)
 
 ### Bug Fixes
