@@ -50,6 +50,11 @@ class GraphBuilder:
         # 4. Supersedes (from hints)
         for target in _as_list(hints.get("supersedes")):
             if isinstance(target, str) and target:
+                if not _KB_ID_RE.fullmatch(target):
+                    logger.warning(
+                        "Ignoring invalid supersedes target %r (expected kb-XXXXX)", target
+                    )
+                    continue
                 await self._ensure_node(target, "entry")
                 await self._add_edge(entry.id, target, "supersedes")
 

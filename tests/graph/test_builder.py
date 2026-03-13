@@ -161,6 +161,22 @@ async def test_supersedes_from_hints_list(db, graph_builder):
 
 
 @pytest.mark.asyncio
+async def test_supersedes_rejects_free_text(db, graph_builder):
+    """Free-text supersedes hints should be ignored, not create junk nodes."""
+    entry = _make_entry(hints={"supersedes": "old authentication approach"})
+    await graph_builder.build_for_entry(entry)
+
+    edges = await _get_edges(db, source="kb-00001", edge_type="supersedes")
+    assert len(edges) == 0
+
+    # No bogus node created
+    row = await db.execute(
+        "SELECT COUNT(*) FROM graph_nodes WHERE node_id = 'old authentication approach'"
+    )
+    assert (await row.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
 async def test_superseded_by_creates_reversed_edge(db, graph_builder):
     entry = _make_entry(superseded_by="kb-00050")
     await graph_builder.build_for_entry(entry)
