@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.59.0 (2026-03-20)
+
+### Features
+
+- Add transaction() context manager for atomic multi-step DB operations
+  ([`b78a2ca`](https://github.com/jason-weddington/personal-kb-mcp/commit/b78a2ca57d48ceba459eda0c3e5c43fbfd13ef14))
+
+
 ## v0.58.3 (2026-03-13)
 
 ### Bug Fixes
