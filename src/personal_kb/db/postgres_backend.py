@@ -8,15 +8,20 @@ backend translates them to ``$N`` at execute time.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import ssl as ssl_module
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
     import asyncpg
 
     from personal_kb.db.backend import Cursor, Row
+
+# When set, all execute() calls route to this connection instead of the pool.
+_txn_conn: ContextVar[asyncpg.Connection | None] = ContextVar("_txn_conn", default=None)
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +138,38 @@ class PostgresBackend:
         """Initialize with an asyncpg connection pool."""
         self._pool = pool
 
+    @asynccontextmanager
+    async def _conn(self) -> AsyncIterator[asyncpg.Connection]:
+        """Get the transaction connection if inside a transaction, else acquire from pool."""
+        existing = _txn_conn.get(None)
+        if existing is not None:
+            yield existing
+        else:
+            async with self._pool.acquire() as conn:
+                yield conn
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        """Begin an atomic transaction.
+
+        All execute() calls within this context use the same pooled connection.
+        Nested calls create savepoints (asyncpg does this automatically).
+        """
+        existing = _txn_conn.get(None)
+        if existing is not None:
+            # Nested — asyncpg creates a savepoint automatically
+            async with existing.transaction():
+                yield
+            return
+
+        async with self._pool.acquire() as conn:
+            token = _txn_conn.set(conn)
+            try:
+                async with conn.transaction():
+                    yield
+            finally:
+                _txn_conn.reset(token)
+
     @classmethod
     async def create(
         cls,
@@ -157,28 +194,24 @@ class PostgresBackend:
     async def execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Cursor:
         """Execute a single SQL statement and return a cursor."""
         pg_sql = _translate_placeholders(sql)
-        async with self._pool.acquire() as conn:
-            # asyncpg.fetch returns list of Records for SELECT
-            # asyncpg.execute returns status string for INSERT/UPDATE/DELETE
+        async with self._conn() as conn:
             stmt = await conn.prepare(pg_sql)
             if stmt.get_attributes():
-                # Query returns rows
                 rows = await conn.fetch(pg_sql, *params)
                 return PostgresCursor(rows)
             else:
-                # DML — returns status string
                 status = await conn.execute(pg_sql, *params)
                 return PostgresCursor([], status=status)
 
     async def executemany(self, sql: str, params_seq: list[tuple[Any, ...] | list[Any]]) -> None:
         """Execute a SQL statement for each set of parameters."""
         pg_sql = _translate_placeholders(sql)
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             await conn.executemany(pg_sql, params_seq)
 
     async def executescript(self, sql: str) -> None:
         """Execute multiple SQL statements."""
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             await conn.execute(sql)
 
     async def commit(self) -> None:
@@ -240,7 +273,7 @@ class PostgresBackend:
         sql += f" ORDER BY score LIMIT ${param_idx}"
         params.append(limit)
 
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             rows = await conn.fetch(sql, *params)
             return [(row["id"], row["score"]) for row in rows]
 
@@ -249,7 +282,7 @@ class PostgresBackend:
     async def vector_store(self, entry_id: str, embedding: list[float]) -> None:
         """Upsert an embedding vector."""
         vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 """INSERT INTO knowledge_vec (entry_id, embedding)
                    VALUES ($1, $2::vector)
@@ -263,7 +296,7 @@ class PostgresBackend:
     ) -> list[tuple[str, float]]:
         """KNN search via pgvector cosine distance. Returns (entry_id, distance)."""
         vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             rows = await conn.fetch(
                 """SELECT entry_id, embedding <=> $1::vector as distance
                    FROM knowledge_vec
@@ -276,14 +309,14 @@ class PostgresBackend:
 
     async def vector_delete(self, entry_id: str) -> None:
         """Delete embedding for an entry."""
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             await conn.execute("DELETE FROM knowledge_vec WHERE entry_id = $1", entry_id)
 
     # -- Graph helpers --
 
     async def delete_llm_edges(self, entry_id: str) -> None:
         """Remove all LLM-derived edges for a given source entry."""
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 "DELETE FROM graph_edges WHERE source = $1 AND properties->>'source' = 'llm'",
                 entry_id,
@@ -293,7 +326,7 @@ class PostgresBackend:
 
     async def next_sequence_value(self) -> int:
         """Atomically get and increment the entry ID sequence."""
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             row = await conn.fetchrow(
                 "UPDATE entry_id_seq SET next_id = next_id + 1 RETURNING next_id - 1 AS val"
             )
@@ -306,7 +339,7 @@ class PostgresBackend:
 
     async def vacuum(self) -> str:
         """Run ANALYZE (Postgres equivalent of PRAGMA optimize + VACUUM)."""
-        async with self._pool.acquire() as conn:
+        async with self._conn() as conn:
             await conn.execute("ANALYZE")
         return "Vacuum complete (ANALYZE)."
 

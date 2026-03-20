@@ -6,15 +6,24 @@ since application code already uses SQLite-flavored SQL.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import struct
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     import aiosqlite
 
     from personal_kb.db.backend import Cursor, Row
+
+# Tracks whether we're inside a transaction() context.
+_in_txn: ContextVar[bool] = ContextVar("_in_txn", default=False)
+_savepoint_counter: ContextVar[int] = ContextVar("_savepoint_counter", default=0)
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +80,42 @@ class SQLiteBackend:
         """Initialize with an aiosqlite connection."""
         self._conn = conn
 
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        """Begin an atomic transaction.
+
+        Suppresses intermediate commit() calls so the whole block commits
+        at the end. Nested calls use SAVEPOINTs for rollback isolation.
+        """
+        if _in_txn.get(False):
+            # Nested — use savepoint
+            count = _savepoint_counter.get(0) + 1
+            token_c = _savepoint_counter.set(count)
+            sp = f"sp_{id(asyncio.current_task())}_{count}"
+            await self._conn.execute(f"SAVEPOINT [{sp}]")
+            try:
+                yield
+                await self._conn.execute(f"RELEASE [{sp}]")
+            except BaseException:
+                await self._conn.execute(f"ROLLBACK TO [{sp}]")
+                raise
+            finally:
+                _savepoint_counter.reset(token_c)
+            return
+
+        token = _in_txn.set(True)
+        try:
+            yield
+            await self._conn.commit()
+        except BaseException:
+            try:
+                await self._conn.execute("ROLLBACK")
+            except Exception:
+                logger.warning("ROLLBACK failed", exc_info=True)
+            raise
+        finally:
+            _in_txn.reset(token)
+
     async def execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Cursor:
         """Execute a single SQL statement and return a cursor."""
         cursor = await self._conn.execute(sql, params)
@@ -85,7 +130,9 @@ class SQLiteBackend:
         await self._conn.executescript(sql)
 
     async def commit(self) -> None:
-        """Commit the current transaction."""
+        """Commit the current transaction. Suppressed inside transaction() context."""
+        if _in_txn.get(False):
+            return  # transaction context manager handles commit
         await self._conn.commit()
 
     async def close(self) -> None:

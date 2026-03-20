@@ -7,7 +7,11 @@ are handled inside the backend, not in application code.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @runtime_checkable
@@ -109,6 +113,18 @@ class Database(Protocol):
     async def next_sequence_value(self) -> int:
         """Atomically get and increment the entry ID sequence. Returns the current value."""
         ...
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        """Begin a transaction.
+
+        All execute() calls within this context use the same connection
+        and are committed atomically. On normal exit: commits.
+        On exception: rolls back. Outside a transaction: execute()
+        auto-commits as before. Nested calls use savepoints so inner
+        failures don't poison the outer transaction.
+        """
+        yield  # pragma: no cover
 
     async def apply_schema(self, *, embedding_dim: int = 1024) -> None:
         """Apply all DDL for this backend."""

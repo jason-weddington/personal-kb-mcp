@@ -162,12 +162,14 @@ async def reactivate_entry_db(db: Database, entry_id: str) -> None:
 
 async def delete_entry_cascade(db: Database, entry_id: str) -> None:
     """Hard-delete an entry and all related data."""
-    await db.vector_delete(entry_id)
-    await db.execute("DELETE FROM entry_versions WHERE entry_id = ?", (entry_id,))
-    await db.execute("DELETE FROM graph_edges WHERE source = ? OR target = ?", (entry_id, entry_id))
-    await db.execute("DELETE FROM graph_nodes WHERE node_id = ?", (entry_id,))
-    await db.execute("DELETE FROM knowledge_entries WHERE id = ?", (entry_id,))
-    await db.commit()
+    async with db.transaction():
+        await db.vector_delete(entry_id)
+        await db.execute("DELETE FROM entry_versions WHERE entry_id = ?", (entry_id,))
+        await db.execute(
+            "DELETE FROM graph_edges WHERE source = ? OR target = ?", (entry_id, entry_id)
+        )
+        await db.execute("DELETE FROM graph_nodes WHERE node_id = ?", (entry_id,))
+        await db.execute("DELETE FROM knowledge_entries WHERE id = ?", (entry_id,))
 
 
 async def touch_accessed(db: Database, entry_ids: list[str]) -> None:

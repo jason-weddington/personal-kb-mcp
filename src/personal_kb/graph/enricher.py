@@ -112,16 +112,15 @@ class GraphEnricher:
         relationships = self._parse_relationships(raw)
 
         await self._load_vocab_cache()
-        await self._ensure_entry_node(entry)
-        await self._clear_enrichment_edges(entry.id)
+        async with self._db.transaction():
+            await self._ensure_entry_node(entry)
+            await self._clear_enrichment_edges(entry.id)
 
-        added = 0
-        for rel in relationships:
-            added += await self._add_enrichment_edge(entry.id, rel)
+            added = 0
+            for rel in relationships:
+                added += await self._add_enrichment_edge(entry.id, rel)
 
-        await self._db.commit()
         self._vocab_cache = None
-
         return added
 
     async def enrich_batch(self, entries: list[KnowledgeEntry]) -> int:
@@ -153,15 +152,15 @@ class GraphEnricher:
             return total
 
         await self._load_vocab_cache()
-        total = 0
-        for entry in entries:
-            rels = batch_rels.get(entry.id, [])
-            await self._ensure_entry_node(entry)
-            await self._clear_enrichment_edges(entry.id)
-            for rel in rels:
-                total += await self._add_enrichment_edge(entry.id, rel)
+        async with self._db.transaction():
+            total = 0
+            for entry in entries:
+                rels = batch_rels.get(entry.id, [])
+                await self._ensure_entry_node(entry)
+                await self._clear_enrichment_edges(entry.id)
+                for rel in rels:
+                    total += await self._add_enrichment_edge(entry.id, rel)
 
-        await self._db.commit()
         self._vocab_cache = None
         return total
 

@@ -64,43 +64,43 @@ class KnowledgeStore:
         expires_at: datetime | None = None,
     ) -> KnowledgeEntry:
         """Create a new knowledge entry with initial version."""
-        entry_id = await next_entry_id(self.db)
-        now = datetime.now(UTC)
+        async with self.db.transaction():
+            entry_id = await next_entry_id(self.db)
+            now = datetime.now(UTC)
 
-        entry = KnowledgeEntry(
-            id=entry_id,
-            project_ref=project_ref,
-            short_title=short_title,
-            long_title=long_title,
-            knowledge_details=knowledge_details,
-            entry_type=entry_type,
-            source_context=source_context,
-            contributor=contributor,
-            team=team,
-            sensitivity=sensitivity,
-            confidence_level=confidence_level,
-            tags=tags or [],
-            hints=hints or {},
-            created_at=now,
-            updated_at=now,
-            expires_at=expires_at,
-            version=1,
-        )
-        await insert_entry(self.db, entry)
+            entry = KnowledgeEntry(
+                id=entry_id,
+                project_ref=project_ref,
+                short_title=short_title,
+                long_title=long_title,
+                knowledge_details=knowledge_details,
+                entry_type=entry_type,
+                source_context=source_context,
+                contributor=contributor,
+                team=team,
+                sensitivity=sensitivity,
+                confidence_level=confidence_level,
+                tags=tags or [],
+                hints=hints or {},
+                created_at=now,
+                updated_at=now,
+                expires_at=expires_at,
+                version=1,
+            )
+            await insert_entry(self.db, entry)
 
-        # Create initial version record
-        version = EntryVersion(
-            entry_id=entry_id,
-            version_number=1,
-            knowledge_details=knowledge_details,
-            change_reason="Initial creation",
-            contributor=contributor,
-            confidence_level=confidence_level,
-            created_at=now,
-        )
-        await insert_version(self.db, version)
+            version = EntryVersion(
+                entry_id=entry_id,
+                version_number=1,
+                knowledge_details=knowledge_details,
+                change_reason="Initial creation",
+                contributor=contributor,
+                confidence_level=confidence_level,
+                created_at=now,
+            )
+            await insert_version(self.db, version)
 
-        await _record_audit_event(self.db, "entry_created", entry_id, contributor, short_title)
+            await _record_audit_event(self.db, "entry_created", entry_id, contributor, short_title)
 
         logger.info("Created entry %s: %s", entry_id, short_title)
         return entry
@@ -123,74 +123,72 @@ class KnowledgeStore:
         source_context: str | None = None,
     ) -> KnowledgeEntry:
         """Update an existing entry, creating a new version."""
-        existing = await get_entry(self.db, entry_id)
-        if existing is None:
-            raise ValueError(f"Entry {entry_id} not found")
-        if not existing.is_active:
-            raise ValueError(f"Entry {entry_id} is inactive and cannot be updated")
+        async with self.db.transaction():
+            existing = await get_entry(self.db, entry_id)
+            if existing is None:
+                raise ValueError(f"Entry {entry_id} not found")
+            if not existing.is_active:
+                raise ValueError(f"Entry {entry_id} is inactive and cannot be updated")
 
-        now = datetime.now(UTC)
-        new_version = existing.version + 1
-        new_confidence = (
-            confidence_level if confidence_level is not None else existing.confidence_level
-        )
+            now = datetime.now(UTC)
+            new_version = existing.version + 1
+            new_confidence = (
+                confidence_level if confidence_level is not None else existing.confidence_level
+            )
 
-        # Merge hints
-        merged_hints = dict(existing.hints)
-        if hints:
-            merged_hints.update(hints)
+            merged_hints = dict(existing.hints)
+            if hints:
+                merged_hints.update(hints)
 
-        content_changed = knowledge_details is not None
-        effective_details = (
-            knowledge_details
-            if knowledge_details is not None
-            else (existing.knowledge_details or "")
-        )
+            content_changed = knowledge_details is not None
+            effective_details = (
+                knowledge_details
+                if knowledge_details is not None
+                else (existing.knowledge_details or "")
+            )
 
-        update_fields: dict[str, object] = {
-            "knowledge_details": effective_details,
-            "confidence_level": new_confidence,
-            "tags": tags if tags is not None else existing.tags,
-            "hints": merged_hints,
-            "updated_at": now,
-            "version": new_version,
-            "updated_by": updated_by,
-        }
-        # Only reset embedding flag when content actually changed
-        if content_changed:
-            update_fields["has_embedding"] = False
-        if sensitivity is not None:
-            update_fields["sensitivity"] = sensitivity
-        if expires_at is not None:
-            update_fields["expires_at"] = expires_at
-        if short_title is not None:
-            update_fields["short_title"] = short_title
-        if long_title is not None:
-            update_fields["long_title"] = long_title
-        if entry_type is not None:
-            update_fields["entry_type"] = entry_type
-        if project_ref is not None:
-            update_fields["project_ref"] = project_ref
-        if source_context is not None:
-            update_fields["source_context"] = source_context
+            update_fields: dict[str, object] = {
+                "knowledge_details": effective_details,
+                "confidence_level": new_confidence,
+                "tags": tags if tags is not None else existing.tags,
+                "hints": merged_hints,
+                "updated_at": now,
+                "version": new_version,
+                "updated_by": updated_by,
+            }
+            if content_changed:
+                update_fields["has_embedding"] = False
+            if sensitivity is not None:
+                update_fields["sensitivity"] = sensitivity
+            if expires_at is not None:
+                update_fields["expires_at"] = expires_at
+            if short_title is not None:
+                update_fields["short_title"] = short_title
+            if long_title is not None:
+                update_fields["long_title"] = long_title
+            if entry_type is not None:
+                update_fields["entry_type"] = entry_type
+            if project_ref is not None:
+                update_fields["project_ref"] = project_ref
+            if source_context is not None:
+                update_fields["source_context"] = source_context
 
-        updated = existing.model_copy(update=update_fields)
-        await update_entry(self.db, updated)
+            updated = existing.model_copy(update=update_fields)
+            await update_entry(self.db, updated)
 
-        # Create version record
-        version = EntryVersion(
-            entry_id=entry_id,
-            version_number=new_version,
-            knowledge_details=effective_details,
-            change_reason=change_reason,
-            contributor=updated_by,
-            confidence_level=new_confidence,
-            created_at=now,
-        )
-        await insert_version(self.db, version)
+            version = EntryVersion(
+                entry_id=entry_id,
+                version_number=new_version,
+                knowledge_details=effective_details,
+                change_reason=change_reason,
+                contributor=updated_by,
+                confidence_level=new_confidence,
+                created_at=now,
+            )
+            await insert_version(self.db, version)
 
-        detail = change_reason or f"Updated to v{new_version}"
-        await _record_audit_event(self.db, "entry_updated", entry_id, updated_by, detail)
+            detail = change_reason or f"Updated to v{new_version}"
+            await _record_audit_event(self.db, "entry_updated", entry_id, updated_by, detail)
 
         logger.info("Updated entry %s to v%d", entry_id, new_version)
         return updated
@@ -211,17 +209,18 @@ class KnowledgeStore:
         self, entry_id: str, contributor: str | None = None
     ) -> KnowledgeEntry:
         """Deactivate an entry (soft-delete). Entry must exist and be active."""
-        existing = await get_entry(self.db, entry_id)
-        if existing is None:
-            raise ValueError(f"Entry {entry_id} not found")
-        if not existing.is_active:
-            raise ValueError(f"Entry {entry_id} is already inactive")
+        async with self.db.transaction():
+            existing = await get_entry(self.db, entry_id)
+            if existing is None:
+                raise ValueError(f"Entry {entry_id} not found")
+            if not existing.is_active:
+                raise ValueError(f"Entry {entry_id} is already inactive")
 
-        await deactivate_entry_db(self.db, entry_id)
-        entry = await get_entry(self.db, entry_id)
-        await _record_audit_event(
-            self.db, "entry_deactivated", entry_id, contributor, existing.short_title
-        )
+            await deactivate_entry_db(self.db, entry_id)
+            entry = await get_entry(self.db, entry_id)
+            await _record_audit_event(
+                self.db, "entry_deactivated", entry_id, contributor, existing.short_title
+            )
         logger.info("Deactivated entry %s", entry_id)
         return entry  # type: ignore[return-value]
 
@@ -229,17 +228,18 @@ class KnowledgeStore:
         self, entry_id: str, contributor: str | None = None
     ) -> KnowledgeEntry:
         """Reactivate a previously deactivated entry. Entry must exist and be inactive."""
-        existing = await get_entry(self.db, entry_id)
-        if existing is None:
-            raise ValueError(f"Entry {entry_id} not found")
-        if existing.is_active:
-            raise ValueError(f"Entry {entry_id} is already active")
+        async with self.db.transaction():
+            existing = await get_entry(self.db, entry_id)
+            if existing is None:
+                raise ValueError(f"Entry {entry_id} not found")
+            if existing.is_active:
+                raise ValueError(f"Entry {entry_id} is already active")
 
-        await reactivate_entry_db(self.db, entry_id)
-        entry = await get_entry(self.db, entry_id)
-        await _record_audit_event(
-            self.db, "entry_reactivated", entry_id, contributor, existing.short_title
-        )
+            await reactivate_entry_db(self.db, entry_id)
+            entry = await get_entry(self.db, entry_id)
+            await _record_audit_event(
+                self.db, "entry_reactivated", entry_id, contributor, existing.short_title
+            )
         logger.info("Reactivated entry %s", entry_id)
         return entry  # type: ignore[return-value]
 
