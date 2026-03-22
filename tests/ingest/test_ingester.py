@@ -84,6 +84,98 @@ class TestIsAllowedFile:
     def test_case_insensitive_extension(self):
         assert _is_allowed_file(Path("README.MD")) is True
 
+    def test_allows_pdf(self):
+        assert _is_allowed_file(Path("document.pdf")) is True
+
+
+class TestReadPdf:
+    def test_extracts_text_from_pdf(self, tmp_path):
+        """Create a PDF with pymupdf and verify text extraction."""
+        import pymupdf
+
+        from personal_kb.ingest.ingester import _read_pdf
+
+        pdf_path = tmp_path / "test.pdf"
+        doc = pymupdf.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Hello from the PDF test.")
+        page.insert_text((72, 100), "Second line of content.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        text = _read_pdf(pdf_path)
+        assert "Hello from the PDF test." in text
+        assert "Second line of content." in text
+
+    def test_multipage_pdf(self, tmp_path):
+        """Multi-page PDFs join pages with double newline."""
+        import pymupdf
+
+        from personal_kb.ingest.ingester import _read_pdf
+
+        pdf_path = tmp_path / "multi.pdf"
+        doc = pymupdf.open()
+        for i in range(3):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"Page {i + 1} content")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        text = _read_pdf(pdf_path)
+        assert "Page 1 content" in text
+        assert "Page 2 content" in text
+        assert "Page 3 content" in text
+
+    def test_empty_pdf(self, tmp_path):
+        """PDFs with no text return empty string."""
+        import pymupdf
+
+        from personal_kb.ingest.ingester import _read_pdf
+
+        pdf_path = tmp_path / "empty.pdf"
+        doc = pymupdf.open()
+        doc.new_page()  # blank page
+        doc.save(str(pdf_path))
+        doc.close()
+
+        text = _read_pdf(pdf_path)
+        assert text == ""
+
+
+class TestIngestPdfFile:
+    async def test_ingests_pdf_file(self, ingester_deps, tmp_path):
+        """End-to-end: PDF file goes through the ingest pipeline."""
+        import pymupdf
+
+        deps = ingester_deps
+        pdf_path = tmp_path / "notes.pdf"
+        doc = pymupdf.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Important decision: chose SQLite for local storage.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        entries = [
+            {
+                "short_title": "SQLite for local storage",
+                "long_title": "Decision to use SQLite",
+                "knowledge_details": "Chose SQLite for local storage.",
+                "entry_type": "decision",
+            }
+        ]
+        llm = _make_llm_with_responses("Summary of PDF", entries)
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            deps["embedder"],
+            deps["graph_builder"],
+            GraphEnricher(deps["db"], llm),
+            llm,
+        )
+        result = await ingester.ingest_file(pdf_path)
+        assert result.action == "ingested"
+        assert result.entry_count >= 1
+
 
 class TestIngestFile:
     async def test_skips_unsupported_extension(self, ingester_deps, tmp_path):

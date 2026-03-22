@@ -64,6 +64,17 @@ Every new feature (not bug fixes) requires updating three things:
 
 **Process**: Use research agents (subagent_type `Explore`) to deep dive the codebase for exact function signatures, thresholds, data flow, and behavior. Parallelize with multiple agents when researching independent features. Write docs from the research reports — every statement must be verifiable against the code. Don't guess or paraphrase from memory; the agents have the source of truth.
 
+## Merge & Push Policy
+
+**Do not merge to main or push until the user confirms testing on the feature branch.** The workflow is:
+
+1. Commit on the feature branch
+2. Push the feature branch if needed (`git push origin feat/...`)
+3. **Stop and wait** — the user will test manually
+4. Only after the user confirms → merge to main and push
+
+Never squash-merge or push to main proactively. Ask if you're unsure whether the user has finished testing.
+
 ## Commit Convention
 
 This repo uses **conventional commits** enforced by a `commit-msg` hook.
@@ -98,7 +109,7 @@ Format: `type(optional-scope): description`
 | `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning/synthesis (`anthropic`, `bedrock`, or `ollama`) |
 | `KB_MANAGER` | (unset) | Set `TRUE` for maintenance + ingestion tools |
-| `KB_INGEST_MAX_FILE_SIZE` | `5242880` | Max file size in bytes for ingestion (5MB) |
+| `KB_INGEST_MAX_FILE_SIZE` | `10485760` | Max file size in bytes for ingestion (10MB) |
 | `KB_INGEST_CHUNK_SIZE` | `16000` | Chunk size in chars for large file ingestion |
 | `KB_INGEST_CHUNK_OVERLAP` | `600` | Overlap in chars between adjacent chunks |
 | `KB_AGENTIC_INGEST` | `TRUE` | Enable KB-aware dedup during ingestion |

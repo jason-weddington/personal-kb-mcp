@@ -177,6 +177,12 @@ async def batch_store_entries(
             fail_lines.append(f"  Entry {idx} ({title}): {err}")
         result += "\n".join(fail_lines)
 
+    from personal_kb.config import get_backend_warning
+
+    warning = get_backend_warning()
+    if warning:
+        result = f"{warning}\n\n{result}"
+
     return result
 
 

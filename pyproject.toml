@@ -1,6 +1,6 @@
 [project]
 name = "personal-kb"
-version = "0.58.3"
+version = "0.59.0"
 description = "Personal Knowledge MCP Server — structured retrieval, knowledge graph, and multi-granularity summaries"
 requires-python = ">=3.13"
 dependencies = [
@@ -13,6 +13,9 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "trafilatura>=2.0",
+    "detect-secrets>=1.4",
+    "scrubadub>=2.0",
+    "pymupdf>=1.25",
 ]
 
 [project.scripts]
@@ -27,10 +30,6 @@ aws = [
 postgres = [
     "asyncpg>=0.29",
 ]
-safety = [
-    "detect-secrets>=1.4",
-    "scrubadub>=2.0",
-]
 iam = [
     "boto3>=1.28",
 ]
@@ -44,7 +43,7 @@ dev = [
     "mypy>=1.14",
     "pre-commit>=4",
     "python-semantic-release>=10.5",
-    "personal-kb[aws,postgres,safety,iam]",
+    "personal-kb[aws,postgres,iam]",
     "vulture>=2.15",
 ]
 

@@ -87,6 +87,7 @@ _ALLOWED_EXTENSIONS: set[str] = {
     ".tf",
     ".Dockerfile",
     ".Makefile",
+    ".pdf",
 }
 
 # Also allow files with no extension that have known names
@@ -101,6 +102,22 @@ _ALLOWED_NAMES: set[str] = {
     "LICENSE",
     "NOTES",
 }
+
+
+def _read_pdf(path: Path) -> str:
+    """Extract text from a PDF file using PyMuPDF."""
+    import pymupdf
+
+    doc = pymupdf.open(str(path))  # type: ignore[no-untyped-call]
+    try:
+        pages = []
+        for page in doc:  # type: ignore[attr-defined]
+            text = page.get_text()
+            if text.strip():
+                pages.append(text)
+        return "\n\n".join(pages)
+    finally:
+        doc.close()  # type: ignore[no-untyped-call]
 
 
 @dataclass
@@ -228,9 +245,18 @@ class FileIngester:
 
         # 4. Read content
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")
+            if path.suffix.lower() == ".pdf":
+                content = _read_pdf(path)
+            else:
+                content = path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             return FileResult(path=rel_path, action="error", reason=str(e))
+        except ImportError:
+            return FileResult(
+                path=rel_path,
+                action="error",
+                reason="pymupdf not installed — run: uv pip install pymupdf",
+            )
 
         # 5. Compute hash, skip if unchanged
         content_hash = hashlib.sha256(content.encode()).hexdigest()

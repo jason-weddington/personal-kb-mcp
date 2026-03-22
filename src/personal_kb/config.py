@@ -1,5 +1,7 @@
 """Environment-variable-based configuration."""
 
+import json
+import logging
 import os
 from pathlib import Path
 
@@ -127,7 +129,7 @@ def get_database_url() -> str | None:
 
 def get_ingest_max_file_size() -> int:
     """Return max file size in bytes for ingestion from KB_INGEST_MAX_FILE_SIZE."""
-    return _parse_int("KB_INGEST_MAX_FILE_SIZE", str(5 * 1024 * 1024))
+    return _parse_int("KB_INGEST_MAX_FILE_SIZE", str(10 * 1024 * 1024))
 
 
 def get_ingest_chunk_size() -> int:
@@ -225,3 +227,51 @@ def get_aws_profile() -> str | None:
 
 
 _CONVENTION_PROFILE = "personal_kb_bedrock"
+
+_BACKEND_STATE_FILE = Path("~/.local/share/personal_kb/backend_state.json").expanduser()
+
+_backend_fallback_warning: str | None = None
+
+
+def check_backend_fallback() -> None:
+    """Check if the current backend differs from the last-known state.
+
+    Reads/writes ``~/.local/share/personal_kb/backend_state.json``,
+    keyed by instance role. Sets a module-level warning string if this
+    instance was previously on Postgres but is now on SQLite.
+    """
+    global _backend_fallback_warning
+
+    role = os.environ.get("KB_INSTANCE_ROLE", "").lower() or "default"
+    current = "postgres" if get_database_url() else "sqlite"
+
+    state: dict[str, str] = {}
+    try:
+        if _BACKEND_STATE_FILE.exists():
+            state = json.loads(_BACKEND_STATE_FILE.read_text())
+    except Exception:
+        logging.getLogger(__name__).debug("Could not read backend state", exc_info=True)
+
+    previous = state.get(role)
+    if previous == "postgres" and current == "sqlite":
+        logger = logging.getLogger(__name__)
+        label = f"[{role}] " if role != "default" else ""
+        _backend_fallback_warning = (
+            f"WARNING: {label}KB fell back to local SQLite "
+            f"(was Postgres). Check that KB_DATABASE_URL is set — "
+            f"entries stored now will NOT appear in your Postgres KB."
+        )
+        logger.warning(_backend_fallback_warning)
+
+    # Update state
+    state[role] = current
+    try:
+        _BACKEND_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _BACKEND_STATE_FILE.write_text(json.dumps(state))
+    except Exception:
+        logging.getLogger(__name__).debug("Could not write backend state", exc_info=True)
+
+
+def get_backend_warning() -> str | None:
+    """Return the backend fallback warning, if any."""
+    return _backend_fallback_warning

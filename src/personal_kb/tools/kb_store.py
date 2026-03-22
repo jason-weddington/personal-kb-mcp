@@ -34,6 +34,8 @@ def _validate_sensitivity(sensitivity: str | None) -> str | None:
 
 def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
     """Format the result of a store operation for the MCP response."""
+    from personal_kb.config import get_backend_warning
+
     action = "Updated" if is_update else "Created"
     anchor = entry.updated_at or entry.created_at or datetime.now(UTC)
     eff = compute_effective_confidence(entry.confidence_level, entry.entry_type, anchor)
@@ -41,6 +43,9 @@ def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
     line = f"{action} {entry.id} (v{entry.version})\n{compact}"
     if not entry.has_embedding:
         line += "\n  Note: Entry will be embedded when Ollama is available"
+    warning = get_backend_warning()
+    if warning:
+        line = f"{warning}\n\n{line}"
     return line
 
 

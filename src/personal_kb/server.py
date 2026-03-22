@@ -108,6 +108,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         logger.info("Opening SQLite database at %s", get_db_path())
     db = await create_connection(embedding_dim=get_embedding_dim())
 
+    # Check for accidental backend fallback (e.g. missing KB_DATABASE_URL)
+    from personal_kb.config import check_backend_fallback
+
+    check_backend_fallback()
+
     store = KnowledgeStore(db)
     embedder = EmbeddingClient(db)
     graph_builder = GraphBuilder(db)
