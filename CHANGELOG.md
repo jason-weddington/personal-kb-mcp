@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.60.0 (2026-03-22)
+
+### Features
+
+- Add PDF ingestion support via PyMuPDF
+  ([`d56a703`](https://github.com/jason-weddington/personal-kb-mcp/commit/d56a7030872379868f22f253c670d356774c2664))
+
+
 ## v0.59.0 (2026-03-20)
 
 ### Features
