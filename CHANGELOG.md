@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.60.1 (2026-03-23)
+
+### Bug Fixes
+
+- Restore [safety] extra as empty alias for backwards compatibility
+  ([`b06e463`](https://github.com/jason-weddington/personal-kb-mcp/commit/b06e463b722b422d502c49ae9e2d05f1fd13def5))
+
+
 ## v0.60.0 (2026-03-22)
 
 ### Features
