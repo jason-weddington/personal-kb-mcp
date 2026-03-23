@@ -33,6 +33,7 @@ postgres = [
 iam = [
     "boto3>=1.28",
 ]
+safety = []  # backwards compat — deps moved to core in v0.60.0
 
 [dependency-groups]
 dev = [
