@@ -12,6 +12,37 @@ from personal_kb.web.events import event_to_status, sse_event
 logger = logging.getLogger(__name__)
 
 
+async def _ingest_binary_file(
+    ingester: Any,
+    b64_content: str,
+    name: str,
+    *,
+    project_ref: str | None = None,
+    progress_callback: Any = None,
+) -> Any:
+    """Decode a base64-encoded file, write to a temp file, and ingest via ingest_file()."""
+    import base64
+    import tempfile
+    from pathlib import Path
+
+    raw = base64.b64decode(b64_content)
+    suffix = Path(name).suffix
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = Path(tmp.name)
+    try:
+        result = await ingester.ingest_file(
+            tmp_path,
+            project_ref=project_ref,
+            progress_callback=progress_callback,
+        )
+        # Replace temp path with original filename in result
+        result.path = name
+        return result
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def register_routes(app: Any) -> None:
     """Register all HTTP routes on the FastAPI app."""
     from fastapi import Request
@@ -421,12 +452,21 @@ def register_routes(app: Any) -> None:
                                     progress_callback=progress_cb,
                                 )
                             elif item_type == "file":
-                                result = await ingester.ingest_text(
-                                    item.get("content", ""),
-                                    item.get("name", "file"),
-                                    project_ref=project_ref,
-                                    progress_callback=progress_cb,
-                                )
+                                if item.get("encoding") == "base64":
+                                    result = await _ingest_binary_file(
+                                        ingester,
+                                        item.get("content", ""),
+                                        item.get("name", "file"),
+                                        project_ref=project_ref,
+                                        progress_callback=progress_cb,
+                                    )
+                                else:
+                                    result = await ingester.ingest_text(
+                                        item.get("content", ""),
+                                        item.get("name", "file"),
+                                        project_ref=project_ref,
+                                        progress_callback=progress_cb,
+                                    )
                             else:
                                 await queue.put(
                                     {
