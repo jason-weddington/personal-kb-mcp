@@ -534,9 +534,10 @@ _TEMPLATE = """\
       <button class="ingest-url-add" onclick="addUrlRow()">+ Add URL</button>
     </div>
     <div id="ingest-tab-file" class="ingest-tab-body">
-      <label class="ingest-file-pick" for="ingest-file-input">Choose .txt or .md files...</label>
-      <input id="ingest-file-input" type="file" multiple
-        accept=".txt,.md" onchange="updateFileList()" />
+      <label class="ingest-file-pick"
+        for="ingest-file-input">Choose files...</label>
+      <input id="ingest-file-input" type="file"
+        multiple onchange="updateFileList()" />
       <div id="ingest-file-list"></div>
     </div>
     <input id="ingest-project-input" list="ingest-project-list"
@@ -1843,8 +1844,16 @@ async function collectIngestItems() {
   } else {
     const files = ingestFileInput.files;
     for (const f of files) {
-      const text = await f.text();
-      items.push({type: 'file', name: f.name, content: text});
+      if (f.name.toLowerCase().endsWith('.pdf')) {
+        const buf = await f.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        items.push({type: 'file', name: f.name, content: btoa(bin), encoding: 'base64'});
+      } else {
+        const text = await f.text();
+        items.push({type: 'file', name: f.name, content: text});
+      }
     }
   }
   return items;

@@ -392,3 +392,91 @@ async def test_stream_no_store(web_kb):
 
     assert resp.status_code == 503
     assert "not available" in resp.json()["error"]
+
+
+def _patch_ingest_file(fake_result):
+    """Patch FileIngester.ingest_file for binary upload tests."""
+    return patch(
+        "personal_kb.ingest.ingester.FileIngester.ingest_file",
+        new_callable=AsyncMock,
+        return_value=fake_result,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_binary_pdf_upload(ingest_app):
+    """Base64-encoded PDF is decoded, written to temp file, and ingested."""
+    import base64
+
+    import pymupdf
+
+    # Create a real small PDF in memory
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Test PDF content")
+    pdf_bytes = doc.tobytes()
+    doc.close()
+
+    b64 = base64.b64encode(pdf_bytes).decode()
+
+    fake_result = FileResult(
+        path="test.pdf",
+        action="ingested",
+        entry_count=1,
+        entry_ids=["kb-00099"],
+    )
+
+    with _patch_ingest_file(fake_result) as mock_ingest:
+        transport = ASGITransport(app=ingest_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/ingest/stream",
+                json={
+                    "items": [
+                        {
+                            "type": "file",
+                            "name": "test.pdf",
+                            "content": b64,
+                            "encoding": "base64",
+                        }
+                    ]
+                },
+            )
+
+    assert resp.status_code == 200
+    events = _parse_sse_events(resp.text)
+    types = [e[0] for e in events]
+    assert "item_done" in types
+
+    # Verify ingest_file was called (not ingest_text)
+    mock_ingest.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_stream_text_file_still_uses_ingest_text(ingest_app):
+    """Non-PDF files without encoding field still use ingest_text."""
+    fake_result = FileResult(
+        path="notes.md",
+        action="ingested",
+        entry_count=1,
+        entry_ids=["kb-00099"],
+    )
+
+    with _patch_ingest_text(fake_result) as mock_text:
+        transport = ASGITransport(app=ingest_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/ingest/stream",
+                json={
+                    "items": [
+                        {
+                            "type": "file",
+                            "name": "notes.md",
+                            "content": "# Hello",
+                        }
+                    ]
+                },
+            )
+
+    assert resp.status_code == 200
+    mock_text.assert_called_once()
