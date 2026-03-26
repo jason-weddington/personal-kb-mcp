@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.61.0 (2026-03-25)
+
+### Features
+
+- Support PDF upload in web explorer
+  ([`1fd17b6`](https://github.com/jason-weddington/personal-kb-mcp/commit/1fd17b607985c001cc306737c73da518e6c8dbcf))
+
+
 ## v0.60.1 (2026-03-23)
 
 ### Bug Fixes
