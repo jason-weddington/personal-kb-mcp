@@ -157,6 +157,24 @@ def test_full_includes_staleness():
     assert "[STALE]" in result
 
 
+def test_full_shows_updated_by_when_different():
+    entry = _make_entry(contributor="alice", updated_by="bob", version=3)
+    result = format_entry_full(entry, effective_confidence=0.9)
+    assert "Updated by @bob (v3)" in result
+
+
+def test_full_hides_updated_by_when_same_as_contributor():
+    entry = _make_entry(contributor="alice", updated_by="alice", version=2)
+    result = format_entry_full(entry, effective_confidence=0.9)
+    assert "Updated by" not in result
+
+
+def test_full_hides_updated_by_when_none():
+    entry = _make_entry(contributor="alice", version=1)
+    result = format_entry_full(entry, effective_confidence=0.9)
+    assert "Updated by" not in result
+
+
 # --- format_result_list ---
 
 

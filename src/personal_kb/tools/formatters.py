@@ -87,6 +87,8 @@ def format_entry_full(
     lines = [header]
     if meta:
         lines.append(f"  {meta}")
+    if entry.updated_by and entry.updated_by != entry.contributor:
+        lines.append(f"  Updated by @{entry.updated_by} (v{entry.version})")
     if context:
         lines.append(f"  \u21b3 {context}")
     lines.append(f"  {entry.knowledge_details}")
