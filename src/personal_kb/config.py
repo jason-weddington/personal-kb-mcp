@@ -228,6 +228,13 @@ def get_aws_profile() -> str | None:
 
 _CONVENTION_PROFILE = "personal_kb_bedrock"
 
+
+def get_chat_history_db_path() -> Path:
+    """Return the chat history SQLite DB path, scoped by instance role."""
+    role = os.environ.get("KB_INSTANCE_ROLE", "").lower() or "default"
+    return Path(f"~/.local/share/personal_kb/chat_history_{role}.db").expanduser()
+
+
 _BACKEND_STATE_FILE = Path("~/.local/share/personal_kb/backend_state.json").expanduser()
 
 _backend_fallback_warning: str | None = None

@@ -4,6 +4,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from personal_kb.db.backend import Database
@@ -11,6 +12,8 @@ from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
 
 logger = logging.getLogger(__name__)
+
+_STATIC_DIR = str(Path(__file__).resolve().parent.parent / "explorer" / "static")
 
 
 def create_app_with_deps(
@@ -36,9 +39,21 @@ def create_app_with_deps(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        yield
+        from personal_kb.web.chat_history import ChatHistoryStore
+
+        ch = await ChatHistoryStore.open()
+        app.state.chat_history = ch
+        try:
+            yield
+        finally:
+            await ch.close()
 
     app = FastAPI(title="KB Explorer", lifespan=lifespan)
+
+    from starlette.staticfiles import StaticFiles
+
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
     app.state.db = db
     app.state.embedder = embedder
     app.state.query_llm = query_llm
@@ -124,5 +139,10 @@ def create_app() -> Any:
             await db.close()
 
     app = FastAPI(title="KB Explorer", lifespan=lifespan)
+
+    from starlette.staticfiles import StaticFiles
+
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
     register_routes(app)
     return app

@@ -126,3 +126,35 @@ async def test_chat_event_callback(db, embedder, llm):
     types = [e["type"] for e in events]
     assert "chat_thinking" in types
     assert "chat_done" in types
+
+
+@pytest.mark.asyncio
+async def test_from_saved_reconstructs_session(db, embedder, llm):
+    """from_saved restores messages and extracts entry IDs."""
+    from personal_kb.web.chat import ChatSession
+
+    saved = [
+        {"role": "user", "content": "What is X?"},
+        {"role": "assistant", "content": "X is in [kb-00001] and [kb-00002]."},
+        {"role": "user", "content": "More about kb-00001"},
+        {"role": "assistant", "content": "Details from [kb-00001] and [kb-00003]."},
+    ]
+    session = ChatSession.from_saved("test-id", saved, db, embedder, llm)
+
+    assert session.id == "test-id"
+    assert len(session.messages) == 4
+    assert session.entry_ids == ["kb-00001", "kb-00002", "kb-00003"]
+
+
+@pytest.mark.asyncio
+async def test_from_saved_with_no_entries(db, embedder, llm):
+    """from_saved handles conversations with no KB references."""
+    from personal_kb.web.chat import ChatSession
+
+    saved = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"},
+    ]
+    session = ChatSession.from_saved("test-id-2", saved, db, embedder, llm)
+    assert session.entry_ids == []
+    assert len(session.messages) == 2

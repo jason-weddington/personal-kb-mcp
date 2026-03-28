@@ -233,7 +233,14 @@ def register_routes(app: Any) -> None:
     @app.post("/api/chat/stream")
     async def api_chat_stream(request: Request) -> StreamingResponse:
         """Stream a follow-up chat response via SSE."""
-        from personal_kb.web.chat import WriteDeps, get_or_create_session, get_session
+        from personal_kb.web.chat import (
+            ChatSession,
+            WriteDeps,
+            cache_session,
+            get_or_create_session,
+            get_session,
+        )
+        from personal_kb.web.chat_history import derive_title
 
         body = await request.json()
         session_id = body.get("session_id")
@@ -242,12 +249,14 @@ def register_routes(app: Any) -> None:
         seed_question = body.get("seed_question")
         seed_answer = body.get("seed_answer")
         seed_entry_ids = body.get("seed_entry_ids", [])
+        mode = body.get("mode", "")
 
         db = request.app.state.db
         embedder = request.app.state.embedder
         query_llm = request.app.state.query_llm
         # Use Sonnet for human-facing chat if available
         chat_llm = getattr(request.app.state, "synthesis_llm", None) or query_llm
+        ch = getattr(request.app.state, "chat_history", None)
 
         # Build write deps if store is available
         write_deps: WriteDeps | None = None
@@ -268,11 +277,31 @@ def register_routes(app: Any) -> None:
                 yield sse_event("stream_end", {})
                 return
 
+            is_new = False
             # Get or create session
             session = get_session(session_id) if session_id else None
 
+            if session is None and session_id and ch and await ch.chat_exists(session_id):
+                saved_msgs = await ch.get_messages(session_id)
+                session = ChatSession.from_saved(
+                    session_id,
+                    saved_msgs,
+                    db,
+                    embedder,
+                    chat_llm,
+                    write_deps=write_deps,
+                )
+                cache_session(session)
+
             if session is None:
-                session = get_or_create_session(None, db, embedder, chat_llm, write_deps=write_deps)
+                is_new = True
+                session = get_or_create_session(
+                    None,
+                    db,
+                    embedder,
+                    chat_llm,
+                    write_deps=write_deps,
+                )
                 if seed_question and seed_answer:
                     session.seed(seed_question, seed_answer, seed_entry_ids)
 
@@ -280,6 +309,22 @@ def register_routes(app: Any) -> None:
                 "chat_session",
                 {"session_id": session.id},
             )
+
+            # Persist new chat to history
+            if is_new and ch:
+                title = derive_title(seed_question or message)
+                try:
+                    await ch.create_chat(session.id, title, mode)
+                    if seed_question and seed_answer:
+                        await ch.save_messages_bulk(
+                            session.id,
+                            [
+                                {"role": "user", "content": seed_question},
+                                {"role": "assistant", "content": seed_answer},
+                            ],
+                        )
+                except Exception:
+                    logger.warning("Failed to persist new chat", exc_info=True)
 
             # Set up event queue
             queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -312,6 +357,14 @@ def register_routes(app: Any) -> None:
                 yield sse_event("stream_end", {})
                 return
 
+            # Persist the exchange
+            if ch:
+                try:
+                    await ch.save_message(session.id, "user", message)
+                    await ch.save_message(session.id, "assistant", answer)
+                except Exception:
+                    logger.warning("Failed to persist chat messages", exc_info=True)
+
             yield sse_event(
                 "chat_response",
                 {"answer": answer, "session_id": session.id},
@@ -327,6 +380,70 @@ def register_routes(app: Any) -> None:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @app.post("/api/chat/create")
+    async def api_chat_create(request: Request) -> JSONResponse:
+        """Create a chat with seed messages (before any follow-up)."""
+        from personal_kb.web.chat_history import derive_title
+
+        ch = getattr(request.app.state, "chat_history", None)
+        if ch is None:
+            return JSONResponse({"error": "Chat history not available"}, status_code=503)
+
+        body = await request.json()
+        chat_id = body.get("chat_id", "")
+        question = body.get("question", "")
+        answer = body.get("answer", "")
+        mode = body.get("mode", "")
+
+        if not chat_id or not question:
+            return JSONResponse({"error": "chat_id and question required"}, status_code=400)
+
+        # Idempotent — skip if already exists
+        if await ch.chat_exists(chat_id):
+            return JSONResponse({"ok": True, "id": chat_id})
+
+        title = derive_title(question)
+        await ch.create_chat(chat_id, title, mode)
+        messages = [{"role": "user", "content": question}]
+        if answer:
+            messages.append({"role": "assistant", "content": answer})
+        await ch.save_messages_bulk(chat_id, messages)
+        return JSONResponse({"ok": True, "id": chat_id})
+
+    @app.get("/api/chat/history")
+    async def api_chat_history(request: Request) -> JSONResponse:
+        """Return recent chat conversations."""
+        ch = getattr(request.app.state, "chat_history", None)
+        if ch is None:
+            return JSONResponse([])
+        chats = await ch.list_chats()
+        return JSONResponse(chats)
+
+    @app.get("/api/chat/{chat_id}/messages")
+    async def api_chat_messages(chat_id: str, request: Request) -> JSONResponse:
+        """Return all messages for a saved chat."""
+        ch = getattr(request.app.state, "chat_history", None)
+        if ch is None:
+            return JSONResponse({"error": "Chat history not available"}, status_code=503)
+        if not await ch.chat_exists(chat_id):
+            return JSONResponse({"error": "Chat not found"}, status_code=404)
+        messages = await ch.get_messages(chat_id)
+        return JSONResponse(messages)
+
+    @app.delete("/api/chat/{chat_id}")
+    async def api_chat_delete(chat_id: str, request: Request) -> JSONResponse:
+        """Delete a chat and its messages."""
+        from personal_kb.web.chat import _sessions
+
+        ch = getattr(request.app.state, "chat_history", None)
+        if ch is None:
+            return JSONResponse({"error": "Chat history not available"}, status_code=503)
+        deleted = await ch.delete_chat(chat_id)
+        if not deleted:
+            return JSONResponse({"error": "Chat not found"}, status_code=404)
+        _sessions.pop(chat_id, None)
+        return JSONResponse({"ok": True})
 
     @app.post("/api/ingest_url")
     async def api_ingest_url(request: Request) -> JSONResponse:

@@ -97,6 +97,9 @@ def _parse_tool_call(text: str) -> dict[str, Any] | None:
     return None
 
 
+_KB_ID_RE = re.compile(r"kb-\d{5}")
+
+
 class ChatSession:
     """Manages a multi-turn conversation grounded in KB data."""
 
@@ -106,8 +109,9 @@ class ChatSession:
         embedder: EmbeddingClient | None,
         llm: LLMProvider,
         write_deps: WriteDeps | None = None,
+        session_id: str | None = None,
     ) -> None:
-        self.id = str(uuid.uuid4())
+        self.id = session_id or str(uuid.uuid4())
         self.db = db
         self.embedder = embedder
         self.llm = llm
@@ -115,6 +119,28 @@ class ChatSession:
         self.messages: list[Message] = []
         # Entry IDs surfaced so far — available as context
         self.entry_ids: list[str] = []
+
+    @classmethod
+    def from_saved(
+        cls,
+        chat_id: str,
+        messages: list[dict[str, str]],
+        db: Database,
+        embedder: EmbeddingClient | None,
+        llm: LLMProvider,
+        write_deps: WriteDeps | None = None,
+    ) -> "ChatSession":
+        """Reconstruct a session from persisted messages."""
+        session = cls(db, embedder, llm, write_deps=write_deps, session_id=chat_id)
+        session.messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+        # Extract entry IDs mentioned in assistant messages
+        for m in session.messages:
+            if m["role"] == "assistant":
+                for match in _KB_ID_RE.finditer(m["content"]):
+                    eid = match.group(0)
+                    if eid not in session.entry_ids:
+                        session.entry_ids.append(eid)
+        return session
 
     def seed(self, question: str, answer: str, entry_ids: list[str]) -> None:
         """Seed the conversation with the initial Q+A from summarize."""
@@ -440,6 +466,11 @@ def get_or_create_session(
     session = ChatSession(db, embedder, llm, write_deps=write_deps)
     _sessions[session.id] = session
     return session
+
+
+def cache_session(session: ChatSession) -> None:
+    """Add a restored session to the in-memory cache."""
+    _sessions[session.id] = session
 
 
 def get_session(session_id: str) -> ChatSession | None:
