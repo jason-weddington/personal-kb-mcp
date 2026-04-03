@@ -51,6 +51,16 @@ class FakeEmbedder:
         norm = sum(v * v for v in vec) ** 0.5
         return [v / norm for v in vec]
 
+    async def embed_batch(self, texts: list[str]) -> list[list[float]] | None:
+        if not self._available:
+            return None
+        return [await self.embed(text) for text in texts]  # type: ignore[misc]
+
+    async def store_embeddings(self, entries: list[tuple[str, list[float]]]) -> None:
+        for entry_id, embedding in entries:
+            await self.db.vector_store(entry_id, embedding)
+        await self.db.commit()
+
     async def store_embedding(self, entry_id: str, embedding: list[float]) -> None:
         await self.db.vector_store(entry_id, embedding)
         await self.db.commit()

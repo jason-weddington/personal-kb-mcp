@@ -448,8 +448,10 @@ async def test_stream_binary_pdf_upload(ingest_app):
     types = [e[0] for e in events]
     assert "item_done" in types
 
-    # Verify ingest_file was called (not ingest_text)
+    # Verify ingest_file was called with original name (not temp path)
     mock_ingest.assert_called_once()
+    _, kwargs = mock_ingest.call_args
+    assert kwargs.get("display_name") == "test.pdf"
 
 
 @pytest.mark.asyncio

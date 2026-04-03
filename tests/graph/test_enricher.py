@@ -4,9 +4,16 @@ import json
 
 import pytest
 
-from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.graph.enricher import GraphEnricher, _PrefixIndex
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from tests.conftest import FakeLLM
+
+
+def _set_vocab(enricher: GraphEnricher, vocab: dict[str, list[str]]) -> None:
+    """Set the vocab cache AND build the prefix index (tests must use this)."""
+    enricher._vocab_cache = vocab
+    enricher._prefix_index = _PrefixIndex()
+    enricher._prefix_index.build(vocab)
 
 
 def _make_entry(**kwargs) -> KnowledgeEntry:
@@ -668,11 +675,14 @@ async def test_resolve_node_id_unit():
     llm = FakeLLM()
     enricher = GraphEnricher(db_mock, llm)
 
-    enricher._vocab_cache = {
-        "tool": ["aiosqlite", "redis", "fastapi"],
-        "concept": ["connection-pooling", "dependency-injection"],
-        "technology": ["asyncio", "postgresql"],
-    }
+    _set_vocab(
+        enricher,
+        {
+            "tool": ["aiosqlite", "redis", "fastapi"],
+            "concept": ["connection-pooling", "dependency-injection"],
+            "technology": ["asyncio", "postgresql"],
+        },
+    )
 
     assert enricher._resolve_node_id("redis", "tool") == "tool:redis"
     assert enricher._resolve_node_id("async-io", "concept") == "technology:asyncio"
@@ -710,13 +720,13 @@ async def test_dedup_threshold_boundary():
     enricher = GraphEnricher(db_mock, llm)
 
     # "abcd" vs "abce" -> ratio 0.75 (below 0.85 threshold)
-    enricher._vocab_cache = {"tool": ["abcd"]}
+    _set_vocab(enricher, {"tool": ["abcd"]})
     ratio = SequenceMatcher(None, "abce", "abcd").ratio()
     assert ratio < _DEDUP_SIMILARITY_THRESHOLD
     assert enricher._resolve_node_id("abce", "tool") == "tool:abce"
 
     # "aiosqlite" vs "aiosqlite3" -> ratio ~0.95 (above 0.85 threshold)
-    enricher._vocab_cache = {"tool": ["aiosqlite"]}
+    _set_vocab(enricher, {"tool": ["aiosqlite"]})
     ratio = SequenceMatcher(None, "aiosqlite3", "aiosqlite").ratio()
     assert ratio >= _DEDUP_SIMILARITY_THRESHOLD
     assert enricher._resolve_node_id("aiosqlite3", "tool") == "tool:aiosqlite"

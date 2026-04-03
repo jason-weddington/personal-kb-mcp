@@ -33,11 +33,10 @@ async def _ingest_binary_file(
     try:
         result = await ingester.ingest_file(
             tmp_path,
+            display_name=name,
             project_ref=project_ref,
             progress_callback=progress_callback,
         )
-        # Replace temp path with original filename in result
-        result.path = name
         return result
     finally:
         tmp_path.unlink(missing_ok=True)

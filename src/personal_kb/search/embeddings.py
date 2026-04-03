@@ -54,6 +54,44 @@ class EmbeddingClient:
             self._available = None  # Will retry next call
             return None
 
+    async def embed_batch(self, texts: list[str]) -> list[list[float]] | None:
+        """Generate embeddings for multiple texts in a single Ollama call.
+
+        Returns None if Ollama is unavailable or the call fails.
+        """
+        if not texts:
+            return []
+        if not await self.is_available():
+            return None
+        try:
+            client = self._get_client()
+            resp = await client.post(
+                f"{get_ollama_url()}/api/embed",
+                json={"model": get_embedding_model(), "input": texts},
+                timeout=get_ollama_timeout(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            embeddings: list[list[float]] = data["embeddings"]
+            if len(embeddings) != len(texts):
+                logger.warning(
+                    "Embedding count mismatch: got %d, expected %d",
+                    len(embeddings),
+                    len(texts),
+                )
+                return None
+            return embeddings
+        except Exception:
+            logger.warning("Batch embedding generation failed", exc_info=True)
+            self._available = None
+            return None
+
+    async def store_embeddings(self, entries: list[tuple[str, list[float]]]) -> None:
+        """Store multiple embeddings. Each item is (entry_id, embedding)."""
+        for entry_id, embedding in entries:
+            await self.db.vector_store(entry_id, embedding)
+        await self.db.commit()
+
     async def store_embedding(self, entry_id: str, embedding: list[float]) -> None:
         """Store an embedding via the database backend."""
         await self.db.vector_store(entry_id, embedding)

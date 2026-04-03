@@ -87,6 +87,40 @@ Example output:
 """
 
 
+class _PrefixIndex:
+    """Groups vocab names by 3-char prefix for fast fuzzy lookup.
+
+    Instead of comparing a candidate entity against all N vocabulary names
+    (O(N) per lookup), this index narrows candidates to those sharing the
+    same 3-character prefix — typically O(1-10) comparisons.
+    """
+
+    _PREFIX_LEN = 3
+
+    def __init__(self) -> None:
+        self._buckets: dict[str, list[tuple[str, str]]] = {}
+
+    def _prefix(self, name: str) -> str:
+        return name[: self._PREFIX_LEN].lower()
+
+    def build(self, vocab: dict[str, list[str]]) -> None:
+        """Build the index from a vocabulary dict."""
+        self._buckets.clear()
+        for node_type, names in vocab.items():
+            for name in names:
+                pfx = self._prefix(name)
+                self._buckets.setdefault(pfx, []).append((node_type, name))
+
+    def add(self, node_type: str, name: str) -> None:
+        """Add a single entry to the index."""
+        pfx = self._prefix(name)
+        self._buckets.setdefault(pfx, []).append((node_type, name))
+
+    def candidates(self, entity: str) -> list[tuple[str, str]]:
+        """Return (node_type, name) pairs sharing the same prefix."""
+        return self._buckets.get(self._prefix(entity), [])
+
+
 class GraphEnricher:
     """Uses an LLM to extract entity relationships and add them as graph edges."""
 
@@ -95,6 +129,7 @@ class GraphEnricher:
         self._db = db
         self._llm = llm
         self._vocab_cache: dict[str, list[str]] | None = None
+        self._prefix_index: _PrefixIndex | None = None
 
     async def enrich_entry(self, entry: KnowledgeEntry) -> int:
         """Extract relationships from an entry via LLM and add as graph edges.
@@ -120,7 +155,6 @@ class GraphEnricher:
             for rel in relationships:
                 added += await self._add_enrichment_edge(entry.id, rel)
 
-        self._vocab_cache = None
         return added
 
     async def enrich_batch(self, entries: list[KnowledgeEntry]) -> int:
@@ -161,7 +195,6 @@ class GraphEnricher:
                 for rel in rels:
                     total += await self._add_enrichment_edge(entry.id, rel)
 
-        self._vocab_cache = None
         return total
 
     def _build_batch_prompt(self, entries: list[KnowledgeEntry]) -> str:
@@ -272,32 +305,39 @@ class GraphEnricher:
         """Remove all LLM-derived edges for a given source entry."""
         await self._db.delete_llm_edges(entry_id)
 
+    def clear_vocab_cache(self) -> None:
+        """Invalidate the vocabulary cache. Call after batch operations."""
+        self._vocab_cache = None
+        self._prefix_index = None
+
     async def _load_vocab_cache(self) -> None:
-        """Load graph vocabulary into the instance cache if not already loaded."""
+        """Load graph vocabulary and build prefix index if not already loaded."""
         if self._vocab_cache is None:
             self._vocab_cache = await get_graph_vocabulary(self._db)
+            self._prefix_index = _PrefixIndex()
+            self._prefix_index.build(self._vocab_cache)
 
     def _resolve_node_id(self, entity: str, entity_type: str) -> str:
         """Find an existing node ID that matches the candidate, or build a new one.
 
-        Compares against cached vocabulary using SequenceMatcher. If a similar
-        node exists (ratio >= threshold), reuses it regardless of entity_type.
-        This merges near-duplicates like concept:async-io and technology:asyncio.
+        Uses a prefix index to narrow candidates before running SequenceMatcher.
+        If a similar node exists (ratio >= threshold), reuses it regardless of
+        entity_type. This merges near-duplicates like concept:async-io and
+        technology:asyncio.
         """
         candidate_id = f"{entity_type}:{entity}"
 
-        if self._vocab_cache is None:
+        if self._prefix_index is None:
             return candidate_id
 
         best_match: str | None = None
         best_ratio: float = 0.0
 
-        for node_type, names in self._vocab_cache.items():
-            for name in names:
-                ratio = SequenceMatcher(None, entity, name).ratio()
-                if ratio >= _DEDUP_SIMILARITY_THRESHOLD and ratio > best_ratio:
-                    best_ratio = ratio
-                    best_match = f"{node_type}:{name}"
+        for node_type, name in self._prefix_index.candidates(entity):
+            ratio = SequenceMatcher(None, entity, name).ratio()
+            if ratio >= _DEDUP_SIMILARITY_THRESHOLD and ratio > best_ratio:
+                best_ratio = ratio
+                best_match = f"{node_type}:{name}"
 
         if best_match is not None:
             if best_match != candidate_id:
@@ -306,8 +346,10 @@ class GraphEnricher:
                 )
             return best_match
 
-        # No match found — register in cache so later edges in the same batch see it
-        self._vocab_cache.setdefault(entity_type, []).append(entity)
+        # No match found — register in cache and index so later edges see it
+        if self._vocab_cache is not None:
+            self._vocab_cache.setdefault(entity_type, []).append(entity)
+        self._prefix_index.add(entity_type, entity)
         return candidate_id
 
     async def _add_enrichment_edge(self, entry_id: str, rel: dict[str, str]) -> int:

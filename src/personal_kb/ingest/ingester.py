@@ -192,6 +192,7 @@ class FileIngester:
         *,
         project_ref: str | None = None,
         base_dir: Path | None = None,
+        display_name: str | None = None,
         dry_run: bool = False,
         progress_callback: ProgressCallback | None = None,
     ) -> FileResult:
@@ -199,8 +200,12 @@ class FileIngester:
 
         Handles filesystem-specific checks (deny-list, extension, symlink,
         size), then delegates to _run_pipeline() for extraction and storage.
+
+        If display_name is set, it overrides the filename used for note nodes
+        and ingested_files records — useful when the file on disk is a temp
+        file (e.g. browser uploads) but the original name should be preserved.
         """
-        rel_path = str(path.relative_to(base_dir)) if base_dir else path.name
+        rel_path = display_name or (str(path.relative_to(base_dir)) if base_dir else path.name)
 
         # 1. Deny-list check (security boundary — before extension check)
         from personal_kb.ingest.safety import check_deny_list
@@ -603,12 +608,37 @@ class FileIngester:
                 entries_extracted=len(extracted),
             )
 
-        # 4. Store entries through the full pipeline
+        # 4. Store entries, batch embed, and batch enrich
         entry_ids: list[str] = []
-        for ext_entry in all_extracted:
-            entry = await self._store_extracted_entry(ext_entry, project_ref, source)
-            if entry:
-                entry_ids.append(entry.id)
+        stored_entries: list[KnowledgeEntry] = []
+        async with self._db.transaction():
+            for ext_entry in all_extracted:
+                entry = await self._store_extracted_entry(ext_entry, project_ref, source)
+                if entry:
+                    entry_ids.append(entry.id)
+                    stored_entries.append(entry)
+
+        # Batch embedding — single Ollama call for all entries
+        if stored_entries:
+            try:
+                texts = [e.embedding_text for e in stored_entries]
+                embeddings = await self._embedder.embed_batch(texts)
+                if embeddings is not None:
+                    pairs = list(zip([e.id for e in stored_entries], embeddings, strict=True))
+                    await self._embedder.store_embeddings(pairs)
+                    for entry in stored_entries:
+                        await self._store.mark_embedding(entry.id, True)
+            except Exception:
+                logger.warning("Batch embedding failed for %s", source, exc_info=True)
+
+        # Batch enrichment — single LLM call for all entries
+        if self._graph_enricher and stored_entries:
+            try:
+                await self._graph_enricher.enrich_batch(stored_entries)
+            except Exception:
+                logger.warning("Batch enrichment failed for %s", source, exc_info=True)
+            finally:
+                self._graph_enricher.clear_vocab_cache()
 
         # Deactivate old entries only after new ones are stored successfully
         if existing:
@@ -808,28 +838,13 @@ class FileIngester:
             logger.warning("Failed to create entry from %s", source_path, exc_info=True)
             return None
 
-        # Embed
-        try:
-            embedding = await self._embedder.embed(entry.embedding_text)
-            if embedding is not None:
-                await self._embedder.store_embedding(entry.id, embedding)
-                await self._store.mark_embedding(entry.id, True)
-        except Exception:
-            logger.warning("Failed to embed entry %s", entry.id, exc_info=True)
-
-        # Build graph
+        # Build deterministic graph edges (tags, projects, supersedes, text refs)
         try:
             await self._graph_builder.build_for_entry(entry)
         except Exception:
             logger.warning("Failed to build graph for %s", entry.id, exc_info=True)
 
-        # Enrich graph
-        if self._graph_enricher:
-            try:
-                await self._graph_enricher.enrich_entry(entry)
-            except Exception:
-                logger.warning("Failed to enrich graph for %s", entry.id, exc_info=True)
-
+        # Embedding and LLM enrichment are handled in batch after all entries
         return entry
 
     async def _upsert_note_node(self, node_id: str, props: dict[str, str]) -> None:
