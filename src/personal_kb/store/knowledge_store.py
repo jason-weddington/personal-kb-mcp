@@ -12,6 +12,7 @@ from personal_kb.db.queries import (
     insert_version,
     next_entry_id,
     reactivate_entry_db,
+    row_to_entry,
     update_entry,
 )
 from personal_kb.models.entry import EntryType, KnowledgeEntry
@@ -263,7 +264,7 @@ class KnowledgeStore:
         tags_add, tags_remove.
         """
         # Build WHERE clause
-        sql = "SELECT id FROM knowledge_entries WHERE is_active = 1"
+        sql = "SELECT * FROM knowledge_entries WHERE is_active = 1"
         params: list[object] = []
 
         if "contributor" in filters:
@@ -300,9 +301,7 @@ class KnowledgeStore:
 
         results: list[tuple[KnowledgeEntry, KnowledgeEntry]] = []
         for row in rows:
-            entry = await get_entry(self.db, row["id"])
-            if entry is None:
-                continue
+            entry = row_to_entry(row)
 
             # Compute updated fields
             update_fields: dict[str, object] = {}
