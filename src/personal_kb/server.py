@@ -31,6 +31,7 @@ from personal_kb.llm.provider import LLMProvider
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.kb_ask import register_kb_ask
+from personal_kb.tools.kb_bulk_update import register_kb_bulk_update
 from personal_kb.tools.kb_explore import register_kb_explore
 from personal_kb.tools.kb_feedback import register_kb_feedback
 from personal_kb.tools.kb_get import register_kb_get
@@ -302,6 +303,7 @@ prioritize what to add next.
 _TOOL_BASES = [
     "store_batch",
     "store",
+    "bulk_update",
     "search",
     "get",
     "ask",
@@ -369,6 +371,7 @@ def create_server() -> FastMCP:
 
     if is_manager_mode():
         register_kb_maintain(mcp, prefix)
+        register_kb_bulk_update(mcp, prefix)
 
     register_kb_list_projects(mcp, prefix)
     if get_contributor():

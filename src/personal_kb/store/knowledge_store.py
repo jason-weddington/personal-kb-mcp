@@ -2,7 +2,7 @@
 
 import logging
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 
 from personal_kb.db.backend import Database
 from personal_kb.db.queries import (
@@ -242,6 +242,124 @@ class KnowledgeStore:
             )
         logger.info("Reactivated entry %s", entry_id)
         return entry  # type: ignore[return-value]
+
+    async def bulk_update(
+        self,
+        filters: dict[str, object],
+        updates: dict[str, object],
+        *,
+        contributor: str | None = None,
+        dry_run: bool = False,
+    ) -> list[tuple[KnowledgeEntry, KnowledgeEntry]]:
+        """Find entries matching filters and apply metadata updates.
+
+        Returns list of (before, after) pairs. In dry_run mode, 'after' is a
+        preview copy — nothing is persisted.
+
+        Supported filters: contributor, team, project_ref (use None value to
+        match unset), tags, entry_ids, entry_type.
+
+        Supported updates: project_ref, entry_type, confidence_level,
+        tags_add, tags_remove.
+        """
+        # Build WHERE clause
+        sql = "SELECT id FROM knowledge_entries WHERE is_active = 1"
+        params: list[object] = []
+
+        if "contributor" in filters:
+            sql += " AND contributor = ?"
+            params.append(filters["contributor"])
+        if "team" in filters:
+            sql += " AND team = ?"
+            params.append(filters["team"])
+        if "project_ref" in filters:
+            val = filters["project_ref"]
+            if val is None:
+                sql += " AND project_ref IS NULL"
+            else:
+                sql += " AND project_ref = ?"
+                params.append(val)
+        if "entry_type" in filters:
+            sql += " AND entry_type = ?"
+            params.append(str(filters["entry_type"]))
+        if "tags" in filters:
+            filter_tags = cast(list[str], filters["tags"])
+            for tag in filter_tags:
+                sql += " AND (' ' || tags || ' ') LIKE ?"
+                params.append(f"% {tag} %")
+        if "entry_ids" in filters:
+            ids = filters["entry_ids"]
+            if isinstance(ids, list) and ids:
+                placeholders = ",".join("?" for _ in ids)
+                sql += f" AND id IN ({placeholders})"
+                params.extend(ids)
+
+        sql += " ORDER BY id"
+        cursor = await self.db.execute(sql, tuple(params))
+        rows = await cursor.fetchall()
+
+        results: list[tuple[KnowledgeEntry, KnowledgeEntry]] = []
+        for row in rows:
+            entry = await get_entry(self.db, row["id"])
+            if entry is None:
+                continue
+
+            # Compute updated fields
+            update_fields: dict[str, object] = {}
+            if "project_ref" in updates and updates["project_ref"] != entry.project_ref:
+                update_fields["project_ref"] = updates["project_ref"]
+            if "entry_type" in updates:
+                new_type = EntryType(str(updates["entry_type"]))
+                if new_type != entry.entry_type:
+                    update_fields["entry_type"] = new_type
+            if "confidence_level" in updates:
+                new_conf = float(str(updates["confidence_level"]))
+                if new_conf != entry.confidence_level:
+                    update_fields["confidence_level"] = new_conf
+
+            # Tag operations
+            new_tags = list(entry.tags)
+            if "tags_add" in updates:
+                add_tags = cast(list[str], updates["tags_add"])
+                for t in add_tags:
+                    if t not in new_tags:
+                        new_tags.append(t)
+            if "tags_remove" in updates:
+                remove_set = set(cast(list[str], updates["tags_remove"]))
+                new_tags = [t for t in new_tags if t not in remove_set]
+            if new_tags != list(entry.tags):
+                update_fields["tags"] = new_tags
+
+            if not update_fields:
+                continue
+
+            now = datetime.now(UTC)
+            new_version = entry.version + 1
+            update_fields["version"] = new_version
+            update_fields["updated_at"] = now
+            update_fields["updated_by"] = contributor
+
+            after = entry.model_copy(update=update_fields)
+
+            if not dry_run:
+                await update_entry(self.db, after)
+                version = EntryVersion(
+                    entry_id=entry.id,
+                    version_number=new_version,
+                    knowledge_details=entry.knowledge_details,
+                    change_reason="Bulk metadata update",
+                    contributor=contributor,
+                    confidence_level=after.confidence_level,
+                    created_at=now,
+                )
+                await insert_version(self.db, version)
+                await _record_audit_event(
+                    self.db, "entry_updated", entry.id, contributor, "Bulk metadata update"
+                )
+
+            results.append((entry, after))
+
+        return results
 
     async def get_entries_without_embeddings(self, limit: int = 100) -> list[str]:
         """Get entry IDs that need embeddings."""
