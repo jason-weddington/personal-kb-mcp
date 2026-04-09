@@ -2,6 +2,46 @@
 
 <!-- version list -->
 
+## v0.62.0 (2026-04-09)
+
+### Bug Fixes
+
+- **store**: Wrap bulk_update writes in transaction
+  ([`de425b0`](https://github.com/jason-weddington/personal-kb-mcp/commit/de425b0187e3588057260b9000bb9da2656362ca))
+
+### Chores
+
+- Remove .kiro/ from repo and add to .gitignore
+  ([`0b17f0b`](https://github.com/jason-weddington/personal-kb-mcp/commit/0b17f0b3dcc9f84c673f67bdba9f8b2bb5125645))
+
+### Documentation
+
+- Add scaling analysis for corpus-level ingestion
+  ([`90db556`](https://github.com/jason-weddington/personal-kb-mcp/commit/90db5562407d61d9599b4c323581e74448a5c8c0))
+
+- **store**: Add transaction convention comment to KnowledgeStore
+  ([`74d9074`](https://github.com/jason-weddington/personal-kb-mcp/commit/74d9074c5d8aa7b2e79d40b1cbf1f9f09b5d26d1))
+
+### Features
+
+- Batch ingestion pipeline and browser PDF filename fix
+  ([`8c798f0`](https://github.com/jason-weddington/personal-kb-mcp/commit/8c798f0f869d8834a50cdcc8a11b48bd20520228))
+
+- Persistent chat history in web explorer
+  ([`27eab63`](https://github.com/jason-weddington/personal-kb-mcp/commit/27eab63ea5d70d39c45352fc91d98a23be06b727))
+
+- Show updated_by attribution in kb_get full output
+  ([`87de497`](https://github.com/jason-weddington/personal-kb-mcp/commit/87de4971aa4892f1cbf2a0d246ae4cf535a40eeb))
+
+- **tools**: Add kb_bulk_update for batch metadata changes
+  ([`c75319a`](https://github.com/jason-weddington/personal-kb-mcp/commit/c75319a6ed49fdc13d1a5d65fdcd2f61d3c97d80))
+
+### Performance Improvements
+
+- **store**: Eliminate N+1 queries in bulk_update
+  ([`cec4332`](https://github.com/jason-weddington/personal-kb-mcp/commit/cec4332f2f651fc6b902a13951c0a1201e35a02b))
+
+
 ## v0.61.0 (2026-03-25)
 
 ### Features
