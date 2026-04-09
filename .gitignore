@@ -17,3 +17,4 @@ venv/
 htmlcov/
 .mcp.json
 .envrc
+.kiro/
