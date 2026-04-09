@@ -42,7 +42,13 @@ async def _record_audit_event(
 
 
 class KnowledgeStore:
-    """CRUD operations for knowledge entries with versioning."""
+    """CRUD operations for knowledge entries with versioning.
+
+    CONVENTION: All write paths that touch multiple tables (entry + version +
+    audit) MUST be wrapped in ``async with self.db.transaction()``. This
+    ensures atomicity — a failure mid-write rolls back cleanly instead of
+    leaving partial updates. See create_entry, update_entry, bulk_update.
+    """
 
     def __init__(self, db: Database):
         """Initialize with a database connection."""
