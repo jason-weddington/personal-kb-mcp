@@ -341,20 +341,21 @@ class KnowledgeStore:
             after = entry.model_copy(update=update_fields)
 
             if not dry_run:
-                await update_entry(self.db, after)
-                version = EntryVersion(
-                    entry_id=entry.id,
-                    version_number=new_version,
-                    knowledge_details=entry.knowledge_details,
-                    change_reason="Bulk metadata update",
-                    contributor=contributor,
-                    confidence_level=after.confidence_level,
-                    created_at=now,
-                )
-                await insert_version(self.db, version)
-                await _record_audit_event(
-                    self.db, "entry_updated", entry.id, contributor, "Bulk metadata update"
-                )
+                async with self.db.transaction():
+                    await update_entry(self.db, after)
+                    version = EntryVersion(
+                        entry_id=entry.id,
+                        version_number=new_version,
+                        knowledge_details=entry.knowledge_details,
+                        change_reason="Bulk metadata update",
+                        contributor=contributor,
+                        confidence_level=after.confidence_level,
+                        created_at=now,
+                    )
+                    await insert_version(self.db, version)
+                    await _record_audit_event(
+                        self.db, "entry_updated", entry.id, contributor, "Bulk metadata update"
+                    )
 
             results.append((entry, after))
 
