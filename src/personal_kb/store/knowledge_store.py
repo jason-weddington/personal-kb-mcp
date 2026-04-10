@@ -290,7 +290,7 @@ class KnowledgeStore:
             sql += " AND entry_type = ?"
             params.append(str(filters["entry_type"]))
         if "tags" in filters:
-            filter_tags = cast(list[str], filters["tags"])
+            filter_tags = cast("list[str]", filters["tags"])
             for tag in filter_tags:
                 sql += " AND (' ' || tags || ' ') LIKE ?"
                 params.append(f"% {tag} %")
@@ -325,12 +325,12 @@ class KnowledgeStore:
             # Tag operations
             new_tags = list(entry.tags)
             if "tags_add" in updates:
-                add_tags = cast(list[str], updates["tags_add"])
+                add_tags = cast("list[str]", updates["tags_add"])
                 for t in add_tags:
                     if t not in new_tags:
                         new_tags.append(t)
             if "tags_remove" in updates:
-                remove_set = set(cast(list[str], updates["tags_remove"]))
+                remove_set = set(cast("list[str]", updates["tags_remove"]))
                 new_tags = [t for t in new_tags if t not in remove_set]
             if new_tags != list(entry.tags):
                 update_fields["tags"] = new_tags
