@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.63.0 (2026-04-10)
+
+### Features
+
+- Add dev-setup script and CONTRIBUTING guide
+  ([`ae0c858`](https://github.com/jason-weddington/personal-kb-mcp/commit/ae0c8582365f2a7c95f7649d83ff559807c451ed))
+
+
 ## v0.62.0 (2026-04-09)
 
 ### Bug Fixes

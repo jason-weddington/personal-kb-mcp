@@ -1530,7 +1530,7 @@ wheels = [
 
 [[package]]
 name = "personal-kb"
-version = "0.62.0"
+version = "0.63.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
