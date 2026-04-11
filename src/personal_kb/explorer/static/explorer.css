@@ -237,20 +237,16 @@
   #ingest-status.error { color: #e57373; }
   #ingest-status.success { color: #81c784; }
   #search-results {
-    display: none; width: 100%; max-height: 300px;
-    overflow-y: auto; margin-top: 4px;
-    background: rgba(20, 20, 30, 0.95);
-    border: 1px solid #333; border-radius: 6px;
-    box-sizing: border-box;
+    display: none; max-height: 300px;
+    overflow-y: auto;
+    border-top: 1px solid #2a2a3a;
   }
   #search-results.visible { display: block; }
   #chat-history-list {
-    display: none; width: 100%;
+    display: none;
     max-height: 60vh;
-    overflow-y: auto; margin-top: 4px;
-    background: rgba(20, 20, 30, 0.95);
-    border: 1px solid #333; border-radius: 6px;
-    box-sizing: border-box;
+    overflow-y: auto;
+    border-top: 1px solid #2a2a3a;
   }
   #chat-history-list.visible { display: block; }
   #chat-history-list .ch-header {
@@ -270,7 +266,7 @@
     background: rgba(255,255,255,0.05); color: #fff;
   }
   .chat-history-item .ch-title {
-    flex: 1; overflow: hidden;
+    flex: 1; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
   .chat-history-item .ch-time {
