@@ -413,15 +413,13 @@ class ChatSession:
     async def _format_entries(self) -> str:
         """Format all known entries as context for the system prompt."""
         from personal_kb.db.queries import get_entry
+        from personal_kb.tools.formatters import format_entry_full
 
         blocks = []
         for eid in self.entry_ids:
             entry = await get_entry(self.db, eid)
             if entry and entry.is_active:
-                tags = " ".join(f"#{t}" for t in entry.tags) if entry.tags else ""
-                block = f"[{entry.id}] {entry.short_title} {tags}"
-                block += f"\n  {entry.knowledge_details}"
-                blocks.append(block)
+                blocks.append(format_entry_full(entry))
         return "\n\n".join(blocks)
 
     def _trim_history(self) -> None:

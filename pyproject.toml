@@ -152,7 +152,7 @@ disallow_untyped_decorators = false
 source = ["personal_kb"]
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 80.5
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
