@@ -32,9 +32,9 @@ _TEMPLATE = """\
       <button class="toolbar-btn" onclick="openIngestModal('url')">+URL(s)</button>
       <button class="toolbar-btn" onclick="openIngestModal('file')">+File(s)</button>
     </div>
+    <div id="search-results"></div>
+    <div id="chat-history-list"></div>
   </div>
-  <div id="search-results"></div>
-  <div id="chat-history-list"></div>
 </div>
 <div id="ingest-modal">
   <div id="ingest-modal-content">
