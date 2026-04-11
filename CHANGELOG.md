@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.63.1 (2026-04-10)
+
+### Bug Fixes
+
+- **explorer**: Use shared formatters for chat entry context
+  ([`80d0503`](https://github.com/jason-weddington/personal-kb-mcp/commit/80d0503aac171762b8ca4816a9d715f837fa55f0))
+
+
 ## v0.63.0 (2026-04-10)
 
 ### Features
