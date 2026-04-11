@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.63.1 (2026-04-10)
+
+### Bug Fixes
+
+- **explorer**: Unify search and history into single container
+  ([`b947d6f`](https://github.com/jason-weddington/personal-kb-mcp/commit/b947d6f3f31f486908c3ee9a86869caa3159f2f2))
+
+
 ## v0.63.0 (2026-04-10)
 
 ### Features
