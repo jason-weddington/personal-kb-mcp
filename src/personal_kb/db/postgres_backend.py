@@ -588,6 +588,7 @@ class PostgresBackend:
             ("entry_versions", "contributor"),
             ("search_events", "contributor"),
             ("agent_feedback", "contributor"),
+            ("agent_feedback", "team"),
             ("ingested_files", "contributor"),
         ]
         for table, column in migrations:

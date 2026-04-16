@@ -97,3 +97,33 @@ async def test_submit_feedback_created_at_set(db):
     row = await cursor.fetchone()
     assert row["created_at"] is not None
     assert "T" in row["created_at"]  # ISO format
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_with_team(db):
+    """Feedback records team when provided."""
+    await submit_feedback(db, "missing", "kb_search", "test query", team="platform")
+    cursor = await db.execute("SELECT team FROM agent_feedback")
+    row = await cursor.fetchone()
+    assert row["team"] == "platform"
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_team_none_by_default(db):
+    """Feedback team is NULL when not provided."""
+    await submit_feedback(db, "friction")
+    cursor = await db.execute("SELECT team FROM agent_feedback")
+    row = await cursor.fetchone()
+    assert row["team"] is None
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_contributor_and_team_together(db):
+    """Both contributor and team are stored correctly on the same row."""
+    await submit_feedback(
+        db, "unhelpful", "kb_ask", "docker networking", contributor="jason", team="platform"
+    )
+    cursor = await db.execute("SELECT contributor, team FROM agent_feedback")
+    row = await cursor.fetchone()
+    assert row["contributor"] == "jason"
+    assert row["team"] == "platform"

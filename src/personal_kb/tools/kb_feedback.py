@@ -63,9 +63,16 @@ def register_kb_feedback(mcp: FastMCP, prefix: str = "kb_") -> None:
         lifespan = ctx.lifespan_context
         db: Database = lifespan["db"]
         contributor: str | None = lifespan.get("contributor")
+        team: str | None = lifespan.get("team")
 
         return await submit_feedback(
-            db, feedback_type, tool_name, query_or_params, detail, contributor=contributor
+            db,
+            feedback_type,
+            tool_name,
+            query_or_params,
+            detail,
+            contributor=contributor,
+            team=team,
         )
 
 
@@ -77,6 +84,7 @@ async def submit_feedback(
     detail: str | None = None,
     *,
     contributor: str | None = None,
+    team: str | None = None,
 ) -> str:
     """Core feedback logic, testable without FastMCP context."""
     if feedback_type not in _VALID_TYPES:
@@ -88,9 +96,9 @@ async def submit_feedback(
     now = datetime.now(UTC).isoformat()
     await db.execute(
         "INSERT INTO agent_feedback"
-        " (feedback_type, tool_name, query_or_params, detail, contributor, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (feedback_type, tool_name, query_or_params, detail, contributor, now),
+        " (feedback_type, tool_name, query_or_params, detail, contributor, team, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (feedback_type, tool_name, query_or_params, detail, contributor, team, now),
     )
     await db.commit()
 

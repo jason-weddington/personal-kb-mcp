@@ -316,6 +316,8 @@ async def _migrate_v2_multi_user(db: Database) -> None:
     fb_cols = {row[1] for row in await cursor.fetchall()}
     if "contributor" not in fb_cols:
         await db.execute("ALTER TABLE agent_feedback ADD COLUMN contributor TEXT")
+    if "team" not in fb_cols:
+        await db.execute("ALTER TABLE agent_feedback ADD COLUMN team TEXT")
 
     # ingested_files: contributor
     cursor = await db.execute("PRAGMA table_info(ingested_files)")
