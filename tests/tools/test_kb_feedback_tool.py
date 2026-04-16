@@ -3,6 +3,7 @@
 import pytest
 
 from personal_kb.tools.kb_feedback import submit_feedback
+from personal_kb.tools.kb_maintain import _action_list_feedback
 
 
 @pytest.mark.asyncio
@@ -127,3 +128,46 @@ async def test_submit_feedback_contributor_and_team_together(db):
     row = await cursor.fetchone()
     assert row["contributor"] == "jason"
     assert row["team"] == "platform"
+
+
+# --- AC6: list_feedback attribution badge tests ---
+
+
+@pytest.mark.asyncio
+async def test_list_feedback_badge_contributor_and_team(db):
+    """list_feedback shows @contributor/team badge when both are set."""
+    await submit_feedback(
+        db,
+        "missing",
+        "kb_search",
+        "sqlite tips",
+        "No results for my topic",
+        contributor="jason",
+        team="infra",
+    )
+    result = await _action_list_feedback(db, None, None)
+    assert "@jason/infra" in result
+
+
+@pytest.mark.asyncio
+async def test_list_feedback_badge_contributor_only(db):
+    """list_feedback shows @contributor badge when only contributor is set."""
+    await submit_feedback(
+        db,
+        "unhelpful",
+        "kb_ask",
+        "docker tips",
+        contributor="alice",
+    )
+    result = await _action_list_feedback(db, None, None)
+    assert "@alice" in result
+    # Ensure there's no trailing slash (no team)
+    assert "@alice/" not in result
+
+
+@pytest.mark.asyncio
+async def test_list_feedback_no_badge_when_no_contributor(db):
+    """list_feedback shows no badge when contributor is not set."""
+    await submit_feedback(db, "friction", detail="Too slow")
+    result = await _action_list_feedback(db, None, None)
+    assert "@" not in result

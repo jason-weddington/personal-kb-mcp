@@ -443,6 +443,11 @@ async def _action_list_feedback(
             line += f" via {row['tool_name']}"
         if row["query_or_params"]:
             line += f" | query: {row['query_or_params']}"
+        if row["contributor"]:
+            badge = f"@{row['contributor']}"
+            if row["team"]:
+                badge += f"/{row['team']}"
+            line += f" {badge}"
         if row["detail"]:
             line += f"\n  {row['detail']}"
         lines.append(line)
@@ -489,6 +494,11 @@ async def _action_summarize_feedback(
             line += f" query={row['query_or_params']}"
         if row["detail"]:
             line += f" — {row['detail']}"
+        if row["contributor"]:
+            by = f"@{row['contributor']}"
+            if row["team"]:
+                by += f"/{row['team']}"
+            line += f" by={by}"
         feedback_lines.append(line)
     feedback_text = "\n".join(feedback_lines)
 
