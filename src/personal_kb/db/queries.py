@@ -90,7 +90,7 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
         project_ref=?, short_title=?, long_title=?, knowledge_details=?, entry_type=?,
         source_context=?, confidence_level=?, tags=?, hints=?, updated_at=?,
         superseded_by=?, is_active=?, has_embedding=?, version=?, updated_by=?,
-        sensitivity=?, expires_at=?
+        sensitivity=?, expires_at=?, team=?
         WHERE id=?""",
         (
             entry.project_ref,
@@ -110,6 +110,7 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
             entry.updated_by,
             entry.sensitivity,
             entry.expires_at.isoformat() if entry.expires_at else None,
+            entry.team,
             entry.id,
         ),
     )

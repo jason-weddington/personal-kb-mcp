@@ -313,6 +313,8 @@ class KnowledgeStore:
             update_fields: dict[str, object] = {}
             if "project_ref" in updates and updates["project_ref"] != entry.project_ref:
                 update_fields["project_ref"] = updates["project_ref"]
+            if "team" in updates and updates["team"] != entry.team:
+                update_fields["team"] = updates["team"]
             if "entry_type" in updates:
                 new_type = EntryType(str(updates["entry_type"]))
                 if new_type != entry.entry_type:

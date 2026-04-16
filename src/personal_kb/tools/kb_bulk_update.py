@@ -30,7 +30,7 @@ def _format_result(results: list[tuple[Any, Any]], dry_run: bool) -> str:
     mode = "DRY RUN — " if dry_run else ""
     lines = [f"{mode}{len(results)} entries {'would be ' if dry_run else ''}updated:\n"]
 
-    fields = ("project_ref", "entry_type", "confidence_level", "tags")
+    fields = ("project_ref", "entry_type", "confidence_level", "tags", "team")
     for before, after in results:
         diffs = [_format_diff(before, after, f) for f in fields]
         diffs = [d for d in diffs if d]
@@ -46,7 +46,7 @@ def _bulk_update_description(prefix: str) -> str:
         "Filters: contributor, team, project_ref (None matches unset), "
         "entry_type, tags, entry_ids.\n\n"
         "Updates: project_ref, entry_type, confidence_level, "
-        "tags_add (list), tags_remove (list).\n\n"
+        "tags_add (list), tags_remove (list), team (str).\n\n"
         "Always use dry_run=true first to preview. "
         "Each updated entry gets a version bump and audit event."
     )
@@ -77,7 +77,8 @@ def register_kb_bulk_update(mcp: FastMCP, prefix: str = "kb_") -> None:
                     "Metadata changes to apply. Keys: "
                     "project_ref (str), entry_type (str), "
                     "confidence_level (float), "
-                    "tags_add (list[str]), tags_remove (list[str])."
+                    "tags_add (list[str]), tags_remove (list[str]), "
+                    "team (str)."
                 ),
             ),
         ],

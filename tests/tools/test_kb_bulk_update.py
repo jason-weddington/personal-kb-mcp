@@ -292,3 +292,50 @@ async def test_format_result_committed():
     result = _format_result([(before, after)], dry_run=False)
     assert "DRY RUN" not in result
     assert "1 entries updated" in result
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_team(populated_store: KnowledgeStore):
+    """Filter by team, reassign team field to a canonical name."""
+    results = await populated_store.bulk_update(
+        filters={"team": "alpha"},
+        updates={"team": "platform-eng"},
+        dry_run=False,
+    )
+    assert len(results) == 2
+    for before, after in results:
+        assert after.team == "platform-eng"
+        assert after.version == before.version + 1
+
+    # Verify the DB was actually updated
+    entry = await populated_store.get_entry(results[0][0].id)
+    assert entry is not None
+    assert entry.team == "platform-eng"
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_team_dry_run(populated_store: KnowledgeStore):
+    """Dry run team change returns previews but does not persist."""
+    results = await populated_store.bulk_update(
+        filters={"team": "alpha"},
+        updates={"team": "platform-eng"},
+        dry_run=True,
+    )
+    assert len(results) == 2
+    for _before, after in results:
+        assert after.team == "platform-eng"
+
+    # DB must still show the original team
+    entry = await populated_store.get_entry(results[0][0].id)
+    assert entry is not None
+    assert entry.team == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_team_no_change(populated_store: KnowledgeStore):
+    """Updating team to its current value is a no-op."""
+    results = await populated_store.bulk_update(
+        filters={"team": "alpha"},
+        updates={"team": "alpha"},
+    )
+    assert results == []
