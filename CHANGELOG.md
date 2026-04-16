@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v0.64.0 (2026-04-16)
+
+### Bug Fixes
+
+- **explorer**: Unify search and history into single container
+  ([`1174914`](https://github.com/jason-weddington/personal-kb-mcp/commit/1174914ce6ff066da16c0a295c934d61180fb690))
+
+- **explorer**: Use shared formatters for chat entry context
+  ([`80d0503`](https://github.com/jason-weddington/personal-kb-mcp/commit/80d0503aac171762b8ca4816a9d715f837fa55f0))
+
+### Features
+
+- **feedback**: Add team attribution to agent_feedback storage
+  ([`caffd82`](https://github.com/jason-weddington/personal-kb-mcp/commit/caffd8233e31352e860d195b1806ca724613bc96))
+
+
 ## v0.63.1 (2026-04-10)
 
 ### Bug Fixes
