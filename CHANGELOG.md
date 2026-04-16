@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.66.0 (2026-04-16)
+
+### Features
+
+- Make team field mutable via kb_bulk_update
+  ([`e380cf4`](https://github.com/jason-weddington/personal-kb-mcp/commit/e380cf49cd4da0088f6bcab3f1833754fed9c0d5))
+
+
 ## v0.65.0 (2026-04-16)
 
 ### Features
