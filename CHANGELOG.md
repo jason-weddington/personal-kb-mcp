@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.65.0 (2026-04-16)
+
+### Features
+
+- **feedback**: Display attribution badges in list/summarize feedback
+  ([`15dc212`](https://github.com/jason-weddington/personal-kb-mcp/commit/15dc212372daf484a04be2ef2979adba6e5285ea))
+
+
 ## v0.64.0 (2026-04-16)
 
 ### Bug Fixes
