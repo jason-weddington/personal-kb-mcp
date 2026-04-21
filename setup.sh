@@ -201,7 +201,7 @@ echo ""
 read -rp "  Launch the knowledge explorer in your browser? [Y/n] " launch < /dev/tty
 if [ "${launch,,}" != "n" ]; then
     echo ""
-    echo "  Opening http://127.0.0.1:8765 ..."
+    echo "  Opening http://127.0.0.1:8767 ..."
     echo "  Press Ctrl+C to stop."
     echo ""
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then

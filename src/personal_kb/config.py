@@ -198,8 +198,8 @@ def is_auto_explore() -> bool:
 
 
 def get_explore_port() -> int:
-    """Return the explorer web server port from KB_EXPLORE_PORT (default: 8765)."""
-    return _parse_int("KB_EXPLORE_PORT", "8765")
+    """Return the explorer web server port from KB_EXPLORE_PORT (default: 8767)."""
+    return _parse_int("KB_EXPLORE_PORT", "8767")
 
 
 def is_pg_iam_auth() -> bool:

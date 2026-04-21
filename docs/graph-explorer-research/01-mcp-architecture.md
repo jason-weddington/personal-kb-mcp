@@ -55,7 +55,7 @@ webbrowser.open("http://localhost:PORT")
 Python's `webbrowser` module is stdlib, works on macOS/Linux/Windows. The tool would:
 1. Start the web server if not already running (background task)
 2. Open the browser
-3. Return a message like "Explorer opened at http://localhost:8765"
+3. Return a message like "Explorer opened at http://localhost:8767"
 
 ### Alternative: Self-contained HTML file
 

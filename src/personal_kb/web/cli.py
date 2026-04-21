@@ -17,8 +17,8 @@ def main() -> None:
         import time
 
         time.sleep(1)
-        webbrowser.open("http://localhost:8765")
+        webbrowser.open("http://localhost:8767")
 
     threading.Thread(target=_open_browser, daemon=True).start()
 
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=8767, log_level="info")
