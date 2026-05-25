@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.66.1 (2026-04-21)
+
+### Bug Fixes
+
+- Change default explorer port from 8765 to 8767
+  ([`4cf16a3`](https://github.com/jason-weddington/personal-kb-mcp/commit/4cf16a335015f29f026197267c71146589cc796d))
+
+
 ## v0.66.0 (2026-04-16)
 
 ### Features

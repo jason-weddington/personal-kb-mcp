@@ -388,11 +388,11 @@ The frontend detects whether it's served by the web server (`location.protocol !
 
 ### Auto-Start and kb_explore Tool Integration
 
-The explorer web server auto-starts during MCP server lifespan when `KB_AUTO_EXPLORE` is `TRUE` (the default). The lifespan calls `start_explorer_server()` with `kill_existing=False`, which first checks `_is_explorer_healthy(port)` — an httpx GET to `/api/graph` with a 2-second timeout. If a healthy explorer is already running (e.g. from another MCP instance), auto-start skips silently. If the port is free, it starts uvicorn as an `asyncio.create_task`. The port is configurable via `KB_EXPLORE_PORT` (default 8765), enabling dual-KB setups where personal and team explorers run on different ports.
+The explorer web server auto-starts during MCP server lifespan when `KB_AUTO_EXPLORE` is `TRUE` (the default). The lifespan calls `start_explorer_server()` with `kill_existing=False`, which first checks `_is_explorer_healthy(port)` — an httpx GET to `/api/graph` with a 2-second timeout. If a healthy explorer is already running (e.g. from another MCP instance), auto-start skips silently. If the port is free, it starts uvicorn as an `asyncio.create_task`. The port is configurable via `KB_EXPLORE_PORT` (default 8767), enabling dual-KB setups where personal and team explorers run on different ports.
 
 The `kb_explore` MCP tool calls `start_explorer_server()` with `kill_existing=True` — if another process holds the port, it kills it via `_kill_port_holder()` (lsof + SIGTERM, skipping own PID) and takes over. If the server is already running in the same process (`_web_server_task` is alive), it returns immediately. After ensuring the server is up, the tool opens the browser. If the server fails to start, it falls back to static `file://` mode — writing a temp HTML file and opening it with `webbrowser.open()`.
 
-The standalone `personal-kb-web` CLI (`web/cli.py`) runs the same web app via `uvicorn.run()` on port 8765, opening the browser after a 1-second delay. This is useful for browsing the KB outside of an MCP session.
+The standalone `personal-kb-web` CLI (`web/cli.py`) runs the same web app via `uvicorn.run()` on port 8767, opening the browser after a 1-second delay. This is useful for browsing the KB outside of an MCP session.
 
 ### Multi-Turn Chat
 

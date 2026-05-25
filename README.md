@@ -186,7 +186,7 @@ Ingest a web page into the knowledge base (only available when `KB_MANAGER=TRUE`
 
 ### `kb_explore`
 
-Open an interactive graph visualization in your browser. The explorer auto-starts on MCP server startup (available at `http://localhost:8765` immediately, no tool call needed — use the tool to relaunch or change ports). Type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Questions routed to `summarize` mode open a multi-turn chat panel where you can ask follow-up questions grounded in the retrieved KB entries, with iMessage-style message bubbles and clickable `[kb-XXXXX]` citations that fly to nodes in the graph. The chat panel supports write-back tools — update entries or ingest URLs directly from the conversation. The toolbar also provides file upload and multi-URL ingestion for bulk import without leaving the browser.
+Open an interactive graph visualization in your browser. The explorer auto-starts on MCP server startup (available at `http://localhost:8767` immediately, no tool call needed — use the tool to relaunch or change ports). Type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Questions routed to `summarize` mode open a multi-turn chat panel where you can ask follow-up questions grounded in the retrieved KB entries, with iMessage-style message bubbles and clickable `[kb-XXXXX]` citations that fly to nodes in the graph. The chat panel supports write-back tools — update entries or ingest URLs directly from the conversation. The toolbar also provides file upload and multi-URL ingestion for bulk import without leaving the browser.
 
 ### `kb_feedback`
 
@@ -222,7 +222,7 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 | `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for `kb_ask` auto strategy |
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in the agentic query loop |
 | `KB_AUTO_EXPLORE` | `TRUE` | Auto-start the graph explorer web server on MCP server startup |
-| `KB_EXPLORE_PORT` | `8765` | Port for the explorer web server |
+| `KB_EXPLORE_PORT` | `8767` | Port for the explorer web server |
 | **Multi-user** | | |
 | `KB_CONTRIBUTOR` | _(unset)_ | Your name — attached to entries, versions, search events, and audit trail |
 | `KB_TEAM` | _(unset)_ | Your team — attached to entries alongside contributor |
@@ -328,7 +328,7 @@ Most team members want both a **shared team KB** (decisions, architecture, patte
         "KB_CONTRIBUTOR": "jason",
         "KB_TEAM": "platform",
         "KB_INSTANCE_ROLE": "team",
-        "KB_EXPLORE_PORT": "8766",
+        "KB_EXPLORE_PORT": "8768",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     },
@@ -345,7 +345,7 @@ Most team members want both a **shared team KB** (decisions, architecture, patte
 }
 ```
 
-The explorer auto-starts on both instances. Personal gets the default port (`8765`), team gets `8766`. Bookmark both — or use `kb_explore` to swap which KB is on which port at any time.
+The explorer auto-starts on both instances. Personal gets the default port (`8767`), team gets `8768`. Bookmark both — or use `kb_explore` to swap which KB is on which port at any time.
 
 `KB_INSTANCE_ROLE` controls two things:
 
