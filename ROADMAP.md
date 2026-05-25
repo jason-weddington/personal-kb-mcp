@@ -8,41 +8,13 @@ Problems worth solving, in priority order. Not specs — the "how" gets figured 
 
 Developers jump between Claude Code, Codex, Gemini CLI, Kiro CLI, Cursor — whatever's best right now. MCP makes personal-kb agent-agnostic: your decisions, patterns, and debugging insights follow you. The KB compounds over time regardless of which tool you're using today.
 
-## Now — Just-In-Time Context (Preflight)
-
-Agents get context from static files (CLAUDE.md, memory) or explicit search (kb_search, kb_ask). Both fail on **unknown unknowns** — the convention the agent doesn't know exists, the expiring entry it can't search for. Preflight closes this gap by pushing relevant context to the agent automatically, before it starts thinking.
-
-### CWD-based project context injection (MVP)
-
-The MCP server subprocess inherits the client's CWD. If the agent launched from `/Users/jason/git/my-project`, the server knows the project. No tool call needed, no agent cooperation, no parsing task descriptions.
-
-**Signal**: `os.getcwd()` at lifespan startup.
-
-**Fuzzy matching**: The directory name won't always match `project_ref` exactly. `personal_kb` vs `personal-kb`, `my-cool-project` vs `cool-project`, monorepo subdirectories. Need robust matching: normalize separators (underscores ↔ hyphens), try parent dirs, check against all known project_ref values in the DB. This matching logic is the make-or-break piece — bad matches inject wrong context, no match means no value.
-
-**What to inject** (appended to server instructions, ~500 tokens max):
-- Expiring soon + recently expired (7-day grace window) — max 3. The highest-value signal: agents can't discover these on their own.
-- Recent decisions + lessons learned (last 14 days) — max 5. What happened lately in this project.
-- Active conventions (pattern_convention, confidence >= 0.7) — max 3. How things are done here.
-- Compact format: entry ID + type + short title + age/expiry badge. No knowledge_details (agent uses kb_get if interested).
-
-**What NOT to build**: task-type detection, configurable thresholds, LLM calls in the preflight path. Hard-code sensible defaults. Keep it pure SQL against indexed columns.
-
-### kb_preflight tool (complement, not replacement)
-
-For cases CWD injection can't handle: cross-project work, explicit scope override, mid-session project switch. Agent calls it with the user's raw message + optional scope. Same retrieval logic as CWD injection but triggered on demand. Lower priority — build after CWD injection proves the concept.
-
-### Steering guide update
-
-Replace "search before acting" with "review the project briefing above, then search for specifics." The briefing is already there; the agent just needs to know to use it.
-
-## Next — Audit Fixes
+## Now — Audit Fixes
 
 Findings from the [March 2026 code audit](audit.md). Ordered by impact and effort.
 
 ### Moderate effort
 
-- **Postgres transaction wrapper.** asyncpg auto-commits per `execute()` on separate pool connections. Multi-step ops (create_entry, delete_cascade) aren't atomic. Need a `transaction()` context manager. (audit M4)
+- **~~Postgres transaction wrapper.~~** (audit M4) → Done
 - **~~String-literal-aware placeholder translation.~~** (audit H5) → Done
 - **~~Config validation.~~** `_parse_int`/`_parse_float`/`_parse_provider` helpers with clear error messages. (audit M18)
 
@@ -64,12 +36,15 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 ## Later
 
+- **Graceful migration failures.** Schema migrations (`ALTER TABLE ADD COLUMN`) run on every startup. If the DB role lacks DDL privileges (common in locked-down Aurora/RDS deployments where initial schema was created by a privileged account), migrations crash the MCP server. Should catch permission errors, log a clear warning with the exact SQL to run manually, and let the server start — all new columns are nullable/optional.
+- **Reuse counting (KCS-inspired).** Track per-entry `reuse_count` (how often it appears in search results) as a diagnostic-only metric for the manager. Inspired by KCS "Reuse is Review" — the 80/20 insight that most articles are rarely reused while a few generate enormous value. Don't use for ranking (yet) — "appeared in results" ≠ "was useful." Surface in `search_stats` as "most/least returned entries" so the manager can prioritize maintenance.
 - **Conflict detection at write time.** Multiple contributors can store contradictory information with no signal. When a new entry is stored, the enricher should search for semantically similar entries and classify the relationship (supports, refines, conflicts_with, unrelated). `conflicts_with` edges get stored in the graph with the LLM's reasoning. At read time, formatters surface a `[CONFLICTING: kb-XXXXX]` badge so agents see both sides. Resolution uses the existing `supersedes` mechanism. Cost: one extra hybrid search + a few lines in the enricher prompt per store. Needs more design work before building — edge cases around context-dependent "conflicts" (different projects, different scopes) and how to avoid false positives.
 - **Multi-user access control.** Current model has attribution but zero isolation — any contributor can read/modify/delete any entry. Fine for trusted teams. If multi-tenant isolation is needed: Postgres row-level security or app-level access checks. (audit H1)
 - **Intra-cluster noise in search results.** Relative score thresholds cut cross-cluster noise but can't distinguish within a topic cluster. Needs semantic re-ranking: query-entity matching, personalized PageRank, or LLM-based re-scoring of top-k candidates.
 
 ## Done
 
+- Just-in-time preflight — `kb_preflight` tool returns project context primer (expiring entries, recent decisions/lessons, active conventions). CWD-based injection didn't work (MCP server CWD unreliable); tool-based approach works better.
 - Explorer write-back — chat agent tools (update_entry, ingest_url, get_entry), file upload + multi-URL ingest with SSE progress, project combo box, auto-start web server (KB_AUTO_EXPLORE, KB_EXPLORE_PORT).
 - Explorer Chat — `generate_chat(messages)` on LLMProvider protocol + all 3 clients, `ChatSession` with token budget, `/api/chat/stream` SSE endpoint, iMessage-style chat UI with slide animation, clickable citations that fly to graph nodes.
 - Graph Explorer Phase 1-2 + animated graph — `kb_explore` MCP tool, force-graph visualization, live web server (`personal-kb-web`), SSE streaming with agent traversal animation (node glow, particles, staggered reveal, progressive camera widening), query routing (explore/summarize), markdown rendering, info panel with on-demand entry details.
