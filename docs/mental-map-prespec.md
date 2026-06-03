@@ -1,6 +1,6 @@
 # Pre-Spec: Mental Map Nodes for Personal KB
 
-**Status:** Pre-spec for adversarial review. Decisions below are *starting positions*, not settled. The job of the multi-agent debate is to break them.
+**Status:** Debated 2026-06-03. Sections 1–6 are the original *starting positions* — preserved as the record of what went into the debate. **The settled design is §7, which supersedes the starting positions where they conflict.** §7 also corrects several factual errors in the starting positions (the prespec made claims about the codebase that turned out to be false — see §7.1).
 
 **Author/owner:** Jason
 **Date:** 2026-06-03
@@ -145,3 +145,90 @@ These are the seams most likely to fail. The debate should attack them directly.
 - Auto-synthesis beyond a clearly-marked draft mechanism (own track).
 - Cross-system shared-component topology (revisit after the tree-vs-DAG question is settled).
 - Any change to how detail entries themselves are stored or decayed.
+
+---
+
+## 7. Settled design (post-debate, 2026-06-03)
+
+A 4-angle × 2-round adversarial debate (Minimalist / Knowledge Architect / Retrieval-Harness Engineer / Lifecycle Steward), each grounded in the actual code, ran against §§1–6. This section records the resolution. Jason made the two irreducible calls (§7.6).
+
+### 7.1 Factual corrections to the starting positions
+
+All four agents independently verified these against the repo. The starting positions were wrong on each:
+
+1. **No `[CONFLICTING]` badge exists.** §3.6 justified `[POINTER-ROT]` as "analogous to the existing `[CONFLICTING]`/`[EXPIRES]` badges." Only `[EXPIRED]`/`[EXPIRES Nd]` render (`formatters.py`). Conflict detection is unbuilt (ROADMAP "Later", line 41). The precedent is a phantom — `[POINTER-ROT]` would be net-new, not a parallel render.
+2. **A new `entry_type` is not free pipeline reuse.** `HALF_LIVES[entry_type]` (`confidence/decay.py:56`) is hard-keyed with no default → a new enum member **KeyErrors on every decay call**. `kb_preflight` hardcodes `entry_type IN ('decision','lesson_learned')` and `= 'pattern_convention'` (`preflight.py:48,64`) → a new type is **invisible to the index surface (the headline use case)** until those WHERE clauses are edited. §3.1's "reuses the entire pipeline" omits these.
+3. **`contains`/`part_of` are not new edge types.** `graph/builder.py::_add_edge` persists arbitrary `edge_type` strings; `graph/queries.py` traverses arbitrary edge sets. The substrate is **already a DAG**. Zero schema work — and zero enforcement/traversal semantics. §3.3 oversells them both directions.
+4. **CWD scope detection was already tried, failed, and removed** ("MCP server CWD unreliable" — ROADMAP:47, `how_it_works.md:430`). §3.5's `CwdChanged` trigger resurrects the dead signal. CWD is at most a low-weight hint.
+5. **`kb_store` has zero dedup** (dedup lives only in `ingest/dedup_agent.py`, called only from `kb_ingest`). "Agents author maps while they still have context" → **guaranteed overlapping half-maps on day one** (Q7), not a someday-risk.
+6. **The decay self-heal trap.** Decay anchors to `max(created_at, last_accessed)` and `touch_accessed` bumps `last_accessed` on every read. A map's freshness therefore tracks **read frequency, not correctness** — a constantly-surfaced map stays "fresh" while its pointers rot; a correct-but-cold map trips stale. This is backwards for an orientation node and reframes the whole staleness design (§7.4).
+
+### 7.2 Structure — new `mental_map` entry_type (Jason's call)
+
+A new `mental_map` `EntryType`, reusing storage/versioning/FTS/edges. It earns enum identity (over a `factual_reference` tagged `map`) as the clean dispatch home for (a) a decoupled freshness policy and (b) the fact-free lint — a tagged `factual_reference` would decay on the wrong 90-day clock and is *allowed* to contain retrievable values, the one thing a map must never do.
+
+**Same-commit guard rails (mandatory — without these the type crashes or is invisible):**
+- `HALF_LIVES.get(entry_type, default)` (or special-case maps out of value-decay entirely, per §7.4) so a new member can never KeyError `confidence/decay.py`.
+- Add `mental_map` to `kb_preflight`'s hardcoded `entry_type` WHERE clauses (`preflight.py:48,64`) or maps never surface in the primer.
+
+### 7.3 The fact-free invariant — "no retrievable value in assertion position"
+
+The starting position's "every assertion resolves to an outbound edge" is **falsified by its own example**: *"the pipeline has three stages"* is a structural claim with no edge target, yet it can rot. Replace it with the sharper, enforceable boundary:
+
+> A map body may assert **structure and relationships** (counts of parts, "X calls Y", "look in Z") and **pointers**. It may **not** contain a **retrievable value** — a port, threshold, config string, signature. Those follow a pointer to a `factual_reference`.
+
+Discriminator: *would a reader act on this number/string directly, or follow it to a source?* Counts-of-parts are pointers-in-disguise (they tell you how many edges to expect); config values are facts. Enforce as a **soft lint heuristic** (numeral/identifier in assertion position), not a graph invariant. The ~1500-char cap is demoted to an **advisory proxy**, not the definition. The required-outbound-pointer rule stays (a map with zero pointers is an orphan note).
+
+### 7.4 Freshness = pointer-validity, not value-decay
+
+Because a map holds no retrievable values of its own (§7.3), value-decay is meaningless for it, and the read-frequency self-heal (§7.1.6) makes a decay clock actively misleading. So:
+
+- **Exempt `mental_map` from value-decay** (the `.get()` default returns no-decay / effectively-infinite half-life).
+- **Stale = a pointer no longer resolves.** On GET, resolve the map's outbound edges and surface inline any target that is `superseded_by` or deactivated — reusing the supersedes edges already in `graph/queries.py:252-269`. This is the **on-GET check**, not a new always-on badge subsystem.
+- **Cut freshness-inheritance entirely.** The `min()`/stalest-pointer function manufactures the prespec's own nightmare: one cold 90-day-half-life leaf pins a map below the 0.5 threshold permanently. It fights the existing model.
+- **Acceptance test:** reading a map keeps its effective state above threshold independent of leaf freshness (proves no permanent-staleness trap).
+
+### 7.5 Topology — DAG, not tree
+
+Ship `contains`/`part_of` as ordinary free-form edges (zero code). **Specify the model as a DAG:** a map node may have multiple `contains`-parents (shared component) and orient multiple components (cross-cutting concern like auth). Do **not** encode a single-parent tree constraint — it forces a falsehood on day one. Named three-tier nesting is *not* enforced in v1: ship flat-with-DAG-edges; add tier semantics only when a real map overflows one screen and demonstrably needs them.
+
+**Content bias (hard authoring rule):** maps should hold the **non-re-derivable** — cross-repo wiring, infra/runtime state, "why" rationale. An agent can re-`grep` local code a human can't, so restating-the-repo prose is low-value *and* a sprawl magnet. Note the Steward's sharpening: non-re-derivable content is exactly the content with **no self-correcting feedback loop** (a stale infra pointer is invisible until it misleads) — which is the strongest reason for human review and a low map count (§7.6).
+
+### 7.6 Authoring & sprawl — human-only for v1
+
+- **v1 = human-authored maps only.** No agent auto-authoring, no auto-synthesis in *any* phase. `kb_store` has no dedup gate, so capping authors caps sprawl for free.
+- **Before any agent-authored or synthesized maps:** build a store-time dedup gate for `mental_map` (hybrid-search same `project_ref`/scope on store, refuse-or-update if a same-component map exists) with a **named reconciliation owner** (update-existing vs create-new must be a decision, not an accident).
+- **Auto-synthesis is cut from every v1 phase** — not deferred as a "stretch track." A wrong synthesized draft is a confident-wrong pointer at scope-scale, the highest-blast-radius failure. It gets its own future spec and its own debate.
+
+### 7.7 Surfacing — pull now, push as packaged opt-in CLI hook tools (Jason's call)
+
+Both halves ship, but the labor splits the way the harness constraints force.
+
+**Pull (in-process, deterministic, v1 first):** extend `kb_preflight` to return a tag/type-filtered **Maps index** for an explicit `project_ref` — a few lines, in-process, testable against the eval corpus. The agent, seeing the index, calls `kb_get` (or `kb_map_get`) to pull full maps it judges relevant, then traverses edges to detail entries.
+
+**Push (packaged CLI hook tools — Jason's reframe):** the genuine cold-start gap is real and pull *cannot* close it — an agent can't request the auth map for a subsystem it doesn't know exists. But the push surface is **not** in-MCP-server hooks and **not** bespoke per-user `settings.json` glue. It's a small set of **CLI entrypoints shipped in the package** (`uv tool install`-able), which users wire into whatever harness hooks they have. Portable (any harness that can shell out), opt-in, documented. Rationale: a new entry_type changes what's *storable*; the push is what changes whether agents *proactively orient* — which is the actual observed gap.
+
+The CLI hook tools must obey the constraints the debate pinned down:
+- **Inject a factual, directory-style string** ("Maps for this system: [kb-00310] Ingestion — chunking, dedup, extraction. …"), **never imperative** — imperative phrasing trips prompt-injection defenses and gets surfaced to the user instead of used. (A hook can only inject a *string*; it cannot force a tool call — which is *why* push delivers an index and pull is the agent's choice.)
+- **Scope via FTS keyword match on map titles** — no embeddings (Ollama hop has fallback gaps), no per-turn LLM classifier. **Not CWD as anchor** (§7.1.4); CWD is at most a low-weight hint.
+- **Stay silent** unless: maps exist for the resolved scope ∧ the scope *changed* ∧ the map IDs aren't already in context.
+- **Cross-turn suppression via a per-session scratch file** (`~/.cache/personal_kb/injected-<session_id>`: surfaced map IDs + last resolved scope). Hooks are stateless between turns; without this file "only on change" is unimplementable.
+- **Read a denormalized on-disk maps index** that the MCP server writes on store/update, so the hook never needs a live MCP call — sidestepping the SessionStart-MCP-not-connected race. First `UserPromptSubmit` re-attempts as fallback.
+- **Push only the non-re-derivable maps** (§7.5). Local-code-structure maps are pull-on-demand at most — never pushed — which is the single biggest lever on the per-turn noise budget.
+
+### 7.8 v1 scope checklist
+
+- [ ] `mental_map` `EntryType` + same-commit guards: `HALF_LIVES` default, `kb_preflight` WHERE clauses.
+- [ ] Maps exempt from value-decay; on-GET pointer-validity check (reuse supersedes edges).
+- [ ] `contains`/`part_of` as free-form DAG edges (multi-parent allowed); required-outbound-pointer validation; no enforced tier nesting.
+- [ ] Fact-free **advisory** lint (retrievable-value-in-assertion heuristic); char cap advisory.
+- [ ] Human-authored only; auto-synthesis and agent auto-authoring out until a store-time dedup gate exists.
+- [ ] `kb_preflight` Maps-index (pull) — ship + eval first.
+- [ ] Packaged CLI hook tools (push): FTS-title scope, per-session scratch-file suppression, on-disk index, factual-not-imperative injection, non-re-derivable-only.
+- [ ] Acceptance test: a map cannot get stuck permanently stale.
+
+### 7.9 Still open (not blocking v1)
+
+- **Tier nesting semantics** — ship flat-with-DAG-edges; revisit named tiers when a real map overflows.
+- **Auto-synthesis** — its own future spec + debate; cut from all v1 phases.
+- **Per-turn noise tolerance** — only Jason's lived judgment after dogfooding can set the acceptable injection rate; the suppression gate is built tight by default.
