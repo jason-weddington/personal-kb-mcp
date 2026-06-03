@@ -64,16 +64,51 @@ Every new feature (not bug fixes) requires updating three things:
 
 **Process**: Use research agents (subagent_type `Explore`) to deep dive the codebase for exact function signatures, thresholds, data flow, and behavior. Parallelize with multiple agents when researching independent features. Write docs from the research reports — every statement must be verifiable against the code. Don't guess or paraphrase from memory; the agents have the source of truth.
 
-## Merge & Push Policy
+## Branch, Merge & Release Policy
 
-**Do not merge to main or push until the user confirms testing on the feature branch.** The workflow is:
+**The production boundary is GitHub, not `main`.** A ~60-person engineering org
+runs this server by `uvx`-ing the package straight from the `github` remote
+(`jason-weddington/personal-kb-mcp`). So **nothing reaches github except through
+a deliberate, vetted release** — `./release.sh`. The two remotes have very
+different trust levels:
 
-1. Commit on the feature branch
-2. Push the feature branch if needed (`git push origin feat/...`)
-3. **Stop and wait** — the user will test manually
-4. Only after the user confirms → merge to main and push
+| Remote | Host | Role | Push freely? |
+|--------|------|------|--------------|
+| `origin` | `git-host` (home lab) | Testing / backup | **Yes** — merge to `main` and push liberally |
+| `github` | `github.com/jason-weddington/personal-kb-mcp` | **Production** (team `uvx`'s from it) | **No** — only via `./release.sh` |
 
-Never squash-merge or push to main proactively. Ask if you're unsure whether the user has finished testing.
+### Day-to-day development (local, liberal)
+
+1. Branch: `git checkout -b feat/...` (or `fix/`, `chore/`, `docs/`).
+2. Code + commit on the branch.
+3. Test: `uv run pytest` must pass (the pre-push hook runs the full suite + coverage ≥ 80%).
+4. Squash-merge to `main`: `git checkout main && git merge --squash feat/... && git commit` (squash message must be a conventional commit — hook-enforced).
+5. **Push to `origin` freely**: `git push origin main`. This lands on the home-lab VM for testing. No tags, **never `github`**.
+6. Clean up: `git branch -D feat/...`.
+
+Merging to `main` and pushing to `origin` no longer requires waiting for manual
+testing — `main` accumulates verified-locally work between releases, and `origin`
+is the home-lab testing target. The old "stop and wait before merging" gate has
+moved to the **release** boundary below.
+
+### Release (deliberate, promotes to github)
+
+Run `./release.sh` only when local `main` is verified good and you intend to ship
+to the team. It:
+
+1. Asserts you're on `main` with a clean tree.
+2. `uv run semantic-release version --no-push --no-vcs-release` — bumps version, updates `CHANGELOG.md` + `uv.lock`, and tags.
+3. Pushes `main` + tags to **both** remotes: `origin` **and** `github`.
+4. Runs `./deploy.sh` if one exists (none today — the team consumes via `uvx`, which is pull-based).
+
+**Cutting a github release is the vetting checkpoint.** Confirm the work is good
+before running `./release.sh`; that is the moment 60 people get the new code.
+
+> Release machinery: `python-semantic-release` (dev dep) + `[tool.semantic_release]`
+> in `pyproject.toml`. The legacy per-commit auto-release post-commit hook was
+> removed (it bumped the version on every `main` commit, which is incompatible
+> with liberal merges). `push` is **not** a valid semantic-release config key in
+> v9+ — pushing is controlled by the `--no-push` flag in `release.sh`.
 
 ## Commit Convention
 
