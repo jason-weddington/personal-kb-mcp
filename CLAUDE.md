@@ -2,9 +2,14 @@
 
 ## Quick Reference
 
-- **Run tests**: `uv run pytest`
+- **Run tests**: `uv run pytest -m "not eval"` — the default for all iteration and CI. The `eval` marker covers the agent-baseline tests, which hit a **live Anthropic API** and rewrite baseline JSON files; **never run the bare `uv run pytest`** in a build/iteration loop (it's slow, nondeterministic, and dirties the tree). Run eval tests manually and deliberately — see "Search Quality Eval" below.
 - **Lint**: `uv run ruff check src/ tests/`
 - **Run server directly**: `uv run personal-kb`
+
+## For headless build agents
+
+- Iterate tests with `uv run pytest -m "not eval"` (see above). The pre-push hook already excludes eval; match it.
+- **Commit and push your feature branch incrementally** — after each meaningful, green step — so partial work survives a dispatch timeout instead of being lost. Don't save the single push for the very end.
 
 ## Architecture
 
