@@ -1,7 +1,7 @@
 """Tests for database connection and schema initialization."""
 
 import ssl
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -107,6 +107,10 @@ async def test_create_postgres_with_iam_auth(monkeypatch):
             side_effect=fake_create,
         ),
         patch("personal_kb.db.connection._check_deployment_config", new_callable=AsyncMock),
+        # Stub boto3 so the token factory builds without resolving real AWS
+        # credentials — building an rds client eagerly hits the credential
+        # chain, which makes this test depend on ambient `aws login` state.
+        patch("boto3.client", return_value=MagicMock()),
     ):
         await _create_postgres(
             "postgresql://myuser@aurora.cluster-xxx.us-east-1.rds.amazonaws.com:5432/kb"
