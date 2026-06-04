@@ -1,8 +1,9 @@
 """Tests for confidence decay model."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from personal_kb.confidence.decay import (
+    HALF_LIVES,
     STALENESS_THRESHOLD,
     compute_effective_confidence,
     staleness_warning,
@@ -112,6 +113,46 @@ def test_last_accessed_older_than_created_uses_created():
     )
     eff_no_access = compute_effective_confidence(1.0, EntryType.FACTUAL_REFERENCE, created, now)
     assert eff == eff_no_access
+
+
+def test_mental_map_never_decays():
+    """mental_map is exempt from value-decay — confidence stays at base forever."""
+    created = datetime(2021, 1, 1, tzinfo=UTC)
+    now = created + timedelta(days=1825)  # 5 years later
+    eff = compute_effective_confidence(1.0, EntryType.MENTAL_MAP, created, now)
+    assert eff == 1.0
+
+
+def test_mental_map_does_not_raise_at_any_age():
+    """mental_map must not raise regardless of age (it is not in HALF_LIVES)."""
+    created = datetime(2000, 1, 1, tzinfo=UTC)
+    for years in (0, 1, 10, 50):
+        now = created + timedelta(days=365 * years)
+        eff = compute_effective_confidence(0.9, EntryType.MENTAL_MAP, created, now)
+        assert eff == 0.9
+
+
+def test_half_life_fallback_for_unmapped_type(monkeypatch):
+    """An EntryType not in HALF_LIVES decays against the 365.0 fallback — no KeyError.
+
+    Exercised independently of mental_map (which early-returns before reaching the
+    .get): a temporarily-unmapped member must decay against the 365.0 default.
+    """
+    # Direct fallback assertion: MENTAL_MAP is genuinely absent from HALF_LIVES.
+    assert HALF_LIVES.get(EntryType.MENTAL_MAP, 365.0) == 365.0
+
+    # Branch coverage: simulate an unmapped member and confirm graceful degradation.
+    monkeypatch.delitem(HALF_LIVES, EntryType.DECISION)
+    created = datetime(2025, 1, 1, tzinfo=UTC)
+    now = datetime(2026, 1, 1, tzinfo=UTC)  # 365 days = 1 half-life at the fallback
+    eff = compute_effective_confidence(1.0, EntryType.DECISION, created, now)
+    # 1 half-life against the 365.0 fallback → ~0.5
+    assert 0.45 < eff < 0.55
+
+
+def test_mental_map_default_never_stale():
+    """A default-0.9 mental_map never crosses the staleness threshold."""
+    assert staleness_warning(0.9, EntryType.MENTAL_MAP) is None
 
 
 def test_last_accessed_naive_timezone_handled():

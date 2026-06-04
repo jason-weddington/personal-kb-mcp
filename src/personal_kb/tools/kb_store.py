@@ -1,6 +1,7 @@
 """kb_store MCP tool — create and update knowledge entries."""
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -10,7 +11,7 @@ from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence
 from personal_kb.config import is_safety_skip
-from personal_kb.graph.builder import GraphBuilder
+from personal_kb.graph.builder import GraphBuilder, _as_list
 from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.ingest.safety import detect_secrets_in_content
 from personal_kb.models.entry import EntryType, KnowledgeEntry
@@ -23,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 _VALID_SENSITIVITY = {"internal", "restricted", "public"}
 
+_KB_ID_RE = re.compile(r"kb-\d{5}")
+
+ORPHAN_MAP_ERROR = (
+    "Error: A mental_map entry requires at least one outbound pointer "
+    "(a kb-XXXXX reference in knowledge_details, or a supersedes/related_entities hint). "
+    "A map with zero pointers is an orphan note, not a map."
+)
+
 
 def _validate_sensitivity(sensitivity: str | None) -> str | None:
     """Return an error string if sensitivity is invalid, None if OK."""
@@ -30,6 +39,50 @@ def _validate_sensitivity(sensitivity: str | None) -> str | None:
         valid = ", ".join(sorted(_VALID_SENSITIVITY))
         return f'Error: Invalid sensitivity "{sensitivity}". Must be one of: {valid}'
     return None
+
+
+def _mental_map_has_pointer(
+    knowledge_details: str,
+    hints: dict[str, object] | None,
+    superseded_by: str | None = None,
+) -> bool:
+    """Return True if a mental_map entry has at least one outbound pointer.
+
+    Closed checklist mirroring graph/builder.py's edge-producing logic exactly
+    (builder.py:52-86), so a future builder change is the only place this can
+    diverge. An outbound pointer exists iff ANY of:
+      (a) a ``kb-XXXXX`` reference appears in knowledge_details;
+      (b) a ``supersedes`` hint contains a ``kb-XXXXX`` id;
+      (c) ``superseded_by`` is a non-empty string;
+      (d) a ``related_entities`` hint contains a dict with a non-empty
+          ``id``/``target`` OR a bare non-empty string.
+    Tag/project/person/tool hints do NOT count.
+    """
+    # (a) kb-XXXXX reference in knowledge_details (mirrors builder.py:69 finditer)
+    if knowledge_details and _KB_ID_RE.search(knowledge_details):
+        return True
+
+    h = hints or {}
+
+    # (b) supersedes hint (mirrors builder.py:52-54 fullmatch)
+    for target in _as_list(h.get("supersedes")):
+        if isinstance(target, str) and _KB_ID_RE.fullmatch(target):
+            return True
+
+    # (c) superseded_by reversed edge (mirrors builder.py:63-65)
+    if isinstance(superseded_by, str) and superseded_by:
+        return True
+
+    # (d) related_entities — dict id/target OR bare non-empty str (mirrors builder.py:77-86)
+    for rel in _as_list(h.get("related_entities")):
+        if isinstance(rel, dict):
+            ref = rel.get("id") or rel.get("target")
+            if isinstance(ref, str) and ref:
+                return True
+        elif isinstance(rel, str) and rel:
+            return True
+
+    return False
 
 
 def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
@@ -61,7 +114,13 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         ] = "",
         entry_type: Annotated[
             EntryType | None,
-            Field(description="factual_reference, decision, pattern_convention, lesson_learned"),
+            Field(
+                description=(
+                    "factual_reference, decision, pattern_convention, lesson_learned, "
+                    "mental_map: structural orientation node — pointers/relationships only, "
+                    "no retrievable values"
+                )
+            ),
         ] = None,
         project_ref: Annotated[
             str | None, Field(description="Project tag/category for filtering")
@@ -76,7 +135,8 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 description=(
                     "Initial confidence score (0.0-1.0). "
                     "Decays over time based on entry_type half-life: "
-                    "factual_reference 90d, decision 1y, pattern_convention 2y, lesson_learned 5y. "
+                    "factual_reference 90d, decision 1y, pattern_convention 2y, lesson_learned 5y, "
+                    "mental_map: no decay (exempt). "
                     "Lower for uncertain info, higher for verified facts. Default 0.9"
                 ),
                 ge=0.0,
@@ -145,6 +205,8 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         - decision: "chose X because Y" — history is critical
         - pattern_convention: coding standards, workflow preferences
         - lesson_learned: mistakes, debugging insights
+        - mental_map: structural orientation node — pointers/relationships only,
+          no retrievable values; requires at least one outbound pointer
         """
         if ctx is None:
             raise RuntimeError("Context not injected")
@@ -234,6 +296,13 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         if entry_type is None:
             entry_type = EntryType.FACTUAL_REFERENCE
+
+        # Mental maps are orientation nodes defined by their pointers. Reject a
+        # zero-pointer map BEFORE create_entry so no orphan row/version is written.
+        if entry_type == EntryType.MENTAL_MAP and not _mental_map_has_pointer(
+            knowledge_details, hints
+        ):
+            return ORPHAN_MAP_ERROR
 
         # Compute expires_at from TTL if provided
         expires_at = None

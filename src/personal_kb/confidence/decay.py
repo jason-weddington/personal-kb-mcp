@@ -30,6 +30,12 @@ def compute_effective_confidence(
     The decay anchor is the most recent of created_at and last_accessed,
     so entries that keep getting retrieved maintain their confidence.
     """
+    # mental_map entries are structural orientation nodes, not value-bearing
+    # assertions — they never decay on a clock (§7.4). Read-frequency self-heal
+    # is irrelevant since there is no value to go stale.
+    if entry_type == EntryType.MENTAL_MAP:
+        return base_confidence
+
     if now is None:
         now = datetime.now(UTC)
 
@@ -53,7 +59,7 @@ def compute_effective_confidence(
     if age_days <= 0:
         return base_confidence
 
-    half_life = HALF_LIVES[entry_type]
+    half_life = HALF_LIVES.get(entry_type, 365.0)
     decay_factor = math.pow(2, -age_days / half_life)
     return round(base_confidence * decay_factor, 4)
 

@@ -14,6 +14,7 @@ class EntryType(StrEnum):
     DECISION = "decision"
     PATTERN_CONVENTION = "pattern_convention"
     LESSON_LEARNED = "lesson_learned"
+    MENTAL_MAP = "mental_map"
 
 
 class KnowledgeEntry(BaseModel):
