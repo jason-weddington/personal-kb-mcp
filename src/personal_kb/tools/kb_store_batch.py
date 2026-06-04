@@ -13,6 +13,7 @@ from personal_kb.config import is_safety_skip
 from personal_kb.ingest.safety import detect_secrets_in_content
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.formatters import format_entry_compact, format_result_list
+from personal_kb.tools.map_lint import lint_map_body
 from personal_kb.tools.ttl import compute_expires_at
 
 if TYPE_CHECKING:
@@ -153,10 +154,16 @@ async def batch_store_entries(
             refreshed.entry_type,
             anchor,
         )
-        formatted.append(
-            f"Created {refreshed.id} (v{refreshed.version})\n"
-            + format_entry_compact(refreshed, eff)
+        block = f"Created {refreshed.id} (v{refreshed.version})\n" + format_entry_compact(
+            refreshed, eff
         )
+        # Advisory mental_map lint, attributed to this specific entry's block.
+        # Never fails or skips the entry; purely informational.
+        if refreshed.entry_type == EntryType.MENTAL_MAP and refreshed.knowledge_details:
+            warnings = lint_map_body(refreshed.knowledge_details)
+            if warnings:
+                block += "\n" + "\n".join(warnings)
+        formatted.append(block)
 
     # Build header with failure details
     if failed and not created:

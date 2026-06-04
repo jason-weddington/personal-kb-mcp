@@ -58,6 +58,40 @@ async def test_batch_store_three_entries(db, store, graph_builder):
 
 
 @pytest.mark.asyncio
+async def test_batch_mental_map_advisory_attributed(db, store, graph_builder):
+    """A batch mental_map with a config value reports created and shows the advisory;
+    a sibling clean non-map entry's block does NOT contain the advisory."""
+    embedder = FakeEmbedder(db)
+    ls = _lifespan(db, store, graph_builder, embedder)
+
+    entries = [
+        _entry_dict(
+            short_title="Net map",
+            long_title="Network orientation",
+            knowledge_details="orients kb-00050; the explorer runs on port 8767",
+            entry_type="mental_map",
+        ),
+        _entry_dict(
+            short_title="Plain fact",
+            long_title="A plain fact",
+            knowledge_details="some clean prose with no values",
+            entry_type="factual_reference",
+        ),
+    ]
+
+    result = await batch_store_entries(entries, ls)
+    assert "2 entries created" in result
+    # Advisory appears exactly once, attributed to the offending map entry.
+    assert result.count("Map lint (advisory):") == 1
+
+    # The advisory is in the map's block (kb-00001), not the sibling's (kb-00002).
+    map_idx = result.index("kb-00001")
+    sibling_idx = result.index("kb-00002")
+    advisory_idx = result.index("Map lint (advisory):")
+    assert map_idx < advisory_idx < sibling_idx
+
+
+@pytest.mark.asyncio
 async def test_batch_store_with_enrichment(db, store, graph_builder):
     """Batch store with enrichment uses a single LLM call."""
     embedder = FakeEmbedder(db)

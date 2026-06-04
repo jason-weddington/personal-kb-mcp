@@ -18,6 +18,7 @@ from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.formatters import format_entry_compact
+from personal_kb.tools.map_lint import lint_map_body
 from personal_kb.tools.ttl import compute_expires_at
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,27 @@ def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
     if warning:
         line = f"{warning}\n\n{line}"
     return line
+
+
+def _prepend_map_advisories(result: str, warnings: list[str]) -> str:
+    """Insert advisory mental_map lint lines into a store result.
+
+    Advisories land ABOVE the Created/Updated compact block but BELOW any
+    backend warning that ``format_store_result`` already prepended (lines
+    46-48). The prepend stays at this tool layer — it is NOT threaded into the
+    shared ``format_store_result`` (which serves non-map stores too). The store
+    always succeeds; these warnings are informational only.
+    """
+    if not warnings:
+        return result
+    from personal_kb.config import get_backend_warning
+
+    advisory = "\n".join(warnings)
+    backend = get_backend_warning()
+    if backend and result.startswith(backend):
+        rest = result[len(backend) :].lstrip("\n")
+        return f"{backend}\n\n{advisory}\n\n{rest}"
+    return f"{advisory}\n\n{result}"
 
 
 def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
@@ -275,7 +297,14 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
             await _build_graph(graph_builder, entry)
             await _enrich_graph(graph_enricher, entry)
             entry = await store.get_entry(entry.id) or entry
-            return format_store_result(entry, is_update=True)
+            result = format_store_result(entry, is_update=True)
+            # Advisory mental_map lint — gate on the RE-FETCHED entry's type
+            # (the entry_type param is None on metadata-only updates) and only
+            # when a new body was supplied. Lint never rejects; the update has
+            # already succeeded.
+            if entry.entry_type == EntryType.MENTAL_MAP and knowledge_details:
+                result = _prepend_map_advisories(result, lint_map_body(knowledge_details))
+            return result
 
         # --- Create path ---
         if not short_title or not long_title or not knowledge_details:
@@ -335,7 +364,13 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         await _enrich_graph(graph_enricher, entry)
         entry = await store.get_entry(entry.id) or entry
 
-        return format_store_result(entry, is_update=False)
+        result = format_store_result(entry, is_update=False)
+        # Advisory mental_map lint — gated here at the call site (not inside
+        # format_store_result, which is shared by non-map stores). The store
+        # always succeeds; the entry is always created.
+        if entry.entry_type == EntryType.MENTAL_MAP and knowledge_details:
+            result = _prepend_map_advisories(result, lint_map_body(knowledge_details))
+        return result
 
 
 async def _build_graph(graph_builder: GraphBuilder, entry: KnowledgeEntry) -> None:

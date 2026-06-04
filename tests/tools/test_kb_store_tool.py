@@ -1,6 +1,6 @@
 """Tests for the kb_store MCP tool logic."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -280,6 +280,107 @@ async def test_non_mental_map_zero_pointers_still_succeeds(tool_context):
     )
     assert "Created" in result
     assert await _entry_count(lifespan["db"]) == 1
+
+
+# --- advisory mental_map lint at the store call site ---
+
+
+@pytest.mark.asyncio
+async def test_mental_map_create_with_value_surfaces_advisory(tool_context):
+    """A mental_map create with a config value in the body returns Created + advisory."""
+    ctx, lifespan = tool_context
+    kb_store = _register_and_capture()
+    result = await kb_store(
+        short_title="Net map",
+        long_title="Network orientation",
+        knowledge_details="orients kb-00050; the explorer runs on port 8767",
+        entry_type=EntryType.MENTAL_MAP,
+        ctx=ctx,
+    )
+    assert "Created kb-" in result
+    assert "Map lint (advisory):" in result
+    # Store still succeeds — entry was created.
+    assert await _entry_count(lifespan["db"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_mental_map_backend_warning_precedes_lint(tool_context):
+    """When both a backend warning and a lint advisory are present, backend comes first."""
+    ctx, _lifespan = tool_context
+    kb_store = _register_and_capture()
+    with patch(
+        "personal_kb.config.get_backend_warning",
+        return_value="Backend fallback: using degraded mode",
+    ):
+        result = await kb_store(
+            short_title="Net map",
+            long_title="Network orientation",
+            knowledge_details="orients kb-00050; the explorer runs on port 8767",
+            entry_type=EntryType.MENTAL_MAP,
+            ctx=ctx,
+        )
+    assert "Backend fallback" in result
+    assert "Map lint (advisory):" in result
+    assert result.index("Backend fallback") < result.index("Map lint (advisory):")
+
+
+@pytest.mark.asyncio
+async def test_mental_map_update_with_body_surfaces_advisory(tool_context):
+    """Update with a new body and NO entry_type param still lints (gate reads persisted type)."""
+    ctx, _lifespan = tool_context
+    kb_store = _register_and_capture()
+    created = await kb_store(
+        short_title="Net map",
+        long_title="Network orientation",
+        knowledge_details="orients kb-00050; clean orientation prose",
+        entry_type=EntryType.MENTAL_MAP,
+        ctx=ctx,
+    )
+    assert "Map lint (advisory):" not in created  # clean body, no advisory
+    result = await kb_store(
+        update_entry_id="kb-00001",
+        knowledge_details="orients kb-00050; the explorer runs on port 8767",
+        ctx=ctx,  # NOTE: no entry_type argument
+    )
+    assert "Updated kb-00001" in result
+    assert "Map lint (advisory):" in result
+
+
+@pytest.mark.asyncio
+async def test_mental_map_metadata_only_update_skips_lint(tool_context):
+    """A metadata-only update (no knowledge_details) returns Updated with NO advisory."""
+    ctx, _lifespan = tool_context
+    kb_store = _register_and_capture()
+    await kb_store(
+        short_title="Net map",
+        long_title="Network orientation",
+        knowledge_details="orients kb-00050; the explorer runs on port 8767",
+        entry_type=EntryType.MENTAL_MAP,
+        ctx=ctx,
+    )
+    result = await kb_store(
+        update_entry_id="kb-00001",
+        tags=["new-tag"],
+        ctx=ctx,  # no knowledge_details — metadata-only
+    )
+    assert "Updated kb-00001" in result
+    assert "Map lint (advisory):" not in result
+
+
+@pytest.mark.asyncio
+async def test_non_map_create_is_not_linted(tool_context):
+    """A factual_reference with a numeral body is never linted (call-site gating)."""
+    ctx, _lifespan = tool_context
+    kb_store = _register_and_capture()
+    result = await kb_store(
+        short_title="Fact",
+        long_title="A fact",
+        knowledge_details="the explorer runs on port 8767",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        ctx=ctx,
+    )
+    assert "Created kb-" in result
+    assert "Map lint (advisory):" not in result
 
 
 @pytest.mark.asyncio
