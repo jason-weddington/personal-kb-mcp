@@ -155,6 +155,20 @@ def test_mental_map_default_never_stale():
     assert staleness_warning(0.9, EntryType.MENTAL_MAP) is None
 
 
+def test_mental_map_permanent_staleness_acceptance():
+    """§7.4 acceptance: a 10-year-old mental_map stays above the staleness floor.
+
+    Executable proof of the no-permanent-staleness-trap property. Asserts ONLY
+    the ``>= STALENESS_THRESHOLD`` invariant (not an exact value or ``== base``)
+    so it passes under either exemption implementation foundation may choose:
+    a return-base-unchanged short-circuit (gives exactly base) or an
+    effectively-infinite half-life (decays imperceptibly but still >= 0.5).
+    """
+    now = datetime.now(UTC)
+    eff = compute_effective_confidence(0.9, EntryType.MENTAL_MAP, now - timedelta(days=3650), now)
+    assert eff >= STALENESS_THRESHOLD
+
+
 def test_last_accessed_naive_timezone_handled():
     """Naive last_accessed datetime should work (assumed UTC)."""
     created = datetime(2025, 1, 1, tzinfo=UTC)

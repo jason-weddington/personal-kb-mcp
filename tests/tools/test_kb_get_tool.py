@@ -2,14 +2,24 @@
 
 import pytest
 
-from personal_kb.db.queries import get_entry, touch_accessed
+from personal_kb.db.queries import (
+    deactivate_entry_db,
+    get_entry,
+    touch_accessed,
+    update_entry,
+)
+from personal_kb.graph.builder import GraphBuilder
 from personal_kb.models.entry import EntryType
 from personal_kb.tools.formatters import format_entry_full, format_result_list
-from personal_kb.tools.kb_get import _MAX_IDS
+from personal_kb.tools.kb_get import _MAX_IDS, _pointer_rot_note
 
 
 async def _kb_get_logic(db, ids: list[str]) -> str:
-    """Replicate kb_get logic for testing without MCP context."""
+    """Replicate kb_get logic for testing without MCP context.
+
+    Must stay in lockstep with the real kb_get tool body — both call the
+    same ``_pointer_rot_note`` helper so the rot-note rendering cannot drift.
+    """
     if len(ids) > _MAX_IDS:
         return f"Error: Maximum {_MAX_IDS} IDs per request (got {len(ids)})."
 
@@ -20,7 +30,11 @@ async def _kb_get_logic(db, ids: list[str]) -> str:
         if entry is None or not entry.is_active:
             formatted.append(f"[{eid}] not found")
         else:
-            formatted.append(format_entry_full(entry))
+            rendered = format_entry_full(entry)
+            note = await _pointer_rot_note(db, entry)
+            if note is not None:
+                rendered = f"{rendered}\n{note}"
+            formatted.append(rendered)
             accessed_ids.append(eid)
 
     if accessed_ids:
@@ -161,3 +175,217 @@ async def test_get_does_not_touch_missing_entries(db, store):
     fetched = await get_entry(db, entry.id)
     assert fetched is not None
     assert fetched.last_accessed is None
+
+
+# --- Pointer-rot tests for mental_map (§7.4) ---------------------------------
+
+
+async def _make_superseded(db, target_id: str, replacement_id: str) -> None:
+    """Mark ``target_id`` as superseded by ``replacement_id``.
+
+    KnowledgeStore.create_entry has no superseded_by parameter, so we re-fetch
+    the row, copy with superseded_by set, and persist via the DB-level
+    update_entry. Caller is responsible for the replacement existing or not —
+    we only mutate the target.
+    """
+    target = await get_entry(db, target_id)
+    assert target is not None
+    mutated = target.model_copy(update={"superseded_by": replacement_id})
+    await update_entry(db, mutated)
+
+
+async def _seed_graph(builder: GraphBuilder, *entries) -> None:
+    """Populate graph_nodes for the given entries via the builder.
+
+    graph_edges has a FOREIGN KEY on graph_nodes(node_id), so both source and
+    target nodes must exist before ``_add_edge`` can run. KnowledgeStore.
+    create_entry does not author graph nodes — that's normally the enricher's
+    job — so tests have to seed the graph explicitly.
+    """
+    for entry in entries:
+        await builder.build_for_entry(entry)
+
+
+@pytest.mark.asyncio
+async def test_mental_map_renders_superseded_pointer(db, store, graph_builder):
+    """(a) Map with one superseded pointer target renders 'superseded by' line."""
+    target = await store.create_entry(
+        short_title="Old fact",
+        long_title="Old factual entry",
+        knowledge_details="The old way.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    replacement = await store.create_entry(
+        short_title="New fact",
+        long_title="New factual entry",
+        knowledge_details="The new way.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await _make_superseded(db, target.id, replacement.id)
+
+    mmap = await store.create_entry(
+        short_title="Map",
+        long_title="Mental map",
+        knowledge_details="Orientation map.",
+        entry_type=EntryType.MENTAL_MAP,
+    )
+    await _seed_graph(graph_builder, target, replacement, mmap)
+    await graph_builder._add_edge(mmap.id, target.id, "references")
+
+    refetched = await get_entry(db, target.id)
+    assert refetched is not None and refetched.superseded_by == replacement.id
+
+    result = await _kb_get_logic(db, [mmap.id])
+    assert "  Pointer-rot:" in result
+    assert f"    [{target.id}] superseded by [{replacement.id}]" in result
+    assert "deactivated" not in result
+
+
+@pytest.mark.asyncio
+async def test_mental_map_renders_deactivated_pointer(db, store, graph_builder):
+    """(b) Map with one deactivated (not-superseded) target renders 'deactivated'."""
+    target = await store.create_entry(
+        short_title="Dead",
+        long_title="Deactivated target",
+        knowledge_details="Gone.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await deactivate_entry_db(db, target.id)
+
+    mmap = await store.create_entry(
+        short_title="Map",
+        long_title="Mental map",
+        knowledge_details="Orientation map.",
+        entry_type=EntryType.MENTAL_MAP,
+    )
+    await _seed_graph(graph_builder, target, mmap)
+    await graph_builder._add_edge(mmap.id, target.id, "references")
+
+    refetched = await get_entry(db, target.id)
+    assert refetched is not None
+    assert refetched.is_active is False
+    assert refetched.superseded_by is None
+
+    result = await _kb_get_logic(db, [mmap.id])
+    assert "  Pointer-rot:" in result
+    assert f"    [{target.id}] deactivated" in result
+    assert "superseded by" not in result
+
+
+@pytest.mark.asyncio
+async def test_mental_map_all_healthy_targets_silent(db, store, graph_builder):
+    """(c) Map with all-healthy targets renders NO rot note."""
+    t1 = await store.create_entry(
+        short_title="Healthy 1",
+        long_title="First healthy",
+        knowledge_details="Active and current.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    t2 = await store.create_entry(
+        short_title="Healthy 2",
+        long_title="Second healthy",
+        knowledge_details="Active and current.",
+        entry_type=EntryType.DECISION,
+    )
+
+    mmap = await store.create_entry(
+        short_title="Map",
+        long_title="Mental map",
+        knowledge_details="Orientation map.",
+        entry_type=EntryType.MENTAL_MAP,
+    )
+    await _seed_graph(graph_builder, t1, t2, mmap)
+    await graph_builder._add_edge(mmap.id, t1.id, "references")
+    await graph_builder._add_edge(mmap.id, t2.id, "contains")
+
+    result = await _kb_get_logic(db, [mmap.id])
+    assert "Pointer-rot" not in result
+    assert "superseded by" not in result
+    assert "deactivated" not in result
+
+
+@pytest.mark.asyncio
+async def test_non_map_pointing_at_superseded_target_silent(db, store, graph_builder):
+    """(d) Non-mental_map entry pointing at a superseded target renders NO rot note.
+
+    Also asserts byte-identical output to the no-edge baseline: the map-only
+    check must not change rendering for the 4 pre-existing entry types.
+    """
+    target = await store.create_entry(
+        short_title="Old",
+        long_title="Old fact",
+        knowledge_details="The old way.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    replacement = await store.create_entry(
+        short_title="New",
+        long_title="New fact",
+        knowledge_details="The new way.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await _make_superseded(db, target.id, replacement.id)
+
+    non_map = await store.create_entry(
+        short_title="A decision",
+        long_title="A decision pointing somewhere",
+        knowledge_details="Points at the old fact.",
+        entry_type=EntryType.DECISION,
+    )
+    await _seed_graph(graph_builder, target, replacement, non_map)
+    await graph_builder._add_edge(non_map.id, target.id, "references")
+
+    result = await _kb_get_logic(db, [non_map.id])
+    assert "Pointer-rot" not in result
+    assert "superseded by" not in result
+    assert "deactivated" not in result
+
+    # Byte-identical guarantee: the helper returns None for non-map entries,
+    # so the rendered output equals format_entry_full + the format_result_list
+    # wrapper — no extra bytes appended.
+    fetched = await get_entry(db, non_map.id)
+    assert fetched is not None
+    expected = format_result_list([format_entry_full(fetched)])
+    # Drop the last_accessed-touched timestamp from comparison by re-fetching
+    # the rendered baseline through the same code path on a fresh row state.
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_mental_map_superseded_and_deactivated_renders_superseded_form(
+    db, store, graph_builder
+):
+    """(e) Target both superseded AND deactivated → SUPERSEDED form (precedence)."""
+    target = await store.create_entry(
+        short_title="Both",
+        long_title="Both rotted",
+        knowledge_details="Superseded and deactivated.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    replacement = await store.create_entry(
+        short_title="Replacement",
+        long_title="The replacement",
+        knowledge_details="Live.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await _make_superseded(db, target.id, replacement.id)
+    await deactivate_entry_db(db, target.id)
+
+    refetched = await get_entry(db, target.id)
+    assert refetched is not None
+    assert refetched.superseded_by == replacement.id
+    assert refetched.is_active is False
+
+    mmap = await store.create_entry(
+        short_title="Map",
+        long_title="Mental map",
+        knowledge_details="Orientation map.",
+        entry_type=EntryType.MENTAL_MAP,
+    )
+    await _seed_graph(graph_builder, target, replacement, mmap)
+    await graph_builder._add_edge(mmap.id, target.id, "references")
+
+    result = await _kb_get_logic(db, [mmap.id])
+    assert "  Pointer-rot:" in result
+    # Precedence: superseded form wins; the deactivated form must NOT appear.
+    assert f"    [{target.id}] superseded by [{replacement.id}]" in result
+    assert f"    [{target.id}] deactivated" not in result
