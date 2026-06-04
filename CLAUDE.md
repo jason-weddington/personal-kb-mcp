@@ -10,6 +10,8 @@
 
 - Iterate tests with `uv run pytest -m "not eval"` (see above). The pre-push hook already excludes eval; match it.
 - **Commit and push your feature branch incrementally** — after each meaningful, green step — so partial work survives a dispatch timeout instead of being lost. Don't save the single push for the very end.
+- **`sqlite-vec` may be missing in your sandbox.** If you see ~59 failures of the form `OperationalError: no such table: knowledge_vec`, that is the native `sqlite-vec` extension not being loaded in this environment — it is **environmental, not caused by your change** (confirm by stashing your work and seeing the same failures on the clean base). Do **not** try to fix them. Run the **targeted tests for your change** to prove correctness, then `git push --no-verify` with a comment listing exactly which failures are the environmental `knowledge_vec` ones so the reviewer can run the full gate locally where `sqlite-vec` is installed.
+- **Once you've pushed your final branch and posted your completion comment, you are done — stop.** Do not keep trying to make the full in-sandbox suite pass; you'll just burn the dispatch budget to a timeout on environmental failures you can't fix.
 
 ## Architecture
 
