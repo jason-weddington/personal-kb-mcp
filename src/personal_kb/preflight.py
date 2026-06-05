@@ -69,6 +69,24 @@ def _conventions_sql(team: str | None) -> tuple[str, bool]:
     return sql, team is not None
 
 
+def _maps_sql(team: str | None) -> tuple[str, bool]:
+    """Build mental_map index SQL. Returns (sql, has_team_param).
+
+    Mental maps are orientation nodes; surfacing their titles lets an agent
+    discover which maps exist for a project and pull only the ones it needs.
+    """
+    sql = (
+        "SELECT id, entry_type, short_title "
+        "FROM knowledge_entries "
+        "WHERE is_active = 1 AND project_ref = ? "
+        "AND entry_type = 'mental_map' "
+    )
+    if team:
+        sql += _TEAM_CLAUSE
+    sql += "ORDER BY created_at DESC LIMIT 5"
+    return sql, team is not None
+
+
 _MAX_RELATED = 5
 
 
@@ -226,6 +244,7 @@ async def build_project_context(
     exp_sql, exp_has_team = _expiring_sql(team)
     rec_sql, rec_has_team = _recent_sql(team, has_since=since_iso is not None)
     conv_sql, conv_has_team = _conventions_sql(team)
+    maps_sql, maps_has_team = _maps_sql(team)
 
     exp_params: list[str] = [project_ref, grace_start, horizon_end]
     if exp_has_team:
@@ -241,7 +260,11 @@ async def build_project_context(
     if conv_has_team:
         conv_params.append(team)  # type: ignore[arg-type]
 
-    # Run all three queries
+    maps_params: list[str] = [project_ref]
+    if maps_has_team:
+        maps_params.append(team)  # type: ignore[arg-type]
+
+    # Run all four queries
     exp_cursor = await db.execute(exp_sql, exp_params)
     expiring = await exp_cursor.fetchall()
 
@@ -251,18 +274,22 @@ async def build_project_context(
     conv_cursor = await db.execute(conv_sql, conv_params)
     conventions = await conv_cursor.fetchall()
 
+    maps_cursor = await db.execute(maps_sql, maps_params)
+    maps = await maps_cursor.fetchall()
+
     # Graph expansion: find decisions/lessons from other projects connected
     # via shared tags (tags that appear on 2+ of this project's entries).
     project_entry_ids = {r[0] for r in expiring}
     project_entry_ids |= {r[0] for r in recent}
     project_entry_ids |= {r[0] for r in conventions}
+    project_entry_ids |= {r[0] for r in maps}
 
     related = await _graph_related(db, project_ref, project_entry_ids, team=team)
 
-    if not expiring and not recent and not conventions and not related:
+    if not expiring and not recent and not conventions and not maps and not related:
         return f"No entries found for project '{project_ref}'."
 
-    total = len(expiring) + len(recent) + len(conventions) + len(related)
+    total = len(expiring) + len(recent) + len(conventions) + len(maps) + len(related)
     lines = [f"{project_ref} ({total} entries)"]
     lines.append("Use kb_get to read full details for any entry below.")
 
@@ -282,6 +309,11 @@ async def build_project_context(
     if conventions:
         lines.append("\nConventions:")
         for row in conventions:
+            lines.append(f"  - {_format_toc_line(row)}")
+
+    if maps:
+        lines.append("\nMaps:")
+        for row in maps:
             lines.append(f"  - {_format_toc_line(row)}")
 
     if related:

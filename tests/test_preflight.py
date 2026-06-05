@@ -653,3 +653,42 @@ class TestGraphExpansion:
         assert "kb-00052" not in result
 
         await db.close()
+
+
+class TestMapsSection:
+    async def test_no_maps_heading_when_none(self, preflight_db) -> None:
+        """A project with no mental_map entries renders no Maps section."""
+        result = await build_project_context(preflight_db, "my-project")
+        assert "Maps:" not in result
+
+    async def test_maps_section_renders(self) -> None:
+        """A mental_map entry surfaces in a dedicated, factual Maps section."""
+        from personal_kb.db.connection import create_connection
+
+        db = await create_connection(":memory:", embedding_dim=64)
+        now = datetime.now(UTC).isoformat()
+        await db.execute(
+            "INSERT INTO knowledge_entries "
+            "(id, project_ref, short_title, long_title, knowledge_details, "
+            "entry_type, created_at, updated_at, expires_at, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                "kb-09001",
+                "map-proj",
+                "Ingestion map",
+                "Ingestion pipeline orientation",
+                "see kb-00001",
+                "mental_map",
+                now,
+                now,
+                None,
+                1,
+            ],
+        )
+        await db.commit()
+        try:
+            result = await build_project_context(db, "map-proj")
+            assert "Maps:" in result
+            assert "  - [kb-09001] mental_map — Ingestion map" in result
+        finally:
+            await db.close()
