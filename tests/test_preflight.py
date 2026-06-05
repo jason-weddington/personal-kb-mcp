@@ -689,6 +689,11 @@ class TestMapsSection:
         try:
             result = await build_project_context(db, "map-proj")
             assert "Maps:" in result
-            assert "  - [kb-09001] mental_map — Ingestion map" in result
+            # Render is [id] short_title — long_title (long_title = orientation);
+            # the redundant "mental_map" type label is NOT leaked into the line.
+            assert "  - [kb-09001] Ingestion map — Ingestion pipeline orientation" in result
+            assert "mental_map" not in result
+            # Maps lead the primer (before any other section).
+            assert result.index("Maps:") < result.index("kb-09001") + len("kb-09001")
         finally:
             await db.close()

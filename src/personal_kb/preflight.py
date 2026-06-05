@@ -76,7 +76,7 @@ def _maps_sql(team: str | None) -> tuple[str, bool]:
     discover which maps exist for a project and pull only the ones it needs.
     """
     sql = (
-        "SELECT id, entry_type, short_title "
+        "SELECT id, short_title, long_title "
         "FROM knowledge_entries "
         "WHERE is_active = 1 AND project_ref = ? "
         "AND entry_type = 'mental_map' "
@@ -293,6 +293,14 @@ async def build_project_context(
     lines = [f"{project_ref} ({total} entries)"]
     lines.append("Use kb_get to read full details for any entry below.")
 
+    # Maps lead: the orientation directory an agent reads first to decide
+    # which maps to pull. Render id + title + one-line orientation (long_title);
+    # the type label is redundant inside a Maps section.
+    if maps:
+        lines.append("\nMaps:")
+        for row in maps:
+            lines.append(f"  - [{row[0]}] {row[1]} — {row[2]}")
+
     if expiring:
         lines.append("\nExpiring:")
         for row in expiring:
@@ -309,11 +317,6 @@ async def build_project_context(
     if conventions:
         lines.append("\nConventions:")
         for row in conventions:
-            lines.append(f"  - {_format_toc_line(row)}")
-
-    if maps:
-        lines.append("\nMaps:")
-        for row in maps:
             lines.append(f"  - {_format_toc_line(row)}")
 
     if related:
