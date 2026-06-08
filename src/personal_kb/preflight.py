@@ -83,7 +83,9 @@ def _maps_sql(team: str | None) -> tuple[str, bool]:
     )
     if team:
         sql += _TEAM_CLAUSE
-    sql += "ORDER BY created_at DESC LIMIT 5"
+    # No LIMIT: maps are a small, curated orientation directory — surface them
+    # ALL (unlike the recent/conventions sections, which cap at 5).
+    sql += "ORDER BY created_at DESC"
     return sql, team is not None
 
 

@@ -246,7 +246,7 @@ Freshness for a map is instead **pointer-validity**, checked at retrieval time: 
 
 Maps are discoverable through two paired mechanisms:
 
-- **Pull (in-process, default):** `kb_preflight(project_ref="...")` includes a `Maps:` section listing up to 5 of the project's mental maps. An agent calls preflight at session start, sees which maps exist, and pulls full detail with `kb_get` only for the ones it judges relevant to the task. No hook, no extra config — this works out of the box on every install.
+- **Pull (in-process, default):** `kb_preflight(project_ref="...")` includes a `Maps:` section listing all of the project's mental maps (they're a small curated set, so there's no cap). An agent calls preflight at session start, sees which maps exist, and pulls full detail with `kb_get` only for the ones it judges relevant to the task. No hook, no extra config — this works out of the box on every install.
 - **Push (opt-in CLI hook, below):** the `personal-kb-hook` console script proactively injects the same Maps directory into Claude Code's `SessionStart` and `UserPromptSubmit` hooks — for the cold-start case where the agent doesn't yet know which subsystem to ask about.
 
 Both halves read from the same `mental_map` entries you author with `kb_store`; the push half is described in the next section.

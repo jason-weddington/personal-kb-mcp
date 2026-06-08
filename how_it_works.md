@@ -419,9 +419,9 @@ See: `explorer/graph_data.py`, `explorer/renderer.py`, `web/app.py`, `web/routes
 
 The `kb_preflight` tool is a lightweight project context primer that agents call at session start to get up to speed on a project. It takes a `project_ref` and returns a compact table-of-contents of relevant entries — no LLM calls, pure SQL against indexed columns.
 
-The output has five sections, each capped at 5 entries:
+The output has five sections. The Maps section lists all of a project's mental maps (uncapped — they're a small curated set); the other four cap at 5 entries each:
 
-1. **Maps** — `mental_map` entries for this project, rendered as `- [kb-XXXXX] short_title — long_title`. The `Maps:` section leads the output: it is the orientation directory an agent reads first to decide which maps to pull. Implemented by `_maps_sql()` in `preflight.py`, which filters on `entry_type = 'mental_map'` and orders by `created_at DESC LIMIT 5`. See the Mental Maps section below for how this in-process pull pairs with the on-disk push index.
+1. **Maps** — `mental_map` entries for this project, rendered as `- [kb-XXXXX] short_title — long_title`. The `Maps:` section leads the output: it is the orientation directory an agent reads first to decide which maps to pull. Implemented by `_maps_sql()` in `preflight.py`, which filters on `entry_type = 'mental_map'` and orders by `created_at DESC` with no limit (maps are a small curated set, unlike the recent/conventions sections which cap at 5). See the Mental Maps section below for how this in-process pull pairs with the on-disk push index.
 2. **Expiring entries** — entries with `expires_at` in a window from 7 days ago (grace period for recently expired) to 30 days ahead. Sorted by expiry date ascending, so the most urgent appear first. Each line includes an expiry badge: `[EXPIRED 2d ago]`, `[EXPIRES 5d]`, or `[EXPIRES 12h]`.
 3. **Recent decisions & lessons** — entries with `entry_type` of `decision` or `lesson_learned`, sorted by `created_at` descending. An optional `since` parameter (same TTL format as `kb_store` — `7d`, `2w`, `24h`) narrows to a time window; omitting it shows all.
 4. **Active conventions** — `pattern_convention` entries, always shown regardless of `since`.
@@ -541,12 +541,12 @@ See: `tools/kb_get.py` (`_pointer_rot_note`, gating at line 124), `graph/queries
 "WHERE is_active = 1 AND project_ref = ? "
 "AND entry_type = 'mental_map' "
 # + optional team clause
-"ORDER BY created_at DESC LIMIT 5"
+"ORDER BY created_at DESC"
 ```
 
 `build_project_context` runs this query alongside the other preflight queries, and renders results into a **`Maps:`** section that leads the output (before Expiring / Recent / Conventions / Related). Each line follows the format `  - [<id>] <short_title> — <long_title>` — id plus both titles, no type label (redundant inside a Maps section), with U+2014 EM DASH between the two titles. When the project has no maps, the section is omitted entirely; an empty Maps block never renders.
 
-The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC LIMIT 5` — is reused by the on-disk push index (`personal_kb.maps_index_writer.write_project_maps`), so the two halves of the surfacing design always agree on which maps are "the maps" for a project. The push half is described in the CLI Hook section below.
+The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC` (no limit) — is reused by the on-disk push index (`personal_kb.maps_index_writer.write_project_maps`), so the two halves of the surfacing design always agree on which maps are "the maps" for a project. The push half is described in the CLI Hook section below.
 
 See: `preflight.py` (`_maps_sql`, the `Maps:` block in `build_project_context`), `tools/kb_preflight.py`.
 
@@ -588,7 +588,7 @@ A **drift guard** test in the main repo (`tests/test_path_drift_guard.py`) impor
 {"project_ref": "personal-kb", "maps": [{"id": "kb-00310", "short_title": "ingestion", "long_title": "Ingestion flow"}, ...]}
 ```
 
-The map list is capped at 5 entries — the writer runs the **exact same predicate as `preflight._maps_sql`** (which already enforces `ORDER BY created_at DESC LIMIT 5`), so the on-disk index has the same shape as the `Maps` section of `kb_preflight` for the same project.
+The map list is **not capped** (maps are a small curated set) — the writer runs the **exact same predicate as `preflight._maps_sql`** (`ORDER BY created_at DESC`, all maps), so the on-disk index has the same shape as the `Maps` section of `kb_preflight` for the same project.
 
 ### Writer hook points
 

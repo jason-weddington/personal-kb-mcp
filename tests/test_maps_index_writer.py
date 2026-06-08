@@ -84,8 +84,8 @@ async def test_writer_emits_parseable_jsonl_and_reader_roundtrips(maps_db, tmp_p
     assert ids == ["kb-1", "kb-2"]
 
 
-async def test_writer_caps_at_five(maps_db, tmp_path: Path) -> None:
-    """A project with 6 active maps writes exactly 5 (preflight LIMIT 5)."""
+async def test_writer_includes_all_maps(maps_db, tmp_path: Path) -> None:
+    """ALL of a project's active maps are written — no cap (maps are small)."""
     for i in range(6):
         await _insert_map(
             maps_db,
@@ -101,11 +101,13 @@ async def test_writer_caps_at_five(maps_db, tmp_path: Path) -> None:
     await write_project_maps(maps_db, "big", path=index_path)
 
     table = read_index(index_path)
-    assert len(table["big"]) == 5
+    # All 6 written (no LIMIT); newest (age=0) first per ORDER BY created_at DESC.
+    assert len(table["big"]) == 6
+    assert table["big"][0]["id"] == "kb-00"
 
 
 async def test_on_disk_equals_preflight_maps_sql(maps_db, tmp_path: Path) -> None:
-    """For a ≤5-map project, on-disk content equals preflight._maps_sql output."""
+    """On-disk content equals preflight._maps_sql output for the project."""
     await _insert_map(maps_db, "kb-a", "p", "alpha", "first", age_minutes=10)
     await _insert_map(maps_db, "kb-b", "p", "beta", "second", age_minutes=20)
     await maps_db.commit()
@@ -242,8 +244,8 @@ async def test_rebuild_all_projects_skips_zero_map_projects(maps_db, tmp_path: P
     assert "gone" not in table
 
 
-async def test_rebuild_all_projects_caps_at_five(maps_db, tmp_path: Path) -> None:
-    """A project with 6 active maps yields exactly 5 (preflight LIMIT 5)."""
+async def test_rebuild_all_projects_includes_all_maps(maps_db, tmp_path: Path) -> None:
+    """ALL of a project's active maps are exported — no cap (maps are small)."""
     for i in range(6):
         await _insert_map(
             maps_db,
@@ -259,7 +261,7 @@ async def test_rebuild_all_projects_caps_at_five(maps_db, tmp_path: Path) -> Non
     await rebuild_all_projects(maps_db, path=index_path)
 
     table = read_index(index_path)
-    assert len(table["bigp"]) == 5
+    assert len(table["bigp"]) == 6
     # ORDER BY created_at DESC: newest (age=0) first
     assert table["bigp"][0]["id"] == "kb-00"
 

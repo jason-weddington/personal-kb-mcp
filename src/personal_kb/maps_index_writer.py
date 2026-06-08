@@ -3,7 +3,8 @@
 Called from ``kb_store`` and ``kb_store_batch`` after a successful
 ``mental_map`` create/update/deactivate. Re-queries the active maps for the
 project using the EXACT same predicate as :func:`personal_kb.preflight._maps_sql`
-(including ``ORDER BY created_at DESC LIMIT 5``), then rewrites the JSONL file
+(``ORDER BY created_at DESC``, no limit — maps are a small curated set), then
+rewrites the JSONL file
 atomically: drop the target project's existing line (if any) and append a
 fresh record — or omit the line entirely if the project now has zero maps.
 
@@ -113,7 +114,7 @@ async def rebuild_all_projects(
     WHERE is_active = 1 AND entry_type = 'mental_map' AND project_ref IS NOT
     NULL``. The static SQL is portable across SQLite and Postgres (no ``?``
     params). Per project, we reuse :func:`_fetch_maps_for_project` so the
-    same predicate + ``ORDER BY created_at DESC LIMIT 5`` + optional team
+    same predicate + ``ORDER BY created_at DESC`` (no limit) + optional team
     clause as the incremental writer is applied — no drift between
     incremental and rebuild output for any given project.
 
@@ -171,8 +172,8 @@ async def write_project_maps(
 ) -> None:
     """Refresh the JSONL index entry for ``project_ref``.
 
-    Re-queries active mental_maps for the project (same predicate +
-    LIMIT 5 as preflight._maps_sql), then atomically rewrites the index
+    Re-queries active mental_maps for the project (same predicate as
+    preflight._maps_sql — all maps, no limit), then atomically rewrites the index
     file: drop the target project's old line and append a fresh record
     (or omit the line entirely if the project now has zero active maps).
 
