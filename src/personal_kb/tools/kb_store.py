@@ -401,11 +401,23 @@ async def _refresh_maps_index(db: object, project_ref: str, team: str | None) ->
     Mirrors the ``_build_graph`` best-effort wrapper: a writer failure must
     never bubble up into the store path. The store has already committed by
     the time we get here.
+
+    After the local file refresh, fire ``notify_maps_changed`` so other
+    server instances (sharing the same Postgres) re-render their own
+    per-instance file. On SQLite this is a no-op.
     """
     try:
         await write_project_maps(db, project_ref, team=team)  # type: ignore[arg-type]
     except Exception:
         logger.warning("Failed to refresh maps index for project %s", project_ref, exc_info=True)
+    try:
+        await db.notify_maps_changed(project_ref)  # type: ignore[attr-defined]
+    except Exception:
+        logger.warning(
+            "Failed to NOTIFY kb_maps_changed for project %s",
+            project_ref,
+            exc_info=True,
+        )
 
 
 async def _enrich_graph(enricher: GraphEnricher | None, entry: KnowledgeEntry) -> None:

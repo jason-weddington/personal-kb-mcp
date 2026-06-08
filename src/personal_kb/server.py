@@ -9,6 +9,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from personal_kb import maps_index_writer
 from personal_kb.config import (
     get_contributor,
     get_database_url,
@@ -28,6 +29,7 @@ from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.llm import AnthropicLLMClient, BedrockLLMClient
 from personal_kb.llm.ollama import OllamaLLMClient
 from personal_kb.llm.provider import LLMProvider
+from personal_kb.maps_index_writer import write_project_maps
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.kb_ask import register_kb_ask
@@ -166,6 +168,44 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             "Set KB_CONTRIBUTOR for multi-user provenance."
         )
 
+    # Startup rebuild: converge any drift from when this instance wasn't
+    # running. Best-effort — a failure here must not abort startup.
+    try:
+        await maps_index_writer.rebuild_all_projects(db, team=team)
+    except Exception:
+        logger.warning("Startup maps_index rebuild failed", exc_info=True)
+
+    # Live-refresh listener: peer instances NOTIFY 'kb_maps_changed' after
+    # they write; we re-render this project's line via write_project_maps,
+    # and on every (re)connect we do a full rebuild to re-sync any events
+    # missed while disconnected. SQLite returns a no-op teardown.
+    async def _on_change(project_ref: str) -> None:
+        try:
+            await write_project_maps(db, project_ref, team=team)
+        except Exception:
+            logger.warning(
+                "maps_index on_change refresh failed for %s",
+                project_ref,
+                exc_info=True,
+            )
+
+    async def _on_reconnect() -> None:
+        try:
+            await maps_index_writer.rebuild_all_projects(db, team=team)
+        except Exception:
+            logger.warning("maps_index on_reconnect rebuild failed", exc_info=True)
+
+    try:
+        listener_teardown = await db.start_maps_listener(
+            on_change=_on_change,
+            on_reconnect=_on_reconnect,
+        )
+    except Exception:
+        logger.warning("Starting maps_index listener failed", exc_info=True)
+
+        async def listener_teardown() -> None:
+            return None
+
     # Auto-start explorer web server
     if is_auto_explore():
         from personal_kb.tools.kb_explore import start_explorer_server
@@ -204,6 +244,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             "team": team,
         }
     finally:
+        # Tear down the maps listener before closing the DB so its dedicated
+        # asyncpg connection (Postgres) is closed cleanly. Best-effort.
+        try:
+            await listener_teardown()
+        except Exception:
+            logger.warning("maps_index listener teardown failed", exc_info=True)
         if synthesis_llm is not None:
             await synthesis_llm.close()
         if query_llm is not None:

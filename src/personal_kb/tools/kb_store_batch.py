@@ -160,6 +160,14 @@ async def batch_store_entries(
             logger.warning(
                 "Failed to refresh maps index for project %s", project_ref, exc_info=True
             )
+        try:
+            await db.notify_maps_changed(project_ref)
+        except Exception:
+            logger.warning(
+                "Failed to NOTIFY kb_maps_changed for project %s",
+                project_ref,
+                exc_info=True,
+            )
 
     # Re-fetch entries to get updated state (embedding flag)
     now = datetime.now(UTC)

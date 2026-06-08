@@ -44,13 +44,22 @@ def get_db_path() -> Path:
 
 
 def get_maps_index_path() -> Path:
-    """Return the on-disk maps index JSONL path.
+    """Return the on-disk maps index JSONL path, scoped by instance role.
 
-    Sibling of the KB database file: ``<db_dir>/maps_index.jsonl``. This is the
-    denormalized index the MCP server writes on mental_map create/update/
-    deactivate and the CLI hook reads (the hook never touches the DB).
+    Sibling of the KB database file: ``<db_dir>/maps_index.{role}.jsonl``,
+    where ``role = KB_INSTANCE_ROLE.lower() or "default"``. The personal and
+    team server instances therefore write to DIFFERENT files in the same
+    directory, avoiding the cross-instance collision they had on the legacy
+    shared ``maps_index.jsonl``. The hook reads ALL ``maps_index*.jsonl``
+    files in this directory and merges them.
+
+    The role keying MUST stay in sync with
+    ``personal_kb_hook.paths.get_maps_index_path`` (the standalone hook
+    package duplicates this helper, stdlib-only). A drift-guard test
+    (``tests/test_path_drift_guard.py``) covers this.
     """
-    return get_db_path().parent / "maps_index.jsonl"
+    role = os.environ.get("KB_INSTANCE_ROLE", "").lower() or "default"
+    return get_db_path().parent / f"maps_index.{role}.jsonl"
 
 
 def get_hook_scratch_path(session_id: str) -> Path:

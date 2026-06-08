@@ -18,6 +18,7 @@ def hook_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     db_path = tmp_path / "kb" / "knowledge.db"
     db_path.parent.mkdir(parents=True)
     monkeypatch.setenv("KB_DB_PATH", str(db_path))
+    monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("HOME", str(tmp_path))
     cache_root.mkdir()
@@ -26,7 +27,8 @@ def hook_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     return {
         "root": tmp_path,
         "db_path": db_path,
-        "maps_index": db_path.parent / "maps_index.jsonl",
+        # role unset -> "default" -> the CLI globs maps_index.*.jsonl
+        "maps_index": db_path.parent / "maps_index.default.jsonl",
     }
 
 

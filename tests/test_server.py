@@ -1,6 +1,9 @@
 """Tests for server-level functions."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from fastmcp import FastMCP
 
 from personal_kb.llm.anthropic import AnthropicLLMClient
 from personal_kb.llm.ollama import OllamaLLMClient
@@ -10,6 +13,7 @@ from personal_kb.server import (
     _create_synthesis_llm,
     _get_tool_prefix,
     create_server,
+    lifespan,
 )
 
 
@@ -233,3 +237,60 @@ async def test_create_server_team_tool_names():
         # No kb_ tools should exist
         assert "kb_store" not in tool_names
         assert "kb_search" not in tool_names
+
+
+# --- Lifespan: maps_index rebuild + listener wiring -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_lifespan_invokes_rebuild_and_listener_teardown(monkeypatch, tmp_path) -> None:
+    """Lifespan startup runs ``rebuild_all_projects`` and tears down the listener.
+
+    Asserts:
+
+    * ``maps_index_writer.rebuild_all_projects`` is awaited at startup (before
+      the lifespan yields).
+    * The teardown returned by ``db.start_maps_listener`` is awaited in the
+      ``finally`` block BEFORE ``db.close()`` — verified by spying on the
+      teardown mock with a sentinel.
+    * No exceptions propagate.
+
+    The actual live LISTEN→NOTIFY round-trip is not exercised here —
+    that requires a real Postgres (manual verify, see CLAUDE.md).
+    """
+    monkeypatch.setenv("KB_DB_PATH", str(tmp_path / "knowledge.db"))
+    monkeypatch.delenv("KB_DATABASE_URL", raising=False)
+    monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
+    monkeypatch.setenv("KB_AUTO_EXPLORE", "FALSE")
+
+    rebuild_mock = AsyncMock(return_value=None)
+    teardown_mock = AsyncMock(return_value=None)
+    start_listener_mock = AsyncMock(return_value=teardown_mock)
+
+    with (
+        patch(
+            "personal_kb.server.maps_index_writer.rebuild_all_projects",
+            rebuild_mock,
+        ),
+        patch(
+            "personal_kb.search.embeddings.EmbeddingClient.is_available",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "personal_kb.db.sqlite_backend.SQLiteBackend.start_maps_listener",
+            start_listener_mock,
+        ),
+    ):
+        mcp = FastMCP("test-kb-lifespan", lifespan=lifespan)
+        async with lifespan(mcp) as ctx:
+            assert "db" in ctx
+            # Rebuild must have been awaited during startup.
+            assert rebuild_mock.await_count >= 1
+            # start_maps_listener was invoked with on_change + on_reconnect.
+            start_listener_mock.assert_awaited_once()
+            kwargs = start_listener_mock.await_args.kwargs
+            assert "on_change" in kwargs
+            assert "on_reconnect" in kwargs
+
+    # After leaving the context (finally block ran):
+    teardown_mock.assert_awaited_once()

@@ -15,7 +15,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     import aiosqlite
 
@@ -138,6 +138,28 @@ class SQLiteBackend:
     async def close(self) -> None:
         """Close the database connection."""
         await self._conn.close()
+
+    # -- NOTIFY / LISTEN — no-op on SQLite (no peer instances to notify) --
+
+    async def notify_maps_changed(self, project_ref: str) -> None:
+        """No-op: SQLite has no LISTEN/NOTIFY and no peer instances."""
+        return None
+
+    async def start_maps_listener(
+        self,
+        on_change: Callable[[str], Awaitable[None]],
+        on_reconnect: Callable[[], Awaitable[None]],
+    ) -> Callable[[], Awaitable[None]]:
+        """No-op listener: starts no task, never invokes the callbacks.
+
+        Returns a no-op async teardown so the lifespan code stays
+        backend-agnostic — no ``isinstance`` checks needed.
+        """
+
+        async def _noop() -> None:
+            return None
+
+        return _noop
 
     # -- FTS5 search --
 

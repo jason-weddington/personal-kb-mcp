@@ -96,6 +96,72 @@ def _atomic_write(path: Path, content: str) -> None:
     os.replace(tmp_path, path)
 
 
+async def rebuild_all_projects(
+    db: Database,
+    *,
+    team: str | None = None,
+    path: Path | None = None,
+) -> None:
+    """Rebuild the entire maps index from scratch by re-querying every project.
+
+    Used at server startup and on listener reconnect to converge any drift
+    introduced while this instance wasn't running (e.g. another server wrote
+    rows; this server missed the NOTIFY). One whole-file atomic rewrite via
+    ``_atomic_write`` — no per-project line-edit logic.
+
+    Discovery query: ``SELECT DISTINCT project_ref FROM knowledge_entries
+    WHERE is_active = 1 AND entry_type = 'mental_map' AND project_ref IS NOT
+    NULL``. The static SQL is portable across SQLite and Postgres (no ``?``
+    params). Per project, we reuse :func:`_fetch_maps_for_project` so the
+    same predicate + ``ORDER BY created_at DESC LIMIT 5`` + optional team
+    clause as the incremental writer is applied — no drift between
+    incremental and rebuild output for any given project.
+
+    Projects whose ``_fetch_maps_for_project`` returns ``[]`` are SKIPPED:
+    no line is emitted (mirrors ``write_project_maps``'s "drop the line"
+    semantics).
+
+    Best-effort: any failure logs a warning and returns; it must never
+    abort startup or a reconnect.
+    """
+    target = path or get_maps_index_path()
+    try:
+        cursor = await db.execute(
+            "SELECT DISTINCT project_ref FROM knowledge_entries "
+            "WHERE is_active = 1 AND entry_type = 'mental_map' "
+            "AND project_ref IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+    except Exception:
+        logger.warning("maps_index rebuild discovery query failed", exc_info=True)
+        return
+
+    lines: list[str] = []
+    for row in rows:
+        project_ref = row[0]
+        if not isinstance(project_ref, str) or not project_ref:
+            continue
+        try:
+            maps = await _fetch_maps_for_project(db, project_ref, team)
+        except Exception:
+            logger.warning(
+                "maps_index rebuild: per-project fetch failed for %s",
+                project_ref,
+                exc_info=True,
+            )
+            continue
+        if not maps:
+            # Skip zero-map projects — no line emitted.
+            continue
+        lines.append(json.dumps({"project_ref": project_ref, "maps": maps}))
+
+    new_content = ("\n".join(lines) + "\n") if lines else ""
+    try:
+        _atomic_write(target, new_content)
+    except OSError:
+        logger.warning("maps_index rebuild write failed at %s", target, exc_info=True)
+
+
 async def write_project_maps(
     db: Database,
     project_ref: str,
