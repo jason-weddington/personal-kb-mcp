@@ -102,6 +102,9 @@ Half-lives vary by entry type, reflecting how quickly different kinds of knowled
 - **decision**: 365 days (1 year) — decisions persist but the context that justified them shifts
 - **pattern_convention**: 730 days (2 years) — coding standards and conventions are durable
 - **lesson_learned**: 1,825 days (5 years) — hard-won debugging insights and experiential knowledge stick
+- **mental_map**: exempt — `compute_effective_confidence` early-returns `base_confidence` for `EntryType.MENTAL_MAP` before any clock math runs. Freshness for a map is pointer-validity, computed at retrieval time, not a half-life. See the Mental Maps section below.
+
+`HALF_LIVES.get(entry_type, 365.0)` in `confidence/decay.py` guards the lookup with a 365-day default, so an unknown entry type can never `KeyError` the decay path.
 
 The decay clock anchors on whichever is more recent: `updated_at` or `last_accessed`. This access-aware approach is inspired by MemoryBank's dynamic memory management [4] and the recency-relevance-importance scoring in Generative Agents [5] — the insight being that retrieval frequency is a valid signal for knowledge value, not just recency of creation. Editing an entry resets its decay via `updated_at`, because if you've verified and updated a piece of knowledge it should be treated as fresh. Retrieving an entry via `kb_get` resets its decay via `last_accessed`, because actively-used knowledge shouldn't rot just because it hasn't been edited. The `db/queries.py:touch_accessed` function batch-updates `last_accessed` to the current time for all entries returned by a `kb_get` call. Crucially, search alone does not reset the decay clock — only explicit retrieval via `kb_get` does. This means an entry that keeps appearing in search results but is never opened will still decay, while one that a user regularly retrieves stays fresh.
 
@@ -416,12 +419,13 @@ See: `explorer/graph_data.py`, `explorer/renderer.py`, `web/app.py`, `web/routes
 
 The `kb_preflight` tool is a lightweight project context primer that agents call at session start to get up to speed on a project. It takes a `project_ref` and returns a compact table-of-contents of relevant entries — no LLM calls, pure SQL against indexed columns.
 
-The output has four sections, each capped at 5 entries:
+The output has five sections, each capped at 5 entries:
 
-1. **Expiring entries** — entries with `expires_at` in a window from 7 days ago (grace period for recently expired) to 30 days ahead. Sorted by expiry date ascending, so the most urgent appear first. Each line includes an expiry badge: `[EXPIRED 2d ago]`, `[EXPIRES 5d]`, or `[EXPIRES 12h]`.
-2. **Recent decisions & lessons** — entries with `entry_type` of `decision` or `lesson_learned`, sorted by `created_at` descending. An optional `since` parameter (same TTL format as `kb_store` — `7d`, `2w`, `24h`) narrows to a time window; omitting it shows all.
-3. **Active conventions** — `pattern_convention` entries, always shown regardless of `since`.
-4. **Related (via graph)** — decisions and lessons from *other* projects that share tags with the current project. Found via 2-hop graph traversal: project entries → shared tag nodes (threshold: 2+ entries using that tag) → entries from other projects. Each line shows the connecting tag: `(via #api)`.
+1. **Maps** — `mental_map` entries for this project, rendered as `- [kb-XXXXX] short_title — long_title`. The `Maps:` section leads the output: it is the orientation directory an agent reads first to decide which maps to pull. Implemented by `_maps_sql()` in `preflight.py`, which filters on `entry_type = 'mental_map'` and orders by `created_at DESC LIMIT 5`. See the Mental Maps section below for how this in-process pull pairs with the on-disk push index.
+2. **Expiring entries** — entries with `expires_at` in a window from 7 days ago (grace period for recently expired) to 30 days ahead. Sorted by expiry date ascending, so the most urgent appear first. Each line includes an expiry badge: `[EXPIRED 2d ago]`, `[EXPIRES 5d]`, or `[EXPIRES 12h]`.
+3. **Recent decisions & lessons** — entries with `entry_type` of `decision` or `lesson_learned`, sorted by `created_at` descending. An optional `since` parameter (same TTL format as `kb_store` — `7d`, `2w`, `24h`) narrows to a time window; omitting it shows all.
+4. **Active conventions** — `pattern_convention` entries, always shown regardless of `since`.
+5. **Related (via graph)** — decisions and lessons from *other* projects that share tags with the current project. Found via 2-hop graph traversal: project entries → shared tag nodes (threshold: 2+ entries using that tag) → entries from other projects. Each line shows the connecting tag: `(via #api)`.
 
 Output format is compact — entry ID, type, and short title only. Agents use `kb_get` to read full details for entries that look relevant.
 
@@ -431,9 +435,124 @@ Output format is compact — entry ID, type, and short title only. Agents use `k
 
 See: `preflight.py`, `tools/kb_preflight.py`
 
+## Mental Maps
+
+The `mental_map` entry type is the directory tier of the KB: an orientation node whose body is *pointers and structure*, never retrievable values. The settled design lives in `docs/mental-map-prespec.md` §7; this section documents the shipped code that implements it. The push half — the `personal-kb-hook` CLI — is documented in the next section; what follows is everything in the MCP server itself that makes maps a distinct entry type.
+
+### The `mental_map` entry type and decay exemption
+
+`EntryType.MENTAL_MAP = "mental_map"` is the fifth member of the `EntryType` enum in `models/entry.py`, sharing all storage, versioning, FTS, embedding, and graph plumbing with the four value-bearing types. The one place it diverges is `confidence/decay.py:compute_effective_confidence`, which checks for `MENTAL_MAP` first and early-returns `base_confidence` without consulting any half-life table:
+
+```python
+if entry_type == EntryType.MENTAL_MAP:
+    return base_confidence
+```
+
+The rationale is double-edged. First, a map holds no retrievable value of its own — there is nothing on it that goes stale on a clock. Second, the system's access-aware self-heal — `db/queries.py:touch_accessed` resets `last_accessed` on every `kb_get`, which is the decay anchor — would make a constantly-surfaced map look "fresh" while its pointers rotted, and a correct-but-cold map trip stale. Both directions are backwards for an orientation node, so the entire clock is bypassed. Freshness for a map is *pointer-validity*, computed on retrieval (see "On-GET pointer-rot" below), not a half-life decay.
+
+The lookup of the four remaining types is `HALF_LIVES.get(entry_type, 365.0)`. The `.get()` with a one-year default is the §7.2 same-commit guard rail: a future enum member can never `KeyError` the decay path.
+
+See: `models/entry.py`, `confidence/decay.py`.
+
+### Required-outbound-pointer validation on store
+
+A map is defined by what it points *to*. A map with zero outbound pointers is, definitionally, an orphan note — not a map. `tools/kb_store.py:_mental_map_has_pointer()` enforces this **before** `create_entry` runs, so an orphan never produces a row or a version record:
+
+```python
+if entry_type == EntryType.MENTAL_MAP and not _mental_map_has_pointer(
+    knowledge_details, hints
+):
+    return ORPHAN_MAP_ERROR
+```
+
+The check is a closed checklist that mirrors `graph/builder.py`'s edge-producing logic exactly (lines 52-86). An outbound pointer exists iff *any* of these is true:
+
+1. `knowledge_details` contains a `kb-XXXXX` reference (matched with the same `re.compile(r"kb-\d{5}")` the builder uses);
+2. the `supersedes` hint contains a string that `fullmatch`es `kb-XXXXX`;
+3. `superseded_by` is a non-empty string (the reversed edge the builder creates);
+4. the `related_entities` hint contains either a dict with a non-empty `id`/`target`, or a bare non-empty string.
+
+Tag, project, person, and tool hints do **not** count — those are categorization, not orientation. Mirroring the builder's exact predicate set means a future change to what counts as a "pointer" needs to be made in exactly one place; the validator follows automatically.
+
+The error message returned to the caller is a single constant, `ORPHAN_MAP_ERROR`:
+
+> *"A mental_map entry requires at least one outbound pointer (a kb-XXXXX reference in knowledge_details, or a supersedes/related_entities hint). A map with zero pointers is an orphan note, not a map."*
+
+This is the only place in the `kb_store` pipeline where mental_map content is *rejected*. The fact-free lint below is advisory only and never blocks.
+
+See: `tools/kb_store.py` (`_mental_map_has_pointer`, `ORPHAN_MAP_ERROR`), `graph/builder.py` (edges 52-86).
+
+### Advisory fact-free lint
+
+The §7.3 invariant — *"no retrievable value in assertion position"* — is enforced as a **deterministic, regex-based, advisory-only** heuristic in `tools/map_lint.py`. The module's contract is deliberately narrow:
+
+- Pure function: `lint_map_body(text) -> list[str]`. No I/O, no LLM, no network. Never raises.
+- Every returned string starts with the literal prefix `Map lint (advisory): `. The module exposes no `Error:` path. The store always succeeds; the warnings are informational.
+- It mirrors the shape of `_check_secrets` in `kb_store.py` — same call-site pattern — but never signals rejection.
+
+The lint runs on every mental_map create and every mental_map update where a fresh `knowledge_details` body was supplied; metadata-only updates are skipped. In `kb_store`, gating happens at the call site (not inside `format_store_result`, which is shared with non-map stores), and warnings are prepended *above* the `Created/Updated` compact block but *below* any backend warning via `_prepend_map_advisories`. `kb_store_batch` runs the same lint per-entry and attaches the warnings to the entry's own block.
+
+The heuristic categories, in order of how `lint_map_body` evaluates them:
+
+1. **`kb-XXXXX` references are stripped first.** Pointers are the desired content; their digits must not later read as a retrievable numeral. The cleaned text is what every subsequent rule sees.
+2. **URLs** — `https?://\S+`. A retrievable link belongs in a `factual_reference` the map points to.
+3. **File paths** — `~/`-rooted, or an absolute `/a/b…` path with at least two segments. Retrievable values, not orientation pointers.
+4. **`ENV_VAR`-style tokens** — all-caps starting with a letter, with at least one underscore (e.g. `KB_DB_PATH`). Retrievable config, not pointers.
+5. **Dotted code identifiers** — `module.func` patterns (`\b[A-Za-z_]\w*\.[A-Za-z_]\w*`). Retrievable signatures.
+6. **Quoted literals** — `"..."` or backticked `` `...` `` pairs. Single quotes are deliberately excluded to avoid flagging ordinary apostrophes in prose.
+7. **Config-like numerals** — decimals (e.g. `0.06`), integers with ≥4 digits (e.g. `8767`, `51820`), or any numeral immediately preceded by `=` or `:`. **Counts-of-parts are exempt**: a numeral followed by a plural noun (`three stages`, `12 nodes`) is a pointer-in-disguise — it tells you how many edges to expect — so the `_COUNT_TAIL_RE` of `\s*[A-Za-z]+s\b` is checked first and matching numerals are allowed regardless of magnitude.
+8. **Advisory size cap.** Bodies longer than `MAP_BODY_ADVISORY_CHARS = 1500` characters get the note "*a map should orient, not contain*." Per §7.3 the cap is an advisory proxy, not the definition of fact-free — the discriminator is value-vs-pointer, not byte count.
+
+The discriminator the prespec frames it with: *would a reader act on this number/string directly* (forbidden — a retrievable value) *or follow it to a source* (fine — a pointer)?
+
+See: `tools/map_lint.py`, `tools/kb_store.py` (`_prepend_map_advisories`, gating), `tools/kb_store_batch.py`.
+
+### On-GET pointer-rot
+
+Because maps don't decay on a clock (§7.4), the freshness signal moves to retrieval. `tools/kb_get.py:_pointer_rot_note` runs only when the retrieved entry's type is `MENTAL_MAP`; for every other entry type the function returns `None` immediately, so non-map `kb_get` output is **byte-identical** to before.
+
+For a mental_map, the function resolves the entry's **outbound** graph edges via `get_neighbors(db, entry.id, direction="outgoing")` with no `edge_types` filter — it sees every outgoing edge, of which only those whose target matches `kb-\d{5}` are treated as pointers. (Tag/project/person/tool nodes are filtered out by the kb-id regex check before any extra DB lookup is made.) A target is *rotted* if either of these holds:
+
+- `target.superseded_by is not None` — there is a replacement; or
+- `target.is_active is False` — the target has been deactivated.
+
+When **both** apply, the superseded form wins, because naming the actionable replacement is more useful than just flagging "gone." Targets are deduplicated (a target reached by multiple edge types surfaces once) and sorted ascending by id so the output is stable. The rendered block is two-space-indented to nest cleanly under the standard full-entry render:
+
+```text
+  Pointer-rot:
+    [kb-00310] superseded by [kb-00342]
+    [kb-00214] deactivated
+```
+
+Two implementation details worth calling out:
+
+- The function deliberately bypasses `kb_get`'s top-level *"not is_active → not found"* short-circuit when resolving targets — a deactivated target is precisely the rot signal we want to surface, not hide. It calls `db/queries.get_entry` directly, which has no `is_active` filter.
+- This is the **on-GET** check, not a new always-on badge subsystem (per §7.4). It deliberately reuses the supersedes edges the graph builder already maintains; no new edge type, no new index, no badge in `format_entry_compact`. There is also **no freshness inheritance** — a map's effective confidence does not depend on its leaves' confidence, which would manufacture a permanent-staleness trap.
+
+See: `tools/kb_get.py` (`_pointer_rot_note`, gating at line 124), `graph/queries.py:get_neighbors`, `db/queries.py:get_entry`.
+
+### The Maps index pull half
+
+`kb_preflight` is the in-process pull half of the §7.7 surfacing design. The relevant SQL lives in `preflight.py:_maps_sql`:
+
+```python
+"SELECT id, short_title, long_title "
+"FROM knowledge_entries "
+"WHERE is_active = 1 AND project_ref = ? "
+"AND entry_type = 'mental_map' "
+# + optional team clause
+"ORDER BY created_at DESC LIMIT 5"
+```
+
+`build_project_context` runs this query alongside the other preflight queries, and renders results into a **`Maps:`** section that leads the output (before Expiring / Recent / Conventions / Related). Each line follows the format `  - [<id>] <short_title> — <long_title>` — id plus both titles, no type label (redundant inside a Maps section), with U+2014 EM DASH between the two titles. When the project has no maps, the section is omitted entirely; an empty Maps block never renders.
+
+The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC LIMIT 5` — is reused by the on-disk push index (`hook/index_writer.write_project_maps`), so the two halves of the surfacing design always agree on which maps are "the maps" for a project. The push half is described in the CLI Hook section below.
+
+See: `preflight.py` (`_maps_sql`, the `Maps:` block in `build_project_context`), `tools/kb_preflight.py`.
+
 ## CLI Hook (personal-kb-hook)
 
-The package ships a second console script — `personal-kb-hook` — that lives inside `src/personal_kb/hook/`. It is wired into Claude Code's `SessionStart` and `UserPromptSubmit` hooks and is the "push" half of the mental_map surfacing design (the in-process `kb_preflight` Maps section is the "pull" half). The hook is intentionally tiny and stdlib-only — argparse, json, pathlib, sys. It **never imports the database layer**: a test asserts no symbols from `personal_kb.store`, `personal_kb.db`, `aiosqlite`, or `sqlite_vec` leak into the hook package (except inside `index_writer.py`, which runs in the MCP process).
+The package ships a second console script — `personal-kb-hook` — that lives inside `src/personal_kb/hook/`. It is wired into Claude Code's `SessionStart` and `UserPromptSubmit` hooks and is the "push" half of the mental_map surfacing design (the in-process `kb_preflight` Maps section, documented above, is the "pull" half). The hook is intentionally tiny and stdlib-only — argparse, json, pathlib, sys. It **never imports the database layer**: a test asserts no symbols from `personal_kb.store`, `personal_kb.db`, `aiosqlite`, or `sqlite_vec` leak into the hook package (except inside `index_writer.py`, which runs in the MCP process).
 
 ### The JSONL maps index
 

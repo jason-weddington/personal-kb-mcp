@@ -209,6 +209,48 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 - `list_contributors` — Contributor/team stats for active entries
 - `list_audit` — Recent mutation events (create/update/deactivate/reactivate) with optional entry_id/date filters
 
+## Mental maps — orientation nodes for your KB
+
+A **mental map** (entry type `mental_map`) is the directory tier of your knowledge base. It is the only entry type that does not carry retrievable knowledge itself — instead, it points to *where* knowledge lives. Think of it as a small, curated index for a subsystem: "the ingestion flow lives across these five entries; auth lives across those three." Agents read a map to orient themselves, then `kb_get` the detail entries the map points to.
+
+### When to author a map vs. a `factual_reference`
+
+A `factual_reference` *is* the answer — a port number, a config threshold, an API signature, the name of a function. A `mental_map` *points to* answers — an orientation directory that says "for the auth subsystem, see kb-00310, kb-00312, kb-00318."
+
+Rule of thumb: ask whether a reader would *act on the value directly* (fact) or *follow it to a source* (map). Counts of parts ("the pipeline has three stages") are pointers in disguise and belong in a map; the actual stage names, thresholds, or filenames belong in the linked factual entries a map points to.
+
+### What a map must contain
+
+Every `mental_map` must have **at least one outbound pointer**. A pointer is any of:
+
+- a `kb-XXXXX` reference inside `knowledge_details`;
+- a `supersedes` hint containing a `kb-XXXXX` id;
+- a `superseded_by` field on the entry;
+- a `related_entities` hint with either a dict carrying an `id`/`target` or a bare entry id string.
+
+Tags, project refs, and person/tool hints **do not** count — those are categorization, not orientation. `kb_store` rejects an orphan map (zero pointers) before any row is written, with an error: *"A mental_map entry requires at least one outbound pointer … A map with zero pointers is an orphan note, not a map."*
+
+### What a map should *not* contain (fact-free discipline)
+
+A map is for **structure and relationships**, not retrievable values. `kb_store` runs a deterministic, advisory-only lint on every map body and flags content that looks like a fact — URLs, file paths, `ENV_VAR`-style tokens, dotted code identifiers (`module.func`), quoted literals, and config-like numerals (decimals, ≥4-digit integers, numerals adjacent to `=` or `:`). It also flags bodies longer than ~1500 characters with the note that a map should *orient*, not *contain*.
+
+The lint never blocks a store — every store succeeds and every warning starts with `Map lint (advisory):`. The signal is purely informational, pointing you at content that probably belongs in a `factual_reference` the map links to instead.
+
+### Maps don't decay on a clock
+
+Unlike the four value-bearing entry types — which lose confidence on an entry-type-specific half-life (90 d / 1 y / 2 y / 5 y) — a `mental_map` is exempt from confidence decay. It has no retrievable value of its own to go stale, and the access-aware self-heal (`last_accessed` resets the decay clock on `kb_get`) would just make a constantly-surfaced map look "fresh" while its pointers rotted. So maps don't decay at all.
+
+Freshness for a map is instead **pointer-validity**, checked at retrieval time: when you `kb_get` a `mental_map`, the server resolves each outbound pointer and surfaces inline any target that is `superseded_by` another entry or has been deactivated. A stale map is one whose pointers no longer resolve, not one that hasn't been read recently.
+
+### Discovering and surfacing maps
+
+Maps are discoverable through two paired mechanisms:
+
+- **Pull (in-process, default):** `kb_preflight(project_ref="...")` includes a `Maps:` section listing up to 5 of the project's mental maps. An agent calls preflight at session start, sees which maps exist, and pulls full detail with `kb_get` only for the ones it judges relevant to the task. No hook, no extra config — this works out of the box on every install.
+- **Push (opt-in CLI hook, below):** the `personal-kb-hook` console script proactively injects the same Maps directory into Claude Code's `SessionStart` and `UserPromptSubmit` hooks — for the cold-start case where the agent doesn't yet know which subsystem to ask about.
+
+Both halves read from the same `mental_map` entries you author with `kb_store`; the push half is described in the next section.
+
 ## Surfacing maps via `personal-kb-hook` (opt-in)
 
 The package also ships a small stdlib-only CLI (`personal-kb-hook`) that you can wire into Claude Code's [hook system](https://docs.claude.com/en/docs/claude-code/hooks) to proactively surface the `mental_map` entries for the project you're working in. The hook itself never talks to the MCP server or the DB — it reads a denormalized JSONL index that the MCP server writes every time a `mental_map` is created, updated, or deactivated.
