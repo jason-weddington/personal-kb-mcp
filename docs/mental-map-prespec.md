@@ -208,13 +208,25 @@ Both halves ship, but the labor splits the way the harness constraints force.
 
 **Push (packaged CLI hook tools — Jason's reframe):** the genuine cold-start gap is real and pull *cannot* close it — an agent can't request the auth map for a subsystem it doesn't know exists. But the push surface is **not** in-MCP-server hooks and **not** bespoke per-user `settings.json` glue. It's a small set of **CLI entrypoints shipped in the package** (`uv tool install`-able), which users wire into whatever harness hooks they have. Portable (any harness that can shell out), opt-in, documented. Rationale: a new entry_type changes what's *storable*; the push is what changes whether agents *proactively orient* — which is the actual observed gap.
 
-The CLI hook tools must obey the constraints the debate pinned down:
-- **Inject a factual, directory-style string** ("Maps for this system: [kb-00310] Ingestion — chunking, dedup, extraction. …"), **never imperative** — imperative phrasing trips prompt-injection defenses and gets surfaced to the user instead of used. (A hook can only inject a *string*; it cannot force a tool call — which is *why* push delivers an index and pull is the agent's choice.)
-- **Scope via FTS keyword match on map titles** — no embeddings (Ollama hop has fallback gaps), no per-turn LLM classifier. **Not CWD as anchor** (§7.1.4); CWD is at most a low-weight hint.
-- **Stay silent** unless: maps exist for the resolved scope ∧ the scope *changed* ∧ the map IDs aren't already in context.
-- **Cross-turn suppression via a per-session scratch file** (`~/.cache/personal_kb/injected-<session_id>`: surfaced map IDs + last resolved scope). Hooks are stateless between turns; without this file "only on change" is unimplementable.
-- **Read a denormalized on-disk maps index** that the MCP server writes on store/update, so the hook never needs a live MCP call — sidestepping the SessionStart-MCP-not-connected race. First `UserPromptSubmit` re-attempts as fallback.
-- **Push only the non-re-derivable maps** (§7.5). Local-code-structure maps are pull-on-demand at most — never pushed — which is the single biggest lever on the per-turn noise budget.
+#### Shipped design (supersedes the bullets below)
+
+The v1 hook (`personal-kb-hook`, in `src/personal_kb/hook/`) resolves scope by walking up from the harness-provided `cwd` to the first **committed `.kb_project`** file. The file is one line — the KB `project_ref` for the repo. This is portable across machines and users (it lives in git), needs no per-user config, and avoids depending on git-origin data. The same resolver is used for `SessionStart` and `UserPromptSubmit`; `cwd` is reliably present in both payloads (the unreliable-`cwd` problem from §7.1.4 was specific to the MCP server *subprocess*, not to harness hook payloads).
+
+**FTS / keyword matching on the prompt is cut from v1.** The `.kb_project` file picks the project; the hook surfaces the full ≤5-map directory for that project. FTS-on-prompt as a refiner — picking *which* of a multi-map project's maps to surface, not *which project* — is deferred to a v1.1 within-project refiner.
+
+**Re-derivable filtering at the hook layer is deferred with sign-off.** §7.5 / §7.7 originally required pushing "only the non-re-derivable maps", but `models/entry.py` does not yet carry a re-derivable flag on `mental_map` entries — the hook has no data source to enforce it. v1 surfaces all of the resolved project's maps (≤5) and relies on the §7.5 human-authoring rule to keep local-code-structure maps out of the corpus to begin with.
+
+The other constraints from the debate **do still hold**, and the shipped hook honors them:
+
+- **Inject a factual, directory-style string** (`Maps for personal-kb — [kb-00310] ingestion: Ingestion flow; …`), **never imperative**. `render.BANNED_TOKENS` is the closed checklist (`load, use, read, fetch, pull, open, retrieve, get, review, consult`); a unit test asserts the rendered string contains none of them.
+- **Stay silent** unless maps exist for the resolved scope AND (`source=compact` bypasses, OR the scope changed, OR no scratch yet, OR the new ids are not already a subset of `surfaced_map_ids`). Any error path — bad stdin, no `.kb_project`, no maps, write failure — exits 0 with no stdout.
+- **Cross-turn suppression via a per-session scratch file** (`~/.cache/personal_kb/injected-<session_id>.json` holding `last_scope` + `surfaced_map_ids`). Tolerant of missing/corrupt scratch (treated as fresh).
+- **Read a denormalized on-disk JSONL index** at `~/.local/share/personal_kb/maps_index.jsonl`. The MCP server writes it on `mental_map` create/update/deactivate from `kb_store` and `kb_store_batch`, using the **exact same predicate as `preflight._maps_sql` including `ORDER BY created_at DESC LIMIT 5`**, with a whole-file-atomic rewrite (`tempfile.NamedTemporaryFile` → `os.replace`). The hook never makes a live MCP/DB call.
+
+#### Original constraints (now superseded by the shipped design above)
+
+- ~~**Scope via FTS keyword match on map titles** — no embeddings, no per-turn LLM classifier. **Not CWD as anchor** (§7.1.4); CWD is at most a low-weight hint.~~ Superseded: `.kb_project` walk-up from `cwd` is the v1 anchor; FTS-on-prompt is deferred to v1.1 as a within-project refiner.
+- ~~**Push only the non-re-derivable maps** (§7.5).~~ Deferred with sign-off: there is no re-derivable flag on `mental_map` entries today, so the hook layer has no data source to enforce it. v1 pushes the full ≤5-map directory and relies on the §7.5 human-authoring rule.
 
 ### 7.8 v1 scope checklist
 

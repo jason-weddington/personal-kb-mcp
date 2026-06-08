@@ -43,6 +43,27 @@ def get_db_path() -> Path:
     return Path(raw).expanduser()
 
 
+def get_maps_index_path() -> Path:
+    """Return the on-disk maps index JSONL path.
+
+    Sibling of the KB database file: ``<db_dir>/maps_index.jsonl``. This is the
+    denormalized index the MCP server writes on mental_map create/update/
+    deactivate and the CLI hook reads (the hook never touches the DB).
+    """
+    return get_db_path().parent / "maps_index.jsonl"
+
+
+def get_hook_scratch_path(session_id: str) -> Path:
+    """Return the per-session hook scratch file path.
+
+    Used by the CLI hook to suppress re-injection of the same map directory in
+    a session. Stored under ``~/.cache/personal_kb/`` so it survives across the
+    pair of ``SessionStart`` / ``UserPromptSubmit`` hook invocations within one
+    session, but is naturally torn down with the cache.
+    """
+    return Path(f"~/.cache/personal_kb/injected-{session_id}.json").expanduser()
+
+
 def get_ollama_url() -> str:
     """Return the Ollama API URL from KB_OLLAMA_URL."""
     return os.environ.get("KB_OLLAMA_URL", "http://localhost:11434")

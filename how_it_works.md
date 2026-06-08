@@ -431,6 +431,72 @@ Output format is compact — entry ID, type, and short title only. Agents use `k
 
 See: `preflight.py`, `tools/kb_preflight.py`
 
+## CLI Hook (personal-kb-hook)
+
+The package ships a second console script — `personal-kb-hook` — that lives inside `src/personal_kb/hook/`. It is wired into Claude Code's `SessionStart` and `UserPromptSubmit` hooks and is the "push" half of the mental_map surfacing design (the in-process `kb_preflight` Maps section is the "pull" half). The hook is intentionally tiny and stdlib-only — argparse, json, pathlib, sys. It **never imports the database layer**: a test asserts no symbols from `personal_kb.store`, `personal_kb.db`, `aiosqlite`, or `sqlite_vec` leak into the hook package (except inside `index_writer.py`, which runs in the MCP process).
+
+### The JSONL maps index
+
+`config.get_maps_index_path()` returns `<KB_DB_PATH dir>/maps_index.jsonl` (default `~/.local/share/personal_kb/maps_index.jsonl`). One project per line, shape:
+
+```jsonl
+{"project_ref": "personal-kb", "maps": [{"id": "kb-00310", "short_title": "ingestion", "long_title": "Ingestion flow"}, ...]}
+```
+
+The map list is capped at 5 entries — the writer runs the **exact same predicate as `preflight._maps_sql`** (which already enforces `ORDER BY created_at DESC LIMIT 5`), so the on-disk index has the same shape as the `Maps` section of `kb_preflight` for the same project.
+
+### Writer hook points
+
+`hook/index_writer.write_project_maps()` is called from three places inside the MCP server, each gated on `entry.entry_type == EntryType.MENTAL_MAP` and each wrapped in best-effort `try / except` (mirroring the existing `_build_graph` wrapper). A writer failure logs a `WARNING` and returns; it never fails the store path:
+
+| Caller | Trigger |
+|---|---|
+| `tools/kb_store.kb_store` (CREATE path) | After the re-fetch following `create_entry` |
+| `tools/kb_store.kb_store` (UPDATE path) | After the re-fetch following `update_entry` |
+| `tools/kb_store.kb_store` (DEACTIVATE path) | After `store.deactivate_entry` and *before* the early return — the re-query naturally excludes the now-inactive row |
+| `tools/kb_store_batch.batch_store_entries` | Once per distinct `project_ref` that received a `mental_map`, after the create loop |
+
+The write itself is whole-file-atomic: read existing lines, drop the target project's line (if any), append a fresh record (or omit the line entirely if the project has zero active maps), then `tempfile.NamedTemporaryFile` → `os.replace`.
+
+### `.kb_project` walk-up resolver
+
+`hook/resolver.resolve_project(cwd)` walks from `Path(cwd)` through each parent up to the filesystem root, returning the first non-blank, non-comment line of the first `.kb_project` it finds. The file is **committed to the repo** — portable across machines and users, no per-user TOML, no git-origin lookups. The walk is tolerant: a falsy `cwd`, a missing/unreadable/empty/comment-only `.kb_project`, or any unexpected I/O error returns `None` and never raises.
+
+This is the v1 scope anchor for **both** the SessionStart and UserPromptSubmit hooks. `cwd` is reliably present in both hook payloads (unlike the MCP server subprocess, where CWD is unreliable — see the design note in the kb_preflight section). FTS/keyword matching on the prompt is **out of scope for v1**; it is deferred to a v1.1 within-project map refiner that picks *which* of a multi-map project's maps to surface, not *which project*.
+
+### Suppression scratch + compact bypass
+
+Hooks are stateless between turns; without a scratch file, "only on change" is unimplementable. `hook/suppression.should_emit()` and `mark_emitted()` read/write `~/.cache/personal_kb/injected-<session_id>.json` holding `{"last_scope": ..., "surfaced_map_ids": [...]}`.
+
+The hook emits only when maps exist for the resolved scope AND at least one of:
+
+* `payload.source == "compact"` (a compaction event re-seeds the context, bypassing the subset check),
+* no scratch file yet,
+* the resolved scope differs from `last_scope` (the user moved to another repo),
+* the resolved map ids are not already a subset of `surfaced_map_ids` (new maps were created since the last surface).
+
+After a successful emit, `mark_emitted()` unions the new ids into `surfaced_map_ids` and sets `last_scope` to the freshly resolved scope. Atomic write: `tempfile.NamedTemporaryFile` → `os.replace`.
+
+### Output
+
+`hook/render.render_directory()` produces:
+
+```text
+Maps for <project_ref> — [<id>] <short_title>: <long_title>; [<id>] <short_title>: <long_title>
+```
+
+The separator after `<project_ref>` is U+2014 EM DASH (matching `preflight.py`'s separator). Entries are joined with `"; "` (semicolon-space). An entry whose `long_title` is empty renders as `[<id>] <short_title>` with no trailing `": "`.
+
+The output is **factual, never imperative**. `render.py` defines a `BANNED_TOKENS` frozenset (`load`, `use`, `read`, `fetch`, `pull`, `open`, `retrieve`, `get`, `review`, `consult`); a unit test lowercases the rendered string and asserts none of those substrings appear. Imperative phrasing trips prompt-injection defenses and gets surfaced to the user instead of read by the model — that's the failure mode we are designing around.
+
+For `--format=claude-json`, `render_claude_json()` wraps the same directory string in `{"hookSpecificOutput": {"hookEventName": <event>, "additionalContext": <directory>}}` — the envelope Claude Code understands.
+
+### Why the hook never touches the DB
+
+The MCP server starts as an `stdio` subprocess. A `SessionStart` hook can fire before that subprocess has connected; a hook that called the MCP would race that startup. SQLite directly is also off the table — it would couple the hook to the database backend (the deployed server might be Postgres), and it would need read-only file locking semantics across instances. The JSONL index sidesteps both problems: the MCP server is the single writer, the hook is read-only, atomic rewrites mean the hook only ever sees fully-formed lines.
+
+See: `hook/cli.py`, `hook/resolver.py`, `hook/index_reader.py`, `hook/index_writer.py`, `hook/render.py`, `hook/suppression.py`.
+
 ## References
 
 [1] G. V. Cormack, C. L. A. Clarke, and S. Büttcher. "Reciprocal rank fusion outperforms Condorcet and individual rank learning methods." *SIGIR 2009*. https://dl.acm.org/doi/10.1145/1571941.1572114

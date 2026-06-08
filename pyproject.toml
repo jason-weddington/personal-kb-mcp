@@ -21,6 +21,7 @@ dependencies = [
 [project.scripts]
 personal-kb = "personal_kb.__main__:main"
 personal-kb-web = "personal_kb.web.cli:main"
+personal-kb-hook = "personal_kb.hook.cli:main"
 
 [project.optional-dependencies]
 aws = [

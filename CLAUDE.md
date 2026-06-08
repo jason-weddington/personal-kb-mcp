@@ -28,6 +28,29 @@
 - MCP tools in `src/personal_kb/tools/` (one file per tool)
 - Tests mirror source structure under `tests/`
 
+## `personal-kb-hook` (CLI hook for mental_map surfacing)
+
+A second console script — `personal-kb-hook` — ships alongside `personal-kb`
+and `personal-kb-web`. It is wired into the harness's `SessionStart` and
+`UserPromptSubmit` hooks and proactively surfaces a project's `mental_map`
+directory into the model context. It is **stdlib-only**, **never touches the
+DB**, and is silent on every error path.
+
+**Install**: `uv tool install --from git+https://github.com/jason-weddington/personal-kb-mcp.git personal-kb-hook`.
+
+**Wire it up**: in `~/.claude/settings.json`, add a hook entry for both
+`SessionStart` and `UserPromptSubmit` invoking `personal-kb-hook --format=claude-json`
+(see the README for the full snippet).
+
+**`.kb_project` convention**: commit a one-line `.kb_project` file at each
+repo root containing the KB `project_ref`. The hook walks up from the
+session's `cwd` to that file to know which project's maps to surface. This
+repo's own `.kb_project` is `personal-kb`.
+
+The hook reads only `<KB_DB_PATH dir>/maps_index.jsonl`, which the MCP server
+writes on `mental_map` create/update/deactivate. Per-session suppression
+lives in `~/.cache/personal_kb/injected-<session_id>.json`.
+
 ## Search Quality Eval
 
 `tests/eval/` contains a regression framework with a controlled corpus (32 entries, 15 golden queries) and a `ControlledEmbedder` that makes vector search deterministic. Two baselines track quality at different layers:

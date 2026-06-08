@@ -13,6 +13,7 @@ from personal_kb.confidence.decay import compute_effective_confidence
 from personal_kb.config import is_safety_skip
 from personal_kb.graph.builder import GraphBuilder, _as_list
 from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.hook.index_writer import write_project_maps
 from personal_kb.ingest.safety import detect_secrets_in_content
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
@@ -254,6 +255,10 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 (deactivate_entry_id,),
             )
             await db.commit()
+            # Refresh the on-disk maps index BEFORE the early return; the
+            # re-query naturally excludes the now-inactive row. Best-effort.
+            if entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
+                await _refresh_maps_index(db, entry.project_ref, team)
             reason = f" ({change_reason})" if change_reason else ""
             return f"Deactivated entry {entry.id}: {entry.short_title}{reason}"
 
@@ -297,6 +302,11 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
             await _build_graph(graph_builder, entry)
             await _enrich_graph(graph_enricher, entry)
             entry = await store.get_entry(entry.id) or entry
+            # Refresh the on-disk maps index for mental_map updates. The
+            # entry type may have CHANGED in this update — we update the
+            # index whenever the refreshed entry is a mental_map.
+            if entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
+                await _refresh_maps_index(db, entry.project_ref, team)
             result = format_store_result(entry, is_update=True)
             # Advisory mental_map lint — gate on the RE-FETCHED entry's type
             # (the entry_type param is None on metadata-only updates) and only
@@ -364,6 +374,10 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         await _enrich_graph(graph_enricher, entry)
         entry = await store.get_entry(entry.id) or entry
 
+        # Refresh the on-disk maps index for mental_map creates. Best-effort.
+        if entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
+            await _refresh_maps_index(db, entry.project_ref, team)
+
         result = format_store_result(entry, is_update=False)
         # Advisory mental_map lint — gated here at the call site (not inside
         # format_store_result, which is shared by non-map stores). The store
@@ -379,6 +393,19 @@ async def _build_graph(graph_builder: GraphBuilder, entry: KnowledgeEntry) -> No
         await graph_builder.build_for_entry(entry)
     except Exception:
         logger.warning("Failed to build graph for entry %s", entry.id, exc_info=True)
+
+
+async def _refresh_maps_index(db: object, project_ref: str, team: str | None) -> None:
+    """Refresh the on-disk maps index for a project, logging on failure.
+
+    Mirrors the ``_build_graph`` best-effort wrapper: a writer failure must
+    never bubble up into the store path. The store has already committed by
+    the time we get here.
+    """
+    try:
+        await write_project_maps(db, project_ref, team=team)  # type: ignore[arg-type]
+    except Exception:
+        logger.warning("Failed to refresh maps index for project %s", project_ref, exc_info=True)
 
 
 async def _enrich_graph(enricher: GraphEnricher | None, entry: KnowledgeEntry) -> None:

@@ -10,6 +10,7 @@ from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence
 from personal_kb.config import is_safety_skip
+from personal_kb.hook.index_writer import write_project_maps
 from personal_kb.ingest.safety import detect_secrets_in_content
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.formatters import format_entry_compact, format_result_list
@@ -71,6 +72,7 @@ async def batch_store_entries(
     embedder = lifespan["embedder"]
     graph_builder: GraphBuilder = lifespan["graph_builder"]
     graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
+    db = lifespan["db"]
     contributor: str | None = lifespan.get("contributor")
     team: str | None = lifespan.get("team")
 
@@ -142,6 +144,22 @@ async def batch_store_entries(
             await graph_enricher.enrich_batch(created)
         except Exception:
             logger.warning("Batch enrichment failed", exc_info=True)
+
+    # Refresh the on-disk maps index once per distinct project_ref that
+    # received a mental_map. Best-effort: a writer failure must not fail
+    # the batch (mirror the graph try/except wrapper above).
+    map_projects: set[str] = {
+        entry.project_ref
+        for entry in created
+        if entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref
+    }
+    for project_ref in map_projects:
+        try:
+            await write_project_maps(db, project_ref, team=team)
+        except Exception:
+            logger.warning(
+                "Failed to refresh maps index for project %s", project_ref, exc_info=True
+            )
 
     # Re-fetch entries to get updated state (embedding flag)
     now = datetime.now(UTC)

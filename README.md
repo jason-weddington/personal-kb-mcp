@@ -209,6 +209,88 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 - `list_contributors` — Contributor/team stats for active entries
 - `list_audit` — Recent mutation events (create/update/deactivate/reactivate) with optional entry_id/date filters
 
+## Surfacing maps via `personal-kb-hook` (opt-in)
+
+The package also ships a small stdlib-only CLI (`personal-kb-hook`) that you can wire into Claude Code's [hook system](https://docs.claude.com/en/docs/claude-code/hooks) to proactively surface the `mental_map` entries for the project you're working in. The hook itself never talks to the MCP server or the DB — it reads a denormalized JSONL index that the MCP server writes every time a `mental_map` is created, updated, or deactivated.
+
+### Install
+
+```bash
+uv tool install --from git+https://github.com/jason-weddington/personal-kb-mcp.git personal-kb-hook
+```
+
+`uv tool` puts the binary on your `PATH`. There are no runtime dependencies beyond the standard library.
+
+### The `.kb_project` convention
+
+The hook resolves which project's maps to surface by walking up from the harness-provided `cwd` to the first `.kb_project` file it finds. That file is **one line** — the KB `project_ref` for the repo:
+
+```text
+# .kb_project — committed at the repo root
+my-project
+```
+
+Commit one per repo so the hook works for every clone, every machine, every user — no per-user config required. Lines starting with `#` are comments; the first non-blank, non-comment line wins.
+
+This repo's own `.kb_project` is just `personal-kb`.
+
+### Wiring it into Claude Code
+
+Add the hook to `~/.claude/settings.json` (or your project-level `.claude/settings.json`). The hook accepts `--format=text` (default — bare directory string) or `--format=claude-json` (the `hookSpecificOutput` envelope Claude Code understands).
+
+```jsonc
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "personal-kb-hook --format=claude-json" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "personal-kb-hook --format=claude-json" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+If you'd rather inject the bare directory string into the model context yourself, use `--format=text`:
+
+```jsonc
+{
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "personal-kb-hook" }] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "personal-kb-hook" }] }
+    ]
+  }
+}
+```
+
+### What gets surfaced
+
+When the hook fires, it:
+
+1. Reads the JSON payload Claude Code writes to its stdin.
+2. Walks up from `payload.cwd` to the first `.kb_project` (or stays silent if none).
+3. Looks the resolved `project_ref` up in `~/.local/share/personal_kb/maps_index.jsonl` (the file the MCP server writes on mental_map store/update/deactivate).
+4. Emits a single factual line like `Maps for my-project — [kb-00310] ingestion: Ingestion flow; [kb-00312] auth: Auth + sessions`.
+
+The output is **factual**, never imperative — no "load", "use", "read" — so it never trips prompt-injection defenses.
+
+A per-session scratch file under `~/.cache/personal_kb/` suppresses re-injection when the same project's same map ids have already been surfaced in this session. Scope drift (cwd → different repo → different `.kb_project`) re-emits. Compaction (`source=compact`) bypasses the suppression so the context is re-seeded.
+
+Any error path — no `.kb_project`, no maps for the project, malformed stdin, write failure — exits 0 with no stdout. The hook never raises into the harness.
+
 ## Environment Variables
 
 | Variable | Default | Description |
