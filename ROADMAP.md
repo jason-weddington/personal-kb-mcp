@@ -44,6 +44,7 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 
 ## Done
 
+- Mental maps — `mental_map` entry type: fact-free orientation nodes (the transactive-memory "directory tier") that point at subsystems rather than restating them. Two surfaces: pull (`kb_preflight` Maps index) and push (stdlib-only `personal-kb-hook` CLI on SessionStart/UserPromptSubmit, scoped via a committed `.kb_project` file). Postgres LISTEN/NOTIFY keeps the on-disk index fresh across multi-writer instances. `recommend-maps.workflow.js` authors a repo's map set.
 - Just-in-time preflight — `kb_preflight` tool returns project context primer (expiring entries, recent decisions/lessons, active conventions). CWD-based injection didn't work (MCP server CWD unreliable); tool-based approach works better.
 - Explorer write-back — chat agent tools (update_entry, ingest_url, get_entry), file upload + multi-URL ingest with SSE progress, project combo box, auto-start web server (KB_AUTO_EXPLORE, KB_EXPLORE_PORT).
 - Explorer Chat — `generate_chat(messages)` on LLMProvider protocol + all 3 clients, `ChatSession` with token budget, `/api/chat/stream` SSE endpoint, iMessage-style chat UI with slide animation, clickable citations that fly to graph nodes.
