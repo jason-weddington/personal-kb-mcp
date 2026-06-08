@@ -1616,7 +1616,7 @@ dev = [
 
 [[package]]
 name = "personal-kb-hook"
-version = "0.1.0"
+version = "0.66.1"
 source = { editable = "packages/personal-kb-hook" }
 
 [[package]]

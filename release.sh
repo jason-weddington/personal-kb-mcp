@@ -26,6 +26,38 @@ fi
 #    --no-vcs-release:  don't create a GitHub Release object (tags are enough).
 uv run semantic-release version --no-push --no-vcs-release
 
+# 2a. Lock the standalone personal-kb-hook package to the same release version
+#     as the main package, and fold that into the release commit so the single
+#     repo tag covers BOTH packages.
+#
+#     Why this works as a post-hoc amend + retag:
+#       - We just ran semantic-release with --no-push, so the new commit and
+#         tag are local only — nothing has been published yet, so editing the
+#         commit and moving the tag onto it is safe.
+#       - The hook is consumed via `uv tool install --from
+#         "git+...#subdirectory=packages/personal-kb-hook"` — pulled straight
+#         out of the git tree at a tag. It is NOT a separately published
+#         wheel, so semantic-release's build_command does not need to build
+#         it. Only the version line that lands in the tagged commit matters.
+#       - Decision: one repo version for both packages — simplest. Revisit
+#         independent versioning only if a real need appears.
+python3 scripts/stamp_hook_version.py
+new_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1)
+new_tag="v${new_version}"
+if ! git diff --quiet -- packages/personal-kb-hook/pyproject.toml; then
+  # The hook is a uv workspace member, so its version also appears in
+  # uv.lock — re-lock so the lockfile entry tracks the new version, then
+  # fold both files into the release commit.
+  uv lock
+  git add packages/personal-kb-hook/pyproject.toml uv.lock
+  # Keep the conventional `chore(release): v{version}` message, then move
+  # the annotated tag onto the new commit. The tag message mirrors what
+  # semantic-release writes by default ("v{version}").
+  git commit --amend --no-edit
+  git tag -d "$new_tag"
+  git tag -a "$new_tag" -m "$new_tag"
+fi
+
 # 3. Publish to BOTH remotes: home-lab origin first, then the team-facing github.
 git push origin main --tags
 git push github main --tags
