@@ -18,10 +18,10 @@ import argparse
 import json
 import sys
 
-from personal_kb.hook.index_reader import read_index
-from personal_kb.hook.render import render_claude_json, render_directory
-from personal_kb.hook.resolver import resolve_project
-from personal_kb.hook.suppression import mark_emitted, should_emit
+from personal_kb_hook.index_reader import read_index
+from personal_kb_hook.render import render_claude_json, render_directory
+from personal_kb_hook.resolver import resolve_project
+from personal_kb_hook.suppression import mark_emitted, should_emit
 
 _SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit"})
 

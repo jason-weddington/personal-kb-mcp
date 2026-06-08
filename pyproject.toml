@@ -21,7 +21,13 @@ dependencies = [
 [project.scripts]
 personal-kb = "personal_kb.__main__:main"
 personal-kb-web = "personal_kb.web.cli:main"
-personal-kb-hook = "personal_kb.hook.cli:main"
+# NOTE: ``personal-kb-hook`` lives in its OWN standalone, zero-dependency
+# package at ``packages/personal-kb-hook/`` so it can be ``uv tool install``ed
+# without dragging in fastmcp/anthropic/pymupdf. Install command:
+#   uv tool install --from \
+#     "git+ssh://git@git-host/home/git/repos/personal_kb#subdirectory=packages/personal-kb-hook" \
+#     personal-kb-hook
+# See ``packages/personal-kb-hook/pyproject.toml`` for the script entry.
 
 [project.optional-dependencies]
 aws = [
@@ -46,8 +52,18 @@ dev = [
     "pre-commit>=4",
     "python-semantic-release>=10.5",
     "personal-kb[aws,postgres,iam]",
+    # Workspace member — pulled in as an editable dev dep so the main repo's
+    # tests can import ``personal_kb_hook`` (drift guard + cross-package
+    # round-trip test). The standalone package itself has ZERO runtime deps.
+    "personal-kb-hook",
     "vulture>=2.15",
 ]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+personal-kb-hook = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

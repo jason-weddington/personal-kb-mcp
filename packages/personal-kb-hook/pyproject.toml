@@ -1,0 +1,67 @@
+[project]
+name = "personal-kb-hook"
+version = "0.1.0"
+description = "Stdlib-only CLI hook that surfaces personal-kb mental_map directories into a Claude Code session"
+requires-python = ">=3.13"
+# ZERO runtime dependencies — this package is deliberately stdlib-only so it
+# can be `uv tool install`ed without dragging in fastmcp/anthropic/pymupdf
+# from the main personal-kb server package. See AC1 of the split task.
+dependencies = []
+
+[project.scripts]
+personal-kb-hook = "personal_kb_hook.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/personal_kb_hook"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "N",
+    "D",
+    "UP",
+    "B",
+    "S",
+    "A",
+    "C4",
+    "SIM",
+    "TCH",
+    "RUF",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S106", "D"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--strict-markers -v"
+
+[tool.coverage.run]
+source = ["personal_kb_hook"]
+
+[tool.coverage.report]
+fail_under = 80.0

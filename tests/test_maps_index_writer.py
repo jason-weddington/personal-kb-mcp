@@ -1,14 +1,21 @@
-"""Tests for the on-disk JSONL maps index writer and reader."""
+"""Tests for the on-disk JSONL maps index writer (MCP-side).
+
+The reader half is exercised in the standalone ``personal-kb-hook`` package's
+own test suite (``packages/personal-kb-hook/tests/test_index_reader.py``). The
+round-trip test below requires both — it imports the writer from the main
+package and the reader from the standalone hook package, so it doubles as a
+cross-package contract test.
+"""
 
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from personal_kb_hook.index_reader import read_index
 
 from personal_kb.db.connection import create_connection
-from personal_kb.hook.index_reader import read_index
-from personal_kb.hook.index_writer import write_project_maps
+from personal_kb.maps_index_writer import write_project_maps
 from personal_kb.preflight import _maps_sql
 
 # ---------------------------------------------------------------------------

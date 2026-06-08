@@ -10,8 +10,8 @@ from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence
 from personal_kb.config import is_safety_skip
-from personal_kb.hook.index_writer import write_project_maps
 from personal_kb.ingest.safety import detect_secrets_in_content
+from personal_kb.maps_index_writer import write_project_maps
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.formatters import format_entry_compact, format_result_list
 from personal_kb.tools.map_lint import lint_map_body

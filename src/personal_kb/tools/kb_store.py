@@ -13,8 +13,8 @@ from personal_kb.confidence.decay import compute_effective_confidence
 from personal_kb.config import is_safety_skip
 from personal_kb.graph.builder import GraphBuilder, _as_list
 from personal_kb.graph.enricher import GraphEnricher
-from personal_kb.hook.index_writer import write_project_maps
 from personal_kb.ingest.safety import detect_secrets_in_content
+from personal_kb.maps_index_writer import write_project_maps
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.store.knowledge_store import KnowledgeStore

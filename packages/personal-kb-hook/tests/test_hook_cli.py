@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from personal_kb.hook import cli
-from personal_kb.hook.render import BANNED_TOKENS, render_directory
+from personal_kb_hook import cli
+from personal_kb_hook.render import BANNED_TOKENS, render_directory
 
 
 @pytest.fixture
@@ -275,26 +275,46 @@ def test_render_uses_em_dash_and_semicolon_join() -> None:
     assert directory == "Maps for demo — [kb-1] alpha: first; [kb-2] beta: second"
 
 
-def test_hook_package_does_not_import_db() -> None:
-    """The hook package must not import any DB / store / sqlite_vec symbols."""
-    hook_dir = Path(__file__).resolve().parent.parent.parent / "src" / "personal_kb" / "hook"
-    forbidden = (
-        "from personal_kb.store",
-        "from personal_kb.db",
-        "import aiosqlite",
-        "import sqlite_vec",
-        "KnowledgeStore",
-    )
-    for py_file in hook_dir.glob("*.py"):
-        if py_file.name == "index_writer.py":
-            # The writer runs in the MCP process and is allowed to touch the DB
-            # via the typed protocol; it imports preflight._maps_sql only.
-            continue
-        text = py_file.read_text(encoding="utf-8")
-        for needle in forbidden:
-            assert needle not in text, (
-                f"{py_file.name}: must not reference {needle!r} (hook stays DB-free)"
-            )
+def test_hook_package_is_stdlib_only_and_does_not_import_main_package() -> None:
+    """The hook package must not import ``personal_kb`` or any third-party module.
+
+    The split rule (AC1 of the standalone-package task): the standalone
+    ``personal-kb-hook`` distribution is RUNTIME-stdlib-only. It must NOT
+    depend on, or import from, the main ``personal_kb`` server package, and
+    must not import any third-party top-level module.
+    """
+    import sys
+
+    src_dir = Path(__file__).resolve().parent.parent / "src" / "personal_kb_hook"
+    assert src_dir.is_dir(), src_dir
+    py_files = sorted(src_dir.glob("*.py"))
+    assert py_files, "no python files found in standalone hook package"
+
+    # Whitelist of acceptable import roots: stdlib + the package's own modules.
+    stdlib_roots = set(sys.stdlib_module_names)
+    own_roots = {"personal_kb_hook"}
+
+    import ast
+
+    for py_file in py_files:
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".", 1)[0]
+                    assert root in stdlib_roots or root in own_roots, (
+                        f"{py_file.name}: forbidden import {alias.name!r} "
+                        f"(must be stdlib or personal_kb_hook only)"
+                    )
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:  # relative import — fine
+                    continue
+                module = node.module or ""
+                root = module.split(".", 1)[0]
+                assert root in stdlib_roots or root in own_roots, (
+                    f"{py_file.name}: forbidden from-import {module!r} "
+                    f"(must be stdlib or personal_kb_hook only)"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +330,7 @@ def test_main_swallows_internal_exception(
     def boom(*args: object, **kwargs: object) -> None:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("personal_kb.hook.cli.read_index", boom)
+    monkeypatch.setattr("personal_kb_hook.cli.read_index", boom)
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     rc, out = _run(
         monkeypatch,

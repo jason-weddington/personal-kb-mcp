@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from personal_kb.hook.resolver import resolve_project
+from personal_kb_hook.resolver import resolve_project
 
 
 def test_nested_subdir_resolves_repo_root(tmp_path: Path) -> None:

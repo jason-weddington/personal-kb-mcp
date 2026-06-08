@@ -11,7 +11,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, TypedDict
 
-from personal_kb.config import get_maps_index_path
+from personal_kb_hook.paths import get_maps_index_path
 
 if TYPE_CHECKING:
     from pathlib import Path

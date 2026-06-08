@@ -12,10 +12,10 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from personal_kb.hook.index_reader import MapEntry
+    from personal_kb_hook.index_reader import MapEntry
 
 # Em-dash separator after the project_ref. Matches preflight.py's separator
-# style; the test asserts the U+2014 codepoint, not a hyphen.
+# style in the main package; the test asserts the U+2014 codepoint, not a hyphen.
 _EM_DASH = "—"
 
 # Words that turn the directory into a command. The hook must inject a

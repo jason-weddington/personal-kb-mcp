@@ -253,15 +253,21 @@ Both halves read from the same `mental_map` entries you author with `kb_store`; 
 
 ## Surfacing maps via `personal-kb-hook` (opt-in)
 
-The package also ships a small stdlib-only CLI (`personal-kb-hook`) that you can wire into Claude Code's [hook system](https://docs.claude.com/en/docs/claude-code/hooks) to proactively surface the `mental_map` entries for the project you're working in. The hook itself never talks to the MCP server or the DB — it reads a denormalized JSONL index that the MCP server writes every time a `mental_map` is created, updated, or deactivated.
+The repo also ships a small stdlib-only CLI (`personal-kb-hook`) that you can wire into Claude Code's [hook system](https://docs.claude.com/en/docs/claude-code/hooks) to proactively surface the `mental_map` entries for the project you're working in. The hook itself never talks to the MCP server or the DB — it reads a denormalized JSONL index that the MCP server writes every time a `mental_map` is created, updated, or deactivated.
 
 ### Install
 
+The hook lives in its **own standalone package** at `packages/personal-kb-hook/` with **zero third-party dependencies** — installing it does NOT drag in `fastmcp`, `anthropic`, `pymupdf`, etc. Install it directly from the git subdirectory:
+
 ```bash
-uv tool install --from git+https://github.com/jason-weddington/personal-kb-mcp.git personal-kb
+uv tool install --from \
+  "git+https://github.com/jason-weddington/personal-kb-mcp.git#subdirectory=packages/personal-kb-hook" \
+  personal-kb-hook
 ```
 
-This installs the `personal-kb` package and puts its console scripts on your `PATH` — including `personal-kb-hook` (alongside `personal-kb` and `personal-kb-web`). Install by the package's real name (`personal-kb`); `uv` rejects a `--from`/name mismatch, so `… personal-kb-hook` fails. The hook *process* itself imports only the Python standard library and never opens the database — it reads the on-disk JSONL index — so it stays fast on the session hot path.
+This puts a single `personal-kb-hook` console script on your `PATH`. The tool venv contains exactly one package (`personal_kb_hook`) — nothing else. The hook *process* itself imports only the Python standard library and never opens the database — it reads the on-disk JSONL index — so it stays fast on the session hot path.
+
+> The main `personal-kb` server package is installed separately (typically via `uvx --from "git+…" personal-kb` or `uv tool install --from "git+…" personal-kb`); it provides the MCP server that writes the on-disk maps index that the hook reads.
 
 ### The `.kb_project` convention
 

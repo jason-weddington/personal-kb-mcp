@@ -16,7 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from personal_kb.config import get_hook_scratch_path
+from personal_kb_hook.paths import get_hook_scratch_path
 
 if TYPE_CHECKING:
     from pathlib import Path

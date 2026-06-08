@@ -546,17 +546,43 @@ See: `tools/kb_get.py` (`_pointer_rot_note`, gating at line 124), `graph/queries
 
 `build_project_context` runs this query alongside the other preflight queries, and renders results into a **`Maps:`** section that leads the output (before Expiring / Recent / Conventions / Related). Each line follows the format `  - [<id>] <short_title> — <long_title>` — id plus both titles, no type label (redundant inside a Maps section), with U+2014 EM DASH between the two titles. When the project has no maps, the section is omitted entirely; an empty Maps block never renders.
 
-The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC LIMIT 5` — is reused by the on-disk push index (`hook/index_writer.write_project_maps`), so the two halves of the surfacing design always agree on which maps are "the maps" for a project. The push half is described in the CLI Hook section below.
+The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC LIMIT 5` — is reused by the on-disk push index (`personal_kb.maps_index_writer.write_project_maps`), so the two halves of the surfacing design always agree on which maps are "the maps" for a project. The push half is described in the CLI Hook section below.
 
 See: `preflight.py` (`_maps_sql`, the `Maps:` block in `build_project_context`), `tools/kb_preflight.py`.
 
 ## CLI Hook (personal-kb-hook)
 
-The package ships a second console script — `personal-kb-hook` — that lives inside `src/personal_kb/hook/`. It is wired into Claude Code's `SessionStart` and `UserPromptSubmit` hooks and is the "push" half of the mental_map surfacing design (the in-process `kb_preflight` Maps section, documented above, is the "pull" half). The hook is intentionally tiny and stdlib-only — argparse, json, pathlib, sys. It **never imports the database layer**: a test asserts no symbols from `personal_kb.store`, `personal_kb.db`, `aiosqlite`, or `sqlite_vec` leak into the hook package (except inside `index_writer.py`, which runs in the MCP process).
+The repo ships a console script — `personal-kb-hook` — that is wired into Claude Code's `SessionStart` and `UserPromptSubmit` hooks and is the "push" half of the mental_map surfacing design (the in-process `kb_preflight` Maps section, documented above, is the "pull" half). The hook is intentionally tiny and stdlib-only — argparse, json, pathlib, sys. It is published as a **separate package** so its install footprint is genuinely zero-third-party-dependency.
+
+### Package split (runtime vs writer)
+
+The hook design has two halves that run in completely different processes, and they now live in two separate distributions:
+
+| Half | Process | Distribution | Path on disk |
+|---|---|---|---|
+| **Runtime** (cli, resolver, index_reader, render, suppression, paths) | CLI hook subprocess on every `SessionStart` / `UserPromptSubmit` | `personal-kb-hook` (zero deps) | `packages/personal-kb-hook/src/personal_kb_hook/` |
+| **Writer** (refreshes the on-disk JSONL maps index after every `mental_map` create/update/deactivate) | MCP server | `personal-kb` (the main server package) | `src/personal_kb/maps_index_writer.py` |
+
+The runtime package imports **only the Python standard library** and the main `personal_kb` distribution. A test in the runtime package's own suite (`packages/personal-kb-hook/tests/test_hook_cli.py::test_hook_package_is_stdlib_only_and_does_not_import_main_package`) walks every `.py` file in the package, parses the AST, and asserts every `import` / `from ... import` resolves to either a `sys.stdlib_module_names` root or the package's own `personal_kb_hook` namespace.
+
+The writer half stays in the main package because it imports `personal_kb.preflight._maps_sql` and runs against a `personal_kb.db.backend.Database` — server-only dependencies. Splitting it out would force the standalone hook to either re-implement the SQL (drift risk) or take a Postgres/SQLite dep (defeats the zero-dep goal).
+
+### Duplicated path helpers + drift guard
+
+The on-disk path contract is the one piece of shared knowledge between the two halves. Rather than introduce a cross-package import (which would either require publishing both packages together or pinning a self-referential git dep), the two helpers are **duplicated**:
+
+| Side | Module | Function | Returns |
+|---|---|---|---|
+| Main package | `personal_kb.config` | `get_maps_index_path()` | `<KB_DB_PATH dir>/maps_index.jsonl` |
+| Main package | `personal_kb.config` | `get_hook_scratch_path(session_id)` | `~/.cache/personal_kb/injected-<session_id>.json` |
+| Standalone hook | `personal_kb_hook.paths` | `get_maps_index_path()` | identical |
+| Standalone hook | `personal_kb_hook.paths` | `get_hook_scratch_path(session_id)` | identical |
+
+A **drift guard** test in the main repo (`tests/test_path_drift_guard.py`) imports both implementations and asserts they produce identical paths for representative inputs, including a custom `KB_DB_PATH` and tilde expansion. If you change one side, change the other and re-run that test. It runs as part of the main `uv run pytest -m "not eval"` gate.
 
 ### The JSONL maps index
 
-`config.get_maps_index_path()` returns `<KB_DB_PATH dir>/maps_index.jsonl` (default `~/.local/share/personal_kb/maps_index.jsonl`). One project per line, shape:
+`get_maps_index_path()` (on either side) returns `<KB_DB_PATH dir>/maps_index.jsonl` (default `~/.local/share/personal_kb/maps_index.jsonl`). One project per line, shape:
 
 ```jsonl
 {"project_ref": "personal-kb", "maps": [{"id": "kb-00310", "short_title": "ingestion", "long_title": "Ingestion flow"}, ...]}
@@ -566,7 +592,7 @@ The map list is capped at 5 entries — the writer runs the **exact same predica
 
 ### Writer hook points
 
-`hook/index_writer.write_project_maps()` is called from three places inside the MCP server, each gated on `entry.entry_type == EntryType.MENTAL_MAP` and each wrapped in best-effort `try / except` (mirroring the existing `_build_graph` wrapper). A writer failure logs a `WARNING` and returns; it never fails the store path:
+`personal_kb.maps_index_writer.write_project_maps()` is called from three places inside the MCP server, each gated on `entry.entry_type == EntryType.MENTAL_MAP` and each wrapped in best-effort `try / except` (mirroring the existing `_build_graph` wrapper). A writer failure logs a `WARNING` and returns; it never fails the store path:
 
 | Caller | Trigger |
 |---|---|
@@ -579,13 +605,13 @@ The write itself is whole-file-atomic: read existing lines, drop the target proj
 
 ### `.kb_project` walk-up resolver
 
-`hook/resolver.resolve_project(cwd)` walks from `Path(cwd)` through each parent up to the filesystem root, returning the first non-blank, non-comment line of the first `.kb_project` it finds. The file is **committed to the repo** — portable across machines and users, no per-user TOML, no git-origin lookups. The walk is tolerant: a falsy `cwd`, a missing/unreadable/empty/comment-only `.kb_project`, or any unexpected I/O error returns `None` and never raises.
+`personal_kb_hook.resolver.resolve_project(cwd)` walks from `Path(cwd)` through each parent up to the filesystem root, returning the first non-blank, non-comment line of the first `.kb_project` it finds. The file is **committed to the repo** — portable across machines and users, no per-user TOML, no git-origin lookups. The walk is tolerant: a falsy `cwd`, a missing/unreadable/empty/comment-only `.kb_project`, or any unexpected I/O error returns `None` and never raises.
 
 This is the v1 scope anchor for **both** the SessionStart and UserPromptSubmit hooks. `cwd` is reliably present in both hook payloads (unlike the MCP server subprocess, where CWD is unreliable — see the design note in the kb_preflight section). FTS/keyword matching on the prompt is **out of scope for v1**; it is deferred to a v1.1 within-project map refiner that picks *which* of a multi-map project's maps to surface, not *which project*.
 
 ### Suppression scratch + compact bypass
 
-Hooks are stateless between turns; without a scratch file, "only on change" is unimplementable. `hook/suppression.should_emit()` and `mark_emitted()` read/write `~/.cache/personal_kb/injected-<session_id>.json` holding `{"last_scope": ..., "surfaced_map_ids": [...]}`.
+Hooks are stateless between turns; without a scratch file, "only on change" is unimplementable. `personal_kb_hook.suppression.should_emit()` and `mark_emitted()` read/write `~/.cache/personal_kb/injected-<session_id>.json` holding `{"last_scope": ..., "surfaced_map_ids": [...]}`.
 
 The hook emits only when maps exist for the resolved scope AND at least one of:
 
@@ -598,7 +624,7 @@ After a successful emit, `mark_emitted()` unions the new ids into `surfaced_map_
 
 ### Output
 
-`hook/render.render_directory()` produces:
+`personal_kb_hook.render.render_directory()` produces:
 
 ```text
 Maps for <project_ref> — [<id>] <short_title>: <long_title>; [<id>] <short_title>: <long_title>
@@ -614,7 +640,16 @@ For `--format=claude-json`, `render_claude_json()` wraps the same directory stri
 
 The MCP server starts as an `stdio` subprocess. A `SessionStart` hook can fire before that subprocess has connected; a hook that called the MCP would race that startup. SQLite directly is also off the table — it would couple the hook to the database backend (the deployed server might be Postgres), and it would need read-only file locking semantics across instances. The JSONL index sidesteps both problems: the MCP server is the single writer, the hook is read-only, atomic rewrites mean the hook only ever sees fully-formed lines.
 
-See: `hook/cli.py`, `hook/resolver.py`, `hook/index_reader.py`, `hook/index_writer.py`, `hook/render.py`, `hook/suppression.py`.
+### Running tests for both halves
+
+Both halves carry their own test suite:
+
+* **Main repo** (`uv run pytest -m "not eval"`): writer unit tests + writer↔reader round-trip + drift-guard.
+* **Standalone hook** (`(cd packages/personal-kb-hook && uv run --project ../.. pytest)`): cli / resolver / render / suppression / index-reader, plus the "no `personal_kb` and no third-party imports" assertion.
+
+The root `pyproject.toml` declares `[tool.uv.workspace] members = ["packages/*"]` and lists `personal-kb-hook` as a workspace dev dep, so `uv sync` installs the standalone package editable into the main `.venv` (needed by the drift-guard and the cross-package round-trip test in `tests/test_maps_index_writer.py`).
+
+See: `packages/personal-kb-hook/src/personal_kb_hook/{cli,resolver,index_reader,render,suppression,paths}.py`, `src/personal_kb/maps_index_writer.py`.
 
 ## References
 

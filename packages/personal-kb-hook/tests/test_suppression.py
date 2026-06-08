@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from personal_kb.hook.suppression import mark_emitted, should_emit
+from personal_kb_hook.suppression import mark_emitted, should_emit
 
 
 def test_first_surface_emits(tmp_path: Path) -> None:

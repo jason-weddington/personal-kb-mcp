@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.13"
 
+[manifest]
+members = [
+    "personal-kb",
+    "personal-kb-hook",
+]
+
 [[package]]
 name = "aiofile"
 version = "3.9.0"
@@ -1563,6 +1569,7 @@ postgres = [
 dev = [
     { name = "mypy" },
     { name = "personal-kb", extra = ["aws", "iam", "postgres"] },
+    { name = "personal-kb-hook" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1597,6 +1604,7 @@ provides-extras = ["aws", "postgres", "iam", "safety"]
 dev = [
     { name = "mypy", specifier = ">=1.14" },
     { name = "personal-kb", extras = ["aws", "postgres", "iam"] },
+    { name = "personal-kb-hook", editable = "packages/personal-kb-hook" },
     { name = "pre-commit", specifier = ">=4" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
@@ -1605,6 +1613,11 @@ dev = [
     { name = "ruff", specifier = ">=0.8" },
     { name = "vulture", specifier = ">=2.15" },
 ]
+
+[[package]]
+name = "personal-kb-hook"
+version = "0.1.0"
+source = { editable = "packages/personal-kb-hook" }
 
 [[package]]
 name = "phonenumbers"

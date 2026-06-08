@@ -2,8 +2,10 @@
 
 ## Quick Reference
 
-- **Run tests**: `uv run pytest -m "not eval"` — the default for all iteration and CI. The `eval` marker covers the agent-baseline tests, which hit a **live Anthropic API** and rewrite baseline JSON files; **never run the bare `uv run pytest`** in a build/iteration loop (it's slow, nondeterministic, and dirties the tree). Run eval tests manually and deliberately — see "Search Quality Eval" below.
-- **Lint**: `uv run ruff check src/ tests/`
+- **Run tests (main package)**: `uv run pytest -m "not eval"` — the default for all iteration and CI. The `eval` marker covers the agent-baseline tests, which hit a **live Anthropic API** and rewrite baseline JSON files; **never run the bare `uv run pytest`** in a build/iteration loop (it's slow, nondeterministic, and dirties the tree). Run eval tests manually and deliberately — see "Search Quality Eval" below.
+- **Run tests (standalone `personal-kb-hook`)**: `(cd packages/personal-kb-hook && uv run --project ../.. pytest)`. The standalone hook lives in its own package and has its own test suite; both must be green.
+- **Lint**: `uv run ruff check src/ tests/ packages/`
+- **Type check**: `uv run mypy src/` for the main package; `(cd packages/personal-kb-hook && uv run --project ../.. mypy src/)` for the hook.
 - **Run server directly**: `uv run personal-kb`
 
 ## For headless build agents
@@ -30,13 +32,26 @@
 
 ## `personal-kb-hook` (CLI hook for mental_map surfacing)
 
-A second console script — `personal-kb-hook` — ships alongside `personal-kb`
-and `personal-kb-web`. It is wired into the harness's `SessionStart` and
-`UserPromptSubmit` hooks and proactively surfaces a project's `mental_map`
-directory into the model context. It is **stdlib-only**, **never touches the
-DB**, and is silent on every error path.
+`personal-kb-hook` is a **separate, standalone, zero-dependency package**
+that lives at `packages/personal-kb-hook/`. It is wired into the harness's
+`SessionStart` and `UserPromptSubmit` hooks and proactively surfaces a
+project's `mental_map` directory into the model context. It is
+**stdlib-only**, **never touches the DB**, never imports the main
+`personal_kb` package, and is silent on every error path.
 
-**Install**: `uv tool install --from git+https://github.com/jason-weddington/personal-kb-mcp.git personal-kb-hook`.
+**Install** (verified — produces a deps-free tool venv with only
+`personal_kb_hook` in site-packages):
+
+```
+uv tool install --from \
+  "git+https://github.com/jason-weddington/personal-kb-mcp.git#subdirectory=packages/personal-kb-hook" \
+  personal-kb-hook
+```
+
+The MCP-side writer that populates the on-disk JSONL maps index that this
+hook reads stays in the main package at
+`src/personal_kb/maps_index_writer.py` — it imports `personal_kb.preflight`
+and `personal_kb.db.backend`, which are server-only.
 
 **Wire it up**: in `~/.claude/settings.json`, add a hook entry for both
 `SessionStart` and `UserPromptSubmit` invoking `personal-kb-hook --format=claude-json`
@@ -50,6 +65,21 @@ repo's own `.kb_project` is `personal-kb`.
 The hook reads only `<KB_DB_PATH dir>/maps_index.jsonl`, which the MCP server
 writes on `mental_map` create/update/deactivate. Per-session suppression
 lives in `~/.cache/personal_kb/injected-<session_id>.json`.
+
+**Drift guard**: the on-disk path contract (maps-index location + scratch
+file location) is duplicated between the main package
+(`personal_kb.config.get_maps_index_path` /
+`personal_kb.config.get_hook_scratch_path`) and the standalone hook package
+(`personal_kb_hook.paths`). A test in the main repo
+(`tests/test_path_drift_guard.py`) imports both implementations and asserts
+they produce identical paths for representative inputs — including a custom
+`KB_DB_PATH`. If you touch one side, touch the other and re-run that test.
+
+**uv workspace**: the root `pyproject.toml` declares
+`[tool.uv.workspace] members = ["packages/*"]` and pulls
+`personal-kb-hook` in as a workspace dev dep, so `uv sync` installs the
+standalone package editable into `.venv` (needed by the drift-guard test and
+by the cross-package round-trip test in `tests/test_maps_index_writer.py`).
 
 ## Search Quality Eval
 
