@@ -258,10 +258,10 @@ The package also ships a small stdlib-only CLI (`personal-kb-hook`) that you can
 ### Install
 
 ```bash
-uv tool install --from git+https://github.com/jason-weddington/personal-kb-mcp.git personal-kb-hook
+uv tool install --from git+https://github.com/jason-weddington/personal-kb-mcp.git personal-kb
 ```
 
-`uv tool` puts the binary on your `PATH`. There are no runtime dependencies beyond the standard library.
+This installs the `personal-kb` package and puts its console scripts on your `PATH` — including `personal-kb-hook` (alongside `personal-kb` and `personal-kb-web`). Install by the package's real name (`personal-kb`); `uv` rejects a `--from`/name mismatch, so `… personal-kb-hook` fails. The hook *process* itself imports only the Python standard library and never opens the database — it reads the on-disk JSONL index — so it stays fast on the session hot path.
 
 ### The `.kb_project` convention
 
