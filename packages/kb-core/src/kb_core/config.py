@@ -336,8 +336,14 @@ class KbConfig:
     database: DatabaseConfig = field(default_factory=SqliteConfig)
     """Storage backend (SQLite or Postgres)."""
 
-    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
-    """Embedding model configuration."""
+    embedding: EmbeddingConfig | None = field(default_factory=EmbeddingConfig)
+    """Embedding model configuration.
+
+    Set to ``None`` to disable embeddings entirely — :class:`kb_core.knowledge_base.KnowledgeBase`
+    treats ``None`` as an explicit, first-class FTS-only choice (never a silent
+    Ollama-unavailable fallback). The default factory produces today's behavior
+    (Ollama on ``localhost:11434``).
+    """
 
     providers: ProviderConfig = field(default_factory=ProviderConfig)
     """Per-role LLM provider selection."""

@@ -36,6 +36,7 @@ from kb_core.config import (
     ProviderRoleConfig,
     SqliteConfig,
 )
+from kb_core.knowledge_base import KnowledgeBase, create_postgres, create_sqlite
 
 __all__ = [
     "AgenticConfig",
@@ -46,9 +47,12 @@ __all__ = [
     "EmbeddingConfig",
     "IngestConfig",
     "KbConfig",
+    "KnowledgeBase",
     "OllamaProviderConfig",
     "PostgresConfig",
     "ProviderConfig",
     "ProviderRoleConfig",
     "SqliteConfig",
+    "create_postgres",
+    "create_sqlite",
 ]
