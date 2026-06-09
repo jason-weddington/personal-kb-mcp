@@ -1,17 +1,9 @@
-"""Entry version models."""
+"""Re-export shim — real code moved to ``kb_core.models.version``.
 
-from datetime import datetime
+Shim: real code moved to kb_core (kb-core extraction).
+Channel-rewiring wave removes this.
+"""
 
-from pydantic import BaseModel, Field
+from kb_core.models.version import EntryVersion
 
-
-class EntryVersion(BaseModel):
-    """A versioned snapshot of a knowledge entry."""
-
-    entry_id: str
-    version_number: int
-    knowledge_details: str
-    change_reason: str | None = None
-    contributor: str | None = None
-    confidence_level: float = Field(ge=0.0, le=1.0)
-    created_at: datetime | None = None
+__all__ = ["EntryVersion"]

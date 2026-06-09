@@ -1,40 +1,9 @@
-"""FTS5/BM25 full-text search."""
+"""Re-export shim — real code moved to ``kb_core.search.fts``.
 
-import logging
+Shim: real code moved to kb_core (kb-core extraction).
+Channel-rewiring wave removes this.
+"""
 
-from personal_kb.db.backend import Database
+from kb_core.search.fts import fts_search
 
-logger = logging.getLogger(__name__)
-
-
-async def fts_search(
-    db: Database,
-    query: str,
-    limit: int = 20,
-    project_ref: str | None = None,
-    entry_type: str | None = None,
-    tags: list[str] | None = None,
-    contributor: str | None = None,
-    team: str | None = None,
-) -> list[tuple[str, float]]:
-    """Search using FTS5 BM25 ranking.
-
-    Returns (entry_id, bm25_score) pairs. Lower BM25 scores are better matches
-    (FTS5 returns negative scores where more negative = better match).
-    """
-    if not query.strip():
-        return []
-
-    try:
-        return await db.fts_search(
-            query,
-            limit=limit,
-            project_ref=project_ref,
-            entry_type=entry_type,
-            tags=tags,
-            contributor=contributor,
-            team=team,
-        )
-    except Exception:
-        logger.warning("FTS search failed for query: %s", query, exc_info=True)
-        return []
+__all__ = ["fts_search"]

@@ -1,0 +1,1 @@
+"""Confidence decay module."""

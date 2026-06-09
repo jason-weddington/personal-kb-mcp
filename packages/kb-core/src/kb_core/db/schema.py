@@ -1,0 +1,332 @@
+"""DDL and migrations for the knowledge database."""
+
+from kb_core.db.backend import Database
+
+SCHEMA_VERSION = 1
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_entries (
+    id TEXT PRIMARY KEY,
+    project_ref TEXT,
+    short_title TEXT NOT NULL,
+    long_title TEXT NOT NULL,
+    knowledge_details TEXT NOT NULL,
+    entry_type TEXT NOT NULL,
+    source_context TEXT,
+    confidence_level REAL NOT NULL DEFAULT 0.9,
+    tags TEXT NOT NULL DEFAULT '[]',
+    hints TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    superseded_by TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    has_embedding INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_entries_project ON knowledge_entries(project_ref);
+CREATE INDEX IF NOT EXISTS idx_entries_type ON knowledge_entries(entry_type);
+CREATE INDEX IF NOT EXISTS idx_entries_active ON knowledge_entries(is_active);
+
+CREATE TABLE IF NOT EXISTS entry_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id TEXT NOT NULL REFERENCES knowledge_entries(id),
+    version_number INTEGER NOT NULL,
+    knowledge_details TEXT NOT NULL,
+    change_reason TEXT,
+    confidence_level REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(entry_id, version_number)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+    short_title,
+    long_title,
+    knowledge_details,
+    tags,
+    content='knowledge_entries',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+-- Triggers to keep FTS in sync with the content table
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_ai AFTER INSERT ON knowledge_entries BEGIN
+    INSERT INTO knowledge_fts(rowid, short_title, long_title, knowledge_details, tags)
+    VALUES (new.rowid, new.short_title, new.long_title, new.knowledge_details, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_ad AFTER DELETE ON knowledge_entries
+BEGIN
+    INSERT INTO knowledge_fts(
+        knowledge_fts, rowid, short_title, long_title, knowledge_details, tags
+    ) VALUES (
+        'delete', old.rowid, old.short_title, old.long_title,
+        old.knowledge_details, old.tags
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_au AFTER UPDATE ON knowledge_entries
+BEGIN
+    INSERT INTO knowledge_fts(
+        knowledge_fts, rowid, short_title, long_title, knowledge_details, tags
+    ) VALUES (
+        'delete', old.rowid, old.short_title, old.long_title,
+        old.knowledge_details, old.tags
+    );
+    INSERT INTO knowledge_fts(rowid, short_title, long_title, knowledge_details, tags)
+    VALUES (new.rowid, new.short_title, new.long_title, new.knowledge_details, new.tags);
+END;
+
+CREATE TABLE IF NOT EXISTS entry_id_seq (
+    next_id INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+
+def _vec_table_sql(dim: int) -> str:
+    return f"""
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vec USING vec0(
+    entry_id TEXT PRIMARY KEY,
+    embedding FLOAT[{dim}] distance_metric=cosine
+);
+"""
+
+
+INIT_SEQ_SQL = """
+INSERT INTO entry_id_seq (next_id)
+SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM entry_id_seq);
+"""
+
+
+async def apply_schema(db: Database) -> None:
+    """Apply the database schema."""
+    await db.executescript(SCHEMA_SQL)
+    await db.execute(INIT_SEQ_SQL)
+
+    # Check schema version
+    cursor = await db.execute("SELECT version FROM schema_version")
+    row = await cursor.fetchone()
+    if row is None:
+        await db.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+
+    # Migration: add last_accessed column (nullable, default NULL)
+    await _migrate_add_last_accessed(db)
+
+    # Migration: add expires_at column (nullable, default NULL)
+    await _migrate_add_expires_at(db)
+
+    # Telemetry and feedback tables (must exist before multi-user migration)
+    await apply_search_events_schema(db)
+    await apply_feedback_schema(db)
+
+    # Audit events table
+    await apply_audit_events_schema(db)
+
+    # Deployment config table
+    await apply_deployment_config_schema(db)
+
+    await db.commit()
+
+
+async def apply_vec_schema(db: Database, dim: int = 1024) -> None:
+    """Create the vec0 virtual table. Requires sqlite-vec extension loaded."""
+    await db.executescript(_vec_table_sql(dim))
+    await db.commit()
+
+
+GRAPH_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    node_id TEXT PRIMARY KEY,
+    node_type TEXT NOT NULL,
+    properties TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nodes_type ON graph_nodes(node_type);
+
+CREATE TABLE IF NOT EXISTS graph_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL REFERENCES graph_nodes(node_id),
+    target TEXT NOT NULL REFERENCES graph_nodes(node_id),
+    edge_type TEXT NOT NULL,
+    properties TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(source, target, edge_type)
+);
+CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target);
+CREATE INDEX IF NOT EXISTS idx_edges_type ON graph_edges(edge_type);
+"""
+
+
+async def apply_graph_schema(db: Database) -> None:
+    """Create graph_nodes and graph_edges tables."""
+    await db.executescript(GRAPH_SCHEMA_SQL)
+    await db.commit()
+
+
+INGEST_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS ingested_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    relative_path TEXT NOT NULL UNIQUE,
+    content_hash TEXT NOT NULL,
+    note_node_id TEXT NOT NULL,
+    entry_ids TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    file_extension TEXT NOT NULL,
+    project_ref TEXT,
+    redactions TEXT NOT NULL DEFAULT '[]',
+    ingested_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+
+async def apply_ingest_schema(db: Database) -> None:
+    """Create ingested_files table."""
+    await db.executescript(INGEST_SCHEMA_SQL)
+    await db.commit()
+
+
+SEARCH_EVENTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS search_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_text TEXT NOT NULL,
+    result_count INTEGER NOT NULL,
+    top_score REAL,
+    match_source TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+FEEDBACK_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS agent_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_type TEXT NOT NULL CHECK(feedback_type IN ('missing', 'unhelpful', 'friction')),
+    tool_name TEXT,
+    query_or_params TEXT,
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+
+async def apply_search_events_schema(db: Database) -> None:
+    """Create search_events table."""
+    await db.executescript(SEARCH_EVENTS_SCHEMA_SQL)
+    await db.commit()
+
+
+async def apply_feedback_schema(db: Database) -> None:
+    """Create agent_feedback table."""
+    await db.executescript(FEEDBACK_SCHEMA_SQL)
+    await db.commit()
+
+
+AUDIT_EVENTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    entry_id TEXT,
+    contributor TEXT,
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_entry ON audit_events(entry_id);
+CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+"""
+
+
+async def apply_audit_events_schema(db: Database) -> None:
+    """Create audit_events table."""
+    await db.executescript(AUDIT_EVENTS_SCHEMA_SQL)
+    await db.commit()
+
+
+DEPLOYMENT_CONFIG_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS deployment_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    set_at TEXT NOT NULL
+);
+"""
+
+
+async def apply_deployment_config_schema(db: Database) -> None:
+    """Create deployment_config table."""
+    await db.executescript(DEPLOYMENT_CONFIG_SCHEMA_SQL)
+    await db.commit()
+
+
+async def _migrate_add_last_accessed(db: Database) -> None:
+    """Add last_accessed column to knowledge_entries if it doesn't exist."""
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "last_accessed" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN last_accessed TEXT")
+
+
+async def _migrate_add_expires_at(db: Database) -> None:
+    """Add expires_at column to knowledge_entries if it doesn't exist."""
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "expires_at" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN expires_at TEXT")
+
+
+async def _migrate_v2_multi_user(db: Database) -> None:
+    """Add multi-user columns if they don't exist (v2 migration)."""
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    columns = {row[1] for row in await cursor.fetchall()}
+
+    if "contributor" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN contributor TEXT")
+    if "team" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN team TEXT")
+    if "updated_by" not in columns:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN updated_by TEXT")
+
+    # Indexes (IF NOT EXISTS is SQLite 3.9+)
+    await db.executescript(
+        "CREATE INDEX IF NOT EXISTS idx_entries_contributor"
+        " ON knowledge_entries(contributor);\n"
+        "CREATE INDEX IF NOT EXISTS idx_entries_team ON knowledge_entries(team);"
+    )
+
+    # entry_versions: contributor
+    cursor = await db.execute("PRAGMA table_info(entry_versions)")
+    ver_cols = {row[1] for row in await cursor.fetchall()}
+    if "contributor" not in ver_cols:
+        await db.execute("ALTER TABLE entry_versions ADD COLUMN contributor TEXT")
+
+    # search_events: contributor
+    cursor = await db.execute("PRAGMA table_info(search_events)")
+    se_cols = {row[1] for row in await cursor.fetchall()}
+    if "contributor" not in se_cols:
+        await db.execute("ALTER TABLE search_events ADD COLUMN contributor TEXT")
+
+    # agent_feedback: contributor
+    cursor = await db.execute("PRAGMA table_info(agent_feedback)")
+    fb_cols = {row[1] for row in await cursor.fetchall()}
+    if "contributor" not in fb_cols:
+        await db.execute("ALTER TABLE agent_feedback ADD COLUMN contributor TEXT")
+    if "team" not in fb_cols:
+        await db.execute("ALTER TABLE agent_feedback ADD COLUMN team TEXT")
+
+    # ingested_files: contributor
+    cursor = await db.execute("PRAGMA table_info(ingested_files)")
+    ig_cols = {row[1] for row in await cursor.fetchall()}
+    if "contributor" not in ig_cols:
+        await db.execute("ALTER TABLE ingested_files ADD COLUMN contributor TEXT")
+
+    # knowledge_entries: sensitivity (Phase 2/3)
+    cursor = await db.execute("PRAGMA table_info(knowledge_entries)")
+    ke_cols = {row[1] for row in await cursor.fetchall()}
+    if "sensitivity" not in ke_cols:
+        await db.execute("ALTER TABLE knowledge_entries ADD COLUMN sensitivity TEXT")
