@@ -1,6 +1,5 @@
 """kb_ask MCP tool — graph traversal queries."""
 
-import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -8,6 +7,14 @@ from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
+
+# Re-exports from kb_core.query keep historical import paths working for
+# tests and external callers (web/routes.py, tests/tools/test_kb_ask_tool.py).
+# These functions live in kb_core now; the wrappers below add the env-driven
+# defaults for `agentic` / `max_tool_calls` so old call sites that don't
+# pass those kwargs still get the historical behavior.
+from kb_core.query import _auto_search_entries
+from kb_core.query import retrieve_entries as _kb_core_retrieve_entries
 from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence, staleness_warning
@@ -18,14 +25,18 @@ from personal_kb.graph.queries import (
     bfs_entries,
     entries_for_scope,
     find_path,
-    get_neighbors,
     supersedes_chain,
 )
 from personal_kb.llm.provider import LLMProvider
-from personal_kb.models.entry import EntryType, KnowledgeEntry
-from personal_kb.models.search import SearchQuery
+from personal_kb.models.entry import KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.tools.formatters import format_entry_compact, format_entry_full, format_result_list
+
+__all__ = [
+    "_auto_search_entries",
+    "register_kb_ask",
+    "retrieve_entries",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -117,55 +128,28 @@ async def retrieve_entries(
     limit: int = 20,
     event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> tuple[list[tuple[KnowledgeEntry, str]], int]:
-    """Retrieve entries via agentic or single-shot path.
+    """Channel-side wrapper: fills agentic params from env, then delegates.
 
-    Returns (entries_with_context, agent_turns_used).
-    Used by both kb_ask (formatted output) and kb_summarize (structured).
+    The real implementation lives in :func:`kb_core.query.retrieve_entries`
+    and takes ``agentic`` / ``max_tool_calls`` as explicit keyword args
+    (kb_core reads no environment). This wrapper preserves the historical
+    signature — callers (the MCP tool, the web routes, the test suite)
+    don't have to know about the env knobs.
     """
     from personal_kb.config import get_agentic_max_tool_calls, is_agentic_query
 
-    # --- Agentic path ---
-    if query_llm is not None and is_agentic_query():
-        from personal_kb.graph.agent import AgentResult, agentic_query
-
-        agent_result = await agentic_query(
-            db,
-            embedder,
-            query_llm,
-            question,
-            max_tool_calls=get_agentic_max_tool_calls(),
-            event_callback=event_callback,
-        )
-        if isinstance(agent_result, AgentResult) and agent_result.entries:
-            entries: list[tuple[KnowledgeEntry, str]] = []
-            for entry_id, context in agent_result.entries[:limit]:
-                entry = await get_entry(db, entry_id)
-                if entry:
-                    entries.append((entry, context))
-            return entries, agent_result.turns_used
-
-        return [], 0
-
-    # --- Single-shot planner path ---
-    # Use planner to refine query, but always retrieve via auto search
-    # (non-auto strategies produce formatted strings, not structured entries).
-    search_query = question
-    if query_llm is not None:
-        planner = QueryPlanner(db, query_llm)
-        plan = await planner.plan(question)
-        logger.debug("Query plan: %s", plan)
-        if plan is not None and plan.search_query:
-            search_query = plan.search_query
-
-    entries = await _auto_search_entries(
+    return await _kb_core_retrieve_entries(
         db,
         embedder,
-        search_query,
+        query_llm,
+        question,
         scope,
         include_graph_context,
         limit,
+        event_callback,
+        agentic=is_agentic_query(),
+        max_tool_calls=get_agentic_max_tool_calls(),
     )
-    return entries, 0
 
 
 async def _strategy_auto_with_planner(
@@ -241,76 +225,6 @@ async def _strategy_auto_with_planner(
     if plan is not None and plan.search_query:
         search_query = plan.search_query
     return await _strategy_auto(db, embedder, search_query, scope, include_graph_context, limit)
-
-
-async def _auto_search_entries(
-    db: Database,
-    embedder: EmbeddingClient | None,
-    question: str,
-    scope: str | None,
-    include_graph_context: bool,
-    limit: int,
-) -> list[tuple[KnowledgeEntry, str]]:
-    """Hybrid search + graph expansion, returning structured entries."""
-    from personal_kb.graph.queries import _parse_scope
-    from personal_kb.search.hybrid import hybrid_search
-
-    # Parse scope into SearchQuery filter fields
-    project_ref = None
-    entry_type = None
-    tags = None
-    if scope:
-        scope_type, scope_value = _parse_scope(scope)
-        if scope_type == "project":
-            project_ref = scope_value
-        elif scope_type == "entry_type":
-            with contextlib.suppress(ValueError):
-                entry_type = EntryType(scope_value)
-        elif scope_type == "tag":
-            tags = [scope_value]
-
-    search_query = SearchQuery(
-        query=question,
-        project_ref=project_ref,
-        entry_type=entry_type,
-        tags=tags,
-        limit=limit,
-        include_stale=False,
-    )
-
-    results, _filtered_count = await hybrid_search(db, embedder, search_query)
-
-    # Collect search result entries
-    seen_ids: set[str] = set()
-    entries_with_context: list[tuple[KnowledgeEntry, str]] = []
-
-    for r in results:
-        seen_ids.add(r.entry.id)
-        entries_with_context.append((r.entry, f"search match (score: {r.score:.4f})"))
-
-    # Expand via graph neighbors
-    if include_graph_context and results:
-        for r in results:
-            neighbors = await get_neighbors(db, r.entry.id, limit=10)
-            for neighbor_id, edge_type, direction in neighbors:
-                if neighbor_id in seen_ids:
-                    continue
-                if not neighbor_id.startswith("kb-"):
-                    continue
-                entry = await get_entry(db, neighbor_id)
-                if entry and entry.is_active:
-                    seen_ids.add(neighbor_id)
-                    if direction == "outgoing":
-                        ctx_str = f"linked from {r.entry.id} via {edge_type}"
-                    else:
-                        ctx_str = f"links to {r.entry.id} via {edge_type}"
-                    entries_with_context.append((entry, ctx_str))
-                    if len(entries_with_context) >= limit:
-                        break
-            if len(entries_with_context) >= limit:
-                break
-
-    return entries_with_context
 
 
 async def _strategy_auto(

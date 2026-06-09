@@ -1,4 +1,20 @@
-"""kb_summarize MCP tool — synthesized answers with citations."""
+"""kb_summarize MCP tool — synthesized answers with citations.
+
+The retrieval + synthesis pipeline lives in :mod:`kb_core.query`; this
+file is the FastMCP channel:
+
+* :func:`register_kb_summarize` registers the ``@tool``-decorated entry
+  point, unpacks the lifespan context, and reads the agentic env flags.
+* :func:`summarize_question` is the historical channel-side helper used
+  by the web routes (``personal_kb.web.routes``) and the test suite. It
+  forwards to :func:`kb_core.query.synthesize_answer` with explicit
+  ``agentic`` / ``agentic_synthesis`` / ``max_tool_calls`` kwargs filled
+  in from the env so legacy callers don't have to know about them.
+* The synthesis prompt, ``_synthesize``, ``_merge_entries``, and the
+  no-LLM fallback formatter are re-exported from :mod:`kb_core.query` so
+  existing imports of ``personal_kb.tools.kb_summarize._synthesize`` etc.
+  keep working.
+"""
 
 import logging
 from collections.abc import Awaitable, Callable
@@ -6,28 +22,31 @@ from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
+
+# Re-exports from kb_core.query: tests and any external caller importing
+# `_synthesize` / `_merge_entries` / `_format_entries_fallback` from this
+# module keep working transparently.
+from kb_core.query import (
+    _format_entries_fallback,
+    _merge_entries,
+    _synthesize,
+)
+from kb_core.query import synthesize_answer as _kb_core_synthesize_answer
 from pydantic import Field
 
 from personal_kb.db.backend import Database
 from personal_kb.llm.provider import LLMProvider
-from personal_kb.models.entry import KnowledgeEntry
 from personal_kb.search.embeddings import EmbeddingClient
-from personal_kb.tools.formatters import format_entry_full
 
 logger = logging.getLogger(__name__)
 
-_SYNTHESIS_SYSTEM_PROMPT = """\
-You are a knowledge base assistant. Given a question and a set of retrieved \
-knowledge entries, synthesize a clear, concise answer.
-
-Rules:
-- Answer ONLY from the provided entries. Do not use outside knowledge.
-- Cite entry IDs in [kb-XXXXX] format when referencing specific entries.
-- If entries contain conflicting information, note the conflict and cite both.
-- If no entries are relevant to the question, say so clearly.
-- Be concise. Prefer bullet points for multi-part answers.
-- Do not repeat the question back.\
-"""
+__all__ = [
+    "_format_entries_fallback",
+    "_merge_entries",
+    "_synthesize",
+    "register_kb_summarize",
+    "summarize_question",
+]
 
 
 def _summarize_description(prefix: str) -> str:
@@ -85,100 +104,30 @@ async def summarize_question(
     event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     synthesis_llm: LLMProvider | None = None,
 ) -> str:
-    """Core summarize logic, testable without FastMCP context."""
-    from personal_kb.config import is_agentic_synthesis
-    from personal_kb.tools.kb_ask import _auto_search_entries, retrieve_entries
+    """Channel-side wrapper: fills agentic params from env, then delegates.
 
-    async def _emit(event: dict[str, Any]) -> None:
-        if event_callback is not None:
-            await event_callback(event)
+    The real implementation lives in
+    :func:`kb_core.query.synthesize_answer`, which takes ``agentic``,
+    ``agentic_synthesis``, and ``max_tool_calls`` as explicit keyword
+    args (kb_core reads no environment). This wrapper preserves the
+    historical signature for callers that don't pass those kwargs.
+    """
+    from personal_kb.config import (
+        get_agentic_max_tool_calls,
+        is_agentic_query,
+        is_agentic_synthesis,
+    )
 
-    # Retrieve entries via agentic or single-shot path
-    entries, agent_turns = await retrieve_entries(
+    return await _kb_core_synthesize_answer(
         db,
         embedder,
         query_llm,
         question,
         scope,
-        include_graph_context=True,
-        limit=limit,
-        event_callback=event_callback,
+        limit,
+        event_callback,
+        synthesis_llm,
+        agentic=is_agentic_query(),
+        agentic_synthesis=is_agentic_synthesis(),
+        max_tool_calls=get_agentic_max_tool_calls(),
     )
-
-    if not entries:
-        return "No entries found matching your question."
-
-    # Coverage check: only when agentic synthesis enabled, LLM available,
-    # and retrieval wasn't fast-path (agent_turns > 0 means agent did work)
-    if is_agentic_synthesis() and query_llm is not None and agent_turns > 0:
-        from personal_kb.tools.coverage import assess_coverage
-
-        coverage = await assess_coverage(query_llm, question, entries)
-        if coverage.has_gaps and coverage.suggested_query:
-            extra = await _auto_search_entries(
-                db,
-                embedder,
-                coverage.suggested_query,
-                scope,
-                True,
-                limit,
-            )
-            entries = _merge_entries(entries, extra)
-
-    # Synthesize with LLM — prefer synthesis_llm (Sonnet) when available
-    synth_provider = synthesis_llm if synthesis_llm is not None else query_llm
-    if synth_provider is not None:
-        await _emit({"type": "synthesis_started", "entry_count": len(entries)})
-        synthesis = await _synthesize(synth_provider, question, entries)
-        if synthesis is not None:
-            await _emit({"type": "synthesis_done"})
-            return synthesis
-
-        fallback = _format_entries_fallback(entries)
-        return f"(LLM synthesis failed — showing raw results)\n\n{fallback}"
-
-    fallback = _format_entries_fallback(entries)
-    return f"(LLM unavailable — showing raw results)\n\n{fallback}"
-
-
-async def _synthesize(
-    llm: LLMProvider,
-    question: str,
-    entries: list[tuple[KnowledgeEntry, str]],
-) -> str | None:
-    """Synthesize an answer from structured entries using the LLM."""
-    # Build rich prompt with full knowledge_details
-    entry_blocks = []
-    for entry, context in entries:
-        tags_str = " ".join(f"#{t}" for t in entry.tags) if entry.tags else ""
-        block = f"[{entry.id}] {entry.short_title} {tags_str}"
-        if context:
-            block += f"\n  Context: {context}"
-        block += f"\n  {entry.knowledge_details}"
-        entry_blocks.append(block)
-
-    entries_text = "\n\n".join(entry_blocks)
-    prompt = f"Question: {question}\n\nRetrieved entries:\n{entries_text}"
-    return await llm.generate(prompt, system=_SYNTHESIS_SYSTEM_PROMPT)
-
-
-def _merge_entries(
-    original: list[tuple[KnowledgeEntry, str]],
-    extra: list[tuple[KnowledgeEntry, str]],
-) -> list[tuple[KnowledgeEntry, str]]:
-    """Merge extra entries into original, deduplicating by entry ID."""
-    seen = {entry.id for entry, _ in original}
-    merged = list(original)
-    for entry, ctx in extra:
-        if entry.id not in seen:
-            seen.add(entry.id)
-            merged.append((entry, ctx))
-    return merged
-
-
-def _format_entries_fallback(
-    entries: list[tuple[KnowledgeEntry, str]],
-) -> str:
-    """Format entries for the no-LLM fallback path."""
-    formatted = [format_entry_full(entry, context=ctx) for entry, ctx in entries]
-    return "\n\n".join(formatted)
