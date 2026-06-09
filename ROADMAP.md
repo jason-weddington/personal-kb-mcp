@@ -34,6 +34,10 @@ Findings from the [March 2026 code audit](audit.md). Ordered by impact and effor
 - **~~Narrow `query_llm` type.~~** Now `LLMProvider | None` everywhere; isinstance checks removed. (audit M20)
 - **~~Agent tool call deduplication.~~** ReAct loop skips identical repeated calls with error feedback. (audit M14)
 
+## Next
+
+- **Cross-project knowledge surfacing — the "unknown-unknown" gap.** The mental_map push surface is project-scoped (`.kb_project`), so cross-cutting knowledge never reaches an agent working elsewhere. The agent reasons confidently from stale priors and never searches, because it doesn't know it's missing anything (the grit-mile WireGuard miss is the canonical case). Direction settled via multi-angle debate — build a **precision-gated cross-project relevance engine, not a daemon**: Gate 0 = fix the `entry_type` filter in hybrid search + inject cross-project map titles (zero-LLM, deterministic floor); Gate 1 = offline precision harness on real wrong-worded transcript slices (bar: ≥0.8, grit-mile as golden #1); timing/daemon deferred until precision is proven. Full rationale + locked dispositions in kb-01725.
+
 ## Later
 
 - **Graceful migration failures.** Schema migrations (`ALTER TABLE ADD COLUMN`) run on every startup. If the DB role lacks DDL privileges (common in locked-down Aurora/RDS deployments where initial schema was created by a privileged account), migrations crash the MCP server. Should catch permission errors, log a clear warning with the exact SQL to run manually, and let the server start — all new columns are nullable/optional.
