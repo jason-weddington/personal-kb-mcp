@@ -1,4 +1,12 @@
-"""HTTP routes for the KB Explorer web server."""
+"""HTTP routes for the KB Explorer web server.
+
+The handlers reach into the :class:`~kb_core.knowledge_base.KnowledgeBase`
+on ``app.state.kb`` for every read/write — search, ask, summarize,
+ingest, get. The web channel no longer imports from
+:mod:`personal_kb.tools` (the historical backdoor): everything routes
+through the facade plus a couple of channel-local helpers
+(SSE event encoding, chat history persistence).
+"""
 
 import asyncio
 import logging
@@ -10,6 +18,39 @@ from personal_kb.explorer.renderer import render_explorer_html
 from personal_kb.web.events import event_to_status, sse_event
 
 logger = logging.getLogger(__name__)
+
+
+def _build_ingester(kb: Any) -> Any:
+    """Build a :class:`~kb_core.ingest.ingester.FileIngester` from a facade.
+
+    Mirrors :meth:`KnowledgeBase._build_ingester` so the streaming routes
+    can attach a ``progress_callback`` (the facade's ``ingest_*`` methods
+    don't expose one). Uses only the facade's public accessors —
+    nothing imported from :mod:`personal_kb.tools`.
+    """
+    from kb_core.ingest.dedup_agent import DedupAgent
+    from kb_core.ingest.ingester import FileIngester
+
+    dedup_agent: Any | None = None
+    if kb.config.ingest.agentic_ingest:
+        dedup_agent = DedupAgent(
+            kb.db,
+            kb.embedder,
+            kb.extraction_llm,
+            threshold=kb.config.ingest.dedup_threshold,
+        )
+    return FileIngester(
+        db=kb.db,
+        store=kb.knowledge_store,
+        embedder=kb.embedder,
+        graph_builder=kb.graph_builder,
+        graph_enricher=kb.graph_enricher,
+        llm=kb.extraction_llm,
+        dedup_agent=dedup_agent,
+        contributor=kb.config.attribution.contributor,
+        team=kb.config.attribution.team,
+        config=kb.config.ingest,
+    )
 
 
 async def _ingest_binary_file(
@@ -50,21 +91,23 @@ def register_routes(app: Any) -> None:
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
         """Serve the explorer HTML page."""
-        data = await extract_graph_data(request.app.state.db)
+        kb = request.app.state.kb
+        data = await extract_graph_data(kb.db)
         html = render_explorer_html(data)
         return HTMLResponse(content=html)
 
     @app.get("/api/graph")
     async def api_graph(request: Request) -> JSONResponse:
         """Return full graph data as JSON."""
-        data = await extract_graph_data(request.app.state.db)
+        kb = request.app.state.kb
+        data = await extract_graph_data(kb.db)
         return JSONResponse(content=data)
 
     @app.get("/api/projects")
     async def api_projects(request: Request) -> JSONResponse:
         """Return distinct project_ref values from active entries."""
-        db = request.app.state.db
-        cursor = await db.execute(
+        kb = request.app.state.kb
+        cursor = await kb.db.execute(
             "SELECT DISTINCT project_ref FROM knowledge_entries"
             " WHERE is_active = 1 AND project_ref IS NOT NULL"
             " ORDER BY project_ref"
@@ -75,9 +118,8 @@ def register_routes(app: Any) -> None:
     @app.get("/api/entry/{entry_id}")
     async def api_entry(entry_id: str, request: Request) -> JSONResponse:
         """Return full entry details by ID."""
-        from personal_kb.db.queries import get_entry
-
-        entry = await get_entry(request.app.state.db, entry_id)
+        kb = request.app.state.kb
+        entry = await kb.get(entry_id)
         if entry is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse(
@@ -98,20 +140,15 @@ def register_routes(app: Any) -> None:
         """Stream query events via SSE."""
         body = await request.json()
         question = body.get("question", "")
-        db = request.app.state.db
-        embedder = request.app.state.embedder
-        query_llm = request.app.state.query_llm
-
-        # Use synthesis_llm (Sonnet) for human-facing summarization if available
-        synthesis_llm = getattr(request.app.state, "synthesis_llm", None)
+        kb = request.app.state.kb
 
         async def event_stream() -> AsyncGenerator[str]:
             # Classify query
             mode = "explore"
-            if query_llm is not None:
+            if kb.query_llm is not None:
                 from personal_kb.web.classifier import classify_query
 
-                mode = await classify_query(query_llm, question)
+                mode = await classify_query(kb.query_llm, question)
 
             yield sse_event("classified", {"mode": mode})
 
@@ -129,50 +166,35 @@ def register_routes(app: Any) -> None:
                 """Run the query and return result data."""
                 try:
                     if mode == "summarize":
-                        from personal_kb.tools.kb_summarize import summarize_question
-
-                        # Use Sonnet for human-facing synthesis, Haiku for retrieval
-                        answer = await summarize_question(
-                            db,
-                            embedder,
-                            query_llm,
+                        answer = await kb.summarize(
                             question,
                             event_callback=event_callback,
-                            synthesis_llm=synthesis_llm,
                         )
                         return {
                             "type": "summarize",
                             "answer": answer,
                             "entry_ids": collected_entry_ids,
                         }
-                    else:
-                        from personal_kb.tools.kb_ask import retrieve_entries
-
-                        entries, turns = await retrieve_entries(
-                            db,
-                            embedder,
-                            query_llm,
-                            question,
-                            event_callback=event_callback,
+                    entries, turns = await kb.ask(
+                        question,
+                        event_callback=event_callback,
+                    )
+                    entry_data = []
+                    for entry, context in entries:
+                        entry_data.append(
+                            {
+                                "id": entry.id,
+                                "short_title": entry.short_title,
+                                "entry_type": entry.entry_type.value if entry.entry_type else None,
+                                "tags": entry.tags or [],
+                                "context": context,
+                            }
                         )
-                        entry_data = []
-                        for entry, context in entries:
-                            entry_data.append(
-                                {
-                                    "id": entry.id,
-                                    "short_title": entry.short_title,
-                                    "entry_type": entry.entry_type.value
-                                    if entry.entry_type
-                                    else None,
-                                    "tags": entry.tags or [],
-                                    "context": context,
-                                }
-                            )
-                        return {
-                            "type": "explore",
-                            "entries": entry_data,
-                            "turns_used": turns,
-                        }
+                    return {
+                        "type": "explore",
+                        "entries": entry_data,
+                        "turns_used": turns,
+                    }
                 finally:
                     await queue.put(None)  # Signal completion
 
@@ -234,7 +256,6 @@ def register_routes(app: Any) -> None:
         """Stream a follow-up chat response via SSE."""
         from personal_kb.web.chat import (
             ChatSession,
-            WriteDeps,
             cache_session,
             get_or_create_session,
             get_session,
@@ -250,25 +271,10 @@ def register_routes(app: Any) -> None:
         seed_entry_ids = body.get("seed_entry_ids", [])
         mode = body.get("mode", "")
 
-        db = request.app.state.db
-        embedder = request.app.state.embedder
-        query_llm = request.app.state.query_llm
-        # Use Sonnet for human-facing chat if available
-        chat_llm = getattr(request.app.state, "synthesis_llm", None) or query_llm
+        kb = request.app.state.kb
+        # Use Sonnet for human-facing chat if available, else fall back to query LLM
+        chat_llm = kb.synthesis_llm or kb.query_llm
         ch = getattr(request.app.state, "chat_history", None)
-
-        # Build write deps if store is available
-        write_deps: WriteDeps | None = None
-        store = getattr(request.app.state, "store", None)
-        if store is not None:
-            write_deps = WriteDeps(
-                store=store,
-                graph_builder=getattr(request.app.state, "graph_builder", None),
-                graph_enricher=getattr(request.app.state, "graph_enricher", None),
-                extraction_llm=getattr(request.app.state, "extraction_llm", None),
-                contributor=getattr(request.app.state, "contributor", None),
-                team=getattr(request.app.state, "team", None),
-            )
 
         async def chat_stream() -> AsyncGenerator[str]:
             if chat_llm is None:
@@ -285,10 +291,8 @@ def register_routes(app: Any) -> None:
                 session = ChatSession.from_saved(
                     session_id,
                     saved_msgs,
-                    db,
-                    embedder,
+                    kb,
                     chat_llm,
-                    write_deps=write_deps,
                 )
                 cache_session(session)
 
@@ -296,10 +300,8 @@ def register_routes(app: Any) -> None:
                 is_new = True
                 session = get_or_create_session(
                     None,
-                    db,
-                    embedder,
+                    kb,
                     chat_llm,
-                    write_deps=write_deps,
                 )
                 if seed_question and seed_answer:
                     session.seed(seed_question, seed_answer, seed_entry_ids)
@@ -454,38 +456,15 @@ def register_routes(app: Any) -> None:
         if not url:
             return JSONResponse({"error": "url is required"}, status_code=400)
 
-        store = getattr(request.app.state, "store", None)
-        extraction_llm = getattr(request.app.state, "extraction_llm", None)
-        graph_builder = getattr(request.app.state, "graph_builder", None)
-        if store is None or extraction_llm is None or graph_builder is None:
+        kb = request.app.state.kb
+        if kb.extraction_llm is None or kb.embedder is None:
             return JSONResponse(
                 {"error": "Ingestion not available (missing dependencies)"},
                 status_code=503,
             )
 
-        db = request.app.state.db
-        embedder = request.app.state.embedder
-        graph_enricher = getattr(request.app.state, "graph_enricher", None)
-        contributor = getattr(request.app.state, "contributor", None)
-        team = getattr(request.app.state, "team", None)
-
-        from personal_kb.config import build_ingest_config
-        from personal_kb.ingest.ingester import FileIngester
-
-        ingester = FileIngester(
-            db=db,
-            store=store,
-            embedder=embedder,
-            graph_builder=graph_builder,
-            graph_enricher=graph_enricher,
-            llm=extraction_llm,
-            contributor=contributor,
-            team=team,
-            config=build_ingest_config(),
-        )
-
         try:
-            result = await ingester.ingest_url(url, project_ref=project_ref)
+            result = await kb.ingest_url(url, project_ref=project_ref)
         except Exception as exc:
             logger.exception("Ingest URL failed: %s", url)
             return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
@@ -510,35 +489,18 @@ def register_routes(app: Any) -> None:
         if not items:
             return JSONResponse({"error": "items is required"}, status_code=400)
 
-        store = getattr(request.app.state, "store", None)
-        extraction_llm = getattr(request.app.state, "extraction_llm", None)
-        graph_builder = getattr(request.app.state, "graph_builder", None)
-        if store is None or extraction_llm is None or graph_builder is None:
+        kb = request.app.state.kb
+        if kb.extraction_llm is None or kb.embedder is None:
             return JSONResponse(
                 {"error": "Ingestion not available (missing dependencies)"},
                 status_code=503,
             )
 
-        db = request.app.state.db
-        embedder = request.app.state.embedder
-        graph_enricher = getattr(request.app.state, "graph_enricher", None)
-        contributor = getattr(request.app.state, "contributor", None)
-        team = getattr(request.app.state, "team", None)
-
-        from personal_kb.config import build_ingest_config
-        from personal_kb.ingest.ingester import FileIngester
-
-        ingester = FileIngester(
-            db=db,
-            store=store,
-            embedder=embedder,
-            graph_builder=graph_builder,
-            graph_enricher=graph_enricher,
-            llm=extraction_llm,
-            contributor=contributor,
-            team=team,
-            config=build_ingest_config(),
-        )
+        # Streaming routes want per-item progress events flowing into the
+        # SSE queue; the facade's ``ingest_*`` methods don't expose a
+        # ``progress_callback``. Build a FileIngester from the facade's
+        # public accessors so the streaming UX stays granular.
+        ingester = _build_ingester(kb)
 
         async def event_stream() -> AsyncGenerator[str]:
             queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()

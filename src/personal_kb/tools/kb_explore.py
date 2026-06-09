@@ -119,13 +119,13 @@ async def start_explorer_server(
     try:
         from personal_kb.web.app import create_app_with_deps
 
-        # The web channel still types its embedder as ``EmbeddingClient``
-        # (concrete) — the kb-core facade exposes the Protocol ``Embedder``.
-        # In practice the channel always supplies an EmbeddingClient instance;
-        # the type narrowing fix lives in the web rewire (W6b).
+        # W6b rewired ``create_app_with_deps`` onto the kb-core
+        # :class:`~kb_core.search.embedder_protocol.Embedder` protocol, so the
+        # facade's accessor type matches the web boundary directly — no more
+        # narrowing ignore.
         app = create_app_with_deps(
             db,
-            embedder,  # type: ignore[arg-type]
+            embedder,
             query_llm,
             synthesis_llm,
             store=store,

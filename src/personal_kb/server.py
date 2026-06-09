@@ -12,10 +12,7 @@ from kb_core.knowledge_base import KnowledgeBase
 
 from personal_kb import maps_index_writer
 from personal_kb.config import (
-    build_anthropic_config,
-    build_bedrock_config,
     build_kb_config,
-    build_ollama_provider_config,
     check_backend_fallback,
     get_contributor,
     get_database_url,
@@ -26,9 +23,6 @@ from personal_kb.config import (
     is_auto_explore,
     is_manager_mode,
 )
-from personal_kb.llm import AnthropicLLMClient, BedrockLLMClient
-from personal_kb.llm.ollama import OllamaLLMClient
-from personal_kb.llm.provider import LLMProvider
 from personal_kb.maps_index_writer import write_project_maps
 from personal_kb.tools.kb_ask import register_kb_ask
 from personal_kb.tools.kb_bulk_update import register_kb_bulk_update
@@ -48,48 +42,6 @@ from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
 from personal_kb.tools.kb_store_batch import register_kb_store_batch
 from personal_kb.tools.kb_summarize import register_kb_summarize
-
-
-def _create_llm(provider: str) -> LLMProvider | None:
-    """Create an LLM client for the given provider name.
-
-    Backwards-compat shim. The lifespan no longer calls this — it composes
-    a :class:`~kb_core.config.KbConfig` and hands it to
-    :meth:`~kb_core.knowledge_base.KnowledgeBase.create`. Still imported by
-    :mod:`personal_kb.web.app` (its rewire onto the facade is W6b).
-    """
-    if provider == "anthropic":
-        if AnthropicLLMClient is not None:
-            return AnthropicLLMClient(build_anthropic_config())
-        return None
-    if provider == "bedrock":
-        if BedrockLLMClient is not None:
-            return BedrockLLMClient(build_bedrock_config())
-        return None
-    if provider == "ollama":
-        return OllamaLLMClient(build_ollama_provider_config())
-    return None
-
-
-def _create_synthesis_llm(provider: str) -> LLMProvider | None:
-    """Create a stronger LLM for human-facing synthesis (Sonnet 4.6).
-
-    Backwards-compat shim with the same status as :func:`_create_llm`.
-    """
-    if provider == "anthropic":
-        if AnthropicLLMClient is not None:
-            from kb_core.llm.anthropic import _SONNET_MODEL
-
-            return AnthropicLLMClient(build_anthropic_config(model=_SONNET_MODEL))
-        return None
-    if provider == "bedrock":
-        if BedrockLLMClient is not None:
-            from kb_core.llm.bedrock import _SONNET_MODEL as _BR_SONNET
-
-            return BedrockLLMClient(build_bedrock_config(model=_BR_SONNET))
-        return None
-    # Ollama: no Sonnet equivalent, fall back to default
-    return None
 
 
 @asynccontextmanager

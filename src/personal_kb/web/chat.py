@@ -1,21 +1,35 @@
-"""Multi-turn chat session grounded in KB data."""
+"""Multi-turn chat session grounded in KB data.
+
+The session is wired against a :class:`~kb_core.knowledge_base.KnowledgeBase`
+facade — search, retrieval, update, and ingest_url all funnel through the
+facade methods. Channel-side write helpers from
+:mod:`personal_kb.tools` are no longer imported (the web → tools
+backdoor closure).
+"""
+
+from __future__ import annotations
 
 import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from personal_kb.db.backend import Database
-from personal_kb.llm.json_parser import parse_json_object
-from personal_kb.llm.provider import LLMProvider, Message
-from personal_kb.search.embeddings import EmbeddingClient
+from kb_core.formatting import format_entry_full
+from kb_core.llm.json_parser import parse_json_object
+from kb_core.ttl import compute_expires_at
+
+if TYPE_CHECKING:
+    from kb_core.knowledge_base import KnowledgeBase
+    from kb_core.llm.provider import LLMProvider, Message
 
 logger = logging.getLogger(__name__)
 
 # Approximate token budget: keep total conversation under this char count.
 # ~25K tokens ≈ 100K chars. Leaves headroom for the LLM's context window.
 _MAX_CONVERSATION_CHARS = 100_000
+
+_VALID_SENSITIVITY = {"internal", "restricted", "public"}
 
 _CHAT_SYSTEM_PROMPT = """\
 You are a knowledge base assistant. You answer questions grounded in KB entries.
@@ -59,18 +73,6 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
 @dataclass
-class WriteDeps:
-    """Dependencies needed for write operations in the chat session."""
-
-    store: Any  # KnowledgeStore
-    graph_builder: Any  # GraphBuilder
-    graph_enricher: Any | None  # GraphEnricher | None
-    extraction_llm: Any | None  # LLMProvider | None
-    contributor: str | None = None
-    team: str | None = None
-
-
-@dataclass
 class _ToolResult:
     tool: str
     success: bool
@@ -97,6 +99,39 @@ def _parse_tool_call(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _validate_sensitivity(sensitivity: str | None) -> str | None:
+    """Return an error string if sensitivity is invalid, None if OK."""
+    if sensitivity is not None and sensitivity not in _VALID_SENSITIVITY:
+        valid = ", ".join(sorted(_VALID_SENSITIVITY))
+        return f'Error: Invalid sensitivity "{sensitivity}". Must be one of: {valid}'
+    return None
+
+
+def _check_secrets(content: str) -> str | None:
+    """Return an error message if secrets are detected, None otherwise.
+
+    Reads the env-driven safety toggle channel-side
+    (:func:`personal_kb.config.is_safety_skip`) and delegates secret
+    detection to :mod:`kb_core.ingest.safety`. The detection logic itself
+    is kb_core; only the env-knob is channel-local.
+    """
+    from kb_core.ingest.safety import detect_secrets_in_content
+
+    from personal_kb.config import is_safety_skip
+
+    if is_safety_skip():
+        return None
+    secrets = detect_secrets_in_content(content)
+    if secrets:
+        types = ", ".join(secrets)
+        return (
+            f"Error: Potential secrets detected ({types}). "
+            "Remove sensitive values before storing. "
+            "Set KB_SKIP_SAFETY=TRUE to override."
+        )
+    return None
+
+
 _KB_ID_RE = re.compile(r"kb-\d{5}")
 
 
@@ -105,17 +140,13 @@ class ChatSession:
 
     def __init__(  # noqa: D107
         self,
-        db: Database,
-        embedder: EmbeddingClient | None,
+        kb: KnowledgeBase,
         llm: LLMProvider,
-        write_deps: WriteDeps | None = None,
         session_id: str | None = None,
     ) -> None:
         self.id = session_id or str(uuid.uuid4())
-        self.db = db
-        self.embedder = embedder
+        self.kb = kb
         self.llm = llm
-        self.write_deps = write_deps
         self.messages: list[Message] = []
         # Entry IDs surfaced so far — available as context
         self.entry_ids: list[str] = []
@@ -125,13 +156,11 @@ class ChatSession:
         cls,
         chat_id: str,
         messages: list[dict[str, str]],
-        db: Database,
-        embedder: EmbeddingClient | None,
+        kb: KnowledgeBase,
         llm: LLMProvider,
-        write_deps: WriteDeps | None = None,
-    ) -> "ChatSession":
+    ) -> ChatSession:
         """Reconstruct a session from persisted messages."""
-        session = cls(db, embedder, llm, write_deps=write_deps, session_id=chat_id)
+        session = cls(kb, llm, session_id=chat_id)
         session.messages = [{"role": m["role"], "content": m["content"]} for m in messages]
         # Extract entry IDs mentioned in assistant messages
         for m in session.messages:
@@ -164,8 +193,10 @@ class ChatSession:
 
         # Build the system prompt with grounding entries
         system = _CHAT_SYSTEM_PROMPT
-        if self.write_deps is not None:
-            system += _WRITE_TOOLS_PROMPT
+        # Write tools are always advertised — the facade decides whether the
+        # write succeeds (no extraction LLM / embedder → graceful error
+        # from kb.update / kb.ingest_url at call time).
+        system += _WRITE_TOOLS_PROMPT
         if self.entry_ids:
             entries_context = await self._format_entries()
             system += "\n\nAvailable KB entries:\n" + entries_context
@@ -246,14 +277,12 @@ class ChatSession:
         )
 
     async def _tool_get_entry(self, args: dict[str, Any]) -> _ToolResult:
-        """Fetch a KB entry by ID and add it to context."""
-        from personal_kb.db.queries import get_entry
-
+        """Fetch a KB entry by ID via the facade and add it to context."""
         entry_id = args.get("entry_id")
         if not entry_id:
             return _ToolResult(tool="get_entry", success=False, message="entry_id is required")
 
-        entry = await get_entry(self.db, entry_id)
+        entry = await self.kb.get(entry_id)
         if entry is None:
             return _ToolResult(
                 tool="get_entry", success=False, message=f"Entry {entry_id} not found"
@@ -272,22 +301,10 @@ class ChatSession:
         return _ToolResult(tool="get_entry", success=True, message=message, entry_ids=[entry_id])
 
     async def _tool_update_entry(self, args: dict[str, Any]) -> _ToolResult:
-        """Execute the update_entry tool."""
-        if self.write_deps is None:
-            return _ToolResult(tool="update_entry", success=False, message="Write not available")
-
+        """Execute the update_entry tool via the facade."""
         entry_id = args.get("entry_id")
         if not entry_id:
             return _ToolResult(tool="update_entry", success=False, message="entry_id is required")
-
-        from personal_kb.tools.kb_store import (
-            _build_graph,
-            _check_secrets,
-            _embed_entry,
-            _enrich_graph,
-            _validate_sensitivity,
-        )
-        from personal_kb.tools.ttl import compute_expires_at
 
         # Validate sensitivity
         sensitivity = args.get("sensitivity")
@@ -317,25 +334,18 @@ class ChatSession:
             tags = [str(tags)]
 
         try:
-            store = self.write_deps.store
-            entry = await store.update_entry(
-                entry_id=entry_id,
+            entry = await self.kb.update(
+                entry_id,
                 knowledge_details=knowledge_details,
                 change_reason=args.get("change_reason"),
                 tags=tags,
-                updated_by=self.write_deps.contributor,
+                updated_by=self.kb.config.attribution.contributor,
                 sensitivity=sensitivity,
                 expires_at=expires_at,
                 project_ref=args.get("project_ref"),
             )
         except (ValueError, KeyError) as e:
             return _ToolResult(tool="update_entry", success=False, message=str(e))
-
-        # Re-embed and rebuild graph
-        if self.embedder:
-            await _embed_entry(self.embedder, self.write_deps.store, entry)
-        await _build_graph(self.write_deps.graph_builder, entry)
-        await _enrich_graph(self.write_deps.graph_enricher, entry)
 
         return _ToolResult(
             tool="update_entry",
@@ -345,41 +355,22 @@ class ChatSession:
         )
 
     async def _tool_ingest_url(self, args: dict[str, Any]) -> _ToolResult:
-        """Execute the ingest_url tool."""
-        if self.write_deps is None:
-            return _ToolResult(tool="ingest_url", success=False, message="Write not available")
-
+        """Execute the ingest_url tool via the facade."""
         url = args.get("url")
         if not url:
             return _ToolResult(tool="ingest_url", success=False, message="url is required")
 
-        from personal_kb.config import build_ingest_config
-        from personal_kb.ingest.ingester import FileIngester
-
-        extraction_llm = self.write_deps.extraction_llm
-        if extraction_llm is None:
+        if self.kb.extraction_llm is None:
             return _ToolResult(
                 tool="ingest_url", success=False, message="Extraction LLM not available"
             )
-        if self.embedder is None:
+        if self.kb.embedder is None:
             return _ToolResult(tool="ingest_url", success=False, message="Embedder not available")
 
-        ingester = FileIngester(
-            db=self.db,
-            store=self.write_deps.store,
-            embedder=self.embedder,
-            llm=extraction_llm,
-            graph_builder=self.write_deps.graph_builder,
-            graph_enricher=self.write_deps.graph_enricher,
-            contributor=self.write_deps.contributor,
-            team=self.write_deps.team,
-            config=build_ingest_config(),
-        )
-
-        result = await ingester.ingest_url(
-            url,
-            project_ref=args.get("project_ref"),
-        )
+        try:
+            result = await self.kb.ingest_url(url, project_ref=args.get("project_ref"))
+        except RuntimeError as e:
+            return _ToolResult(tool="ingest_url", success=False, message=str(e))
 
         if result.action in ("skipped", "error"):
             return _ToolResult(
@@ -398,12 +389,11 @@ class ChatSession:
         )
 
     async def _retrieve_context(self, query: str) -> list[str]:
-        """Search for entries relevant to the follow-up question."""
-        from personal_kb.models.search import SearchQuery
-        from personal_kb.search.hybrid import hybrid_search
+        """Search for entries relevant to the follow-up question via the facade."""
+        from kb_core.models.search import SearchQuery
 
         sq = SearchQuery(query=query, limit=5, include_stale=False)
-        results, _ = await hybrid_search(self.db, self.embedder, sq)
+        results, _ = await self.kb.search(sq)
 
         new_ids = []
         for r in results:
@@ -414,12 +404,9 @@ class ChatSession:
 
     async def _format_entries(self) -> str:
         """Format all known entries as context for the system prompt."""
-        from personal_kb.db.queries import get_entry
-        from personal_kb.tools.formatters import format_entry_full
-
         blocks = []
         for eid in self.entry_ids:
-            entry = await get_entry(self.db, eid)
+            entry = await self.kb.get(eid)
             if entry and entry.is_active:
                 blocks.append(format_entry_full(entry))
         return "\n\n".join(blocks)
@@ -455,15 +442,13 @@ _sessions: dict[str, ChatSession] = {}
 
 def get_or_create_session(
     session_id: str | None,
-    db: Database,
-    embedder: EmbeddingClient | None,
+    kb: KnowledgeBase,
     llm: LLMProvider,
-    write_deps: WriteDeps | None = None,
 ) -> ChatSession:
     """Get an existing session or create a new one."""
     if session_id and session_id in _sessions:
         return _sessions[session_id]
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb, llm)
     _sessions[session.id] = session
     return session
 

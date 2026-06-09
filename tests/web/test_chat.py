@@ -21,17 +21,36 @@ async def embedder(db):
     return FakeEmbedder(db)
 
 
+@pytest_asyncio.fixture
+async def kb(db, embedder):
+    """In-memory :class:`KnowledgeBase` wrapped around the test db + embedder."""
+    from personal_kb.web.app import _wrap_deps_as_kb
+
+    return _wrap_deps_as_kb(
+        db,
+        embedder,
+        query_llm=None,
+        synthesis_llm=None,
+        store=None,
+        graph_builder=None,
+        graph_enricher=None,
+        extraction_llm=None,
+        contributor=None,
+        team=None,
+    )
+
+
 @pytest.fixture
 def llm():
     return FakeLLM(response="This is a follow-up answer based on [kb-00001].")
 
 
 @pytest.mark.asyncio
-async def test_chat_session_seed_and_reply(db, embedder, llm):
+async def test_chat_session_seed_and_reply(kb, llm):
     """Seeding a session and sending a follow-up works."""
     from personal_kb.web.chat import ChatSession
 
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb, llm)
     session.seed("What is X?", "X is described in [kb-00001].", ["kb-00001"])
 
     assert len(session.messages) == 2
@@ -43,11 +62,11 @@ async def test_chat_session_seed_and_reply(db, embedder, llm):
 
 
 @pytest.mark.asyncio
-async def test_chat_session_accumulates_entries(db, embedder, llm):
+async def test_chat_session_accumulates_entries(kb, llm):
     """Follow-up queries should search for and accumulate entry IDs."""
     from personal_kb.web.chat import ChatSession
 
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb, llm)
     session.seed("Q1", "A1", ["kb-00001"])
 
     await session.reply("Q2")
@@ -56,11 +75,11 @@ async def test_chat_session_accumulates_entries(db, embedder, llm):
 
 
 @pytest.mark.asyncio
-async def test_chat_session_trim_history(db, embedder, llm):
+async def test_chat_session_trim_history(kb, llm):
     """History trimming preserves first pair and latest messages."""
     from personal_kb.web.chat import _MAX_CONVERSATION_CHARS, ChatSession
 
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb, llm)
     # Seed with short messages
     session.seed("Q", "A", [])
 
@@ -80,12 +99,12 @@ async def test_chat_session_trim_history(db, embedder, llm):
 
 
 @pytest.mark.asyncio
-async def test_chat_session_llm_unavailable(db, embedder):
+async def test_chat_session_llm_unavailable(kb):
     """Graceful fallback when LLM returns None."""
     from personal_kb.web.chat import ChatSession
 
     llm = FakeLLM(response=None, available=True)
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Follow up")
@@ -93,11 +112,11 @@ async def test_chat_session_llm_unavailable(db, embedder):
 
 
 @pytest.mark.asyncio
-async def test_get_or_create_session(db, embedder, llm):
+async def test_get_or_create_session(kb, llm):
     """Session store creates and retrieves sessions."""
     from personal_kb.web.chat import get_or_create_session, get_session
 
-    session = get_or_create_session(None, db, embedder, llm)
+    session = get_or_create_session(None, kb, llm)
     assert session.id is not None
 
     # Same ID returns same session
@@ -109,7 +128,7 @@ async def test_get_or_create_session(db, embedder, llm):
 
 
 @pytest.mark.asyncio
-async def test_chat_event_callback(db, embedder, llm):
+async def test_chat_event_callback(kb, llm):
     """Event callback fires chat_thinking and chat_done events."""
     from personal_kb.web.chat import ChatSession
 
@@ -118,7 +137,7 @@ async def test_chat_event_callback(db, embedder, llm):
     async def capture(event):
         events.append(event)
 
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb, llm)
     session.seed("Q", "A", [])
 
     await session.reply("Follow up", event_callback=capture)
@@ -129,7 +148,7 @@ async def test_chat_event_callback(db, embedder, llm):
 
 
 @pytest.mark.asyncio
-async def test_from_saved_reconstructs_session(db, embedder, llm):
+async def test_from_saved_reconstructs_session(kb, llm):
     """from_saved restores messages and extracts entry IDs."""
     from personal_kb.web.chat import ChatSession
 
@@ -139,7 +158,7 @@ async def test_from_saved_reconstructs_session(db, embedder, llm):
         {"role": "user", "content": "More about kb-00001"},
         {"role": "assistant", "content": "Details from [kb-00001] and [kb-00003]."},
     ]
-    session = ChatSession.from_saved("test-id", saved, db, embedder, llm)
+    session = ChatSession.from_saved("test-id", saved, kb, llm)
 
     assert session.id == "test-id"
     assert len(session.messages) == 4
@@ -147,7 +166,7 @@ async def test_from_saved_reconstructs_session(db, embedder, llm):
 
 
 @pytest.mark.asyncio
-async def test_from_saved_with_no_entries(db, embedder, llm):
+async def test_from_saved_with_no_entries(kb, llm):
     """from_saved handles conversations with no KB references."""
     from personal_kb.web.chat import ChatSession
 
@@ -155,6 +174,6 @@ async def test_from_saved_with_no_entries(db, embedder, llm):
         {"role": "user", "content": "Hello"},
         {"role": "assistant", "content": "Hi there!"},
     ]
-    session = ChatSession.from_saved("test-id-2", saved, db, embedder, llm)
+    session = ChatSession.from_saved("test-id-2", saved, kb, llm)
     assert session.entry_ids == []
     assert len(session.messages) == 2

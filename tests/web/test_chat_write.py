@@ -5,7 +5,7 @@ import pytest_asyncio
 
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.store.knowledge_store import KnowledgeStore
-from personal_kb.web.chat import WriteDeps, _parse_tool_call
+from personal_kb.web.chat import _parse_tool_call
 from tests.conftest import FakeEmbedder, FakeLLM, ScriptedLLM
 
 
@@ -34,12 +34,38 @@ async def graph_builder(db):
 
 
 @pytest_asyncio.fixture
-async def write_deps(store, graph_builder):
-    return WriteDeps(
+async def kb_read(db, embedder):
+    """KB with no extraction LLM — write tools advertise but fail at runtime."""
+    from personal_kb.web.app import _wrap_deps_as_kb
+
+    return _wrap_deps_as_kb(
+        db,
+        embedder,
+        query_llm=None,
+        synthesis_llm=None,
+        store=None,
+        graph_builder=None,
+        graph_enricher=None,
+        extraction_llm=None,
+        contributor=None,
+        team=None,
+    )
+
+
+@pytest_asyncio.fixture
+async def kb_write(db, embedder, store, graph_builder):
+    """KB with store + graph_builder for write-capable chat sessions."""
+    from personal_kb.web.app import _wrap_deps_as_kb
+
+    return _wrap_deps_as_kb(
+        db,
+        embedder,
+        query_llm=None,
+        synthesis_llm=None,
         store=store,
         graph_builder=graph_builder,
         graph_enricher=None,
-        extraction_llm=None,
+        extraction_llm=None,  # ingest_url fails gracefully at runtime
         contributor="test-user",
         team=None,
     )
@@ -86,12 +112,12 @@ class TestParseToolCall:
 
 
 @pytest.mark.asyncio
-async def test_reply_passthrough_no_write_deps(db, embedder):
-    """Without write deps, reply never attempts tool dispatch."""
+async def test_reply_passthrough_read_only_kb(kb_read):
+    """Without write capability (no store/extraction_llm), reply still works for read."""
     from personal_kb.web.chat import ChatSession
 
     llm = FakeLLM(response="Just a normal answer about [kb-00001].")
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb_read, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Tell me more")
@@ -100,12 +126,12 @@ async def test_reply_passthrough_no_write_deps(db, embedder):
 
 
 @pytest.mark.asyncio
-async def test_reply_passthrough_with_write_deps(db, embedder, write_deps):
-    """With write deps but no tool call in response, passthrough works."""
+async def test_reply_passthrough_write_kb(kb_write):
+    """With a write-capable KB but no tool call in response, passthrough works."""
     from personal_kb.web.chat import ChatSession
 
     llm = FakeLLM(response="Here's info about that entry.")
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("What's in kb-00001?")
@@ -117,7 +143,7 @@ async def test_reply_passthrough_with_write_deps(db, embedder, write_deps):
 
 
 @pytest.mark.asyncio
-async def test_get_entry_by_id(db, embedder, store):
+async def test_get_entry_by_id(kb_write, store):
     """Chat can fetch a specific entry by ID and add it to context."""
     from personal_kb.models.entry import EntryType
     from personal_kb.web.chat import ChatSession
@@ -138,7 +164,7 @@ async def test_get_entry_by_id(db, embedder, store):
     llm = ScriptedLLM(
         responses=[tool_response, f"Here's what [{entry.id}] says: missing APIs are..."]
     )
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply(f"What's in {entry.id}?")
@@ -147,13 +173,13 @@ async def test_get_entry_by_id(db, embedder, store):
 
 
 @pytest.mark.asyncio
-async def test_get_entry_not_found(db, embedder):
+async def test_get_entry_not_found(kb_write):
     """get_entry with nonexistent ID returns error."""
     from personal_kb.web.chat import ChatSession
 
     tool_response = '```json\n{"tool": "get_entry", "args": {"entry_id": "kb-99999"}}\n```'
     llm = ScriptedLLM(responses=[tool_response, "That entry doesn't exist."])
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Show me kb-99999")
@@ -161,13 +187,13 @@ async def test_get_entry_not_found(db, embedder):
 
 
 @pytest.mark.asyncio
-async def test_get_entry_missing_id(db, embedder):
+async def test_get_entry_missing_id(kb_write):
     """get_entry without entry_id arg returns error."""
     from personal_kb.web.chat import ChatSession
 
     tool_response = '```json\n{"tool": "get_entry", "args": {}}\n```'
     llm = ScriptedLLM(responses=[tool_response, "Missing ID."])
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Get entry")
@@ -175,8 +201,8 @@ async def test_get_entry_missing_id(db, embedder):
 
 
 @pytest.mark.asyncio
-async def test_get_entry_no_write_deps_needed(db, embedder, store):
-    """get_entry works without write deps — it's a read-only tool."""
+async def test_get_entry_works_on_read_only_kb(kb_read, store):
+    """get_entry works on a read-only KB — it's a read tool."""
     from personal_kb.models.entry import EntryType
     from personal_kb.web.chat import ChatSession
 
@@ -189,8 +215,7 @@ async def test_get_entry_no_write_deps_needed(db, embedder, store):
 
     tool_response = f'```json\n{{"tool": "get_entry", "args": {{"entry_id": "{entry.id}"}}}}\n```'
     llm = ScriptedLLM(responses=[tool_response, f"Got it: [{entry.id}]"])
-    # No write_deps!
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb_read, llm)
     session.seed("Q", "A", [])
 
     await session.reply(f"Look up {entry.id}")
@@ -201,7 +226,7 @@ async def test_get_entry_no_write_deps_needed(db, embedder, store):
 
 
 @pytest.mark.asyncio
-async def test_update_entry_tags(db, embedder, store, write_deps):
+async def test_update_entry_tags(kb_write, store):
     """Chat can update tags on an existing entry."""
     from personal_kb.models.entry import EntryType
     from personal_kb.web.chat import ChatSession
@@ -223,7 +248,7 @@ async def test_update_entry_tags(db, embedder, store, write_deps):
         + '", "tags": ["postgres", "migration"]}}\n```'
     )
     llm = ScriptedLLM(responses=[tool_response, "Done! I've updated the tags on " + entry.id + "."])
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [entry.id])
 
     reply = await session.reply("Add tags postgres and migration to " + entry.id)
@@ -236,13 +261,13 @@ async def test_update_entry_tags(db, embedder, store, write_deps):
 
 
 @pytest.mark.asyncio
-async def test_update_entry_missing_id(db, embedder, write_deps):
+async def test_update_entry_missing_id(kb_write):
     """Tool call without entry_id returns error."""
     from personal_kb.web.chat import ChatSession
 
     tool_response = '```json\n{"tool": "update_entry", "args": {"tags": ["x"]}}\n```'
     llm = ScriptedLLM(responses=[tool_response, "Error noted."])
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Update tags")
@@ -251,7 +276,7 @@ async def test_update_entry_missing_id(db, embedder, write_deps):
 
 
 @pytest.mark.asyncio
-async def test_update_entry_invalid_sensitivity(db, embedder, store, write_deps):
+async def test_update_entry_invalid_sensitivity(kb_write, store):
     """Invalid sensitivity value is rejected."""
     from personal_kb.models.entry import EntryType
     from personal_kb.web.chat import ChatSession
@@ -269,7 +294,7 @@ async def test_update_entry_invalid_sensitivity(db, embedder, store, write_deps)
         + '", "sensitivity": "top-secret"}}\n```'
     )
     llm = ScriptedLLM(responses=[tool_response, "Got it, invalid sensitivity."])
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Set sensitivity")
@@ -280,14 +305,14 @@ async def test_update_entry_invalid_sensitivity(db, embedder, store, write_deps)
 
 
 @pytest.mark.asyncio
-async def test_ingest_url_no_extraction_llm(db, embedder, write_deps):
+async def test_ingest_url_no_extraction_llm(kb_write):
     """ingest_url fails gracefully when extraction LLM is not available."""
     from personal_kb.web.chat import ChatSession
 
-    # write_deps has extraction_llm=None
+    # kb_write has extraction_llm=None
     tool_response = '```json\n{"tool": "ingest_url", "args": {"url": "https://example.com"}}\n```'
     llm = ScriptedLLM(responses=[tool_response, "Sorry, ingestion isn't available right now."])
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Ingest https://example.com")
@@ -295,13 +320,13 @@ async def test_ingest_url_no_extraction_llm(db, embedder, write_deps):
 
 
 @pytest.mark.asyncio
-async def test_ingest_url_missing_url(db, embedder, write_deps):
+async def test_ingest_url_missing_url(kb_write):
     """ingest_url without url arg returns error."""
     from personal_kb.web.chat import ChatSession
 
     tool_response = '```json\n{"tool": "ingest_url", "args": {}}\n```'
     llm = ScriptedLLM(responses=[tool_response, "URL was missing."])
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Ingest something")
@@ -312,13 +337,13 @@ async def test_ingest_url_missing_url(db, embedder, write_deps):
 
 
 @pytest.mark.asyncio
-async def test_unknown_tool(db, embedder, write_deps):
+async def test_unknown_tool(kb_write):
     """Unknown tool name returns error gracefully."""
     from personal_kb.web.chat import ChatSession
 
     tool_response = '```json\n{"tool": "delete_everything", "args": {}}\n```'
     llm = ScriptedLLM(responses=[tool_response, "That tool doesn't exist."])
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     reply = await session.reply("Delete everything")
@@ -329,7 +354,7 @@ async def test_unknown_tool(db, embedder, write_deps):
 
 
 @pytest.mark.asyncio
-async def test_tool_dispatch_fires_events(db, embedder, store, write_deps):
+async def test_tool_dispatch_fires_events(kb_write, store):
     """Tool dispatch fires chat_tool_result event."""
     from personal_kb.models.entry import EntryType
     from personal_kb.web.chat import ChatSession
@@ -348,7 +373,7 @@ async def test_tool_dispatch_fires_events(db, embedder, store, write_deps):
         + '", "tags": ["new"]}}\n```'
     )
     llm = ScriptedLLM(responses=[tool_response, "Updated!"])
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     events: list[dict] = []
@@ -372,12 +397,12 @@ async def test_tool_dispatch_fires_events(db, embedder, store, write_deps):
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_includes_write_tools(db, embedder, write_deps):
-    """When write deps are present, system prompt includes tool descriptions."""
+async def test_system_prompt_includes_write_tools(kb_write):
+    """System prompt advertises the write tools (update_entry + ingest_url)."""
     from personal_kb.web.chat import ChatSession
 
     llm = FakeLLM(response="Just a response.")
-    session = ChatSession(db, embedder, llm, write_deps=write_deps)
+    session = ChatSession(kb_write, llm)
     session.seed("Q", "A", [])
 
     await session.reply("Hello")
@@ -389,16 +414,15 @@ async def test_system_prompt_includes_write_tools(db, embedder, write_deps):
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_excludes_write_tools_without_deps(db, embedder):
-    """Without write deps, system prompt has get_entry but not write tools."""
+async def test_system_prompt_includes_get_entry(kb_read):
+    """System prompt always advertises the read-only get_entry tool."""
     from personal_kb.web.chat import ChatSession
 
     llm = FakeLLM(response="Just a response.")
-    session = ChatSession(db, embedder, llm)
+    session = ChatSession(kb_read, llm)
     session.seed("Q", "A", [])
 
     await session.reply("Hello")
 
     assert llm.last_system is not None
     assert "get_entry" in llm.last_system
-    assert "update_entry" not in llm.last_system
