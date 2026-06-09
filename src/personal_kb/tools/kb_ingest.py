@@ -2,20 +2,13 @@
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
-from personal_kb.ingest.ingester import FileIngester, FileResult, IngestResult
-
-if TYPE_CHECKING:
-    from personal_kb.graph.builder import GraphBuilder
-    from personal_kb.graph.enricher import GraphEnricher
-    from personal_kb.llm.provider import LLMProvider
-    from personal_kb.search.embeddings import EmbeddingClient
-    from personal_kb.store.knowledge_store import KnowledgeStore
+from personal_kb.ingest.ingester import FileResult, IngestResult
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +142,8 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         For URLs, use kb_ingest_url instead — it handles fetching and HTML extraction.
         """
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
@@ -170,50 +165,13 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
                     "To bypass (not recommended): set KB_SKIP_SAFETY=TRUE"
                 )
 
-        lifespan = ctx.lifespan_context
-        db = lifespan["db"]
-        store: KnowledgeStore = lifespan["store"]
-        embedder: EmbeddingClient = lifespan["embedder"]
-        graph_builder: GraphBuilder = lifespan["graph_builder"]
-        graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
-        query_llm: LLMProvider | None = lifespan.get("query_llm")
-
-        if query_llm is None:
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        if kb.extraction_llm is None and kb.query_llm is None:
             return "Error: No LLM available for ingestion. Configure an LLM provider."
+        if kb.embedder is None:
+            return "Error: No embedder configured. The ingest pipeline requires embeddings."
 
-        from personal_kb.config import build_ingest_config
-
-        ingest_config = build_ingest_config()
-
-        # Construct dedup agent if agentic ingest is enabled
-        dedup_agent = None
-        if not dry_run and ingest_config.agentic_ingest:
-            from personal_kb.ingest.dedup_agent import DedupAgent
-
-            dedup_agent = DedupAgent(
-                db=db,
-                embedder=embedder,
-                llm=query_llm,
-                threshold=ingest_config.dedup_threshold,
-            )
-
-        contributor: str | None = lifespan.get("contributor")
-        team: str | None = lifespan.get("team")
-
-        ingester = FileIngester(
-            db=db,
-            store=store,
-            embedder=embedder,
-            graph_builder=graph_builder,
-            graph_enricher=graph_enricher,
-            llm=query_llm,
-            dedup_agent=dedup_agent,
-            contributor=contributor,
-            team=team,
-            config=ingest_config,
-        )
-
-        # Glob pattern: expand and ingest each matched file
+        # Glob pattern: expand and ingest each matched file via the facade
         if _is_glob(path):
             base = Path.cwd()
             matched = sorted(f for f in base.glob(path) if f.is_file() and not f.is_symlink())
@@ -223,12 +181,20 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
             result = IngestResult()
             for file_path in matched:
                 result.total_files += 1
-                file_result = await ingester.ingest_file(
-                    file_path,
-                    project_ref=project_ref,
-                    base_dir=base,
-                    dry_run=dry_run,
-                )
+                try:
+                    file_result = await kb.ingest_file(
+                        file_path,
+                        project_ref=project_ref,
+                        dry_run=dry_run,
+                    )
+                except RuntimeError as exc:
+                    return f"Error: {exc}"
+                # Re-display as a path relative to the glob base, mirroring the
+                # legacy FileIngester(...).ingest_file(base_dir=...) behavior.
+                try:
+                    file_result.path = str(file_path.relative_to(base))
+                except ValueError:
+                    file_result.path = str(file_path)
                 result.file_results.append(file_result)
                 _tally_result(result, file_result)
 
@@ -241,12 +207,14 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
             return f"Error: Path does not exist: {target}"
 
         if target.is_file():
-            file_result = await ingester.ingest_file(
-                target,
-                project_ref=project_ref,
-                base_dir=target.parent,
-                dry_run=dry_run,
-            )
+            try:
+                file_result = await kb.ingest_file(
+                    target,
+                    project_ref=project_ref,
+                    dry_run=dry_run,
+                )
+            except RuntimeError as exc:
+                return f"Error: {exc}"
             prefix = "[DRY RUN] " if dry_run else ""
             line = f"{prefix}{_format_file_result(file_result)}"
             if file_result.summary:
@@ -254,12 +222,15 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
             return line
 
         if target.is_dir():
-            dir_result = await ingester.ingest_directory(
-                target,
-                project_ref=project_ref,
-                recursive=recursive,
-                dry_run=dry_run,
-            )
+            try:
+                dir_result = await kb.ingest_directory(
+                    target,
+                    project_ref=project_ref,
+                    recursive=recursive,
+                    dry_run=dry_run,
+                )
+            except RuntimeError as exc:
+                return f"Error: {exc}"
             return _format_ingest_result(dir_result, dry_run)
 
         return f"Error: {target} is not a file or directory."

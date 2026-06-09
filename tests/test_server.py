@@ -5,70 +5,60 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastmcp import FastMCP
 
-from personal_kb.llm.anthropic import AnthropicLLMClient
-from personal_kb.llm.ollama import OllamaLLMClient
 from personal_kb.server import (
     _build_instructions,
-    _create_llm,
-    _create_synthesis_llm,
     _get_tool_prefix,
     create_server,
     lifespan,
 )
 
-
-def test_create_llm_ollama():
-    """Should create OllamaLLMClient for 'ollama' provider."""
-    client = _create_llm("ollama")
-    assert isinstance(client, OllamaLLMClient)
+# --- Provider config builders (channel-side env → kb_core.config) ---
 
 
-def test_create_llm_anthropic():
-    """Should create AnthropicLLMClient for 'anthropic' provider."""
-    client = _create_llm("anthropic")
-    assert isinstance(client, AnthropicLLMClient)
+def test_build_provider_config_default_anthropic():
+    """Default env → all three roles point at the Anthropic provider."""
+    from personal_kb.config import build_provider_config
+
+    with patch.dict(
+        "os.environ",
+        {"KB_EXTRACTION_PROVIDER": "anthropic", "KB_QUERY_PROVIDER": "anthropic"},
+    ):
+        cfg = build_provider_config()
+        assert cfg.extraction.provider == "anthropic"
+        assert cfg.query.provider == "anthropic"
+        assert cfg.synthesis.provider == "anthropic"
 
 
-def test_create_llm_anthropic_unavailable():
-    """Should return None when Anthropic SDK is not installed."""
-    with patch("personal_kb.server.AnthropicLLMClient", None):
-        client = _create_llm("anthropic")
-        assert client is None
+def test_build_provider_config_synthesis_uses_sonnet_for_anthropic():
+    """Synthesis role overrides the Anthropic model to Sonnet."""
+    from kb_core.llm.anthropic import _SONNET_MODEL as ANTHROPIC_SONNET
+
+    from personal_kb.config import build_provider_config
+
+    with patch.dict("os.environ", {"KB_QUERY_PROVIDER": "anthropic"}):
+        cfg = build_provider_config()
+        assert cfg.synthesis.anthropic.model == ANTHROPIC_SONNET
 
 
-def test_create_llm_unknown_provider():
-    """Should return None for unknown providers."""
-    client = _create_llm("unknown")
-    assert client is None
+def test_build_provider_config_synthesis_uses_sonnet_for_bedrock():
+    """Synthesis role overrides the Bedrock model to Sonnet."""
+    from kb_core.llm.bedrock import _SONNET_MODEL as BEDROCK_SONNET
+
+    from personal_kb.config import build_provider_config
+
+    with patch.dict("os.environ", {"KB_QUERY_PROVIDER": "bedrock"}):
+        cfg = build_provider_config()
+        assert cfg.synthesis.bedrock.model == BEDROCK_SONNET
 
 
-def test_create_synthesis_llm_anthropic():
-    """Should create AnthropicLLMClient with Sonnet model in config."""
-    client = _create_synthesis_llm("anthropic")
-    assert isinstance(client, AnthropicLLMClient)
-    from personal_kb.llm.anthropic import _SONNET_MODEL
+def test_build_provider_config_ollama_provider():
+    """KB_QUERY_PROVIDER=ollama → query + synthesis roles both report 'ollama'."""
+    from personal_kb.config import build_provider_config
 
-    assert client._config.model == _SONNET_MODEL
-
-
-def test_create_synthesis_llm_bedrock():
-    """Should create BedrockLLMClient with Sonnet model in config."""
-    from personal_kb.llm.bedrock import _SONNET_MODEL as BR_SONNET
-    from personal_kb.llm.bedrock import BedrockLLMClient
-
-    client = _create_synthesis_llm("bedrock")
-    assert isinstance(client, BedrockLLMClient)
-    assert client._config.model == BR_SONNET
-
-
-def test_create_synthesis_llm_ollama():
-    """Ollama has no Sonnet equivalent — returns None."""
-    assert _create_synthesis_llm("ollama") is None
-
-
-def test_create_synthesis_llm_unknown():
-    """Unknown provider returns None."""
-    assert _create_synthesis_llm("unknown") is None
+    with patch.dict("os.environ", {"KB_QUERY_PROVIDER": "ollama"}):
+        cfg = build_provider_config()
+        assert cfg.query.provider == "ollama"
+        assert cfg.synthesis.provider == "ollama"
 
 
 def test_provider_config_defaults():
@@ -273,17 +263,20 @@ async def test_lifespan_invokes_rebuild_and_listener_teardown(monkeypatch, tmp_p
             rebuild_mock,
         ),
         patch(
-            "personal_kb.search.embeddings.EmbeddingClient.is_available",
+            "kb_core.search.embeddings.EmbeddingClient.is_available",
             AsyncMock(return_value=False),
         ),
         patch(
-            "personal_kb.db.sqlite_backend.SQLiteBackend.start_maps_listener",
+            "kb_core.db.sqlite_backend.SQLiteBackend.start_maps_listener",
             start_listener_mock,
         ),
     ):
         mcp = FastMCP("test-kb-lifespan", lifespan=lifespan)
         async with lifespan(mcp) as ctx:
-            assert "db" in ctx
+            # Lifespan now stores the KnowledgeBase facade as the source of
+            # truth — db / store / embedder / LLMs are reached through it.
+            assert "kb" in ctx
+            assert ctx["kb"].db is not None
             # Rebuild must have been awaited during startup.
             assert rebuild_mock.await_count >= 1
             # start_maps_listener was invoked with on_change + on_reconnect.

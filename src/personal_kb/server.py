@@ -8,45 +8,28 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastmcp import FastMCP
-from kb_core.config import (
-    AnthropicProviderConfig,
-    BedrockProviderConfig,
-    OllamaProviderConfig,
-)
+from kb_core.knowledge_base import KnowledgeBase
 
 from personal_kb import maps_index_writer
 from personal_kb.config import (
-    build_embedding_config,
-    get_anthropic_model,
-    get_anthropic_timeout,
-    get_aws_profile,
-    get_bedrock_model,
-    get_bedrock_region,
-    get_bedrock_timeout,
+    build_anthropic_config,
+    build_bedrock_config,
+    build_kb_config,
+    build_ollama_provider_config,
+    check_backend_fallback,
     get_contributor,
     get_database_url,
     get_db_path,
-    get_embedding_dim,
     get_explore_port,
-    get_extraction_provider,
-    get_llm_model,
-    get_llm_timeout,
     get_log_level,
-    get_ollama_url,
     get_query_provider,
-    get_team,
     is_auto_explore,
     is_manager_mode,
 )
-from personal_kb.db.connection import create_connection
-from personal_kb.graph.builder import GraphBuilder
-from personal_kb.graph.enricher import GraphEnricher
 from personal_kb.llm import AnthropicLLMClient, BedrockLLMClient
 from personal_kb.llm.ollama import OllamaLLMClient
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.maps_index_writer import write_project_maps
-from personal_kb.search.embeddings import EmbeddingClient
-from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.kb_ask import register_kb_ask
 from personal_kb.tools.kb_bulk_update import register_kb_bulk_update
 from personal_kb.tools.kb_explore import register_kb_explore
@@ -67,70 +50,43 @@ from personal_kb.tools.kb_store_batch import register_kb_store_batch
 from personal_kb.tools.kb_summarize import register_kb_summarize
 
 
-def _build_anthropic_config(*, model: str | None = None) -> AnthropicProviderConfig:
-    """Snapshot env-driven Anthropic config into the explicit dataclass."""
-    return AnthropicProviderConfig(
-        model=model or get_anthropic_model(),
-        timeout=get_anthropic_timeout(),
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
-
-
-def _build_bedrock_config(*, model: str | None = None) -> BedrockProviderConfig:
-    """Snapshot env-driven Bedrock config into the explicit dataclass.
-
-    Reads ``AWS_BEARER_TOKEN_BEDROCK`` and ``AWS_ACCESS_KEY_ID`` HERE (the
-    channel) so kb_core never touches ``os.environ``. The bearer token
-    string is captured; for env-credential auth we only pass a boolean
-    flag — the smithy resolver reads the actual creds at use time.
-    """
-    return BedrockProviderConfig(
-        model=model or get_bedrock_model(),
-        timeout=get_bedrock_timeout(),
-        region=get_bedrock_region(),
-        profile=get_aws_profile(),
-        bearer_token=os.environ.get("AWS_BEARER_TOKEN_BEDROCK"),
-        has_env_credentials=bool(os.environ.get("AWS_ACCESS_KEY_ID")),
-    )
-
-
-def _build_ollama_config() -> OllamaProviderConfig:
-    """Snapshot env-driven Ollama LLM config into the explicit dataclass."""
-    return OllamaProviderConfig(
-        model=get_llm_model(),
-        timeout=get_llm_timeout(),
-        url=get_ollama_url(),
-    )
-
-
 def _create_llm(provider: str) -> LLMProvider | None:
-    """Create an LLM client for the given provider name."""
+    """Create an LLM client for the given provider name.
+
+    Backwards-compat shim. The lifespan no longer calls this — it composes
+    a :class:`~kb_core.config.KbConfig` and hands it to
+    :meth:`~kb_core.knowledge_base.KnowledgeBase.create`. Still imported by
+    :mod:`personal_kb.web.app` (its rewire onto the facade is W6b).
+    """
     if provider == "anthropic":
         if AnthropicLLMClient is not None:
-            return AnthropicLLMClient(_build_anthropic_config())
+            return AnthropicLLMClient(build_anthropic_config())
         return None
     if provider == "bedrock":
         if BedrockLLMClient is not None:
-            return BedrockLLMClient(_build_bedrock_config())
+            return BedrockLLMClient(build_bedrock_config())
         return None
     if provider == "ollama":
-        return OllamaLLMClient(_build_ollama_config())
+        return OllamaLLMClient(build_ollama_provider_config())
     return None
 
 
 def _create_synthesis_llm(provider: str) -> LLMProvider | None:
-    """Create a stronger LLM for human-facing synthesis (Sonnet 4.6)."""
+    """Create a stronger LLM for human-facing synthesis (Sonnet 4.6).
+
+    Backwards-compat shim with the same status as :func:`_create_llm`.
+    """
     if provider == "anthropic":
         if AnthropicLLMClient is not None:
-            from personal_kb.llm.anthropic import _SONNET_MODEL
+            from kb_core.llm.anthropic import _SONNET_MODEL
 
-            return AnthropicLLMClient(_build_anthropic_config(model=_SONNET_MODEL))
+            return AnthropicLLMClient(build_anthropic_config(model=_SONNET_MODEL))
         return None
     if provider == "bedrock":
         if BedrockLLMClient is not None:
-            from personal_kb.llm.bedrock import _SONNET_MODEL as _BR_SONNET
+            from kb_core.llm.bedrock import _SONNET_MODEL as _BR_SONNET
 
-            return BedrockLLMClient(_build_bedrock_config(model=_BR_SONNET))
+            return BedrockLLMClient(build_bedrock_config(model=_BR_SONNET))
         return None
     # Ollama: no Sonnet equivalent, fall back to default
     return None
@@ -138,7 +94,17 @@ def _create_synthesis_llm(provider: str) -> LLMProvider | None:
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-    """Manage database connection and embedding client lifecycle."""
+    """Manage the :class:`KnowledgeBase` facade lifecycle.
+
+    Builds a :class:`kb_core.config.KbConfig` from the channel-side env
+    getters (:mod:`personal_kb.config`) and opens a
+    :class:`~kb_core.knowledge_base.KnowledgeBase` over it. The facade
+    owns the database, the embedder, the LLM clients, and the graph
+    enricher; the channel just holds a reference. Maps-index startup
+    rebuild + LISTEN/NOTIFY wiring use ``kb.db`` directly — the channel
+    keeps those concerns since the on-disk JSONL path is env-driven and
+    therefore server-side.
+    """
     # Configure logging to stderr (stdout is MCP stdio transport)
     log_level = getattr(logging, get_log_level())
     log_fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
@@ -160,57 +126,59 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         logger.info("Connecting to PostgreSQL database")
     else:
         logger.info("Opening SQLite database at %s", get_db_path())
-    db = await create_connection(embedding_dim=get_embedding_dim())
 
     # Check for accidental backend fallback (e.g. missing KB_DATABASE_URL)
-    from personal_kb.config import check_backend_fallback
-
     check_backend_fallback()
 
-    store = KnowledgeStore(db)
-    embedder = EmbeddingClient(db, config=build_embedding_config())
-    graph_builder = GraphBuilder(db)
+    # Build the engine config + open the facade.
+    kb_config = build_kb_config()
 
-    # Create LLM clients based on provider config
-    extraction_provider = get_extraction_provider()
+    # Ollama parity: the legacy ``_create_synthesis_llm`` returned ``None`` for
+    # the "ollama" provider (no Sonnet equivalent). Preserve that — pass
+    # ``synthesis_llm=None`` to the facade so the engine doesn't build a
+    # separate synthesis client. Anthropic/Bedrock keep their Sonnet override
+    # via :func:`build_provider_config`.
     query_provider = get_query_provider()
+    if query_provider == "ollama":
+        kb = await KnowledgeBase.create(kb_config, synthesis_llm=None)
+    else:
+        kb = await KnowledgeBase.create(kb_config)
 
-    extraction_llm = _create_llm(extraction_provider)
-    query_llm = _create_llm(query_provider)
-
-    # Stronger LLM for human-facing synthesis (web explorer, kb_summarize via browser)
-    synthesis_llm = _create_synthesis_llm(query_provider)
-
-    graph_enricher: GraphEnricher | None = None
-    if extraction_llm is not None:
-        graph_enricher = GraphEnricher(db, extraction_llm)
+    db = kb.db
+    embedder = kb.embedder
 
     # Pre-check Ollama availability (non-blocking, just logs)
-    ollama_ok = await embedder.is_available()
+    ollama_ok = False
+    if embedder is not None:
+        try:
+            ollama_ok = await embedder.is_available()  # type: ignore[attr-defined]
+        except Exception:
+            ollama_ok = False
     if ollama_ok:
         logger.info("Ollama available — vector search enabled")
     else:
         logger.warning("Ollama unavailable — vector search disabled, FTS-only mode")
 
-    if extraction_llm is not None:
+    extraction_provider = kb.config.providers.extraction.provider
+    if kb.extraction_llm is not None:
         logger.info("Extraction LLM: %s", extraction_provider)
     else:
         logger.warning(
             "Extraction LLM not available (%s) — graph enrichment disabled", extraction_provider
         )
 
-    if query_llm is not None:
+    if kb.query_llm is not None:
         logger.info("Query LLM: %s", query_provider)
     else:
         logger.warning("Query LLM not available (%s) — query planning disabled", query_provider)
 
-    if synthesis_llm is not None:
+    if kb.synthesis_llm is not None:
         logger.info("Synthesis LLM: Sonnet 4.6 (%s)", query_provider)
     else:
         logger.info("Synthesis LLM: using query LLM (no Sonnet override available)")
 
-    contributor = get_contributor()
-    team = get_team()
+    contributor = kb.config.attribution.contributor
+    team = kb.config.attribution.team
     if contributor:
         logger.info("Contributor: %s, Team: %s", contributor, team or "(not set)")
     elif db_url:
@@ -265,12 +233,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         started = await start_explorer_server(
             db,
             embedder,
-            query_llm,
-            synthesis_llm,
-            store=store,
-            graph_builder=graph_builder,
-            graph_enricher=graph_enricher,
-            extraction_llm=extraction_llm,
+            kb.query_llm,
+            kb.synthesis_llm,
+            store=kb.store,
+            graph_builder=kb.graph_builder,
+            graph_enricher=kb.graph_enricher,
+            extraction_llm=kb.extraction_llm,
             contributor=contributor,
             team=team,
             port=port,
@@ -282,18 +250,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             logger.info("Explorer auto-start skipped (port %d in use)", port)
 
     try:
-        yield {
-            "db": db,
-            "store": store,
-            "embedder": embedder,
-            "graph_builder": graph_builder,
-            "llm_client": extraction_llm,
-            "graph_enricher": graph_enricher,
-            "query_llm": query_llm,
-            "synthesis_llm": synthesis_llm,
-            "contributor": contributor,
-            "team": team,
-        }
+        yield {"kb": kb}
     finally:
         # Tear down the maps listener before closing the DB so its dedicated
         # asyncpg connection (Postgres) is closed cleanly. Best-effort.
@@ -301,14 +258,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             await listener_teardown()
         except Exception:
             logger.warning("maps_index listener teardown failed", exc_info=True)
-        if synthesis_llm is not None:
-            await synthesis_llm.close()
-        if query_llm is not None:
-            await query_llm.close()
-        if extraction_llm is not None:
-            await extraction_llm.close()
-        await embedder.close()
-        await db.close()
+        # The facade owns everything it built (DB, embedder, LLMs) — close()
+        # releases them in reverse construction order, swallowing teardown
+        # failures.
+        await kb.close()
         logger.info("Database connection closed")
 
 

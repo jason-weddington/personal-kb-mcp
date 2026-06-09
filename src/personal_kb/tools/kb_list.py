@@ -62,8 +62,10 @@ def register_kb_list_projects(mcp: FastMCP, prefix: str = "kb_") -> None:
         ),
     )
     async def kb_list_projects(ctx: Context) -> str:
-        db = ctx.lifespan_context["db"]
-        return await list_projects_logic(db)
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        return await list_projects_logic(kb.db)
 
 
 def register_kb_list_contributors(mcp: FastMCP, prefix: str = "kb_") -> None:
@@ -74,8 +76,10 @@ def register_kb_list_contributors(mcp: FastMCP, prefix: str = "kb_") -> None:
         description="List all contributors in the knowledge base with entry counts.",
     )
     async def kb_list_contributors(ctx: Context) -> str:
-        db = ctx.lifespan_context["db"]
-        return await list_contributors_logic(db)
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        return await list_contributors_logic(kb.db)
 
 
 def register_kb_list_teams(mcp: FastMCP, prefix: str = "kb_") -> None:
@@ -86,5 +90,7 @@ def register_kb_list_teams(mcp: FastMCP, prefix: str = "kb_") -> None:
         description="List all teams in the knowledge base with entry counts.",
     )
     async def kb_list_teams(ctx: Context) -> str:
-        db = ctx.lifespan_context["db"]
-        return await list_teams_logic(db)
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        return await list_teams_logic(kb.db)

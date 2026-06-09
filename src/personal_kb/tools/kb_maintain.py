@@ -102,20 +102,22 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
         - list_contributors: Show contributor/team stats for active entries
         - list_audit: Recent audit events (optional: entry_id, since)
         """
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
         if action not in _ACTIONS:
             return f"Unknown action '{action}'. Use: {', '.join(sorted(_ACTIONS))}"
 
-        lifespan = ctx.lifespan_context
-        db: Database = lifespan["db"]
-        store: KnowledgeStore = lifespan["store"]
-        embedder: EmbeddingClient = lifespan["embedder"]
-        graph_builder: GraphBuilder = lifespan["graph_builder"]
-        graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
-        query_llm: LLMProvider | None = lifespan.get("query_llm")
-        contributor: str | None = lifespan.get("contributor")
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        db: Database = kb.db
+        store: KnowledgeStore = kb.knowledge_store
+        embedder: EmbeddingClient = kb.embedder  # type: ignore[assignment]
+        graph_builder: GraphBuilder = kb.graph_builder
+        graph_enricher: GraphEnricher | None = kb.graph_enricher
+        query_llm: LLMProvider | None = kb.query_llm
+        contributor: str | None = kb.config.attribution.contributor
 
         if action == "stats":
             return await _action_stats(db)

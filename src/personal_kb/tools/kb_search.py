@@ -135,7 +135,7 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
         ctx: Context | None = None,
     ) -> str:
         """Search the knowledge base using hybrid semantic + keyword search."""
-        from personal_kb.search.hybrid import hybrid_search
+        from personal_kb.tools._lifespan import kb_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
@@ -151,24 +151,25 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
             include_expired=include_expired,
         )
 
-        lifespan = ctx.lifespan_context
-        db = lifespan["db"]
-        embedder = lifespan["embedder"]
-        telemetry_contributor: str | None = lifespan.get("contributor")
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        telemetry_contributor = kb.config.attribution.contributor
 
-        results, filtered_count = await hybrid_search(
-            db, embedder, search_query, contributor=telemetry_contributor
-        )
+        results, filtered_count = await kb.search(search_query, contributor=telemetry_contributor)
 
-        # Add a note if vector search was unavailable
+        # Add a note if vector search was unavailable. ``kb.embedder`` is the
+        # Embedder Protocol; the concrete EmbeddingClient (which the channel
+        # always provides) carries an ``is_available()`` method — duck-typed
+        # via getattr so a future plain-Protocol embedder doesn't error.
         note = None
-        if embedder is None or not await embedder.is_available():
+        embedder = kb.embedder
+        is_available = getattr(embedder, "is_available", None)
+        if embedder is None or (is_available is not None and not await is_available()):
             note = "Vector search unavailable (Ollama offline). Results are FTS-only."
 
         # Collect graph hints when results are sparse
         hints = None
         if len(results) < _SPARSE_THRESHOLD:
-            hints = await collect_graph_hints(db, results)
+            hints = await collect_graph_hints(kb.db, results)
 
         return format_search_results(
             results, note, graph_hints=hints, filtered_count=filtered_count

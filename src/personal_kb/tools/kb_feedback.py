@@ -57,22 +57,21 @@ def register_kb_feedback(mcp: FastMCP, prefix: str = "kb_") -> None:
         ctx: Context | None = None,
     ) -> str:
         """Report when a KB query failed to help with your task."""
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        lifespan = ctx.lifespan_context
-        db: Database = lifespan["db"]
-        contributor: str | None = lifespan.get("contributor")
-        team: str | None = lifespan.get("team")
+        kb = kb_from_lifespan(ctx.lifespan_context)
 
         return await submit_feedback(
-            db,
+            kb.db,
             feedback_type,
             tool_name,
             query_or_params,
             detail,
-            contributor=contributor,
-            team=team,
+            contributor=kb.config.attribution.contributor,
+            team=kb.config.attribution.team,
         )
 
 

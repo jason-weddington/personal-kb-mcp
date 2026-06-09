@@ -82,7 +82,7 @@ if TYPE_CHECKING:
     )
     from kb_core.db.backend import Database
     from kb_core.graph.enricher import GraphEnricher
-    from kb_core.ingest.ingester import FileIngester, FileResult
+    from kb_core.ingest.ingester import FileIngester, FileResult, IngestResult
     from kb_core.llm.provider import LLMProvider
     from kb_core.models.search import SearchQuery, SearchResult
     from kb_core.search.embedder_protocol import Embedder
@@ -492,6 +492,40 @@ class KnowledgeBase:
         """The configured embedder, or ``None`` for explicit FTS-only mode."""
         return self._embedder
 
+    @property
+    def knowledge_store(self) -> KnowledgeStore:
+        """The underlying :class:`KnowledgeStore` (advanced; prefer facade methods).
+
+        Named ``knowledge_store`` (not ``store``) so it doesn't collide with the
+        :meth:`store` method that creates entries.
+        """
+        return self._store
+
+    @property
+    def graph_builder(self) -> GraphBuilder:
+        """The deterministic :class:`GraphBuilder` (advanced; prefer facade methods)."""
+        return self._graph_builder
+
+    @property
+    def graph_enricher(self) -> GraphEnricher | None:
+        """The LLM-driven :class:`GraphEnricher`, or ``None`` when no extraction LLM is set."""
+        return self._graph_enricher
+
+    @property
+    def extraction_llm(self) -> LLMProvider | None:
+        """The LLM used for graph extraction, or ``None`` if unavailable."""
+        return self._extraction_llm
+
+    @property
+    def query_llm(self) -> LLMProvider | None:
+        """The LLM used for query planning + the agentic ReAct loop, or ``None`` if unavailable."""
+        return self._query_llm
+
+    @property
+    def synthesis_llm(self) -> LLMProvider | None:
+        """The (stronger) LLM used for human-facing synthesis, or ``None`` if unavailable."""
+        return self._synthesis_llm
+
     # -- Search -------------------------------------------------------------
 
     async def search(
@@ -887,6 +921,75 @@ class KnowledgeBase:
             )
             raise RuntimeError(msg)
         return await ingester.ingest_text(content, source_name, project_ref=project_ref)
+
+    async def ingest_url(
+        self,
+        url: str,
+        *,
+        project_ref: str | None = None,
+        dry_run: bool = False,
+    ) -> FileResult:
+        """Fetch a URL, extract its article content, and ingest it.
+
+        Thin wrapper over :meth:`FileIngester.ingest_url`. Requires an
+        extraction LLM and an embedder; raises :class:`RuntimeError` if
+        either is missing.
+        """
+        ingester = self._build_ingester()
+        if ingester is None:
+            msg = (
+                "ingest_url requires both an extraction LLM and an embedder. "
+                "Configure providers.extraction and embedding on KbConfig."
+            )
+            raise RuntimeError(msg)
+        return await ingester.ingest_url(url, project_ref=project_ref, dry_run=dry_run)
+
+    async def ingest_url_content(
+        self,
+        content: str,
+        source_url: str,
+        *,
+        project_ref: str | None = None,
+        dry_run: bool = False,
+    ) -> FileResult:
+        """Ingest pre-fetched URL content (e.g. from authenticated sites).
+
+        Skips the HTTP fetch + HTML extraction stages — feeds ``content``
+        straight into the pipeline with ``source_url`` as the attribution.
+        Useful when the caller already has clean text (WebFetch output,
+        internal wiki dumps, JavaScript-rendered pages). Requires an
+        extraction LLM and an embedder.
+        """
+        ingester = self._build_ingester()
+        if ingester is None:
+            msg = (
+                "ingest_url_content requires both an extraction LLM and an embedder. "
+                "Configure providers.extraction and embedding on KbConfig."
+            )
+            raise RuntimeError(msg)
+        return await ingester._ingest_content(
+            content, source_url, project_ref=project_ref, dry_run=dry_run
+        )
+
+    async def ingest_directory(
+        self,
+        dir_path: Path | str,
+        *,
+        project_ref: str | None = None,
+        recursive: bool = True,
+        dry_run: bool = False,
+    ) -> IngestResult:
+        """Ingest all eligible files from a directory through the pipeline."""
+        ingester = self._build_ingester()
+        if ingester is None:
+            msg = (
+                "ingest_directory requires both an extraction LLM and an embedder. "
+                "Configure providers.extraction and embedding on KbConfig."
+            )
+            raise RuntimeError(msg)
+        return await ingester.ingest_directory(
+            Path(dir_path), project_ref=project_ref, recursive=recursive, dry_run=dry_run
+        )
 
     # -- Project context / maps --------------------------------------------
 

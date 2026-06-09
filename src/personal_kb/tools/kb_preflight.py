@@ -46,15 +46,13 @@ def register_kb_preflight(mcp: FastMCP, prefix: str = "kb_") -> None:
         ctx: Context | None = None,
     ) -> str:
         """Get a project context primer."""
+        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools.ttl import parse_ttl
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        from personal_kb.preflight import build_project_context
-        from personal_kb.tools.ttl import parse_ttl
-
-        lifespan = ctx.lifespan_context
-        db = lifespan["db"]
-        team: str | None = lifespan.get("team")
+        kb = kb_from_lifespan(ctx.lifespan_context)
 
         since_td = None
         if since is not None:
@@ -63,4 +61,4 @@ def register_kb_preflight(mcp: FastMCP, prefix: str = "kb_") -> None:
             except ValueError as exc:
                 return f"Error: {exc}"
 
-        return await build_project_context(db, project_ref, team=team, since=since_td)
+        return await kb.preflight(project_ref, since=since_td)

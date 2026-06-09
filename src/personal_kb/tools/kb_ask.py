@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
@@ -29,8 +29,10 @@ from personal_kb.graph.queries import (
 )
 from personal_kb.llm.provider import LLMProvider
 from personal_kb.models.entry import KnowledgeEntry
-from personal_kb.search.embeddings import EmbeddingClient
 from personal_kb.tools.formatters import format_entry_compact, format_entry_full, format_result_list
+
+if TYPE_CHECKING:
+    from kb_core.search.embedder_protocol import Embedder
 
 __all__ = [
     "_auto_search_entries",
@@ -88,13 +90,15 @@ def register_kb_ask(mcp: FastMCP, prefix: str = "kb_") -> None:
           Use for "what touches tag:python?" or "what depends on kb-00042?"
         - connection: Find paths between two nodes. Use for "how are X and Y related?"
         """
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        lifespan = ctx.lifespan_context
-        db = lifespan["db"]
-        embedder = lifespan["embedder"]
-        query_llm = lifespan.get("query_llm")
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        db = kb.db
+        embedder = kb.embedder
+        query_llm = kb.query_llm
 
         if strategy == "auto":
             return await _strategy_auto_with_planner(
@@ -120,7 +124,7 @@ def register_kb_ask(mcp: FastMCP, prefix: str = "kb_") -> None:
 
 async def retrieve_entries(
     db: Database,
-    embedder: EmbeddingClient | None,
+    embedder: "Embedder | None",
     query_llm: LLMProvider | None,
     question: str,
     scope: str | None = None,
@@ -154,7 +158,7 @@ async def retrieve_entries(
 
 async def _strategy_auto_with_planner(
     db: Database,
-    embedder: EmbeddingClient | None,
+    embedder: "Embedder | None",
     query_llm: LLMProvider | None,
     question: str,
     scope: str | None,
@@ -229,7 +233,7 @@ async def _strategy_auto_with_planner(
 
 async def _strategy_auto(
     db: Database,
-    embedder: EmbeddingClient | None,
+    embedder: "Embedder | None",
     question: str,
     scope: str | None,
     include_graph_context: bool,

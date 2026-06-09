@@ -7,7 +7,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kb_core.config import EmbeddingConfig, IngestConfig
+    from kb_core.config import (
+        AgenticConfig,
+        AnthropicProviderConfig,
+        Attribution,
+        BedrockProviderConfig,
+        DatabaseConfig,
+        EmbeddingConfig,
+        IngestConfig,
+        KbConfig,
+        OllamaProviderConfig,
+        ProviderConfig,
+    )
 
 _VALID_PROVIDERS = {"anthropic", "bedrock", "ollama"}
 
@@ -360,3 +371,171 @@ def check_backend_fallback() -> None:
 def get_backend_warning() -> str | None:
     """Return the backend fallback warning, if any."""
     return _backend_fallback_warning
+
+
+# ---------------------------------------------------------------------------
+# kb_core config builders (channel-side env → dataclass adapters)
+# ---------------------------------------------------------------------------
+#
+# These snapshots ``KB_*`` env vars into the explicit, env-free
+# ``kb_core.config`` dataclasses. Every ``KnowledgeBase.create(...)`` call from
+# the MCP channel flows through :func:`build_kb_config` so behavior across the
+# move stays identical and the env surface stays centralized here.
+
+
+def build_anthropic_config(*, model: str | None = None) -> "AnthropicProviderConfig":
+    """Snapshot env-driven Anthropic config into the explicit dataclass."""
+    from kb_core.config import AnthropicProviderConfig
+
+    return AnthropicProviderConfig(
+        model=model or get_anthropic_model(),
+        timeout=get_anthropic_timeout(),
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+
+
+def build_bedrock_config(*, model: str | None = None) -> "BedrockProviderConfig":
+    """Snapshot env-driven Bedrock config into the explicit dataclass.
+
+    Reads ``AWS_BEARER_TOKEN_BEDROCK`` and ``AWS_ACCESS_KEY_ID`` HERE (the
+    channel) so kb_core never touches ``os.environ``. The bearer token
+    string is captured; for env-credential auth we only pass a boolean
+    flag — the smithy resolver reads the actual creds at use time.
+    """
+    from kb_core.config import BedrockProviderConfig
+
+    return BedrockProviderConfig(
+        model=model or get_bedrock_model(),
+        timeout=get_bedrock_timeout(),
+        region=get_bedrock_region(),
+        profile=get_aws_profile(),
+        bearer_token=os.environ.get("AWS_BEARER_TOKEN_BEDROCK"),
+        has_env_credentials=bool(os.environ.get("AWS_ACCESS_KEY_ID")),
+    )
+
+
+def build_ollama_provider_config() -> "OllamaProviderConfig":
+    """Snapshot env-driven Ollama LLM config into the explicit dataclass."""
+    from kb_core.config import OllamaProviderConfig
+
+    return OllamaProviderConfig(
+        model=get_llm_model(),
+        timeout=get_llm_timeout(),
+        url=get_ollama_url(),
+    )
+
+
+def build_provider_config() -> "ProviderConfig":
+    """Build a per-role provider config for the engine.
+
+    Each role (extraction / query / synthesis) is a :class:`ProviderRoleConfig`
+    that bundles which provider is active + credentials for all three providers
+    (so switching providers requires no extra plumbing). The synthesis role
+    points at the Sonnet model for Anthropic/Bedrock (mirroring the legacy
+    ``_create_synthesis_llm`` behavior). For Ollama, the synthesis role keeps
+    the default Ollama config; the channel passes ``synthesis_llm=None`` to
+    ``KnowledgeBase.create`` so the engine doesn't build a separate synthesis
+    client (matching today's "no Sonnet equivalent" fallback).
+    """
+    from kb_core.config import ProviderConfig, ProviderRoleConfig
+    from kb_core.llm.anthropic import _SONNET_MODEL as _ANTHROPIC_SONNET
+    from kb_core.llm.bedrock import _SONNET_MODEL as _BEDROCK_SONNET
+
+    extraction_provider = get_extraction_provider()
+    query_provider = get_query_provider()
+
+    anthropic = build_anthropic_config()
+    bedrock = build_bedrock_config()
+    ollama = build_ollama_provider_config()
+
+    # Synthesis role uses the same provider as query (today's behavior), but
+    # with the Sonnet model for Anthropic/Bedrock. For Ollama the role config
+    # stays as the default Ollama; the channel overrides ``synthesis_llm=None``
+    # at create() time to preserve the "no Sonnet equivalent" behavior.
+    synthesis_anthropic = build_anthropic_config(model=_ANTHROPIC_SONNET)
+    synthesis_bedrock = build_bedrock_config(model=_BEDROCK_SONNET)
+
+    extraction_role = ProviderRoleConfig(
+        provider=extraction_provider,  # type: ignore[arg-type]
+        anthropic=anthropic,
+        bedrock=bedrock,
+        ollama=ollama,
+    )
+    query_role = ProviderRoleConfig(
+        provider=query_provider,  # type: ignore[arg-type]
+        anthropic=anthropic,
+        bedrock=bedrock,
+        ollama=ollama,
+    )
+    synthesis_role = ProviderRoleConfig(
+        provider=query_provider,  # type: ignore[arg-type]
+        anthropic=synthesis_anthropic,
+        bedrock=synthesis_bedrock,
+        ollama=ollama,
+    )
+
+    return ProviderConfig(
+        extraction=extraction_role,
+        query=query_role,
+        synthesis=synthesis_role,
+    )
+
+
+def build_agentic_config() -> "AgenticConfig":
+    """Snapshot env-driven agentic flags into the explicit dataclass."""
+    from kb_core.config import AgenticConfig
+
+    return AgenticConfig(
+        agentic_query=is_agentic_query(),
+        agentic_synthesis=is_agentic_synthesis(),
+        max_tool_calls=get_agentic_max_tool_calls(),
+    )
+
+
+def build_attribution() -> "Attribution":
+    """Snapshot ``KB_CONTRIBUTOR`` / ``KB_TEAM`` into the explicit dataclass."""
+    from kb_core.config import Attribution
+
+    return Attribution(contributor=get_contributor(), team=get_team())
+
+
+def build_database_config(*, embedding_dim: int | None = None) -> "DatabaseConfig":
+    """Build :class:`SqliteConfig` or :class:`PostgresConfig` from env.
+
+    Dispatches on ``KB_DATABASE_URL`` — when set, returns a
+    :class:`PostgresConfig`; otherwise a :class:`SqliteConfig` over
+    ``KB_DB_PATH``.
+    """
+    from kb_core.config import PostgresConfig, SqliteConfig
+
+    dim = embedding_dim if embedding_dim is not None else get_embedding_dim()
+    db_url = get_database_url()
+    if db_url:
+        return PostgresConfig(
+            dsn=db_url,
+            embedding_dim=dim,
+            pool_min=get_pg_pool_min(),
+            pool_max=get_pg_pool_max(),
+            iam_auth=is_pg_iam_auth(),
+            region=get_pg_region(),
+        )
+    return SqliteConfig(path=get_db_path(), embedding_dim=dim)
+
+
+def build_kb_config() -> "KbConfig":
+    """Build a complete :class:`KbConfig` from this module's env getters.
+
+    This is the single channel-side adapter that snapshots every ``KB_*`` env
+    var the engine cares about into the explicit ``kb_core.config`` dataclasses
+    so the MCP server can hand the engine a fully-typed configuration object.
+    """
+    from kb_core.config import KbConfig
+
+    return KbConfig(
+        database=build_database_config(),
+        embedding=build_embedding_config(),
+        providers=build_provider_config(),
+        ingest=build_ingest_config(),
+        agentic=build_agentic_config(),
+        attribution=build_attribution(),
+    )

@@ -103,9 +103,10 @@ def register_kb_get(mcp: FastMCP, prefix: str = "kb_") -> None:
             raise RuntimeError("Context not injected")
 
         from personal_kb.db.queries import touch_accessed
+        from personal_kb.tools._lifespan import kb_from_lifespan
 
-        lifespan = ctx.lifespan_context
-        db = lifespan["db"]
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        db = kb.db
 
         # Normalize to list
         ids = [entry_id] if isinstance(entry_id, str) else list(entry_id)
@@ -116,7 +117,7 @@ def register_kb_get(mcp: FastMCP, prefix: str = "kb_") -> None:
         formatted: list[str] = []
         accessed_ids: list[str] = []
         for eid in ids:
-            entry = await get_entry(db, eid)
+            entry = await kb.get(eid)
             if entry is None or not entry.is_active:
                 formatted.append(f"[{eid}] not found")
             else:

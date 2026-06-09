@@ -1,14 +1,11 @@
 """kb_bulk_update MCP tool — apply metadata changes to multiple entries at once."""
 
 import logging
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
-
-if TYPE_CHECKING:
-    from personal_kb.store.knowledge_store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +90,8 @@ def register_kb_bulk_update(mcp: FastMCP, prefix: str = "kb_") -> None:
         Filters select which entries to update. Updates specify what to change.
         Use dry_run=true to preview before committing.
         """
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
@@ -102,15 +101,12 @@ def register_kb_bulk_update(mcp: FastMCP, prefix: str = "kb_") -> None:
         if not updates:
             return "Error: No updates specified."
 
-        lifespan = ctx.lifespan_context
-        store: KnowledgeStore = lifespan["store"]
-        contributor: str | None = lifespan.get("contributor")
+        kb = kb_from_lifespan(ctx.lifespan_context)
 
         try:
-            results = await store.bulk_update(
+            results = await kb.bulk_update(
                 filters=filters,
                 updates=updates,
-                contributor=contributor,
                 dry_run=dry_run,
             )
         except Exception as exc:

@@ -34,6 +34,8 @@ async def batch_store_entries(
     lifespan: dict[str, Any],
 ) -> str:
     """Core batch store logic, testable without MCP context."""
+    from personal_kb.tools._lifespan import kb_from_lifespan
+
     if len(entries) > _MAX_BATCH:
         return f"Error: Maximum {_MAX_BATCH} entries per batch (got {len(entries)})."
 
@@ -68,13 +70,19 @@ async def batch_store_entries(
                     "Set KB_SKIP_SAFETY=TRUE to override."
                 )
 
-    store: KnowledgeStore = lifespan["store"]
-    embedder = lifespan["embedder"]
-    graph_builder: GraphBuilder = lifespan["graph_builder"]
-    graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
-    db = lifespan["db"]
-    contributor: str | None = lifespan.get("contributor")
-    team: str | None = lifespan.get("team")
+    # Per-entry failure tracking + maps-index refresh stay channel-side; the
+    # facade's store_batch swallows failures and doesn't expose them, and
+    # write_project_maps is env-driven (server-only). Reach for store /
+    # embedder / graph_builder / graph_enricher / db through the facade so
+    # there's a single source of truth even though the loop is local.
+    kb = kb_from_lifespan(lifespan)
+    store: KnowledgeStore = kb.knowledge_store
+    embedder = kb.embedder
+    graph_builder: GraphBuilder = kb.graph_builder
+    graph_enricher: GraphEnricher | None = kb.graph_enricher
+    db = kb.db
+    contributor = kb.config.attribution.contributor
+    team = kb.config.attribution.team
 
     created: list[KnowledgeEntry] = []
     failed: list[tuple[int, str, str]] = []  # (index, short_title, error)
@@ -120,13 +128,17 @@ async def batch_store_entries(
             logger.warning("Failed to create entry %d (%s): %s", i, title, exc)
             continue
 
-        # Embed
+        # Embed. ``embedder`` is the Embedder Protocol on kb_core; the concrete
+        # EmbeddingClient carries ``store_embedding``. Duck-type via getattr so
+        # a future plain-Protocol embedder degrades gracefully.
         if embedder:
             try:
                 embedding = await embedder.embed(entry.embedding_text)
                 if embedding is not None:
-                    await embedder.store_embedding(entry.id, embedding)
-                    await store.mark_embedding(entry.id, True)
+                    store_embedding = getattr(embedder, "store_embedding", None)
+                    if callable(store_embedding):
+                        await store_embedding(entry.id, embedding)
+                        await store.mark_embedding(entry.id, True)
             except Exception:
                 logger.warning("Failed to embed entry %s", entry.id, exc_info=True)
 

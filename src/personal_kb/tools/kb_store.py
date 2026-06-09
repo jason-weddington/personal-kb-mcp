@@ -231,22 +231,19 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         - mental_map: structural orientation node — pointers/relationships only,
           no retrievable values; requires at least one outbound pointer
         """
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
-        lifespan = ctx.lifespan_context
-        store: KnowledgeStore = lifespan["store"]
-        embedder: EmbeddingClient = lifespan["embedder"]
-        graph_builder: GraphBuilder = lifespan["graph_builder"]
-        db = lifespan["db"]
-        contributor: str | None = lifespan.get("contributor")
-        team: str | None = lifespan.get("team")
 
-        graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        db = kb.db
+        team = kb.config.attribution.team
 
         # --- Deactivate path ---
         if deactivate_entry_id:
             try:
-                entry = await store.deactivate_entry(deactivate_entry_id, contributor=contributor)
+                entry = await kb.deactivate(deactivate_entry_id)
             except ValueError as e:
                 return f"Error: {e}"
             # Remove outgoing graph edges
@@ -280,15 +277,15 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     expires_at = compute_expires_at(ttl)
                 except ValueError as e:
                     return f"Error: {e}"
-            entry = await store.update_entry(
-                entry_id=update_entry_id,
+            entry = await kb.update(
+                update_entry_id,
                 knowledge_details=knowledge_details or None,
                 change_reason=change_reason,
                 confidence_level=confidence_level,
                 tags=tags,
                 hints=hints,
-                updated_by=contributor,
-                sensitivity=sensitivity,  # type: ignore[arg-type]  # validated above
+                updated_by=kb.config.attribution.contributor,
+                sensitivity=sensitivity,
                 expires_at=expires_at,
                 short_title=short_title or None,
                 long_title=long_title or None,
@@ -296,12 +293,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 project_ref=project_ref,
                 source_context=source_context,
             )
-            # Re-embed updated entry
-            if embedder:
-                await _embed_entry(embedder, store, entry)
-            await _build_graph(graph_builder, entry)
-            await _enrich_graph(graph_enricher, entry)
-            entry = await store.get_entry(entry.id) or entry
+            entry = await kb.get(entry.id) or entry
             # Refresh the on-disk maps index for mental_map updates. The
             # entry type may have CHANGED in this update — we update the
             # index whenever the refreshed entry is a mental_map.
@@ -351,7 +343,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
             except ValueError as e:
                 return f"Error: {e}"
 
-        entry = await store.create_entry(
+        entry = await kb.store(
             short_title=short_title,
             long_title=long_title,
             knowledge_details=knowledge_details,
@@ -361,18 +353,10 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
             confidence_level=confidence_level,
             tags=tags,
             hints=hints,
-            contributor=contributor,
-            team=team,
-            sensitivity=sensitivity,  # type: ignore[arg-type]  # validated above
+            sensitivity=sensitivity,
             expires_at=expires_at,
         )
-
-        # Embed new entry
-        if embedder:
-            await _embed_entry(embedder, store, entry)
-        await _build_graph(graph_builder, entry)
-        await _enrich_graph(graph_enricher, entry)
-        entry = await store.get_entry(entry.id) or entry
+        entry = await kb.get(entry.id) or entry
 
         # Refresh the on-disk maps index for mental_map creates. Best-effort.
         if entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:

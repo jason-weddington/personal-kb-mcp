@@ -1,21 +1,13 @@
 """kb_ingest_url MCP tool — ingest a URL into the knowledge base."""
 
 import logging
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
-from personal_kb.ingest.ingester import FileIngester
 from personal_kb.tools.kb_ingest import _check_safety_deps, _format_file_result
-
-if TYPE_CHECKING:
-    from personal_kb.graph.builder import GraphBuilder
-    from personal_kb.graph.enricher import GraphEnricher
-    from personal_kb.llm.provider import LLMProvider
-    from personal_kb.search.embeddings import EmbeddingClient
-    from personal_kb.store.knowledge_store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +59,8 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
         LLM extraction, and deduplication.
 
         """
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
@@ -87,63 +81,29 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
                     "To bypass (not recommended): set KB_SKIP_SAFETY=TRUE"
                 )
 
-        lifespan = ctx.lifespan_context
-        db = lifespan["db"]
-        store: KnowledgeStore = lifespan["store"]
-        embedder: EmbeddingClient = lifespan["embedder"]
-        graph_builder: GraphBuilder = lifespan["graph_builder"]
-        graph_enricher: GraphEnricher | None = lifespan.get("graph_enricher")
-        query_llm: LLMProvider | None = lifespan.get("query_llm")
-
-        if query_llm is None:
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        if kb.extraction_llm is None and kb.query_llm is None:
             return "Error: No LLM available for ingestion. Configure an LLM provider."
+        if kb.embedder is None:
+            return "Error: No embedder configured. The ingest pipeline requires embeddings."
 
-        from personal_kb.config import build_ingest_config
-
-        ingest_config = build_ingest_config()
-
-        # Construct dedup agent if agentic ingest is enabled
-        dedup_agent = None
-        if not dry_run and ingest_config.agentic_ingest:
-            from personal_kb.ingest.dedup_agent import DedupAgent
-
-            dedup_agent = DedupAgent(
-                db=db,
-                embedder=embedder,
-                llm=query_llm,
-                threshold=ingest_config.dedup_threshold,
-            )
-
-        contributor: str | None = lifespan.get("contributor")
-        team: str | None = lifespan.get("team")
-
-        ingester = FileIngester(
-            db=db,
-            store=store,
-            embedder=embedder,
-            graph_builder=graph_builder,
-            graph_enricher=graph_enricher,
-            llm=query_llm,
-            dedup_agent=dedup_agent,
-            contributor=contributor,
-            team=team,
-            config=ingest_config,
-        )
-
-        if content is not None:
-            # Agent provided pre-fetched content — skip fetch/extraction
-            file_result = await ingester._ingest_content(
-                content,
-                url,
-                project_ref=project_ref,
-                dry_run=dry_run,
-            )
-        else:
-            file_result = await ingester.ingest_url(
-                url,
-                project_ref=project_ref,
-                dry_run=dry_run,
-            )
+        try:
+            if content is not None:
+                # Agent provided pre-fetched content — skip fetch/extraction
+                file_result = await kb.ingest_url_content(
+                    content,
+                    url,
+                    project_ref=project_ref,
+                    dry_run=dry_run,
+                )
+            else:
+                file_result = await kb.ingest_url(
+                    url,
+                    project_ref=project_ref,
+                    dry_run=dry_run,
+                )
+        except RuntimeError as exc:
+            return f"Error: {exc}"
 
         dry_prefix = "[DRY RUN] " if dry_run else ""
         line = f"{dry_prefix}{_format_file_result(file_result)}"

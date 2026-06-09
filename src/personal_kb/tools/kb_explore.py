@@ -7,7 +7,7 @@ import signal
 import subprocess
 import tempfile
 import webbrowser
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
@@ -17,7 +17,9 @@ from personal_kb.db.backend import Database
 from personal_kb.explorer.graph_data import extract_graph_data
 from personal_kb.explorer.renderer import render_explorer_html
 from personal_kb.llm.provider import LLMProvider
-from personal_kb.search.embeddings import EmbeddingClient
+
+if TYPE_CHECKING:
+    from kb_core.search.embedder_protocol import Embedder
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +76,7 @@ async def _is_explorer_healthy(port: int) -> bool:
 
 async def start_explorer_server(
     db: Database,
-    embedder: EmbeddingClient | None = None,
+    embedder: "Embedder | None" = None,
     query_llm: LLMProvider | None = None,
     synthesis_llm: LLMProvider | None = None,
     *,
@@ -117,9 +119,13 @@ async def start_explorer_server(
     try:
         from personal_kb.web.app import create_app_with_deps
 
+        # The web channel still types its embedder as ``EmbeddingClient``
+        # (concrete) — the kb-core facade exposes the Protocol ``Embedder``.
+        # In practice the channel always supplies an EmbeddingClient instance;
+        # the type narrowing fix lives in the web rewire (W6b).
         app = create_app_with_deps(
             db,
-            embedder,
+            embedder,  # type: ignore[arg-type]
             query_llm,
             synthesis_llm,
             store=store,
@@ -151,7 +157,7 @@ async def start_explorer_server(
 
 async def explore_logic(
     db: Database,
-    embedder: EmbeddingClient | None = None,
+    embedder: "Embedder | None" = None,
     query_llm: LLMProvider | None = None,
     synthesis_llm: LLMProvider | None = None,
     *,
@@ -225,25 +231,26 @@ def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
     )
     async def kb_explore(ctx: Context | None = None) -> str:
         """Open interactive graph explorer in the browser."""
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        lifespan = ctx.lifespan_context
-        db = lifespan["db"]
-        embedder = lifespan.get("embedder")
-        query_llm = lifespan.get("query_llm")
-        synthesis_llm = lifespan.get("synthesis_llm")
+        kb = kb_from_lifespan(ctx.lifespan_context)
 
+        # The web channel takes a loose tuple — DO NOT touch web/ per W6a
+        # scope. Pull each piece through the facade's public accessors so the
+        # source-of-truth still flows from the KnowledgeBase.
         _, summary = await explore_logic(
-            db,
-            embedder,
-            query_llm,
-            synthesis_llm,
-            store=lifespan.get("store"),
-            graph_builder=lifespan.get("graph_builder"),
-            graph_enricher=lifespan.get("graph_enricher"),
-            extraction_llm=lifespan.get("llm_client"),
-            contributor=lifespan.get("contributor"),
-            team=lifespan.get("team"),
+            kb.db,
+            kb.embedder,
+            kb.query_llm,
+            kb.synthesis_llm,
+            store=kb.knowledge_store,
+            graph_builder=kb.graph_builder,
+            graph_enricher=kb.graph_enricher,
+            extraction_llm=kb.extraction_llm,
+            contributor=kb.config.attribution.contributor,
+            team=kb.config.attribution.team,
         )
         return summary

@@ -76,21 +76,24 @@ def register_kb_summarize(mcp: FastMCP, prefix: str = "kb_") -> None:
         ctx: Context | None = None,
     ) -> str:
         """Answer a question with a synthesized natural language response."""
+        from personal_kb.config import (
+            get_agentic_max_tool_calls,
+            is_agentic_query,
+            is_agentic_synthesis,
+        )
+        from personal_kb.tools._lifespan import kb_from_lifespan
+
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        lifespan = ctx.lifespan_context
-        db = lifespan["db"]
-        embedder = lifespan["embedder"]
-        query_llm = lifespan.get("query_llm")
-
-        return await summarize_question(
-            db,
-            embedder,
-            query_llm,
+        kb = kb_from_lifespan(ctx.lifespan_context)
+        return await kb.summarize(
             question,
-            scope,
-            limit,
+            scope=scope,
+            limit=limit,
+            agentic=is_agentic_query(),
+            agentic_synthesis=is_agentic_synthesis(),
+            max_tool_calls=get_agentic_max_tool_calls(),
         )
 
 
