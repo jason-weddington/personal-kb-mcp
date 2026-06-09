@@ -32,7 +32,10 @@ personal-kb-web = "personal_kb.web.cli:main"
 [project.optional-dependencies]
 aws = [
     "aws-sdk-bedrock-runtime>=0.3.0",
-    "smithy-json @ git+https://github.com/jason-weddington/smithy-python.git@fix/json-control-char-escaping#subdirectory=packages/smithy-json",
+    # Control-char escaping fix upstreamed in smithy-lang/smithy-python#647
+    # (merged 2026-03-13), released in smithy-json 0.2.2 (2026-04-07). The
+    # >=0.2.2 floor guarantees the fix; no fork/git pin needed.
+    "smithy-json>=0.2.2",
 ]
 postgres = [
     "asyncpg>=0.29",
