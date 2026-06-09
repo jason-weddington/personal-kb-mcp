@@ -229,18 +229,77 @@ class SQLiteBackend:
         )
 
     async def vector_search(
-        self, embedding: list[float], limit: int = 20
+        self,
+        embedding: list[float],
+        limit: int = 20,
+        *,
+        project_ref: str | None = None,
+        entry_type: str | None = None,
+        tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> list[tuple[str, float]]:
-        """KNN search via sqlite-vec cosine distance. Returns (entry_id, distance) pairs."""
+        """KNN search via sqlite-vec cosine distance.
+
+        Returns (entry_id, distance) pairs. When any metadata filter is
+        provided, results are restricted to entries matching those
+        filters via a JOIN with ``knowledge_entries``. Because vec0
+        scores only the top-K nearest neighbors before the JOIN can
+        filter them, we over-fetch from vec0 (10x) when filters are
+        active so the post-JOIN result set can still reach ``limit``.
+        """
         blob = _serialize_f32(embedding)
-        cursor = await self._conn.execute(
-            """SELECT entry_id, distance
-            FROM knowledge_vec
-            WHERE embedding MATCH ?
-            ORDER BY distance
-            LIMIT ?""",
-            (blob, limit),
-        )
+        has_filters = bool(project_ref or entry_type or tags or contributor or team)
+
+        if not has_filters:
+            cursor = await self._conn.execute(
+                """SELECT entry_id, distance
+                FROM knowledge_vec
+                WHERE embedding MATCH ?
+                ORDER BY distance
+                LIMIT ?""",
+                (blob, limit),
+            )
+            rows = await cursor.fetchall()
+            return [(row[0], row[1]) for row in rows]
+
+        # Over-fetch from vec0 so post-JOIN filtering still yields `limit`
+        inner_limit = max(limit * 10, 100)
+        sql = """
+            SELECT v.entry_id, v.distance
+            FROM (
+                SELECT entry_id, distance
+                FROM knowledge_vec
+                WHERE embedding MATCH ?
+                ORDER BY distance
+                LIMIT ?
+            ) v
+            JOIN knowledge_entries e ON e.id = v.entry_id
+            WHERE e.is_active = 1
+        """
+        params: list[Any] = [blob, inner_limit]
+
+        if project_ref:
+            sql += " AND e.project_ref = ?"
+            params.append(project_ref)
+        if entry_type:
+            sql += " AND e.entry_type = ?"
+            params.append(entry_type)
+        if tags:
+            for tag in tags:
+                sql += " AND (' ' || e.tags || ' ') LIKE ?"
+                params.append(f"% {tag} %")
+        if contributor:
+            sql += " AND e.contributor = ?"
+            params.append(contributor)
+        if team:
+            sql += " AND e.team = ?"
+            params.append(team)
+
+        sql += " ORDER BY v.distance LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._conn.execute(sql, params)
         rows = await cursor.fetchall()
         return [(row[0], row[1]) for row in rows]
 

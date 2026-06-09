@@ -484,19 +484,73 @@ class PostgresBackend:
             )
 
     async def vector_search(
-        self, embedding: list[float], limit: int = 20
+        self,
+        embedding: list[float],
+        limit: int = 20,
+        *,
+        project_ref: str | None = None,
+        entry_type: str | None = None,
+        tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> list[tuple[str, float]]:
-        """KNN search via pgvector cosine distance. Returns (entry_id, distance)."""
+        """KNN search via pgvector cosine distance. Returns (entry_id, distance).
+
+        When metadata filters are provided, joins with knowledge_entries
+        and applies the filters at the SQL level so hybrid callers can
+        trust the vector leg honors the same scoping as the FTS leg.
+        """
         vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
+        has_filters = bool(project_ref or entry_type or tags or contributor or team)
+
+        if not has_filters:
+            async with self._conn() as conn:
+                rows = await conn.fetch(
+                    """SELECT entry_id, embedding <=> $1::vector as distance
+                       FROM knowledge_vec
+                       ORDER BY distance
+                       LIMIT $2""",
+                    vec_str,
+                    limit,
+                )
+                return [(row["entry_id"], row["distance"]) for row in rows]
+
+        sql = """
+            SELECT v.entry_id, v.embedding <=> $1::vector as distance
+            FROM knowledge_vec v
+            JOIN knowledge_entries e ON e.id = v.entry_id
+            WHERE e.is_active = 1
+        """
+        params: list[Any] = [vec_str]
+        param_idx = 2
+
+        if project_ref:
+            sql += f" AND e.project_ref = ${param_idx}"
+            params.append(project_ref)
+            param_idx += 1
+        if entry_type:
+            sql += f" AND e.entry_type = ${param_idx}"
+            params.append(entry_type)
+            param_idx += 1
+        if tags:
+            for tag in tags:
+                sql += f" AND (' ' || e.tags || ' ') LIKE ${param_idx}"
+                params.append(f"% {tag} %")
+                param_idx += 1
+        if contributor:
+            sql += f" AND e.contributor = ${param_idx}"
+            params.append(contributor)
+            param_idx += 1
+        if team:
+            sql += f" AND e.team = ${param_idx}"
+            params.append(team)
+            param_idx += 1
+
+        sql += f" ORDER BY distance LIMIT ${param_idx}"
+        params.append(limit)
+
         async with self._conn() as conn:
-            rows = await conn.fetch(
-                """SELECT entry_id, embedding <=> $1::vector as distance
-                   FROM knowledge_vec
-                   ORDER BY distance
-                   LIMIT $2""",
-                vec_str,
-                limit,
-            )
+            rows = await conn.fetch(sql, *params)
             return [(row["entry_id"], row["distance"]) for row in rows]
 
     async def vector_delete(self, entry_id: str) -> None:

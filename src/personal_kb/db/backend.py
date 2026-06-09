@@ -93,9 +93,25 @@ class Database(Protocol):
         ...
 
     async def vector_search(
-        self, embedding: list[float], limit: int = 20
+        self,
+        embedding: list[float],
+        limit: int = 20,
+        *,
+        project_ref: str | None = None,
+        entry_type: str | None = None,
+        tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> list[tuple[str, float]]:
-        """KNN search. Returns (entry_id, cosine distance)."""
+        """KNN search. Returns (entry_id, cosine distance).
+
+        Optional metadata filters restrict results to entries matching
+        the given project_ref / entry_type / tags / contributor / team
+        (and only ``is_active = 1`` entries). Filters are applied at
+        the SQL level so that hybrid RRF callers can trust the vector
+        leg honors the same scoping as the FTS leg — see
+        ``personal_kb.search.hybrid``.
+        """
         ...
 
     async def vector_delete(self, entry_id: str) -> None:

@@ -481,6 +481,268 @@ async def test_filter_only_records_telemetry(db, store):
     assert rows[0]["top_score"] is None
 
 
+# --- Hybrid-path filter regression tests ---
+#
+# These tests exercise the HYBRID path (FTS + vector via RRF). The bug being
+# fixed: hybrid_search applied entry_type / project_ref / tags / contributor /
+# team filters to the FTS leg only, leaving the vector leg unfiltered. When a
+# wrong-type entry was a strong vector match it sailed into the fused result
+# set and the final results "ignored" the requested filter. Each test below
+# seeds the vector index for entries OUTSIDE the requested filter and asserts
+# they don't leak through.
+
+
+async def _embed_and_index(store, fake_embedder, entry):
+    """Embed an entry's text and store the vector — so hybrid_search sees
+    the entry in BOTH the FTS and vector legs."""
+    text = entry.embedding_text
+    embedding = await fake_embedder.embed(text)
+    assert embedding is not None
+    await fake_embedder.store_embedding(entry.id, embedding)
+    await store.mark_embedding(entry.id, True)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_entry_type_filter_excludes_other_types(db, store, fake_embedder):
+    """Hybrid search with entry_type filter must NOT return other types.
+
+    Regression for: vector leg ignored entry_type, so a strong vector match
+    of the wrong entry_type would smuggle into the final results past the
+    FTS leg's filter.
+    """
+    # Entry of the REQUESTED type
+    target = await store.create_entry(
+        short_title="Project layout map",
+        long_title="Mental map of project layout",
+        knowledge_details="The mental map shows the project's directory layout.",
+        entry_type=EntryType.MENTAL_MAP,
+    )
+    # Entry of a DIFFERENT type that shares strong query terms — will be a
+    # strong match on BOTH FTS and vector legs.
+    other = await store.create_entry(
+        short_title="Project layout convention",
+        long_title="Mental map of project layout",
+        knowledge_details="The mental map shows the project's directory layout.",
+        entry_type=EntryType.PATTERN_CONVENTION,
+    )
+
+    await _embed_and_index(store, fake_embedder, target)
+    await _embed_and_index(store, fake_embedder, other)
+
+    query = SearchQuery(
+        query="mental map project layout",
+        entry_type=EntryType.MENTAL_MAP,
+        limit=10,
+        min_score_ratio=0.0,
+    )
+    results, _ = await hybrid_search(db, fake_embedder, query)
+
+    assert len(results) >= 1, "expected the mental_map entry to be returned"
+    assert all(r.entry.entry_type == EntryType.MENTAL_MAP for r in results), (
+        f"hybrid search returned wrong entry_type(s): "
+        f"{[(r.entry.id, r.entry.entry_type) for r in results]}"
+    )
+    # The mental_map entry should be present; the pattern_convention must not be
+    returned_ids = {r.entry.id for r in results}
+    assert target.id in returned_ids
+    assert other.id not in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_hybrid_project_ref_filter_excludes_other_projects(db, store, fake_embedder):
+    """Hybrid search with project_ref filter must NOT return other projects.
+
+    Regression for: vector leg ignored project_ref. (The previous behavior
+    happened to apply a project_ref post-fusion filter, but that path
+    silently shrinks the result count below `limit`; the proper fix is to
+    filter both legs at the SQL level.)
+    """
+    target = await store.create_entry(
+        short_title="Deployment runbook",
+        long_title="Production deployment runbook",
+        knowledge_details="Steps to deploy the production service.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="project-a",
+    )
+    other = await store.create_entry(
+        short_title="Deployment runbook",
+        long_title="Production deployment runbook",
+        knowledge_details="Steps to deploy the production service.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref="project-b",
+    )
+
+    await _embed_and_index(store, fake_embedder, target)
+    await _embed_and_index(store, fake_embedder, other)
+
+    query = SearchQuery(
+        query="deployment runbook production",
+        project_ref="project-a",
+        limit=10,
+        min_score_ratio=0.0,
+    )
+    results, _ = await hybrid_search(db, fake_embedder, query)
+
+    assert len(results) >= 1
+    assert all(r.entry.project_ref == "project-a" for r in results), (
+        f"hybrid search returned wrong project_ref(s): "
+        f"{[(r.entry.id, r.entry.project_ref) for r in results]}"
+    )
+    returned_ids = {r.entry.id for r in results}
+    assert target.id in returned_ids
+    assert other.id not in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_hybrid_contributor_filter_in_vector_leg(db, store, fake_embedder):
+    """Hybrid search with contributor filter must NOT return other contributors."""
+    target = await store.create_entry(
+        short_title="Build pipeline notes",
+        long_title="Build pipeline configuration",
+        knowledge_details="Notes about the build pipeline configuration.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="jason",
+    )
+    other = await store.create_entry(
+        short_title="Build pipeline notes",
+        long_title="Build pipeline configuration",
+        knowledge_details="Notes about the build pipeline configuration.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="alice",
+    )
+
+    await _embed_and_index(store, fake_embedder, target)
+    await _embed_and_index(store, fake_embedder, other)
+
+    query = SearchQuery(
+        query="build pipeline configuration",
+        contributor="jason",
+        limit=10,
+        min_score_ratio=0.0,
+    )
+    results, _ = await hybrid_search(db, fake_embedder, query)
+
+    assert len(results) >= 1
+    assert all(r.entry.contributor == "jason" for r in results)
+    returned_ids = {r.entry.id for r in results}
+    assert target.id in returned_ids
+    assert other.id not in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_hybrid_team_filter_in_vector_leg(db, store, fake_embedder):
+    """Hybrid search with team filter must NOT return other teams."""
+    target = await store.create_entry(
+        short_title="On-call playbook",
+        long_title="Platform team on-call playbook",
+        knowledge_details="The on-call playbook for incidents.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="jason",
+        team="platform",
+    )
+    other = await store.create_entry(
+        short_title="On-call playbook",
+        long_title="Platform team on-call playbook",
+        knowledge_details="The on-call playbook for incidents.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        contributor="alice",
+        team="infra",
+    )
+
+    await _embed_and_index(store, fake_embedder, target)
+    await _embed_and_index(store, fake_embedder, other)
+
+    query = SearchQuery(
+        query="on-call playbook incidents",
+        team="platform",
+        limit=10,
+        min_score_ratio=0.0,
+    )
+    results, _ = await hybrid_search(db, fake_embedder, query)
+
+    assert len(results) >= 1
+    assert all(r.entry.team == "platform" for r in results)
+    returned_ids = {r.entry.id for r in results}
+    assert target.id in returned_ids
+    assert other.id not in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_hybrid_tags_filter_in_vector_leg(db, store, fake_embedder):
+    """Hybrid search with tags filter must NOT return entries missing those tags."""
+    target = await store.create_entry(
+        short_title="Caching strategy",
+        long_title="Caching strategy notes",
+        knowledge_details="Notes about the caching strategy and TTLs.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["caching", "performance"],
+    )
+    other = await store.create_entry(
+        short_title="Caching strategy",
+        long_title="Caching strategy notes",
+        knowledge_details="Notes about the caching strategy and TTLs.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["database"],
+    )
+
+    await _embed_and_index(store, fake_embedder, target)
+    await _embed_and_index(store, fake_embedder, other)
+
+    query = SearchQuery(
+        query="caching strategy TTL",
+        tags=["caching"],
+        limit=10,
+        min_score_ratio=0.0,
+    )
+    results, _ = await hybrid_search(db, fake_embedder, query)
+
+    assert len(results) >= 1
+    assert all("caching" in (r.entry.tags or []) for r in results)
+    returned_ids = {r.entry.id for r in results}
+    assert target.id in returned_ids
+    assert other.id not in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_vector_search_backend_applies_entry_type_filter(db, store, fake_embedder):
+    """Backend-level: db.vector_search must honor entry_type at SQL level.
+
+    The hybrid filter regression is rooted in this layer — the vector
+    backend used to ignore filters entirely. Probe it directly so a
+    backend regression is caught even if the hybrid wiring above silently
+    stops passing the filter through.
+    """
+    target = await store.create_entry(
+        short_title="Map A",
+        long_title="Mental map A",
+        knowledge_details="Map A content.",
+        entry_type=EntryType.MENTAL_MAP,
+    )
+    other = await store.create_entry(
+        short_title="Pattern A",
+        long_title="Pattern A",
+        knowledge_details="Map A content.",
+        entry_type=EntryType.PATTERN_CONVENTION,
+    )
+    await _embed_and_index(store, fake_embedder, target)
+    await _embed_and_index(store, fake_embedder, other)
+
+    query_emb = await fake_embedder.embed("Map A content")
+    assert query_emb is not None
+
+    # No filter: both come back
+    unfiltered = await db.vector_search(query_emb, limit=10)
+    unfiltered_ids = {row[0] for row in unfiltered}
+    assert target.id in unfiltered_ids
+    assert other.id in unfiltered_ids
+
+    # Filter by entry_type: only mental_map
+    filtered = await db.vector_search(query_emb, limit=10, entry_type=EntryType.MENTAL_MAP.value)
+    filtered_ids = {row[0] for row in filtered}
+    assert target.id in filtered_ids
+    assert other.id not in filtered_ids
+
+
 @pytest.mark.asyncio
 async def test_search_telemetry_failure_does_not_break_search(db, store, monkeypatch):
     """Telemetry failure should not break the search results."""

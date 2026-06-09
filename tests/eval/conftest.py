@@ -50,9 +50,25 @@ class ControlledEmbedder:
         await self.db.commit()
 
     async def search_similar(
-        self, query_embedding: list[float], limit: int = 20
+        self,
+        query_embedding: list[float],
+        limit: int = 20,
+        *,
+        project_ref: str | None = None,
+        entry_type: str | None = None,
+        tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> list[tuple[str, float]]:
-        return await self.db.vector_search(query_embedding, limit=limit)
+        return await self.db.vector_search(
+            query_embedding,
+            limit=limit,
+            project_ref=project_ref,
+            entry_type=entry_type,
+            tags=tags,
+            contributor=contributor,
+            team=team,
+        )
 
     async def close(self):
         pass

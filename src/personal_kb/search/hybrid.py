@@ -56,11 +56,22 @@ async def hybrid_search(
         team=query.team,
     )
 
-    # Try vector search
+    # Try vector search — pass the SAME metadata filters as the FTS leg so
+    # the vector leg can't smuggle in wrong-type / wrong-project entries
+    # that the FTS leg would have excluded.
     vec_results: list[tuple[str, float]] = []
     match_source = "fts"
     if embedder is not None:
-        vec_results = await vector_search(embedder, query.query, limit=fetch_limit)
+        vec_results = await vector_search(
+            embedder,
+            query.query,
+            limit=fetch_limit,
+            project_ref=query.project_ref,
+            entry_type=query.entry_type.value if query.entry_type else None,
+            tags=query.tags,
+            contributor=query.contributor,
+            team=query.team,
+        )
         if vec_results:
             match_source = "hybrid"
 
@@ -92,9 +103,22 @@ async def hybrid_search(
         if entry is None or not entry.is_active:
             continue
 
-        # Hard filter by project_ref (vector search doesn't scope by project)
+        # Defense-in-depth: re-apply metadata filters post-fusion.
+        # Both legs (FTS + vector) already filter at the SQL level, but
+        # repeating the check here guarantees correctness even if a
+        # future backend mis-implements the filter pushdown.
         if query.project_ref and entry.project_ref != query.project_ref:
             continue
+        if query.entry_type and entry.entry_type != query.entry_type:
+            continue
+        if query.contributor and entry.contributor != query.contributor:
+            continue
+        if query.team and entry.team != query.team:
+            continue
+        if query.tags:
+            entry_tag_set = set(entry.tags or [])
+            if not all(tag in entry_tag_set for tag in query.tags):
+                continue
 
         # Filter expired entries unless requested
         if not query.include_expired and entry.expires_at is not None:

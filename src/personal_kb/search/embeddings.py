@@ -98,10 +98,30 @@ class EmbeddingClient:
         await self.db.commit()
 
     async def search_similar(
-        self, query_embedding: list[float], limit: int = 20
+        self,
+        query_embedding: list[float],
+        limit: int = 20,
+        *,
+        project_ref: str | None = None,
+        entry_type: str | None = None,
+        tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> list[tuple[str, float]]:
-        """Find similar entries by vector distance. Returns (entry_id, distance) pairs."""
-        return await self.db.vector_search(query_embedding, limit=limit)
+        """Find similar entries by vector distance. Returns (entry_id, distance) pairs.
+
+        Optional metadata filters are passed through to the backend so the
+        KNN result set is restricted to matching entries at the SQL level.
+        """
+        return await self.db.vector_search(
+            query_embedding,
+            limit=limit,
+            project_ref=project_ref,
+            entry_type=entry_type,
+            tags=tags,
+            contributor=contributor,
+            team=team,
+        )
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._http is None:
