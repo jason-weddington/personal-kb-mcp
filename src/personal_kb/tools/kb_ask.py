@@ -122,7 +122,7 @@ async def retrieve_entries(
     Returns (entries_with_context, agent_turns_used).
     Used by both kb_ask (formatted output) and kb_summarize (structured).
     """
-    from personal_kb.config import is_agentic_query
+    from personal_kb.config import get_agentic_max_tool_calls, is_agentic_query
 
     # --- Agentic path ---
     if query_llm is not None and is_agentic_query():
@@ -133,6 +133,7 @@ async def retrieve_entries(
             embedder,
             query_llm,
             question,
+            max_tool_calls=get_agentic_max_tool_calls(),
             event_callback=event_callback,
         )
         if isinstance(agent_result, AgentResult) and agent_result.entries:
@@ -182,13 +183,19 @@ async def _strategy_auto_with_planner(
     ReAct agent loop which can plan, execute, evaluate, and retry.  Falls back
     to the single-shot planner when agentic query is disabled.
     """
-    from personal_kb.config import is_agentic_query
+    from personal_kb.config import get_agentic_max_tool_calls, is_agentic_query
 
     # --- Agentic path ---
     if query_llm is not None and is_agentic_query():
         from personal_kb.graph.agent import agentic_query
 
-        agent_result = await agentic_query(db, embedder, query_llm, question)
+        agent_result = await agentic_query(
+            db,
+            embedder,
+            query_llm,
+            question,
+            max_tool_calls=get_agentic_max_tool_calls(),
+        )
         return await _format_agent_result_full(agent_result, db, question, limit)
 
     # --- Single-shot planner path ---
