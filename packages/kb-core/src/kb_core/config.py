@@ -186,6 +186,21 @@ class BedrockProviderConfig:
     profile: str | None = None
     """AWS profile name (boto3 credential chain). ``None`` uses the default chain."""
 
+    bearer_token: str | None = None
+    """Bedrock bearer token (``AWS_BEARER_TOKEN_BEDROCK``). ``None`` disables bearer auth.
+
+    Captured by the channel at construction time so kb_core never reads env. The
+    bearer auth scheme closes over this string at use time.
+    """
+
+    has_env_credentials: bool = False
+    """Whether traditional AWS env credentials (``AWS_ACCESS_KEY_ID`` etc.) are set.
+
+    A bool signal — kb_core never reads the actual credential values; the smithy
+    ``EnvironmentCredentialsResolver`` reads them at use time. This flag only
+    controls whether to wire that resolver into the Bedrock client config.
+    """
+
 
 @dataclass(frozen=True)
 class OllamaProviderConfig:

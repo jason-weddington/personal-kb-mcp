@@ -2,8 +2,17 @@
 
 import httpx
 import pytest
+from kb_core.config import OllamaProviderConfig
 
 from personal_kb.llm.ollama import OllamaLLMClient
+
+
+def _make_client(transport: httpx.MockTransport) -> OllamaLLMClient:
+    """Helper: build an OllamaLLMClient with an explicit config + mock transport."""
+    return OllamaLLMClient(
+        OllamaProviderConfig(),
+        http_client=httpx.AsyncClient(transport=transport),
+    )
 
 
 @pytest.fixture
@@ -23,7 +32,7 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
 @pytest.mark.asyncio
 async def test_generate_success():
     transport = httpx.MockTransport(_default_handler)
-    client = OllamaLLMClient(http_client=httpx.AsyncClient(transport=transport))
+    client = _make_client(transport)
     try:
         result = await client.generate("hello")
         assert result == "test output"
@@ -37,7 +46,7 @@ async def test_generate_unavailable():
         return httpx.Response(500)
 
     transport = httpx.MockTransport(fail_handler)
-    client = OllamaLLMClient(http_client=httpx.AsyncClient(transport=transport))
+    client = _make_client(transport)
     try:
         result = await client.generate("hello")
         assert result is None
@@ -61,7 +70,7 @@ async def test_generate_with_system_prompt():
         return httpx.Response(404)
 
     transport = httpx.MockTransport(capture_handler)
-    client = OllamaLLMClient(http_client=httpx.AsyncClient(transport=transport))
+    client = _make_client(transport)
     try:
         await client.generate("hello", system="be helpful")
         assert len(captured) == 1
@@ -86,7 +95,7 @@ async def test_availability_caching():
         return httpx.Response(404)
 
     transport = httpx.MockTransport(counting_handler)
-    client = OllamaLLMClient(http_client=httpx.AsyncClient(transport=transport))
+    client = _make_client(transport)
     try:
         # First call checks availability
         assert await client.is_available() is True
@@ -107,7 +116,7 @@ async def test_availability_caching():
 @pytest.mark.asyncio
 async def test_close_cleans_up():
     transport = httpx.MockTransport(_default_handler)
-    client = OllamaLLMClient(http_client=httpx.AsyncClient(transport=transport))
+    client = _make_client(transport)
     assert client._http is not None
     await client.close()
     assert client._http is None

@@ -8,16 +8,30 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastmcp import FastMCP
+from kb_core.config import (
+    AnthropicProviderConfig,
+    BedrockProviderConfig,
+    OllamaProviderConfig,
+)
 
 from personal_kb import maps_index_writer
 from personal_kb.config import (
+    get_anthropic_model,
+    get_anthropic_timeout,
+    get_aws_profile,
+    get_bedrock_model,
+    get_bedrock_region,
+    get_bedrock_timeout,
     get_contributor,
     get_database_url,
     get_db_path,
     get_embedding_dim,
     get_explore_port,
     get_extraction_provider,
+    get_llm_model,
+    get_llm_timeout,
     get_log_level,
+    get_ollama_url,
     get_query_provider,
     get_team,
     is_auto_explore,
@@ -52,18 +66,54 @@ from personal_kb.tools.kb_store_batch import register_kb_store_batch
 from personal_kb.tools.kb_summarize import register_kb_summarize
 
 
+def _build_anthropic_config(*, model: str | None = None) -> AnthropicProviderConfig:
+    """Snapshot env-driven Anthropic config into the explicit dataclass."""
+    return AnthropicProviderConfig(
+        model=model or get_anthropic_model(),
+        timeout=get_anthropic_timeout(),
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+
+
+def _build_bedrock_config(*, model: str | None = None) -> BedrockProviderConfig:
+    """Snapshot env-driven Bedrock config into the explicit dataclass.
+
+    Reads ``AWS_BEARER_TOKEN_BEDROCK`` and ``AWS_ACCESS_KEY_ID`` HERE (the
+    channel) so kb_core never touches ``os.environ``. The bearer token
+    string is captured; for env-credential auth we only pass a boolean
+    flag — the smithy resolver reads the actual creds at use time.
+    """
+    return BedrockProviderConfig(
+        model=model or get_bedrock_model(),
+        timeout=get_bedrock_timeout(),
+        region=get_bedrock_region(),
+        profile=get_aws_profile(),
+        bearer_token=os.environ.get("AWS_BEARER_TOKEN_BEDROCK"),
+        has_env_credentials=bool(os.environ.get("AWS_ACCESS_KEY_ID")),
+    )
+
+
+def _build_ollama_config() -> OllamaProviderConfig:
+    """Snapshot env-driven Ollama LLM config into the explicit dataclass."""
+    return OllamaProviderConfig(
+        model=get_llm_model(),
+        timeout=get_llm_timeout(),
+        url=get_ollama_url(),
+    )
+
+
 def _create_llm(provider: str) -> LLMProvider | None:
     """Create an LLM client for the given provider name."""
     if provider == "anthropic":
         if AnthropicLLMClient is not None:
-            return AnthropicLLMClient()
+            return AnthropicLLMClient(_build_anthropic_config())
         return None
     if provider == "bedrock":
         if BedrockLLMClient is not None:
-            return BedrockLLMClient()
+            return BedrockLLMClient(_build_bedrock_config())
         return None
     if provider == "ollama":
-        return OllamaLLMClient()
+        return OllamaLLMClient(_build_ollama_config())
     return None
 
 
@@ -73,13 +123,13 @@ def _create_synthesis_llm(provider: str) -> LLMProvider | None:
         if AnthropicLLMClient is not None:
             from personal_kb.llm.anthropic import _SONNET_MODEL
 
-            return AnthropicLLMClient(model_override=_SONNET_MODEL)
+            return AnthropicLLMClient(_build_anthropic_config(model=_SONNET_MODEL))
         return None
     if provider == "bedrock":
         if BedrockLLMClient is not None:
             from personal_kb.llm.bedrock import _SONNET_MODEL as _BR_SONNET
 
-            return BedrockLLMClient(model_override=_BR_SONNET)
+            return BedrockLLMClient(_build_bedrock_config(model=_BR_SONNET))
         return None
     # Ollama: no Sonnet equivalent, fall back to default
     return None

@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from kb_core.config import BedrockProviderConfig
 
 from personal_kb.llm.bedrock import BedrockLLMClient
 
@@ -13,6 +14,24 @@ except ImportError:
     _has_sdk = False
 
 needs_sdk = pytest.mark.skipif(not _has_sdk, reason="aws-sdk-bedrock-runtime not installed")
+
+
+def _client(
+    *,
+    model: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    profile: str | None = None,
+    bearer_token: str | None = None,
+    has_env_credentials: bool = False,
+) -> BedrockLLMClient:
+    """Helper: build a client with an explicit BedrockProviderConfig."""
+    return BedrockLLMClient(
+        BedrockProviderConfig(
+            model=model,
+            profile=profile,
+            bearer_token=bearer_token,
+            has_env_credentials=has_env_credentials,
+        )
+    )
 
 
 @pytest.fixture
@@ -32,7 +51,7 @@ def mock_converse_response():
 @pytest.fixture
 def mock_bedrock_client(mock_converse_response):
     """Patch _get_client and return the mock client."""
-    with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
+    with patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
         client = MagicMock()
         client.converse = AsyncMock(return_value=mock_converse_response)
         mock_get.return_value = client
@@ -43,7 +62,7 @@ def mock_bedrock_client(mock_converse_response):
 @pytest.mark.asyncio
 async def test_generate_success(mock_bedrock_client):
     """Successful generate returns text and sets available."""
-    llm = BedrockLLMClient()
+    llm = _client()
     result = await llm.generate("test prompt")
     assert result == "Hello from Bedrock"
     assert llm._available is True
@@ -53,7 +72,7 @@ async def test_generate_success(mock_bedrock_client):
 @pytest.mark.asyncio
 async def test_generate_with_system_prompt(mock_bedrock_client):
     """System prompt is passed through to the Converse API."""
-    llm = BedrockLLMClient()
+    llm = _client()
     await llm.generate("test prompt", system="You are helpful")
     call_args = mock_bedrock_client.converse.call_args
     converse_input = call_args[0][0]
@@ -66,7 +85,7 @@ async def test_generate_with_system_prompt(mock_bedrock_client):
 @pytest.mark.asyncio
 async def test_generate_without_system_prompt(mock_bedrock_client):
     """No system field when system is None."""
-    llm = BedrockLLMClient()
+    llm = _client()
     await llm.generate("test prompt")
     call_args = mock_bedrock_client.converse.call_args
     converse_input = call_args[0][0]
@@ -77,14 +96,14 @@ async def test_generate_without_system_prompt(mock_bedrock_client):
 async def test_generate_failure_returns_none():
     """Generate returns None after exhausting retries."""
     with (
-        patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
-        patch("personal_kb.llm.bedrock.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
+        patch("kb_core.llm.bedrock.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
     ):
         client = MagicMock()
         client.converse = AsyncMock(side_effect=Exception("AWS error"))
         mock_get.return_value = client
 
-        llm = BedrockLLMClient()
+        llm = _client()
         llm._available = True
         result = await llm.generate("test")
         assert result is None
@@ -98,8 +117,8 @@ async def test_generate_failure_returns_none():
 async def test_generate_retries_on_transient_failure(mock_converse_response):
     """Generate succeeds after transient failure on first attempt."""
     with (
-        patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
-        patch("personal_kb.llm.bedrock.asyncio.sleep", new_callable=AsyncMock),
+        patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
+        patch("kb_core.llm.bedrock.asyncio.sleep", new_callable=AsyncMock),
     ):
         client = MagicMock()
         client.converse = AsyncMock(
@@ -107,7 +126,7 @@ async def test_generate_retries_on_transient_failure(mock_converse_response):
         )
         mock_get.return_value = client
 
-        llm = BedrockLLMClient()
+        llm = _client()
         result = await llm.generate("test")
         assert result == "Hello from Bedrock"
         assert client.converse.call_count == 2
@@ -116,10 +135,10 @@ async def test_generate_retries_on_transient_failure(mock_converse_response):
 @pytest.mark.asyncio
 async def test_generate_returns_none_when_client_none():
     """Generate returns None when SDK is not installed."""
-    with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
+    with patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
         mock_get.return_value = None
 
-        llm = BedrockLLMClient()
+        llm = _client()
         result = await llm.generate("test")
         assert result is None
 
@@ -127,51 +146,48 @@ async def test_generate_returns_none_when_client_none():
 @pytest.mark.asyncio
 async def test_is_available_caches_success(mock_bedrock_client):
     """After successful generate, is_available returns True."""
-    llm = BedrockLLMClient()
+    llm = _client()
     await llm.generate("test")
     assert await llm.is_available() is True
 
 
 @pytest.mark.asyncio
 async def test_is_available_true_with_aws_key():
-    """is_available returns True when AWS credentials are set."""
-    with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
+    """is_available returns True when AWS credentials are configured."""
+    with patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
         mock_get.return_value = MagicMock()
-        with patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "AKIA_TEST"}):
-            llm = BedrockLLMClient()
-            llm._auth_method = "env"
-            assert await llm.is_available() is True
+        llm = _client(has_env_credentials=True)
+        llm._auth_method = "env"
+        assert await llm.is_available() is True
 
 
 @pytest.mark.asyncio
 async def test_is_available_true_with_bearer_token():
-    """is_available returns True when bearer token is set."""
-    with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
+    """is_available returns True when bearer token is configured."""
+    with patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
         mock_get.return_value = MagicMock()
-        with patch.dict("os.environ", {"AWS_BEARER_TOKEN_BEDROCK": "ABSKtest123"}):
-            llm = BedrockLLMClient()
-            llm._auth_method = "bearer"
-            assert await llm.is_available() is True
+        llm = _client(bearer_token="ABSKtest123")
+        llm._auth_method = "bearer"
+        assert await llm.is_available() is True
 
 
 @pytest.mark.asyncio
 async def test_is_available_false_without_any_credentials():
-    """is_available returns False when no credentials set."""
-    with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
+    """is_available returns False when no credentials are configured."""
+    with patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
         mock_get.return_value = MagicMock()
-        with patch.dict("os.environ", {}, clear=True):
-            llm = BedrockLLMClient()
-            # _auth_method stays None when no creds found
-            assert await llm.is_available() is False
+        llm = _client()  # nothing — no bearer, no profile, no env flag
+        # _auth_method stays None when no creds found
+        assert await llm.is_available() is False
 
 
 @pytest.mark.asyncio
 async def test_is_available_false_when_sdk_missing():
     """is_available returns False when SDK is not importable."""
-    with patch("personal_kb.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
+    with patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get:
         mock_get.return_value = None
 
-        llm = BedrockLLMClient()
+        llm = _client()
         assert await llm.is_available() is False
 
 
@@ -179,7 +195,7 @@ async def test_is_available_false_when_sdk_missing():
 @pytest.mark.asyncio
 async def test_generate_passes_newlines_through(mock_bedrock_client):
     """Newlines are passed through directly (smithy-json now handles escaping)."""
-    llm = BedrockLLMClient()
+    llm = _client()
     await llm.generate("line 1\nline 2\nline 3", system="rule 1\nrule 2")
     call_args = mock_bedrock_client.converse.call_args
     converse_input = call_args[0][0]
@@ -192,21 +208,20 @@ async def test_generate_passes_newlines_through(mock_bedrock_client):
 @pytest.mark.asyncio
 async def test_close_is_noop():
     """Close is safe to call (no-op)."""
-    llm = BedrockLLMClient()
+    llm = _client()
     await llm.close()  # Should not raise
 
 
 def test_model_override():
-    """model_override changes the model returned by _model()."""
-    llm = BedrockLLMClient(model_override="us.anthropic.claude-sonnet-4-6-20250514-v1:0")
-    assert llm._model() == "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+    """Model passed via config is returned by ``_config.model``."""
+    llm = _client(model="us.anthropic.claude-sonnet-4-6-20250514-v1:0")
+    assert llm._config.model == "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
 
 
-def test_model_default(monkeypatch):
-    """Without override, uses config default."""
-    monkeypatch.setenv("KB_BEDROCK_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
-    llm = BedrockLLMClient()
-    assert llm._model() == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+def test_model_default():
+    """Default config carries the default Bedrock model id."""
+    llm = BedrockLLMClient(BedrockProviderConfig())
+    assert llm._config.model == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 @pytest.mark.asyncio
@@ -214,7 +229,7 @@ async def test_protocol_conformance():
     """BedrockLLMClient satisfies LLMProvider protocol."""
     from personal_kb.llm.provider import LLMProvider
 
-    assert isinstance(BedrockLLMClient(), LLMProvider)
+    assert isinstance(_client(), LLMProvider)
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +239,7 @@ async def test_protocol_conformance():
 
 @pytest.mark.asyncio
 async def test_is_available_true_with_explicit_profile():
-    """is_available returns True when KB_AWS_PROFILE resolves credentials."""
+    """is_available returns True when an explicit profile resolves credentials."""
     mock_boto3 = MagicMock()
     frozen = MagicMock()
     frozen.access_key = "AKIA_PROFILE"
@@ -234,12 +249,8 @@ async def test_is_available_true_with_explicit_profile():
     mock_creds.get_frozen_credentials.return_value = frozen
     mock_boto3.Session.return_value.get_credentials.return_value = mock_creds
 
-    with (
-        patch.dict("os.environ", {"KB_AWS_PROFILE": "work"}, clear=True),
-        patch.dict("sys.modules", {"boto3": mock_boto3}),
-    ):
-        # Need a fresh client so _get_client runs the profile path
-        llm = BedrockLLMClient()
+    with patch.dict("sys.modules", {"boto3": mock_boto3}):
+        llm = _client(profile="work")
         client = llm._get_client()
         if client is not None:
             assert llm._auth_method == "profile:work"
@@ -263,11 +274,8 @@ async def test_convention_profile_auto_detected():
     mock_creds.get_frozen_credentials.return_value = frozen
     mock_boto3.Session.return_value.get_credentials.return_value = mock_creds
 
-    with (
-        patch.dict("os.environ", {}, clear=True),
-        patch.dict("sys.modules", {"boto3": mock_boto3}),
-    ):
-        llm = BedrockLLMClient()
+    with patch.dict("sys.modules", {"boto3": mock_boto3}):
+        llm = _client()  # no explicit profile
         client = llm._get_client()
         if client is not None:
             assert llm._auth_method == "profile:personal_kb_bedrock"
@@ -275,7 +283,7 @@ async def test_convention_profile_auto_detected():
 
 @pytest.mark.asyncio
 async def test_explicit_profile_overrides_convention():
-    """KB_AWS_PROFILE takes priority over convention profile."""
+    """Explicit ``config.profile`` takes priority over convention profile."""
     mock_boto3 = MagicMock()
     mock_boto3.Session.return_value.available_profiles = [
         "default",
@@ -289,11 +297,8 @@ async def test_explicit_profile_overrides_convention():
     mock_creds.get_frozen_credentials.return_value = frozen
     mock_boto3.Session.return_value.get_credentials.return_value = mock_creds
 
-    with (
-        patch.dict("os.environ", {"KB_AWS_PROFILE": "custom"}, clear=True),
-        patch.dict("sys.modules", {"boto3": mock_boto3}),
-    ):
-        llm = BedrockLLMClient()
+    with patch.dict("sys.modules", {"boto3": mock_boto3}):
+        llm = _client(profile="custom")
         client = llm._get_client()
         if client is not None:
             assert llm._auth_method == "profile:custom"
@@ -311,19 +316,12 @@ async def test_profile_takes_priority_over_bearer_and_env():
     mock_creds.get_frozen_credentials.return_value = frozen
     mock_boto3.Session.return_value.get_credentials.return_value = mock_creds
 
-    with (
-        patch.dict(
-            "os.environ",
-            {
-                "KB_AWS_PROFILE": "work",
-                "AWS_BEARER_TOKEN_BEDROCK": "ABSKtest",
-                "AWS_ACCESS_KEY_ID": "AKIA_ENV",
-            },
-            clear=True,
-        ),
-        patch.dict("sys.modules", {"boto3": mock_boto3}),
-    ):
-        llm = BedrockLLMClient()
+    with patch.dict("sys.modules", {"boto3": mock_boto3}):
+        llm = _client(
+            profile="work",
+            bearer_token="ABSKtest",
+            has_env_credentials=True,
+        )
         client = llm._get_client()
         if client is not None:
             assert llm._auth_method == "profile:work"
@@ -331,12 +329,9 @@ async def test_profile_takes_priority_over_bearer_and_env():
 
 @pytest.mark.asyncio
 async def test_profile_fallback_when_boto3_missing():
-    """No crash when boto3 is not installed and no env credentials."""
-    with (
-        patch.dict("os.environ", {}, clear=True),
-        patch.dict("sys.modules", {"boto3": None}),
-    ):
+    """No crash when boto3 is not installed and no explicit profile."""
+    with patch.dict("sys.modules", {"boto3": None}):
         # _find_aws_profile should return None gracefully
         from personal_kb.llm.bedrock import _find_aws_profile
 
-        assert _find_aws_profile() is None
+        assert _find_aws_profile(None) is None

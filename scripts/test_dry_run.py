@@ -26,23 +26,9 @@ from personal_kb.store.knowledge_store import KnowledgeStore
 
 def _create_llm(provider: str) -> LLMProvider | None:
     """Create an LLM client for the given provider name."""
-    if provider == "anthropic":
-        try:
-            from personal_kb.llm.anthropic import AnthropicLLMClient
-        except Exception:
-            return None
-        return AnthropicLLMClient()
-    if provider == "bedrock":
-        try:
-            from personal_kb.llm.bedrock import BedrockLLMClient
-        except Exception:
-            return None
-        return BedrockLLMClient()
-    if provider == "ollama":
-        from personal_kb.llm.ollama import OllamaLLMClient
+    from personal_kb.server import _create_llm as _channel_create_llm
 
-        return OllamaLLMClient()
-    return None
+    return _channel_create_llm(provider)
 
 
 async def main() -> None:

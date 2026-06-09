@@ -143,7 +143,7 @@ module = ["scrubadub", "scrubadub.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["personal_kb.llm.bedrock"]
+module = ["personal_kb.llm.bedrock", "kb_core.llm.bedrock"]
 disallow_subclassing_any = false
 warn_unused_ignores = false
 

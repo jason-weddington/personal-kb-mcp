@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
+from kb_core.config import AnthropicProviderConfig
 
 from personal_kb.graph.agent import agentic_query
 from personal_kb.llm.anthropic import AnthropicLLMClient
@@ -22,7 +23,11 @@ class TestAgentBaseline:
         db, embedder, title_to_id, queries = eval_kb
 
         try:
-            llm = AnthropicLLMClient()
+            import os
+
+            llm = AnthropicLLMClient(
+                AnthropicProviderConfig(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            )
             if not await llm.is_available():
                 pytest.skip("Anthropic API not available")
         except Exception:

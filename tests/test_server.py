@@ -43,22 +43,22 @@ def test_create_llm_unknown_provider():
 
 
 def test_create_synthesis_llm_anthropic():
-    """Should create AnthropicLLMClient with Sonnet model override."""
+    """Should create AnthropicLLMClient with Sonnet model in config."""
     client = _create_synthesis_llm("anthropic")
     assert isinstance(client, AnthropicLLMClient)
     from personal_kb.llm.anthropic import _SONNET_MODEL
 
-    assert client._model_override == _SONNET_MODEL
+    assert client._config.model == _SONNET_MODEL
 
 
 def test_create_synthesis_llm_bedrock():
-    """Should create BedrockLLMClient with Sonnet model override."""
+    """Should create BedrockLLMClient with Sonnet model in config."""
     from personal_kb.llm.bedrock import _SONNET_MODEL as BR_SONNET
     from personal_kb.llm.bedrock import BedrockLLMClient
 
     client = _create_synthesis_llm("bedrock")
     assert isinstance(client, BedrockLLMClient)
-    assert client._model_override == BR_SONNET
+    assert client._config.model == BR_SONNET
 
 
 def test_create_synthesis_llm_ollama():

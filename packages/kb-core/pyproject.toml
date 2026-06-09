@@ -93,6 +93,51 @@ strict = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+# Provider modules touch optional SDKs (anthropic / boto3 / bedrock /
+# scrubadub / asyncpg) that ship without type stubs. Mirror the root
+# pyproject's ``personal_kb.llm.bedrock`` overrides so the kb-core
+# mypy run matches the main-package mypy run.
+[[tool.mypy.overrides]]
+module = ["anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["scrubadub", "scrubadub.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aws_sdk_bedrock_runtime", "aws_sdk_bedrock_runtime.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["smithy_core", "smithy_core.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["smithy_http", "smithy_http.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["smithy_aws_core", "smithy_aws_core.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["detect_secrets", "detect_secrets.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["kb_core.llm.bedrock"]
+disallow_subclassing_any = false
+warn_unused_ignores = false
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
