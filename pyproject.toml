@@ -16,6 +16,10 @@ dependencies = [
     "detect-secrets>=1.4",
     "scrubadub>=2.0",
     "pymupdf>=1.25",
+    # The channel-agnostic engine. MUST be a real runtime dependency (not just
+    # a dev-group dep) so `uvx`-from-git installs it — the server imports
+    # kb_core directly. Resolved from the workspace via [tool.uv.sources] below.
+    "kb-core",
 ]
 
 [project.scripts]
