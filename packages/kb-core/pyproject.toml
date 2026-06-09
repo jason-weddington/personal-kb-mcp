@@ -1,0 +1,102 @@
+[project]
+name = "kb-core"
+version = "0.0.1"
+description = "Channel-agnostic engine for personal-kb: hybrid search, graph RAG, store, ingest, agentic query"
+requires-python = ">=3.13"
+# Nucleus runtime — the minimum needed to import kb_core and use the
+# in-process SQLite backend with hybrid search. Anything provider-specific
+# (anthropic, bedrock, postgres, ingest helpers) is gated behind an extra.
+dependencies = [
+    "aiosqlite>=0.21",
+    "sqlite-vec>=0.1.6",
+    "pydantic>=2.0",
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+# Postgres backend
+postgres = [
+    "asyncpg>=0.29",
+]
+# RDS/Aurora IAM auth token signing
+iam = [
+    "boto3>=1.28",
+]
+# Bedrock provider for LLM calls.
+# Control-char escaping fix upstreamed in smithy-lang/smithy-python#647
+# (merged 2026-03-13), released in smithy-json 0.2.2 (2026-04-07). The
+# >=0.2.2 floor guarantees the fix; no fork/git pin needed.
+aws = [
+    "aws-sdk-bedrock-runtime>=0.3.0",
+    "smithy-json>=0.2.2",
+]
+# Anthropic provider for LLM calls
+anthropic = [
+    "anthropic>=0.40",
+]
+# File ingestion (HTML/PDF text extraction)
+ingest = [
+    "trafilatura>=2.0",
+    "pymupdf>=1.25",
+]
+# Pre-store safety scrubbers
+safety = [
+    "detect-secrets>=1.4",
+    "scrubadub>=2.0",
+]
+# Marker extra — Ollama is reached over httpx (already nucleus), so this
+# carries no extra deps. Present so consumers can express intent in
+# requirements files alongside the other providers.
+ollama = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kb_core"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "N",
+    "D",
+    "UP",
+    "B",
+    "S",
+    "A",
+    "C4",
+    "SIM",
+    "TCH",
+    "RUF",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S106", "D"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--strict-markers -v"
+
+[tool.coverage.run]
+source = ["kb_core"]

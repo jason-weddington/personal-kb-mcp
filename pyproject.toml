@@ -59,6 +59,12 @@ dev = [
     # tests can import ``personal_kb_hook`` (drift guard + cross-package
     # round-trip test). The standalone package itself has ZERO runtime deps.
     "personal-kb-hook",
+    # Workspace member — kb-core is the channel-agnostic engine being
+    # extracted out of personal_kb in waves. Wired in as a dev dep with all
+    # optional extras so the main repo and its test suite can import it
+    # once later waves move logic modules over. Today (wave 1) only ships
+    # KbConfig + the import-purity guard.
+    "kb-core[postgres,iam,aws,anthropic,ingest,safety]",
     "vulture>=2.15",
 ]
 
@@ -67,6 +73,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 personal-kb-hook = { workspace = true }
+kb-core = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

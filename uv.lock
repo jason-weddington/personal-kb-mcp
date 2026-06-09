@@ -4,6 +4,7 @@ requires-python = ">=3.13"
 
 [manifest]
 members = [
+    "kb-core",
     "personal-kb",
     "personal-kb-hook",
 ]
@@ -1123,6 +1124,58 @@ wheels = [
 ]
 
 [[package]]
+name = "kb-core"
+version = "0.0.1"
+source = { editable = "packages/kb-core" }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "sqlite-vec" },
+]
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
+]
+aws = [
+    { name = "aws-sdk-bedrock-runtime" },
+    { name = "smithy-json" },
+]
+iam = [
+    { name = "boto3" },
+]
+ingest = [
+    { name = "pymupdf" },
+    { name = "trafilatura" },
+]
+postgres = [
+    { name = "asyncpg" },
+]
+safety = [
+    { name = "detect-secrets" },
+    { name = "scrubadub" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.21" },
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
+    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
+    { name = "aws-sdk-bedrock-runtime", marker = "extra == 'aws'", specifier = ">=0.3.0" },
+    { name = "boto3", marker = "extra == 'iam'", specifier = ">=1.28" },
+    { name = "detect-secrets", marker = "extra == 'safety'", specifier = ">=1.4" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pymupdf", marker = "extra == 'ingest'", specifier = ">=1.25" },
+    { name = "scrubadub", marker = "extra == 'safety'", specifier = ">=2.0" },
+    { name = "smithy-json", marker = "extra == 'aws'", specifier = ">=0.2.2" },
+    { name = "sqlite-vec", specifier = ">=0.1.6" },
+    { name = "trafilatura", marker = "extra == 'ingest'", specifier = ">=2.0" },
+]
+provides-extras = ["postgres", "iam", "aws", "anthropic", "ingest", "safety", "ollama"]
+
+[[package]]
 name = "keyring"
 version = "25.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1567,6 +1620,7 @@ postgres = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "kb-core", extra = ["anthropic", "aws", "iam", "ingest", "postgres", "safety"] },
     { name = "mypy" },
     { name = "personal-kb", extra = ["aws", "iam", "postgres"] },
     { name = "personal-kb-hook" },
@@ -1602,6 +1656,7 @@ provides-extras = ["aws", "postgres", "iam", "safety"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "kb-core", extras = ["postgres", "iam", "aws", "anthropic", "ingest", "safety"], editable = "packages/kb-core" },
     { name = "mypy", specifier = ">=1.14" },
     { name = "personal-kb", extras = ["aws", "postgres", "iam"] },
     { name = "personal-kb-hook", editable = "packages/personal-kb-hook" },
