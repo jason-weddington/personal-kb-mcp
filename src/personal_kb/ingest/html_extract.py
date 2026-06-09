@@ -1,20 +1,9 @@
-"""HTML-to-markdown extraction for URL ingestion."""
+"""Re-export shim — real code moved to ``kb_core.ingest.html_extract``.
 
-import trafilatura
+Shim: real code moved to kb_core (kb-core extraction).
+Channel-rewiring wave removes this.
+"""
 
+from kb_core.ingest.html_extract import extract_content
 
-def extract_content(html: str, url: str | None = None) -> str | None:
-    """Extract main content from HTML, returning clean text.
-
-    Uses trafilatura for article extraction. Returns None if
-    extraction fails.
-    """
-    result = trafilatura.extract(
-        html,
-        url=url,
-        include_comments=False,
-        include_tables=True,
-        output_format="txt",
-        favor_precision=True,
-    )
-    return result
+__all__ = ["extract_content"]

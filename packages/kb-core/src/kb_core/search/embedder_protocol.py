@@ -45,3 +45,29 @@ class Embedder(Protocol):
     ) -> list[tuple[str, float]]:
         """Return (entry_id, distance) pairs — lower distance is closer."""
         ...
+
+
+@runtime_checkable
+class BatchEmbedder(Embedder, Protocol):
+    """Embedder that also supports batched embed + persist.
+
+    The ingestion pipeline embeds N entries at once and writes the
+    vectors back to the vector store in a single call. The two extra
+    methods are deliberately split from :class:`Embedder` so that read
+    paths (hybrid search, dedup lookup) program against the narrower
+    surface, while write paths (ingest) require the richer one. The
+    production ``EmbeddingClient`` and the ``FakeEmbedder`` test fixture
+    both satisfy this superset structurally.
+    """
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]] | None:
+        """Embed a batch of texts in a single backend call.
+
+        Returns ``None`` if the embedder is unavailable. Otherwise the
+        returned list is parallel to ``texts``.
+        """
+        ...
+
+    async def store_embeddings(self, entries: list[tuple[str, list[float]]]) -> None:
+        """Persist ``(entry_id, vector)`` pairs to the vector store."""
+        ...

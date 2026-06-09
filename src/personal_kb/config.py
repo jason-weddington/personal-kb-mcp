@@ -4,6 +4,10 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kb_core.config import IngestConfig
 
 _VALID_PROVIDERS = {"anthropic", "bedrock", "ollama"}
 
@@ -180,6 +184,29 @@ def is_agentic_ingest() -> bool:
 def get_ingest_dedup_threshold() -> float:
     """Return the hybrid search score threshold for dedup from KB_INGEST_DEDUP_THRESHOLD."""
     return _parse_float("KB_INGEST_DEDUP_THRESHOLD", "0.06")
+
+
+def build_ingest_config() -> "IngestConfig":
+    """Build a kb_core ``IngestConfig`` from this module's env getters.
+
+    The kb_core ingest pipeline is env-free; the engine reads its
+    tunables from a typed dataclass instead of ``os.environ``. This
+    helper is the single channel-side adapter that snapshots the
+    relevant ``KB_*`` env vars and hands them to the engine. Every
+    ``FileIngester(...)`` construction site uses it so behavior stays
+    identical across the move and the env surface stays centralized
+    here.
+    """
+    from kb_core.config import IngestConfig
+
+    return IngestConfig(
+        max_file_size=get_ingest_max_file_size(),
+        chunk_size=get_ingest_chunk_size(),
+        chunk_overlap=get_ingest_chunk_overlap(),
+        dedup_threshold=get_ingest_dedup_threshold(),
+        agentic_ingest=is_agentic_ingest(),
+        skip_safety=is_safety_skip(),
+    )
 
 
 def is_agentic_query() -> bool:

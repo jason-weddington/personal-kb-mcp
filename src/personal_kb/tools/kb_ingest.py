@@ -181,15 +181,21 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
         if query_llm is None:
             return "Error: No LLM available for ingestion. Configure an LLM provider."
 
+        from personal_kb.config import build_ingest_config
+
+        ingest_config = build_ingest_config()
+
         # Construct dedup agent if agentic ingest is enabled
         dedup_agent = None
-        if not dry_run:
-            from personal_kb.config import is_agentic_ingest
+        if not dry_run and ingest_config.agentic_ingest:
+            from personal_kb.ingest.dedup_agent import DedupAgent
 
-            if is_agentic_ingest():
-                from personal_kb.ingest.dedup_agent import DedupAgent
-
-                dedup_agent = DedupAgent(db=db, embedder=embedder, llm=query_llm)
+            dedup_agent = DedupAgent(
+                db=db,
+                embedder=embedder,
+                llm=query_llm,
+                threshold=ingest_config.dedup_threshold,
+            )
 
         contributor: str | None = lifespan.get("contributor")
         team: str | None = lifespan.get("team")
@@ -204,6 +210,7 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
             dedup_agent=dedup_agent,
             contributor=contributor,
             team=team,
+            config=ingest_config,
         )
 
         # Glob pattern: expand and ingest each matched file

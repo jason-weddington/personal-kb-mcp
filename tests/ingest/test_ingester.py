@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from personal_kb.config import build_ingest_config
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
@@ -206,6 +207,7 @@ class TestIngestFile:
             deps["graph_builder"],
             deps["enricher"],
             deps["llm"],
+            config=build_ingest_config(),
         )
         result = await ingester.ingest_file(f, base_dir=tmp_path)
         assert result.action == "skipped"
@@ -462,6 +464,7 @@ class TestIngestFile:
             deps["graph_builder"],
             GraphEnricher(deps["db"], llm),
             llm,
+            config=build_ingest_config(),
         )
 
         f = tmp_path / "mixed.md"
@@ -888,6 +891,7 @@ class TestIngestContent:
             deps["graph_builder"],
             GraphEnricher(deps["db"], llm),
             llm,
+            config=build_ingest_config(),
         )
 
         content = (
@@ -984,6 +988,7 @@ class TestIngestContent:
             deps["graph_builder"],
             deps["enricher"],
             deps["llm"],
+            config=build_ingest_config(),
         )
 
         result = await ingester._ingest_content(
@@ -1093,6 +1098,7 @@ class TestIngestText:
             deps["graph_builder"],
             deps["enricher"],
             deps["llm"],
+            config=build_ingest_config(),
         )
         result = await ingester.ingest_text("x" * 100, "notes.md")
         assert result.action == "skipped"

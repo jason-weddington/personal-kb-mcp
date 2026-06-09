@@ -353,6 +353,7 @@ class ChatSession:
         if not url:
             return _ToolResult(tool="ingest_url", success=False, message="url is required")
 
+        from personal_kb.config import build_ingest_config
         from personal_kb.ingest.ingester import FileIngester
 
         extraction_llm = self.write_deps.extraction_llm
@@ -372,6 +373,7 @@ class ChatSession:
             graph_enricher=self.write_deps.graph_enricher,
             contributor=self.write_deps.contributor,
             team=self.write_deps.team,
+            config=build_ingest_config(),
         )
 
         result = await ingester.ingest_url(

@@ -469,6 +469,7 @@ def register_routes(app: Any) -> None:
         contributor = getattr(request.app.state, "contributor", None)
         team = getattr(request.app.state, "team", None)
 
+        from personal_kb.config import build_ingest_config
         from personal_kb.ingest.ingester import FileIngester
 
         ingester = FileIngester(
@@ -480,6 +481,7 @@ def register_routes(app: Any) -> None:
             llm=extraction_llm,
             contributor=contributor,
             team=team,
+            config=build_ingest_config(),
         )
 
         try:
@@ -523,6 +525,7 @@ def register_routes(app: Any) -> None:
         contributor = getattr(request.app.state, "contributor", None)
         team = getattr(request.app.state, "team", None)
 
+        from personal_kb.config import build_ingest_config
         from personal_kb.ingest.ingester import FileIngester
 
         ingester = FileIngester(
@@ -534,6 +537,7 @@ def register_routes(app: Any) -> None:
             llm=extraction_llm,
             contributor=contributor,
             team=team,
+            config=build_ingest_config(),
         )
 
         async def event_stream() -> AsyncGenerator[str]:

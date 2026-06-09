@@ -4,6 +4,7 @@ import json
 
 import pytest_asyncio
 
+from personal_kb.config import build_ingest_config
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
@@ -89,6 +90,7 @@ class TestChunkedIngestion:
             deps["graph_builder"],
             GraphEnricher(deps["db"], FakeLLM()),
             llm,
+            config=build_ingest_config(),
         )
 
         result = await ingester.ingest_file(f, base_dir=tmp_path)
@@ -163,6 +165,7 @@ class TestChunkedIngestion:
             deps["graph_builder"],
             GraphEnricher(deps["db"], FakeLLM()),
             llm,
+            config=build_ingest_config(),
         )
 
         result = await ingester.ingest_file(f, base_dir=tmp_path)
@@ -200,6 +203,7 @@ class TestChunkedIngestion:
             deps["graph_builder"],
             GraphEnricher(deps["db"], FakeLLM()),
             llm,
+            config=build_ingest_config(),
         )
 
         result = await ingester.ingest_file(f, base_dir=tmp_path, dry_run=True)
