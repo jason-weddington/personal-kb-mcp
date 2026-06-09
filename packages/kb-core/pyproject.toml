@@ -1,8 +1,35 @@
 [project]
 name = "kb-core"
 version = "0.0.1"
-description = "Channel-agnostic engine for personal-kb: hybrid search, graph RAG, store, ingest, agentic query"
+description = "Channel-agnostic graph-RAG engine: hybrid FTS+vector search, knowledge graph, agentic retrieval"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.13"
+authors = [
+    { name = "Jason Weddington" },
+]
+keywords = [
+    "knowledge-base",
+    "rag",
+    "graph-rag",
+    "hybrid-search",
+    "vector-search",
+    "sqlite",
+    "knowledge-graph",
+    "agentic",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+    "Typing :: Typed",
+]
 # Nucleus runtime — the minimum needed to import kb_core and use the
 # in-process SQLite backend with hybrid search. Anything provider-specific
 # (anthropic, bedrock, postgres, ingest helpers) is gated behind an extra.
@@ -12,6 +39,11 @@ dependencies = [
     "pydantic>=2.0",
     "httpx>=0.28",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jason-weddington/personal-kb-mcp"
+Repository = "https://github.com/jason-weddington/personal-kb-mcp"
+Issues = "https://github.com/jason-weddington/personal-kb-mcp/issues"
 
 [project.optional-dependencies]
 # Postgres backend

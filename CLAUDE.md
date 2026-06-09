@@ -170,6 +170,28 @@ before running `./release.sh`; that is the moment 60 people get the new code.
 > with liberal merges). `push` is **not** a valid semantic-release config key in
 > v9+ — pushing is controlled by the `--no-push` flag in `release.sh`.
 
+### Pre-release verification
+
+**Always run `scripts/smoke_install.sh` before publishing or releasing.** The
+in-workspace test suite does NOT catch missing-runtime-dep / packaging breaks:
+`uv sync` installs every workspace member editable, so a sibling package can
+be absent from `[project] dependencies` while every test, ruff check, and
+mypy pass — and the deploy artifact is silently broken. This is exactly how
+the W6 deploy crashed with `ModuleNotFoundError: kb_core` despite 1089 green
+tests (see KB kb-01738).
+
+`scripts/smoke_install.sh` runs two checks:
+
+- **Part A — kb-core wheel smoke** (automated): `uv build --package kb-core`,
+  create a venv OUTSIDE the workspace, `pip install` the built wheel, and
+  round-trip `create_sqlite → store → search`. Proves the published kb-core
+  artifact stands on its own.
+- **Part B — personal-kb deploy-path smoke** (release-time only — needs the
+  release commit pushed first): `uvx --from "personal-kb[postgres] @ git+ssh://...@<sha>" personal-kb`
+  against a throwaway SQLite DB, asserting the FastMCP `Starting MCP server`
+  banner with NO `ModuleNotFoundError`. See the script header for the exact
+  invocation.
+
 ## Commit Convention
 
 This repo uses **conventional commits** enforced by a `commit-msg` hook.
