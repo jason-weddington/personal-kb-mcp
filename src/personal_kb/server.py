@@ -16,6 +16,7 @@ from kb_core.config import (
 
 from personal_kb import maps_index_writer
 from personal_kb.config import (
+    build_embedding_config,
     get_anthropic_model,
     get_anthropic_timeout,
     get_aws_profile,
@@ -167,7 +168,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     check_backend_fallback()
 
     store = KnowledgeStore(db)
-    embedder = EmbeddingClient(db)
+    embedder = EmbeddingClient(db, config=build_embedding_config())
     graph_builder = GraphBuilder(db)
 
     # Create LLM clients based on provider config

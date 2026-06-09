@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kb_core.config import IngestConfig
+    from kb_core.config import EmbeddingConfig, IngestConfig
 
 _VALID_PROVIDERS = {"anthropic", "bedrock", "ollama"}
 
@@ -206,6 +206,27 @@ def build_ingest_config() -> "IngestConfig":
         dedup_threshold=get_ingest_dedup_threshold(),
         agentic_ingest=is_agentic_ingest(),
         skip_safety=is_safety_skip(),
+    )
+
+
+def build_embedding_config() -> "EmbeddingConfig":
+    """Build a kb_core ``EmbeddingConfig`` from this module's env getters.
+
+    The kb_core ``EmbeddingClient`` is env-free; it reads its tunables
+    from a typed dataclass instead of ``os.environ``. This helper is the
+    single channel-side adapter that snapshots ``KB_OLLAMA_URL``,
+    ``KB_EMBEDDING_MODEL``, ``KB_OLLAMA_TIMEOUT``, and ``KB_EMBEDDING_DIM``
+    into an :class:`~kb_core.config.EmbeddingConfig`. Every
+    ``EmbeddingClient(...)`` construction site uses it so behavior stays
+    identical across the move and the env surface stays centralized here.
+    """
+    from kb_core.config import EmbeddingConfig
+
+    return EmbeddingConfig(
+        ollama_url=get_ollama_url(),
+        timeout=get_ollama_timeout(),
+        model=get_embedding_model(),
+        dim=get_embedding_dim(),
     )
 
 

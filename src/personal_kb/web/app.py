@@ -76,6 +76,7 @@ def create_app() -> Any:
     from fastapi import FastAPI
 
     from personal_kb.config import (
+        build_embedding_config,
         get_embedding_dim,
         get_log_level,
         get_query_provider,
@@ -101,7 +102,7 @@ def create_app() -> Any:
             stream=sys.stderr,
         )
         db = await create_connection(embedding_dim=get_embedding_dim())
-        embedder = EmbeddingClient(db)
+        embedder = EmbeddingClient(db, config=build_embedding_config())
         store = KnowledgeStore(db)
         graph_builder = GraphBuilder(db)
 
