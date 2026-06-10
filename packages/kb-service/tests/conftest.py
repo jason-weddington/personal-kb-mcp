@@ -647,12 +647,19 @@ class StatefulFakeDbPool(FakeDbPool):
 class FakeLLM:
     """Scriptable LLM stub — returns responses in the order they were enqueued.
 
-    Call ``fake_llm.enqueue("...")`` before each expected ``generate_chat``
-    call.  When the queue is exhausted, subsequent calls return ``None``.
+    Call ``fake_llm.enqueue("...")`` before each expected ``generate_chat`` or
+    ``generate`` call.  When the queue is exhausted, subsequent calls return
+    ``None``.
+
+    Both ``generate_chat`` and ``generate`` share the same ``_responses`` queue
+    so test scripts are interchangeable between the two calling conventions.
     """
 
     def __init__(self) -> None:
         self._responses: list[str | None] = []
+        # MANDATORY call recording (mirrors FakeKnowledgeBase.search_calls).
+        # Each entry is (prompt, system) for generate(); tests assert on this.
+        self.generate_calls: list[tuple[Any, Any]] = []
 
     def enqueue(self, response: str | None) -> None:
         """Add *response* to the tail of the response queue."""
@@ -660,6 +667,18 @@ class FakeLLM:
 
     async def generate_chat(self, messages: Any, *, system: Any = None) -> str | None:
         """Pop and return the next scripted response (None when exhausted)."""
+        if self._responses:
+            return self._responses.pop(0)
+        return None
+
+    async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+        """Record (prompt, system) then pop and return the next scripted response.
+
+        Mirrors the ``AnthropicLLMClient.generate`` signature (anthropic.py:51-76).
+        Appends to ``self.generate_calls`` — tests assert ``len(generate_calls)``
+        and inspect the prompt text.
+        """
+        self.generate_calls.append((prompt, system))
         if self._responses:
             return self._responses.pop(0)
         return None

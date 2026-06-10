@@ -504,6 +504,38 @@ class ChatMessageItem(BaseModel):
     content: str
 
 
+# --- Listener Schemas ---
+
+
+class ListenerRequest(BaseModel):
+    """Request body for ``POST /api/kb/listener``.
+
+    ``text`` is head-truncated to 4000 chars by the hook before sending;
+    the service accepts whatever arrives.  ``operating`` lists the MCP-server
+    labels that are currently active in the caller's session.  ``source_label``
+    is used ONLY for the ``{source}`` substitution in the gate prompt; it falls
+    back to ``cwd_project`` then ``'unknown'`` when omitted.
+    """
+
+    text: str = Field(min_length=1)
+    cwd_project: str | None = None
+    operating: list[str] = Field(default_factory=list)
+    source_label: str | None = None
+
+
+class ListenerPointer(BaseModel):
+    """A KB entry pointer returned by the listener gate."""
+
+    id: str
+    short_title: str
+
+
+class ListenerResponse(BaseModel):
+    """Response for ``POST /api/kb/listener``."""
+
+    pointer: ListenerPointer | None
+
+
 class IngestFileResult(BaseModel):
     """Lossless mirror of kb-core's ``FileResult`` dataclass for P5 round-trip.
 
