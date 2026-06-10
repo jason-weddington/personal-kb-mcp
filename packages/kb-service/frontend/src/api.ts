@@ -10,6 +10,16 @@ import type {
   Settings,
   AdminUser,
 } from './types'
+import type {
+  SearchRequest,
+  SearchResponse,
+  GetResponse,
+  KbListResponse,
+  GraphFullResponse,
+  ChatListItem,
+  ChatMessageItem,
+  ChatOkResponse,
+} from './kbTypes'
 
 export class ApiError extends Error {
   status: number
@@ -23,7 +33,8 @@ export class ApiError extends Error {
   }
 }
 
-function getToken(): string | null {
+/** Returns the stored JWT, or null if not logged in. */
+export function getToken(): string | null {
   return localStorage.getItem('kb-token')
 }
 
@@ -135,4 +146,84 @@ export const api = {
         request<void>('DELETE', `/admin/users/${id}`),
     },
   },
+}
+
+// ── KB API wrappers ──────────────────────────────────────────────────────────
+//
+// KB routes return raw snake_case JSON (no camelCase conversion).
+// Use kbRequest<T> which skips convertKeys.
+
+async function kbRequest<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+  }
+
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+
+  if (res.status === 401) {
+    localStorage.removeItem('kb-token')
+    localStorage.removeItem('kb-user')
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
+    throw new ApiError(401, 'Unauthorized')
+  }
+
+  if (res.status === 204) {
+    return undefined as T
+  }
+
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      const data = (await res.json()) as { detail?: string }
+      if (data.detail) detail = data.detail
+    } catch {
+      // use statusText fallback
+    }
+    throw new ApiError(res.status, detail)
+  }
+
+  return (await res.json()) as T
+}
+
+export function searchKb(req: SearchRequest): Promise<SearchResponse> {
+  return kbRequest<SearchResponse>('POST', '/kb/search', req)
+}
+
+export function getEntries(ids: string[]): Promise<GetResponse> {
+  return kbRequest<GetResponse>('POST', '/kb/get', { ids })
+}
+
+export function listKbProjects(): Promise<KbListResponse> {
+  return kbRequest<KbListResponse>('GET', '/kb/projects')
+}
+
+export function getGraphFull(): Promise<GraphFullResponse> {
+  return kbRequest<GraphFullResponse>('GET', '/kb/graph/full')
+}
+
+export function listChats(): Promise<ChatListItem[]> {
+  return kbRequest<ChatListItem[]>('GET', '/chat/history')
+}
+
+export function getChatMessages(chatId: string): Promise<ChatMessageItem[]> {
+  return kbRequest<ChatMessageItem[]>('GET', `/chat/${chatId}/messages`)
+}
+
+export function deleteChat(chatId: string): Promise<ChatOkResponse> {
+  return kbRequest<ChatOkResponse>('DELETE', `/chat/${chatId}`)
 }

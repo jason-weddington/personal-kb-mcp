@@ -1,0 +1,148 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, waitFor, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
+import { Ask } from '../pages/Ask'
+
+// Mock AuthContext
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: vi.fn(() => ({
+    isAuthenticated: true,
+    user: { id: 'u1', email: 'user@example.com', isAdmin: false, createdAt: '' },
+    loading: false,
+    login: vi.fn(),
+    register: vi.fn(),
+    logout: vi.fn(),
+  })),
+  AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+// Mock streaming
+vi.mock('../streaming', () => ({
+  streamSSE: vi.fn(),
+}))
+
+// Mock api
+vi.mock('../api', () => ({
+  getToken: vi.fn(() => 'test-token'),
+  ApiError: class ApiError extends Error {
+    status: number
+    detail: string
+    constructor(status: number, detail: string) {
+      super(detail)
+      this.status = status
+      this.detail = detail
+      this.name = 'ApiError'
+    }
+  },
+}))
+
+import { streamSSE } from '../streaming'
+
+type OnEvent = (event: string, data: Record<string, unknown>) => void
+
+function renderAsk() {
+  return render(
+    <MemoryRouter>
+      <Ask />
+    </MemoryRouter>,
+  )
+}
+
+describe('Ask page', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('Ask button is disabled when question is empty', () => {
+    renderAsk()
+    expect(screen.getByRole('button', { name: /^ask$/i })).toBeDisabled()
+  })
+
+  it('shows mode Chip, live status line, markdown answer, and entry chip link', async () => {
+    const user = userEvent.setup()
+
+    // Controlled mock: capture onEvent, resolve on demand
+    let capturedOnEvent: OnEvent | null = null
+    let resolveStream!: () => void
+
+    vi.mocked(streamSSE).mockImplementation(
+      async (_url: string, _body: unknown, onEvent: OnEvent) => {
+        capturedOnEvent = onEvent
+        return new Promise<void>((resolve) => {
+          resolveStream = resolve
+        })
+      },
+    )
+
+    renderAsk()
+
+    await user.type(screen.getByLabelText(/question/i), 'What is a decision?')
+    await user.click(screen.getByRole('button', { name: /^ask$/i }))
+
+    // Wait for streamSSE to be called (mock captures onEvent)
+    await waitFor(() => expect(capturedOnEvent).not.toBeNull())
+
+    // Fire classified and status events
+    act(() => {
+      capturedOnEvent!('classified', { mode: 'summarize' })
+      capturedOnEvent!('status', { message: 'Searching knowledge base...' })
+    })
+
+    // Mode Chip should be visible
+    await waitFor(() =>
+      expect(screen.getByText('summarize')).toBeInTheDocument(),
+    )
+
+    // Status line should be visible during streaming
+    await waitFor(() =>
+      expect(screen.getByText('Searching knowledge base...')).toBeInTheDocument(),
+    )
+
+    // Fire synthesis_result and stream_end, then resolve
+    act(() => {
+      capturedOnEvent!('synthesis_result', {
+        answer: 'A decision is a KB entry.',
+        question: 'What is a decision?',
+        entry_ids: ['kb-00001'],
+      })
+      capturedOnEvent!('stream_end', {})
+      resolveStream()
+    })
+
+    // Markdown answer should render
+    await waitFor(() =>
+      expect(screen.getByText('A decision is a KB entry.')).toBeInTheDocument(),
+    )
+
+    // Entry chip linking to /entries/kb-00001
+    await waitFor(() => {
+      const chip = screen.getByRole('link', { name: 'kb-00001' })
+      expect(chip).toBeInTheDocument()
+      expect(chip).toHaveAttribute('href', '/entries/kb-00001')
+    })
+
+    // Form is re-enabled after stream
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^ask$/i })).not.toBeDisabled(),
+    )
+  })
+
+  it('shows error Alert when streamSSE rejects', async () => {
+    const user = userEvent.setup()
+
+    vi.mocked(streamSSE).mockRejectedValue(new Error('Network failure'))
+
+    renderAsk()
+
+    await user.type(screen.getByLabelText(/question/i), 'test question')
+    await user.click(screen.getByRole('button', { name: /^ask$/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText('Network failure')).toBeInTheDocument(),
+    )
+
+    // Form should be re-enabled in finally
+    expect(screen.getByRole('button', { name: /^ask$/i })).not.toBeDisabled()
+  })
+})

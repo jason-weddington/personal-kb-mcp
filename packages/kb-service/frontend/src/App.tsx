@@ -8,6 +8,7 @@ import { Layout } from './components/Layout'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { AdminRoute } from './components/AdminRoute'
 import { appPages } from './pages/registry'
+import { EntryDetail } from './pages/EntryDetail'
 
 export function App() {
   return (
@@ -17,7 +18,7 @@ export function App() {
       <Route path="/register" element={<Register />} />
       <Route path="/reset-password" element={<ResetPassword />} />
 
-      {/* Authenticated routes (home, settings, …) */}
+      {/* Authenticated routes (home, settings, search, graph, ask, chat, …) */}
       <Route
         element={
           <ProtectedRoute>
@@ -28,6 +29,8 @@ export function App() {
         {appPages.map((page) => (
           <Route key={page.path} path={page.path} element={page.element} />
         ))}
+        {/* Entry detail — navigation-only, no nav link */}
+        <Route path="/entries/:id" element={<EntryDetail />} />
       </Route>
 
       {/* Admin-only routes */}
