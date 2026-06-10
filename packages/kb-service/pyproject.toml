@@ -115,4 +115,4 @@ build-backend = "hatchling.build"
 packages = ["src/kb_service"]
 
 [tool.uv.sources]
-kb-core = { path = "../personal_kb/packages/kb-core" }
+kb-core = { git = "ssh://git@git-host/~/repos/personal_kb", subdirectory = "packages/kb-core", rev = "main" }

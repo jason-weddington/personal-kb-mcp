@@ -713,7 +713,7 @@ wheels = [
 [[package]]
 name = "kb-core"
 version = "0.0.1"
-source = { directory = "../personal_kb/packages/kb-core" }
+source = { git = "ssh://git@git-host/~/repos/personal_kb?subdirectory=packages%2Fkb-core&rev=main#ea1b2ef2f6225ee1b6f9efd46dfe901570ea285e" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "httpx" },
@@ -732,24 +732,6 @@ ingest = [
 postgres = [
     { name = "asyncpg" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.21" },
-    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
-    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
-    { name = "aws-sdk-bedrock-runtime", marker = "extra == 'aws'", specifier = ">=0.3.0" },
-    { name = "boto3", marker = "extra == 'iam'", specifier = ">=1.28" },
-    { name = "detect-secrets", marker = "extra == 'safety'", specifier = ">=1.4" },
-    { name = "httpx", specifier = ">=0.28" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pymupdf", marker = "extra == 'ingest'", specifier = ">=1.25" },
-    { name = "scrubadub", marker = "extra == 'safety'", specifier = ">=2.0" },
-    { name = "smithy-json", marker = "extra == 'aws'", specifier = ">=0.2.2" },
-    { name = "sqlite-vec", specifier = ">=0.1.6" },
-    { name = "trafilatura", marker = "extra == 'ingest'", specifier = ">=2.0" },
-]
-provides-extras = ["postgres", "iam", "aws", "anthropic", "ingest", "safety", "ollama"]
 
 [[package]]
 name = "librt"
@@ -1057,7 +1039,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=4.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
-    { name = "kb-core", extras = ["postgres", "ingest", "anthropic"], directory = "../personal_kb/packages/kb-core" },
+    { name = "kb-core", extras = ["postgres", "ingest", "anthropic"], git = "ssh://git@git-host/~/repos/personal_kb?subdirectory=packages%2Fkb-core&rev=main" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pyjwt", specifier = ">=2.9" },
     { name = "python-multipart", specifier = ">=0.0.9" },
