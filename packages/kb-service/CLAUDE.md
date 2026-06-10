@@ -22,8 +22,10 @@ this file only summarizes:
 - **kb-01745** — lesson: FastAPI `HTTPBearer` returns 401 (not 403) on missing
   creds in 0.136 — watch for stale exact-status assertions copied from agent_gtd.
 
-Build status: **P1–P3 done**; **P4a done** (Vite/React 19/MUI 7 chassis, auth plumbing, FastAPI
-SPA serving). Pending: P4b (settings/admin UI), P4c (explorer), P5 thin MCP client, P6 deploy.
+Build status: **P1–P4 done** (full backend + SPA: settings/admin UI, explorer
+with graph viz / streaming ask / chat). P5 thin MCP client lives in the
+`personal_kb` repo. Dev deploy: systemd user unit `kb-service` on `kb-host-1`;
+`./deploy.sh` pulls main there, rebuilds the frontend, restarts the unit.
 Plan in kb-01742.
 
 ## Commands
