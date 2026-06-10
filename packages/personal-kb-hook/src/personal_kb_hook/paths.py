@@ -49,3 +49,13 @@ def get_hook_scratch_path(session_id: str) -> Path:
     one session, but is naturally torn down with the cache.
     """
     return Path(f"~/.cache/personal_kb/injected-{session_id}.json").expanduser()
+
+
+def get_listener_cache_path(session_id: str) -> Path:
+    """Return the per-session listener cache file path.
+
+    Used by the listener worker to store pending whisper entries and the set
+    of already-whispered map ids for the session. Stored under
+    ``~/.cache/personal_kb/`` as a sibling of the hook scratch file.
+    """
+    return Path(f"~/.cache/personal_kb/listener-{session_id}.json").expanduser()

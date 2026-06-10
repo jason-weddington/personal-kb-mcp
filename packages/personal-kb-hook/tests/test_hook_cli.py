@@ -3,12 +3,14 @@
 import io
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from personal_kb_hook import cli
+from personal_kb_hook import cli, listener
+from personal_kb_hook.paths import get_listener_cache_path
 from personal_kb_hook.render import BANNED_TOKENS, render_directory
 
 
@@ -394,4 +396,697 @@ def test_http_env_set_urlopen_fails_emits_local_directory(
     )
     assert rc == 0
     assert "personal-kb" in out
+    assert "auth" in out
+
+
+# ---------------------------------------------------------------------------
+# Stop-event: env gate
+# ---------------------------------------------------------------------------
+
+
+def _listener_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set all three listener env vars to active values."""
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
+    monkeypatch.setenv("PERSONAL_KB_LISTENER", "true")
+
+
+def _make_transcript(path: Path, text: str = "A" * 300) -> None:
+    """Write a minimal Claude Code transcript JSONL that extract_manifest can parse."""
+    record = {
+        "type": "assistant",
+        "message": {"content": [{"type": "text", "text": text}]},
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+
+class _ProcHandle:
+    """Mock Popen return value that fails if wait/communicate are called."""
+
+    def wait(self, *args: object, **kwargs: object) -> int:
+        raise AssertionError("wait() must NOT be called on the Stop path")
+
+    def communicate(self, *args: object, **kwargs: object) -> tuple[bytes, bytes]:
+        raise AssertionError("communicate() must NOT be called on the Stop path")
+
+
+@pytest.mark.parametrize(
+    "missing_var",
+    ["PERSONAL_KB_URL", "PERSONAL_KB_API_KEY", "PERSONAL_KB_LISTENER"],
+)
+def test_stop_env_gate_off_per_var_is_noop(
+    missing_var: str,
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Stop event is a complete no-op when any of the three listener vars is absent."""
+    _listener_env(monkeypatch)
+    monkeypatch.delenv(missing_var, raising=False)
+
+    popen_calls: list[Any] = []
+
+    def mock_popen(*args: object, **kwargs: object) -> _ProcHandle:
+        popen_calls.append((args, kwargs))
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", mock_popen)
+    monkeypatch.setattr(
+        "personal_kb_hook.http_index.load_index",
+        lambda: (_ for _ in ()).throw(AssertionError("load_index must not be called on Stop")),
+    )
+
+    transcript = hook_env["root"] / "transcript.jsonl"
+    _make_transcript(transcript)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "stop-gate-off",
+            "transcript_path": str(transcript),
+        },
+    )
+    assert rc == 0
+    assert out == ""
+    assert popen_calls == []
+
+
+def test_stop_gated_spawns_popen_no_wait(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Gated Stop event spawns Popen with correct argv and never calls wait."""
+    _listener_env(monkeypatch)
+
+    popen_calls: list[tuple[Any, Any]] = []
+
+    def mock_popen(*args: object, **kwargs: object) -> _ProcHandle:
+        popen_calls.append((args, kwargs))
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", mock_popen)
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+
+    transcript = hook_env["root"] / "transcript.jsonl"
+    _make_transcript(transcript)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "stop-gated-1",
+            "transcript_path": str(transcript),
+        },
+    )
+    assert rc == 0
+    assert out == ""
+    assert len(popen_calls) == 1
+    call_args = popen_calls[0][0][0]  # first positional arg (cmd list)
+    assert call_args[1] == "-m"
+    assert call_args[2] == "personal_kb_hook.listener_worker"
+    # argv[3] = request_tmp_path, argv[4] = cache_path
+    req_tmp_path = call_args[3]
+    cache_path = call_args[4]
+    assert req_tmp_path.endswith(".json")
+    assert "listener-stop-gated-1.json" in cache_path
+
+
+def test_stop_request_tmp_body_contains_expected_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """The request tmp file written before Popen has text/project_ref/operated fields."""
+    _listener_env(monkeypatch)
+
+    popen_calls: list[tuple[Any, Any]] = []
+
+    def mock_popen(*args: object, **kwargs: object) -> _ProcHandle:
+        popen_calls.append((args, kwargs))
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", mock_popen)
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+
+    transcript = hook_env["root"] / "transcript.jsonl"
+    record = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "text", "text": "B" * 300},
+                {"type": "tool_use", "name": "mcp__personal-kb__kb_search"},
+            ]
+        },
+    }
+    transcript.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "stop-body",
+            "transcript_path": str(transcript),
+        },
+    )
+    assert rc == 0
+    assert out == ""
+    assert len(popen_calls) == 1
+
+    req_tmp_path = popen_calls[0][0][0][3]
+    with open(req_tmp_path, encoding="utf-8") as fh:
+        body = json.load(fh)
+
+    assert body["text"] == "B" * 300
+    assert body["project_ref"] == "personal-kb"
+    assert "mcp:personal-kb" in body["operated"]
+
+    # Cleanup tmp file
+    os.unlink(req_tmp_path)
+
+
+def test_stop_project_ref_null_when_no_kb_project(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """project_ref=null in request body when resolve_project returns None."""
+    _listener_env(monkeypatch)
+
+    popen_calls: list[tuple[Any, Any]] = []
+
+    def mock_popen(*args: object, **kwargs: object) -> _ProcHandle:
+        popen_calls.append((args, kwargs))
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", mock_popen)
+    # No .kb_project file -> resolve_project returns None
+
+    transcript = hook_env["root"] / "transcript.jsonl"
+    _make_transcript(transcript)
+
+    _rc, _out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "stop-null-proj",
+            "transcript_path": str(transcript),
+        },
+    )
+    assert _rc == 0
+    assert len(popen_calls) == 1
+
+    req_tmp_path = popen_calls[0][0][0][3]
+    with open(req_tmp_path, encoding="utf-8") as fh:
+        body = json.load(fh)
+    assert body["project_ref"] is None
+
+    os.unlink(req_tmp_path)
+
+
+def test_stop_never_calls_load_index(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Stop event never calls http_index.load_index, even when gated and valid."""
+    _listener_env(monkeypatch)
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("load_index MUST NOT be called on a Stop event")
+
+    monkeypatch.setattr("personal_kb_hook.http_index.load_index", boom)
+
+    # Also mock Popen so no real subprocess is spawned
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: _ProcHandle())
+
+    transcript = hook_env["root"] / "transcript.jsonl"
+    _make_transcript(transcript)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "stop-no-li",
+            "transcript_path": str(transcript),
+        },
+    )
+    assert rc == 0
+    assert out == ""
+
+
+def test_stop_missing_transcript_path_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Stop with missing/non-str transcript_path is a no-op (no Popen)."""
+    _listener_env(monkeypatch)
+    popen_calls: list[Any] = []
+
+    def _record_popen(*a: Any, **kw: Any) -> _ProcHandle:
+        popen_calls.append(a)
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", _record_popen)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "stop-no-tp",
+            # transcript_path intentionally omitted
+        },
+    )
+    assert rc == 0
+    assert out == ""
+    assert popen_calls == []
+
+
+def test_stop_empty_transcript_path_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Stop with empty-string transcript_path is a no-op."""
+    _listener_env(monkeypatch)
+    popen_calls: list[Any] = []
+
+    def _record_popen(*a: Any, **kw: Any) -> _ProcHandle:
+        popen_calls.append(a)
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", _record_popen)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "stop-empty-tp",
+            "transcript_path": "",
+        },
+    )
+    assert rc == 0
+    assert out == ""
+    assert popen_calls == []
+
+
+def test_stop_missing_session_id_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Stop with missing session_id is a no-op (no Popen)."""
+    _listener_env(monkeypatch)
+    popen_calls: list[Any] = []
+
+    def _record_popen(*a: Any, **kw: Any) -> _ProcHandle:
+        popen_calls.append(a)
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", _record_popen)
+
+    transcript = hook_env["root"] / "transcript.jsonl"
+    _make_transcript(transcript)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            # session_id intentionally omitted
+            "transcript_path": str(transcript),
+        },
+    )
+    assert rc == 0
+    assert out == ""
+    assert popen_calls == []
+
+
+def test_stop_empty_session_id_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Stop with empty-string session_id is a no-op."""
+    _listener_env(monkeypatch)
+    popen_calls: list[Any] = []
+
+    def _record_popen(*a: Any, **kw: Any) -> _ProcHandle:
+        popen_calls.append(a)
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", _record_popen)
+
+    transcript = hook_env["root"] / "transcript.jsonl"
+    _make_transcript(transcript)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "",
+            "transcript_path": str(transcript),
+        },
+    )
+    assert rc == 0
+    assert out == ""
+    assert popen_calls == []
+
+
+# ---------------------------------------------------------------------------
+# UserPromptSubmit: whisper injection
+# ---------------------------------------------------------------------------
+
+
+def _write_listener_cache(path: Path, pending: Any, whispered_ids: list[str]) -> None:
+    """Write a listener cache file for test setup."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"pending": pending, "whispered_map_ids": whispered_ids}),
+        encoding="utf-8",
+    )
+
+
+def _pending_map(
+    entry_id: str = "kb-00099",
+    short_title: str = "Authflow",
+    long_title: str = "Authentication flow details",
+) -> dict[str, str]:
+    return {"id": entry_id, "short_title": short_title, "long_title": long_title}
+
+
+def test_whisper_emitted_when_resolve_project_none(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Pending whisper is emitted even when resolve_project returns None."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-no-proj"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(cache_path, _pending_map(), [])
+
+    # No .kb_project -> resolve_project returns None
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+    assert "Possibly relevant map" in out
+    assert "kb-00099" in out
+
+
+def test_whisper_emitted_when_empty_index(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Pending whisper is emitted even when the maps index has no maps."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-empty-idx"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(cache_path, _pending_map(), [])
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    # Index has no maps for "personal-kb"
+    _write_index(hook_env["maps_index"], "some-other-project", [])
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+    assert "Possibly relevant map" in out
+    assert "kb-00099" in out
+
+
+def test_whisper_emitted_when_should_emit_false(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Pending whisper is emitted even when should_emit returns False (suppressed)."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-suppressed"
+    cache_path = get_listener_cache_path(session_id)
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    _write_index(
+        hook_env["maps_index"],
+        "personal-kb",
+        [{"id": "kb-00001", "short_title": "auth", "long_title": "Auth flow"}],
+    )
+    # First invocation — no pending whisper, emits directory and marks suppression scratch
+    _write_listener_cache(cache_path, None, [])
+    _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    # Now write a new pending whisper to the cache (simulate worker writing it)
+    _write_listener_cache(cache_path, _pending_map("kb-00099"), [])
+
+    # Second invocation — suppression blocks the directory but whisper still emits
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+    assert "Possibly relevant map" in out
+    assert "kb-00099" in out
+
+
+def test_whisper_injection_clears_pending_and_appends_id(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """After a whisper is emitted, pending=null and whispered id is appended."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-clear"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(cache_path, _pending_map("kb-00099"), ["kb-00001"])
+
+    # Need a project + index so should_emit passes for a clean first emission,
+    # but for this test we don't need the directory — we use no .kb_project
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+    assert "Possibly relevant map" in out
+
+    # Cache must be updated: pending cleared, whispered id appended
+    updated = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert updated["pending"] is None
+    assert "kb-00099" in updated["whispered_map_ids"]
+    assert "kb-00001" in updated["whispered_map_ids"]  # pre-existing id preserved
+
+
+def test_same_id_never_whispered_twice(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """An id already in whispered_map_ids is not whispered again."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-dedup"
+    cache_path = get_listener_cache_path(session_id)
+    # pending=kb-00099 but it's already in whispered_map_ids
+    _write_listener_cache(cache_path, _pending_map("kb-00099"), ["kb-00099"])
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+    # whisper must NOT be emitted
+    assert "Possibly relevant map" not in out
+
+
+def test_directory_and_whisper_composed_text(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Directory + whisper are joined with a single newline (whisper last), text format."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-compose-text"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(cache_path, _pending_map("kb-00099", "Authflow", "Auth details"), [])
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    _write_index(
+        hook_env["maps_index"],
+        "personal-kb",
+        [{"id": "kb-00001", "short_title": "ingest", "long_title": "Ingestion flow"}],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    lines = out.split("\n")
+    assert any("Maps for personal-kb" in ln for ln in lines), f"Directory missing: {out!r}"
+    assert any("Possibly relevant map" in ln for ln in lines), f"Whisper missing: {out!r}"
+    # Whisper comes after directory
+    dir_idx = next(i for i, ln in enumerate(lines) if "Maps for personal-kb" in ln)
+    whi_idx = next(i for i, ln in enumerate(lines) if "Possibly relevant map" in ln)
+    assert whi_idx > dir_idx
+
+
+def test_directory_and_whisper_composed_claude_json(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Directory + whisper are in ONE additionalContext field (claude-json format)."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-compose-json"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(cache_path, _pending_map("kb-00099", "Authflow", "Auth details"), [])
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    _write_index(
+        hook_env["maps_index"],
+        "personal-kb",
+        [{"id": "kb-00001", "short_title": "ingest", "long_title": "Ingestion flow"}],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=claude-json"],
+    )
+    assert rc == 0
+    obj = json.loads(out)
+    context = obj["hookSpecificOutput"]["additionalContext"]
+    assert "Maps for personal-kb" in context
+    assert "Possibly relevant map" in context
+    # whisper appears after directory in the combined string
+    assert context.index("Maps for personal-kb") < context.index("Possibly relevant map")
+
+
+def test_whisper_only_claude_json_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Whisper-only output (no directory) wraps in one hookSpecificOutput envelope."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-only-json"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(cache_path, _pending_map("kb-00099", "Authflow", "Auth details"), [])
+
+    # No .kb_project -> directory pipeline returns early
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=claude-json"],
+    )
+    assert rc == 0
+    obj = json.loads(out)
+    assert obj["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    context = obj["hookSpecificOutput"]["additionalContext"]
+    assert "Possibly relevant map" in context
+    assert "kb-00099" in context
+    assert "Maps for" not in context
+
+
+def test_session_start_leaves_listener_cache_byte_identical(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """SessionStart does not read or mutate the listener cache."""
+    _listener_env(monkeypatch)
+    session_id = "session-start-cache"
+    cache_path = get_listener_cache_path(session_id)
+    cache_content = {"pending": _pending_map("kb-00099"), "whispered_map_ids": []}
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    original_bytes = json.dumps(cache_content).encode("utf-8")
+    cache_path.write_bytes(original_bytes)
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    _write_index(
+        hook_env["maps_index"],
+        "personal-kb",
+        [{"id": "kb-00001", "short_title": "auth", "long_title": "Auth flow"}],
+    )
+
+    _run(
+        monkeypatch,
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+
+    # Cache must be byte-identical
+    assert cache_path.read_bytes() == original_bytes
+
+
+def test_extract_manifest_raising_still_emits_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Listener failure (extract_manifest raises) leaves directory emission intact."""
+    _listener_env(monkeypatch)
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated listener failure")
+
+    monkeypatch.setattr(listener, "extract_manifest", boom)
+    # Also break read_listener_cache so the whisper check fails
+    monkeypatch.setattr(listener, "read_listener_cache", boom)
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    _write_index(
+        hook_env["maps_index"],
+        "personal-kb",
+        [{"id": "kb-00001", "short_title": "auth", "long_title": "Auth flow"}],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": "resilience-test",
+        },
+    )
+    assert rc == 0
+    assert "Maps for personal-kb" in out
     assert "auth" in out

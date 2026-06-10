@@ -105,6 +105,28 @@ def compose_directory(
     return None
 
 
+def render_whisper(map_entry: dict[str, object]) -> str:
+    """Render the whisper line for a pending listener map.
+
+    Format: ``Possibly relevant map — [<id>] <short_title>: <long_title>``
+    with the U+2014 em dash. When ``long_title`` is empty the ``': ...'``
+    suffix is omitted. The scaffold phrase contains no banned tokens; no
+    runtime filtering of server-supplied titles is performed.
+    """
+    entry_id = map_entry.get("id")
+    short_title = map_entry.get("short_title")
+    long_title = map_entry.get("long_title")
+    if not isinstance(entry_id, str):
+        entry_id = ""
+    if not isinstance(short_title, str):
+        short_title = ""
+    if not isinstance(long_title, str) or not long_title:
+        long_title = ""
+    if long_title:
+        return f"Possibly relevant map {_EM_DASH} [{entry_id}] {short_title}: {long_title}"
+    return f"Possibly relevant map {_EM_DASH} [{entry_id}] {short_title}"
+
+
 def render_claude_json(event_name: str, directory: str) -> str:
     """Render the ``--format=claude-json`` envelope.
 
