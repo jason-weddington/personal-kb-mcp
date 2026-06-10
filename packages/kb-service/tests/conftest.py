@@ -75,6 +75,13 @@ class FakeKnowledgeBase:
         self.maps_rows: list[tuple[Any, ...]] | None = None
         self.search_calls: list[tuple[Any, str | None]] = []
         self.db = _FakeDb(self)
+        self.ask_calls: list[tuple[str, dict[str, Any]]] = []
+        self.summarize_calls: list[tuple[str, dict[str, Any]]] = []
+        self.ask_return: tuple[list[tuple[KnowledgeEntry, str]], int] = (
+            [(make_search_result().entry, "fake ask context")],
+            3,
+        )
+        self.summarize_return: str = "fake synthesized answer"
 
     async def search(
         self, query: Any, *, contributor: str | None = None
@@ -88,6 +95,60 @@ class FakeKnowledgeBase:
     ) -> list[dict[str, str]]:
         """Return configured maps for the given project_ref."""
         return self.maps_projects.get(project_ref, [])
+
+    async def ask(
+        self,
+        question: str,
+        *,
+        scope: str | None = None,
+        agentic: bool | None = None,
+        max_tool_calls: int | None = None,
+        limit: int = 20,
+        include_graph_context: bool = True,
+        event_callback: Any | None = None,
+    ) -> tuple[list[tuple[KnowledgeEntry, str]], int]:
+        """Record the call and return the configured ask results."""
+        self.ask_calls.append(
+            (
+                question,
+                {
+                    "scope": scope,
+                    "agentic": agentic,
+                    "max_tool_calls": max_tool_calls,
+                    "limit": limit,
+                    "include_graph_context": include_graph_context,
+                    "event_callback": event_callback,
+                },
+            )
+        )
+        return self.ask_return
+
+    async def summarize(
+        self,
+        question: str,
+        *,
+        scope: str | None = None,
+        agentic: bool | None = None,
+        agentic_synthesis: bool | None = None,
+        max_tool_calls: int | None = None,
+        limit: int = 20,
+        event_callback: Any | None = None,
+    ) -> str:
+        """Record the call and return the configured summarize result."""
+        self.summarize_calls.append(
+            (
+                question,
+                {
+                    "scope": scope,
+                    "agentic": agentic,
+                    "agentic_synthesis": agentic_synthesis,
+                    "max_tool_calls": max_tool_calls,
+                    "limit": limit,
+                    "event_callback": event_callback,
+                },
+            )
+        )
+        return self.summarize_return
 
     async def close(self) -> None:
         """No-op close."""

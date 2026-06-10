@@ -20,6 +20,7 @@ from kb_service.routes.admin_routes import router as admin_router
 from kb_service.routes.auth_routes import router as auth_router
 from kb_service.routes.kb_routes import router as kb_router
 from kb_service.routes.maps_routes import router as maps_router
+from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,7 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(kb_router)
 app.include_router(maps_router)
+app.include_router(query_router)
 app.include_router(settings_router)
 
 

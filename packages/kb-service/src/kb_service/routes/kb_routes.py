@@ -1,7 +1,7 @@
 """KB API routes: the authed read surface over the kb-core engine.
 
-P1 ships only ``POST /api/kb/search``. P2+ extends this router with
-store/get/ask/summarize/ingest/preflight endpoints.
+P1 ships ``POST /api/kb/search``.  P2 adds sibling per-feature routers under
+``routes/`` (e.g. ``query_routes``) rather than extending this module.
 """
 
 from typing import Annotated

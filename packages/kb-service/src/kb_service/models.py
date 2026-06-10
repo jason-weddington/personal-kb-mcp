@@ -1,7 +1,8 @@
-"""Pydantic models for the KB service: auth, admin, invites, and search."""
+"""Pydantic models for the KB service: auth, admin, invites, search, and query."""
 
 from datetime import datetime
 
+from kb_core.models.entry import KnowledgeEntry
 from kb_core.models.search import SearchResult
 from pydantic import BaseModel, Field
 
@@ -190,6 +191,55 @@ class MapsIndexResponse(BaseModel):
     """Response for ``GET /api/kb/maps-index``."""
 
     projects: list[ProjectMaps]
+
+
+# --- KB Query Schemas ---
+
+
+class AskRequest(BaseModel):
+    """Client-safe parameters for ``POST /api/kb/ask``.
+
+    Scope syntax: ``project:X``, ``tag:Y``, an entry ID (``kb-XXXXX``), or a
+    graph node ID.  Agentic knobs (``agentic``, ``max_tool_calls``) are
+    deliberately NOT exposed — they are governed by server env config.
+    """
+
+    question: str
+    scope: str | None = None
+    include_graph_context: bool = True
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class AskEntry(BaseModel):
+    """A single entry returned by the ask endpoint with its context string."""
+
+    entry: KnowledgeEntry
+    context: str
+
+
+class AskResponse(BaseModel):
+    """Response for ``POST /api/kb/ask``."""
+
+    entries: list[AskEntry]
+    agent_turns_used: int
+
+
+class SummarizeRequest(BaseModel):
+    """Client-safe parameters for ``POST /api/kb/summarize``.
+
+    Scope syntax: ``project:X``, ``tag:Y``, an entry ID (``kb-XXXXX``), or a
+    graph node ID.  Agentic knobs are governed by server env config only.
+    """
+
+    question: str
+    scope: str | None = None
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class SummarizeResponse(BaseModel):
+    """Response for ``POST /api/kb/summarize``."""
+
+    answer: str
 
 
 # --- App-Config / Settings Schemas ---
