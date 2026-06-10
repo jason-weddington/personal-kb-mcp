@@ -380,12 +380,17 @@ class FileIngester:
         source_name: str,
         *,
         project_ref: str | None = None,
+        dry_run: bool = False,
         progress_callback: ProgressCallback | None = None,
     ) -> FileResult:
         """Ingest raw text content (e.g. from a file upload in the explorer).
 
         Validates extension from source_name against the allowlist and checks
         content size, then delegates to _ingest_content().
+
+        ``dry_run=True`` runs the extraction pipeline but does not write any
+        entries to the database. Returns a :class:`FileResult` with
+        ``action="dry_run"`` and the entry count that *would* be created.
         """
         ext = Path(source_name).suffix.lower()
         name = Path(source_name).name
@@ -423,6 +428,7 @@ class FileIngester:
             content,
             source_name,
             project_ref=project_ref,
+            dry_run=dry_run,
             progress_callback=progress_callback,
         )
 

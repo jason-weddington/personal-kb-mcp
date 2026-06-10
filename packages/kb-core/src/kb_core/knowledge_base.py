@@ -847,11 +847,20 @@ class KnowledgeBase:
 
     # -- Ingest -------------------------------------------------------------
 
-    def _build_ingester(self) -> FileIngester | None:
+    def _build_ingester(
+        self,
+        contributor: str | None = None,
+        team: str | None = None,
+    ) -> FileIngester | None:
         """Build a :class:`FileIngester` from current dependencies, or None.
 
         Returns ``None`` when extraction is not possible (no extraction
         LLM and no embedder — both are required by the ingest pipeline).
+
+        ``contributor`` and ``team`` override ``config.attribution`` for this
+        ingester instance only. When ``None`` (the default), the
+        construction-time attribution values from ``config.attribution`` are
+        used — preserving today's behavior for callers that don't pass them.
         """
         if self._extraction_llm is None:
             return None
@@ -879,8 +888,10 @@ class KnowledgeBase:
             graph_enricher=self._graph_enricher,
             llm=self._extraction_llm,
             dedup_agent=dedup_agent,
-            contributor=self._config.attribution.contributor,
-            team=self._config.attribution.team,
+            contributor=(
+                contributor if contributor is not None else self._config.attribution.contributor
+            ),
+            team=team if team is not None else self._config.attribution.team,
             config=self._config.ingest,
         )
 
@@ -890,13 +901,20 @@ class KnowledgeBase:
         *,
         project_ref: str | None = None,
         dry_run: bool = False,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> FileResult:
         """Ingest a file from disk through the full pipeline.
 
         Requires an extraction LLM and an embedder; raises
         :class:`RuntimeError` if either is missing.
+
+        ``contributor`` and ``team`` override the construction-time
+        ``config.attribution`` for this call only. When ``None`` (the
+        default), the ctor attribution is used — existing callers are
+        100% unaffected.
         """
-        ingester = self._build_ingester()
+        ingester = self._build_ingester(contributor=contributor, team=team)
         if ingester is None:
             msg = (
                 "ingest_file requires both an extraction LLM and an embedder. "
@@ -911,16 +929,31 @@ class KnowledgeBase:
         source_name: str,
         *,
         project_ref: str | None = None,
+        dry_run: bool = False,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> FileResult:
-        """Ingest raw text (e.g. from an upload) through the full pipeline."""
-        ingester = self._build_ingester()
+        """Ingest raw text (e.g. from an upload) through the full pipeline.
+
+        ``contributor`` and ``team`` override the construction-time
+        ``config.attribution`` for this call only. When ``None`` (the
+        default), the ctor attribution is used — existing callers are
+        100% unaffected.
+
+        ``dry_run=True`` runs the extraction pipeline but does not write any
+        entries to the database. Returns a :class:`FileResult` with
+        ``action="dry_run"`` and the entry count that *would* be created.
+        """
+        ingester = self._build_ingester(contributor=contributor, team=team)
         if ingester is None:
             msg = (
                 "ingest_text requires both an extraction LLM and an embedder. "
                 "Configure providers.extraction and embedding on KbConfig."
             )
             raise RuntimeError(msg)
-        return await ingester.ingest_text(content, source_name, project_ref=project_ref)
+        return await ingester.ingest_text(
+            content, source_name, project_ref=project_ref, dry_run=dry_run
+        )
 
     async def ingest_url(
         self,
@@ -928,14 +961,21 @@ class KnowledgeBase:
         *,
         project_ref: str | None = None,
         dry_run: bool = False,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> FileResult:
         """Fetch a URL, extract its article content, and ingest it.
 
         Thin wrapper over :meth:`FileIngester.ingest_url`. Requires an
         extraction LLM and an embedder; raises :class:`RuntimeError` if
         either is missing.
+
+        ``contributor`` and ``team`` override the construction-time
+        ``config.attribution`` for this call only. When ``None`` (the
+        default), the ctor attribution is used — existing callers are
+        100% unaffected.
         """
-        ingester = self._build_ingester()
+        ingester = self._build_ingester(contributor=contributor, team=team)
         if ingester is None:
             msg = (
                 "ingest_url requires both an extraction LLM and an embedder. "
@@ -951,6 +991,8 @@ class KnowledgeBase:
         *,
         project_ref: str | None = None,
         dry_run: bool = False,
+        contributor: str | None = None,
+        team: str | None = None,
     ) -> FileResult:
         """Ingest pre-fetched URL content (e.g. from authenticated sites).
 
@@ -959,8 +1001,13 @@ class KnowledgeBase:
         Useful when the caller already has clean text (WebFetch output,
         internal wiki dumps, JavaScript-rendered pages). Requires an
         extraction LLM and an embedder.
+
+        ``contributor`` and ``team`` override the construction-time
+        ``config.attribution`` for this call only. When ``None`` (the
+        default), the ctor attribution is used — existing callers are
+        100% unaffected.
         """
-        ingester = self._build_ingester()
+        ingester = self._build_ingester(contributor=contributor, team=team)
         if ingester is None:
             msg = (
                 "ingest_url_content requires both an extraction LLM and an embedder. "

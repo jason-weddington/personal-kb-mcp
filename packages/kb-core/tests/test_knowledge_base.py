@@ -34,6 +34,7 @@ import pytest
 from kb_core import (
     Attribution,
     EmbeddingConfig,
+    IngestConfig,
     KnowledgeBase,
     SqliteConfig,
     create_sqlite,
@@ -638,5 +639,144 @@ async def test_embedder_none_is_explicit_choice_not_fallback(tmp_path: Any) -> N
         results, _ = await kb.search(SearchQuery(query="explicit fts", limit=5))
         # Match source must be "fts" since there's no embedder.
         assert all(r.match_source == "fts" for r in results)
+    finally:
+        await kb.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-request attribution kwargs + dry_run threading on ingest_text
+# ---------------------------------------------------------------------------
+
+
+class _SequenceLLM:
+    """LLM test double that returns pre-scripted responses in order.
+
+    Cycles back to the last response once the list is exhausted, so
+    a two-element list works for any number of chunks.
+    """
+
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = responses
+        self._idx = 0
+
+    async def is_available(self) -> bool:
+        return True
+
+    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+        resp = self._responses[min(self._idx, len(self._responses) - 1)]
+        self._idx += 1
+        return resp
+
+    async def generate_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system: str | None = None,
+    ) -> str | None:
+        return await self.generate(
+            next((m["content"] for m in reversed(messages) if m["role"] == "user"), ""),
+            system=system,
+        )
+
+    async def close(self) -> None:
+        pass
+
+
+_INGEST_ENTRY_JSON = (
+    '[{"short_title": "test entry", "long_title": "A test knowledge entry",'
+    ' "knowledge_details": "This is a test entry for attribution testing.",'
+    ' "entry_type": "lesson_learned", "tags": ["test"]}]'
+)
+
+
+async def _make_ingest_kb(
+    tmp_path: Any,
+    *,
+    contributor: str | None = None,
+    team: str | None = None,
+) -> KnowledgeBase:
+    """Build a KB wired for ingest tests: fake LLM + fake embedder + no dedup."""
+    llm = _SequenceLLM(["Test summary.", _INGEST_ENTRY_JSON])
+    kb = await create_sqlite(
+        tmp_path / "ingest.db",
+        attribution=Attribution(contributor=contributor, team=team),
+        ingest=IngestConfig(agentic_ingest=False),
+        extraction_llm=llm,
+    )
+    # Inject a deterministic batch embedder (both extraction and vector store need it).
+    fake = FakeEmbedder(kb.db)
+    kb._embedder = fake  # type: ignore[attr-defined]
+    return kb
+
+
+async def test_ingest_text_per_call_attribution_overrides_ctor(tmp_path: Any) -> None:
+    """``contributor``/``team`` kwargs on :meth:`ingest_text` override ctor attribution.
+
+    The KB is constructed with ``contributor="ctor_user"``/``team="ctor_team"``.
+    When :meth:`ingest_text` is called with ``contributor="alice@x"``/``team="t1"``,
+    the created entries must carry the per-call attribution — not the ctor values.
+    """
+    kb = await _make_ingest_kb(tmp_path, contributor="ctor_user", team="ctor_team")
+    try:
+        result = await kb.ingest_text(
+            "A note about a useful pattern.",
+            "notes.md",
+            contributor="alice@x",
+            team="t1",
+        )
+        assert result.action == "ingested", f"Unexpected action: {result.action}"
+        assert len(result.entry_ids) >= 1, "Expected at least one entry to be created"
+        entry = await kb.get(result.entry_ids[0])
+        assert entry is not None
+        assert entry.contributor == "alice@x"
+        assert entry.team == "t1"
+    finally:
+        await kb.close()
+
+
+async def test_ingest_text_default_attribution_uses_ctor(tmp_path: Any) -> None:
+    """Without per-call kwargs, :meth:`ingest_text` uses the ctor attribution (regression guard).
+
+    The KB is constructed with ``contributor="ctor_user"``/``team="ctor_team"``.
+    Calling :meth:`ingest_text` without attribution kwargs must produce entries
+    stamped with the ctor values, preserving today's behavior byte-for-byte.
+    """
+    kb = await _make_ingest_kb(tmp_path, contributor="ctor_user", team="ctor_team")
+    try:
+        result = await kb.ingest_text(
+            "A note about a useful pattern.",
+            "notes.md",
+        )
+        assert result.action == "ingested", f"Unexpected action: {result.action}"
+        assert len(result.entry_ids) >= 1, "Expected at least one entry to be created"
+        entry = await kb.get(result.entry_ids[0])
+        assert entry is not None
+        assert entry.contributor == "ctor_user"
+        assert entry.team == "ctor_team"
+    finally:
+        await kb.close()
+
+
+async def test_ingest_text_dry_run_creates_no_entries(tmp_path: Any) -> None:
+    """``dry_run=True`` on :meth:`ingest_text` runs the pipeline without storing entries.
+
+    The returned :class:`FileResult` must have ``action="dry_run"`` and the
+    database must remain empty (zero ``knowledge_entries`` rows).
+    """
+    kb = await _make_ingest_kb(tmp_path, contributor="ctor_user", team="ctor_team")
+    try:
+        result = await kb.ingest_text(
+            "A note about a useful pattern.",
+            "notes.md",
+            dry_run=True,
+        )
+        assert result.action == "dry_run", f"Unexpected action: {result.action}"
+        # entry_ids must be empty — nothing was persisted.
+        assert result.entry_ids == []
+        # Verify no rows in the knowledge_entries table.
+        cursor = await kb.db.execute("SELECT COUNT(*) FROM knowledge_entries WHERE is_active = 1")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == 0, f"Expected 0 active entries, got {row[0]}"
     finally:
         await kb.close()
