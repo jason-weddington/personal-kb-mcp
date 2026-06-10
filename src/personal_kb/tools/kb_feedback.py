@@ -1,14 +1,11 @@
 """kb_feedback MCP tool — structured agent friction reporting."""
 
 import logging
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
-
-from personal_kb.db.backend import Database
 
 logger = logging.getLogger(__name__)
 
@@ -57,26 +54,25 @@ def register_kb_feedback(mcp: FastMCP, prefix: str = "kb_") -> None:
         ctx: Context | None = None,
     ) -> str:
         """Report when a KB query failed to help with your task."""
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        kb = kb_from_lifespan(ctx.lifespan_context)
+        # Client-side type validation — keeps the exact local string in both modes
+        if feedback_type not in _VALID_TYPES:
+            return (
+                f"Invalid feedback_type '{feedback_type}'. "
+                f"Must be one of: {', '.join(sorted(_VALID_TYPES))}"
+            )
 
-        return await submit_feedback(
-            kb.db,
-            feedback_type,
-            tool_name,
-            query_or_params,
-            detail,
-            contributor=kb.config.attribution.contributor,
-            team=kb.config.attribution.team,
-        )
+        backend = backend_from_lifespan(ctx.lifespan_context)
+        await backend.feedback(feedback_type, tool_name, query_or_params, detail)
+        return f"Feedback recorded ({feedback_type}). Thank you — this helps improve the KB."
 
 
 async def submit_feedback(
-    db: Database,
+    db: object,
     feedback_type: str,
     tool_name: str | None = None,
     query_or_params: str | None = None,
@@ -85,20 +81,25 @@ async def submit_feedback(
     contributor: str | None = None,
     team: str | None = None,
 ) -> str:
-    """Core feedback logic, testable without FastMCP context."""
+    """Core feedback logic (legacy helper for tests/web routes).
+
+    New code should use :func:`backend.feedback` directly.
+    """
     if feedback_type not in _VALID_TYPES:
         return (
             f"Invalid feedback_type '{feedback_type}'. "
             f"Must be one of: {', '.join(sorted(_VALID_TYPES))}"
         )
 
+    from datetime import UTC, datetime
+
     now = datetime.now(UTC).isoformat()
-    await db.execute(
+    await db.execute(  # type: ignore[attr-defined]
         "INSERT INTO agent_feedback"
         " (feedback_type, tool_name, query_or_params, detail, contributor, team, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?, ?)",
         (feedback_type, tool_name, query_or_params, detail, contributor, team, now),
     )
-    await db.commit()
+    await db.commit()  # type: ignore[attr-defined]
 
     return f"Feedback recorded ({feedback_type}). Thank you — this helps improve the KB."

@@ -5,40 +5,39 @@ import pytest
 from personal_kb.db.queries import (
     deactivate_entry_db,
     get_entry,
-    touch_accessed,
     update_entry,
 )
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.models.entry import EntryType
 from personal_kb.tools.formatters import format_entry_full, format_result_list
-from personal_kb.tools.kb_get import _MAX_IDS, _pointer_rot_note
+from personal_kb.tools.kb_get import _MAX_IDS, _render_pointer_rot
 
 
 async def _kb_get_logic(db, ids: list[str]) -> str:
     """Replicate kb_get logic for testing without MCP context.
 
-    Must stay in lockstep with the real kb_get tool body — both call the
-    same ``_pointer_rot_note`` helper so the rot-note rendering cannot drift.
+    Uses ``backend_from_lifespan`` so this helper stays in lockstep with
+    the real kb_get tool body — both go through the same
+    LocalBackend.get_entries() path.
     """
     if len(ids) > _MAX_IDS:
         return f"Error: Maximum {_MAX_IDS} IDs per request (got {len(ids)})."
 
+    from personal_kb.tools._lifespan import backend_from_lifespan
+
+    backend = backend_from_lifespan({"db": db})
+    entries_data = await backend.get_entries(ids)
+
     formatted: list[str] = []
-    accessed_ids: list[str] = []
-    for eid in ids:
-        entry = await get_entry(db, eid)
-        if entry is None or not entry.is_active:
+    for eid, entry, rot_pairs in entries_data:
+        if entry is None:
             formatted.append(f"[{eid}] not found")
         else:
             rendered = format_entry_full(entry)
-            note = await _pointer_rot_note(db, entry)
+            note = _render_pointer_rot(rot_pairs)
             if note is not None:
                 rendered = f"{rendered}\n{note}"
             formatted.append(rendered)
-            accessed_ids.append(eid)
-
-    if accessed_ids:
-        await touch_accessed(db, accessed_ids)
 
     return format_result_list(formatted)
 

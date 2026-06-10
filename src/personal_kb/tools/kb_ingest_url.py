@@ -59,7 +59,7 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
         LLM extraction, and deduplication.
 
         """
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
@@ -67,7 +67,24 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
         if not url:
             return "Error: url is required."
 
-        # Fail closed: require safety deps for secret/PII scanning
+        backend = backend_from_lifespan(ctx.lifespan_context)
+
+        if backend.is_remote:
+            try:
+                file_result = await backend.ingest_url(url, content, project_ref, dry_run)
+            except Exception as exc:
+                from personal_kb.backend.http import BackendHttpError, _map_error
+
+                if isinstance(exc, BackendHttpError):
+                    return _map_error(exc, "")
+                return f"Error: {exc}"
+            dry_prefix = "[DRY RUN] " if dry_run else ""
+            line = f"{dry_prefix}{_format_file_result(file_result)}"
+            if file_result.summary:
+                line += f"\n  Summary: {file_result.summary}"
+            return line
+
+        # Local mode — require safety deps for secret/PII scanning
         from personal_kb.config import is_safety_skip
 
         if not is_safety_skip():
@@ -80,6 +97,8 @@ def register_kb_ingest_url(mcp: FastMCP, prefix: str = "kb_") -> None:
                     "  uv sync --extra safety\n\n"
                     "To bypass (not recommended): set KB_SKIP_SAFETY=TRUE"
                 )
+
+        from personal_kb.tools._lifespan import kb_from_lifespan
 
         kb = kb_from_lifespan(ctx.lifespan_context)
         if kb.extraction_llm is None and kb.query_llm is None:

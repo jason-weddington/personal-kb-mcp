@@ -81,10 +81,25 @@ def register_kb_summarize(mcp: FastMCP, prefix: str = "kb_") -> None:
             is_agentic_query,
             is_agentic_synthesis,
         )
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
+
+        backend = backend_from_lifespan(ctx.lifespan_context)
+
+        if backend.is_remote:
+            try:
+                return await backend.summarize(question, scope, limit)
+            except Exception as exc:
+                from personal_kb.backend.http import BackendHttpError, _map_error
+
+                if isinstance(exc, BackendHttpError):
+                    return _map_error(exc, "")
+                return f"Error: {exc}"
+
+        # Local mode
+        from personal_kb.tools._lifespan import kb_from_lifespan
 
         kb = kb_from_lifespan(ctx.lifespan_context)
         return await kb.summarize(

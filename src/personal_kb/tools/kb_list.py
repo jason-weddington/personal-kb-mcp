@@ -62,6 +62,23 @@ def register_kb_list_projects(mcp: FastMCP, prefix: str = "kb_") -> None:
         ),
     )
     async def kb_list_projects(ctx: Context) -> str:
+        from personal_kb.tools._lifespan import backend_from_lifespan
+
+        backend = backend_from_lifespan(ctx.lifespan_context)
+        if backend.is_remote:
+            try:
+                rows = await backend.list_projects()
+            except Exception as exc:
+                from personal_kb.backend.http import BackendHttpError, _map_error
+
+                if isinstance(exc, BackendHttpError):
+                    return _map_error(exc, "")
+                return f"Error: {exc}"
+            if not rows:
+                return "No projects found."
+            return "\n".join(f"{name} ({count} entries)" for name, count in rows)
+
+        # Local mode
         from personal_kb.tools._lifespan import kb_from_lifespan
 
         kb = kb_from_lifespan(ctx.lifespan_context)
@@ -76,6 +93,23 @@ def register_kb_list_contributors(mcp: FastMCP, prefix: str = "kb_") -> None:
         description="List all contributors in the knowledge base with entry counts.",
     )
     async def kb_list_contributors(ctx: Context) -> str:
+        from personal_kb.tools._lifespan import backend_from_lifespan
+
+        backend = backend_from_lifespan(ctx.lifespan_context)
+        if backend.is_remote:
+            try:
+                rows = await backend.list_contributors()
+            except Exception as exc:
+                from personal_kb.backend.http import BackendHttpError, _map_error
+
+                if isinstance(exc, BackendHttpError):
+                    return _map_error(exc, "")
+                return f"Error: {exc}"
+            if not rows:
+                return "No contributors found."
+            return "\n".join(f"{name} ({count} entries)" for name, count in rows)
+
+        # Local mode
         from personal_kb.tools._lifespan import kb_from_lifespan
 
         kb = kb_from_lifespan(ctx.lifespan_context)
@@ -90,6 +124,23 @@ def register_kb_list_teams(mcp: FastMCP, prefix: str = "kb_") -> None:
         description="List all teams in the knowledge base with entry counts.",
     )
     async def kb_list_teams(ctx: Context) -> str:
+        from personal_kb.tools._lifespan import backend_from_lifespan
+
+        backend = backend_from_lifespan(ctx.lifespan_context)
+        if backend.is_remote:
+            try:
+                rows = await backend.list_teams()
+            except Exception as exc:
+                from personal_kb.backend.http import BackendHttpError, _map_error
+
+                if isinstance(exc, BackendHttpError):
+                    return _map_error(exc, "")
+                return f"Error: {exc}"
+            if not rows:
+                return "No teams found."
+            return "\n".join(f"{name} ({count} entries)" for name, count in rows)
+
+        # Local mode
         from personal_kb.tools._lifespan import kb_from_lifespan
 
         kb = kb_from_lifespan(ctx.lifespan_context)

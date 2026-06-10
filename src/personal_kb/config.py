@@ -301,6 +301,26 @@ def get_pg_region() -> str:
     return os.environ.get("KB_PG_REGION", "us-east-1")
 
 
+def get_personal_kb_url() -> str | None:
+    """Return the personal-kb service URL from PERSONAL_KB_URL, or None.
+
+    An empty string is treated as unset (returns None), so both
+    ``PERSONAL_KB_URL=`` and an absent env var select the local engine.
+    Read at **call time** — not at module load time — so tests can
+    monkeypatch the env after importing this module.
+    """
+    return os.environ.get("PERSONAL_KB_URL") or None
+
+
+def get_personal_kb_api_key() -> str | None:
+    """Return the personal-kb API key from PERSONAL_KB_API_KEY, or None.
+
+    An empty string is treated as unset (returns None).  Read at
+    **call time**.
+    """
+    return os.environ.get("PERSONAL_KB_API_KEY") or None
+
+
 def get_aws_profile() -> str | None:
     """Return the AWS profile name for Bedrock credentials.
 

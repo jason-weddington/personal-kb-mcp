@@ -231,10 +231,21 @@ def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
     )
     async def kb_explore(ctx: Context | None = None) -> str:
         """Open interactive graph explorer in the browser."""
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
+
+        backend = backend_from_lifespan(ctx.lifespan_context)
+
+        if backend.is_remote:
+            from personal_kb.config import get_personal_kb_url
+
+            url = get_personal_kb_url() or "the KB service"
+            return f"KB explorer is hosted at {url} — open it in a browser."
+
+        # Local mode
+        from personal_kb.tools._lifespan import kb_from_lifespan
 
         kb = kb_from_lifespan(ctx.lifespan_context)
 

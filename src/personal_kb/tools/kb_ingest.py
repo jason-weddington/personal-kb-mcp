@@ -142,7 +142,7 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         For URLs, use kb_ingest_url instead — it handles fetching and HTML extraction.
         """
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
@@ -150,7 +150,61 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
         if not path:
             return "Error: path is required. For URLs, use kb_ingest_url."
 
-        # Fail closed: require safety deps for secret/PII scanning
+        backend = backend_from_lifespan(ctx.lifespan_context)
+
+        if backend.is_remote:
+            from personal_kb.backend.http import BackendHttpError, _map_error
+
+            if _is_glob(path):
+                base = Path.cwd()
+                matched = sorted(f for f in base.glob(path) if f.is_file() and not f.is_symlink())
+                if not matched:
+                    return f"Error: No files matched pattern: {path}"
+                result = IngestResult()
+                for file_path in matched:
+                    result.total_files += 1
+                    try:
+                        file_result = await backend.ingest_file(file_path, project_ref, dry_run)
+                    except BackendHttpError as exc:
+                        from personal_kb.ingest.ingester import FileResult as FileResultCls
+
+                        fr = FileResultCls(
+                            path=str(file_path), action="error", reason=_map_error(exc, "")
+                        )
+                        result.file_results.append(fr)
+                        result.errors += 1
+                        continue
+                    try:
+                        file_result.path = str(file_path.relative_to(base))
+                    except ValueError:
+                        file_result.path = str(file_path)
+                    result.file_results.append(file_result)
+                    _tally_result(result, file_result)
+                return _format_ingest_result(result, dry_run)
+
+            target = Path(path).expanduser().resolve()
+            if not target.exists():
+                return f"Error: Path does not exist: {target}"
+            if target.is_file():
+                try:
+                    file_result = await backend.ingest_file(target, project_ref, dry_run)
+                except BackendHttpError as exc:
+                    return _map_error(exc, "")
+                except Exception as exc:
+                    return f"Error: {exc}"
+                prefix_str = "[DRY RUN] " if dry_run else ""
+                line = f"{prefix_str}{_format_file_result(file_result)}"
+                if file_result.summary:
+                    line += f"\n  Summary: {file_result.summary}"
+                return line
+            if target.is_dir():
+                return (
+                    "Error: Directory ingest is not supported in HTTP mode"
+                    " — ingest individual files."
+                )
+            return f"Error: {target} is not a file or directory."
+
+        # Local mode — require safety deps for secret/PII scanning
         from personal_kb.config import is_safety_skip
 
         if not is_safety_skip():
@@ -164,6 +218,8 @@ def register_kb_ingest(mcp: FastMCP, prefix: str = "kb_") -> None:
                     "  # or: uvx --with 'personal-kb[safety]' personal-kb\n\n"
                     "To bypass (not recommended): set KB_SKIP_SAFETY=TRUE"
                 )
+
+        from personal_kb.tools._lifespan import kb_from_lifespan
 
         kb = kb_from_lifespan(ctx.lifespan_context)
         if kb.extraction_llm is None and kb.query_llm is None:

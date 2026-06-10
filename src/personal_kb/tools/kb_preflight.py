@@ -46,19 +46,26 @@ def register_kb_preflight(mcp: FastMCP, prefix: str = "kb_") -> None:
         ctx: Context | None = None,
     ) -> str:
         """Get a project context primer."""
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
         from personal_kb.tools.ttl import parse_ttl
 
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        kb = kb_from_lifespan(ctx.lifespan_context)
-
-        since_td = None
+        # Parse since before dispatching — same early error in both modes
         if since is not None:
             try:
-                since_td = parse_ttl(since)
+                parse_ttl(since)  # validate only
             except ValueError as exc:
                 return f"Error: {exc}"
 
-        return await kb.preflight(project_ref, since=since_td)
+        backend = backend_from_lifespan(ctx.lifespan_context)
+
+        try:
+            return await backend.preflight(project_ref, since)
+        except Exception as exc:
+            from personal_kb.backend.http import BackendHttpError, _map_error
+
+            if isinstance(exc, BackendHttpError):
+                return _map_error(exc, "")
+            return f"Error: {exc}"

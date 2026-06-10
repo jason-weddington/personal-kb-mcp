@@ -1,16 +1,18 @@
 """kb_search MCP tool — hybrid FTS + vector search."""
 
 import logging
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
-from personal_kb.db.backend import Database
 from personal_kb.models.entry import EntryType
 from personal_kb.models.search import SearchQuery, SearchResult
 from personal_kb.tools.formatters import format_entry_compact, format_graph_hint, format_result_list
+
+if TYPE_CHECKING:
+    from personal_kb.backend.protocol import Backend
 
 logger = logging.getLogger(__name__)
 
@@ -19,34 +21,31 @@ _MAX_HINTS = 3
 
 
 async def collect_graph_hints(
-    db: Database,
+    backend: "Backend",
     results: list[SearchResult],
     max_hints: int = _MAX_HINTS,
 ) -> list[str]:
     """Collect graph-connected entries as hints when results are sparse.
 
-    For each search result, does a 1-hop neighbor lookup to find connected
+    For each search result, does a 1-hop neighbour lookup to find connected
     entries not already in the result set. Returns formatted hint strings.
     """
-    from personal_kb.db.queries import get_entry
-    from personal_kb.graph.queries import get_neighbors
-
     seen_ids = {r.entry.id for r in results}
     hints: list[str] = []
 
     for r in results:
-        neighbors = await get_neighbors(db, r.entry.id, limit=10)
-        for neighbor_id, edge_type, _direction in neighbors:
+        neighbours = await backend.neighbors(r.entry.id, limit=10)
+        for neighbor_id, edge_type, _direction in neighbours:
             if not neighbor_id.startswith("kb-"):
                 # Intermediate node (tag, concept, etc.) — look one more hop
-                # to find entries connected through this node
                 via_node = neighbor_id
-                second_hop = await get_neighbors(db, neighbor_id, limit=10)
+                second_hop = await backend.neighbors(neighbor_id, limit=10)
                 for entry_id, _edge_type, _dir in second_hop:
                     if entry_id in seen_ids or not entry_id.startswith("kb-"):
                         continue
-                    entry = await get_entry(db, entry_id)
-                    if entry and entry.is_active:
+                    entries_data = await backend.get_entries([entry_id])
+                    _, entry, _ = entries_data[0]
+                    if entry is not None:
                         seen_ids.add(entry_id)
                         hints.append(format_graph_hint(entry, via_node))
                         if len(hints) >= max_hints:
@@ -54,10 +53,10 @@ async def collect_graph_hints(
             else:
                 if neighbor_id in seen_ids:
                     continue
-                entry = await get_entry(db, neighbor_id)
-                if entry and entry.is_active:
+                entries_data = await backend.get_entries([neighbor_id])
+                _, entry, _ = entries_data[0]
+                if entry is not None:
                     seen_ids.add(neighbor_id)
-                    # Find the shared intermediate node for context
                     hints.append(format_graph_hint(entry, f"{edge_type} from {r.entry.id}"))
                     if len(hints) >= max_hints:
                         return hints
@@ -135,10 +134,17 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
         ctx: Context | None = None,
     ) -> str:
         """Search the knowledge base using hybrid semantic + keyword search."""
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
+
+        backend = backend_from_lifespan(ctx.lifespan_context)
+
+        # HTTP mode: contributor/team filters are not supported
+        if backend.is_remote and (contributor is not None or team is not None):
+            return "Error: contributor/team filters are not supported in HTTP mode."
+
         search_query = SearchQuery(
             query=query,
             project_ref=project_ref,
@@ -151,25 +157,29 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
             include_expired=include_expired,
         )
 
-        kb = kb_from_lifespan(ctx.lifespan_context)
-        telemetry_contributor = kb.config.attribution.contributor
+        # For local mode: obtain contributor for telemetry from the KB config.
+        # For HTTP mode: the service handles attribution; contributor param above
+        # is always None (checked above).
+        telemetry_contributor: str | None = None
+        if not backend.is_remote:
+            from personal_kb.tools._lifespan import kb_from_lifespan
 
-        results, filtered_count = await kb.search(search_query, contributor=telemetry_contributor)
+            kb = kb_from_lifespan(ctx.lifespan_context)
+            telemetry_contributor = kb.config.attribution.contributor
 
-        # Add a note if vector search was unavailable. ``kb.embedder`` is the
-        # Embedder Protocol; the concrete EmbeddingClient (which the channel
-        # always provides) carries an ``is_available()`` method — duck-typed
-        # via getattr so a future plain-Protocol embedder doesn't error.
+        results, filtered_count = await backend.search(
+            search_query, contributor=telemetry_contributor
+        )
+
+        # Add a note if vector search was unavailable.
         note = None
-        embedder = kb.embedder
-        is_available = getattr(embedder, "is_available", None)
-        if embedder is None or (is_available is not None and not await is_available()):
+        if not await backend.vector_search_available():
             note = "Vector search unavailable (Ollama offline). Results are FTS-only."
 
         # Collect graph hints when results are sparse
         hints = None
         if len(results) < _SPARSE_THRESHOLD:
-            hints = await collect_graph_hints(kb.db, results)
+            hints = await collect_graph_hints(backend, results)
 
         return format_search_results(
             results, note, graph_hints=hints, filtered_count=filtered_count

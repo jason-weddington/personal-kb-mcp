@@ -19,6 +19,7 @@ from personal_kb.config import (
     get_db_path,
     get_explore_port,
     get_log_level,
+    get_personal_kb_url,
     get_query_provider,
     is_auto_explore,
     is_manager_mode,
@@ -46,16 +47,20 @@ from personal_kb.tools.kb_summarize import register_kb_summarize
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-    """Manage the :class:`KnowledgeBase` facade lifecycle.
+    """Manage the backend lifecycle.
 
-    Builds a :class:`kb_core.config.KbConfig` from the channel-side env
-    getters (:mod:`personal_kb.config`) and opens a
-    :class:`~kb_core.knowledge_base.KnowledgeBase` over it. The facade
-    owns the database, the embedder, the LLM clients, and the graph
-    enricher; the channel just holds a reference. Maps-index startup
-    rebuild + LISTEN/NOTIFY wiring use ``kb.db`` directly — the channel
-    keeps those concerns since the on-disk JSONL path is env-driven and
-    therefore server-side.
+    HTTP mode (``PERSONAL_KB_URL`` set): opens an :class:`HttpBackend`
+    that talks to the remote KB service.  The local DB, embedder, LLMs,
+    maps-index writer, and explorer auto-start are all skipped.
+
+    Local mode (``PERSONAL_KB_URL`` unset): builds a
+    :class:`~kb_core.knowledge_base.KnowledgeBase` from env config,
+    wraps it in a :class:`LocalBackend`, and runs the full local startup
+    sequence (maps rebuild, LISTEN/NOTIFY, explorer auto-start) —
+    byte-identical to the previous implementation.
+
+    Both modes yield a dict with ``"kb"`` and ``"backend"`` keys so that
+    :func:`kb_from_lifespan` and :func:`backend_from_lifespan` both work.
     """
     # Configure logging to stderr (stdout is MCP stdio transport)
     log_level = getattr(logging, get_log_level())
@@ -73,6 +78,30 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 
     logger = logging.getLogger(__name__)
 
+    kb_service_url = get_personal_kb_url()
+
+    # ------------------------------------------------------------------ #
+    # HTTP mode                                                            #
+    # ------------------------------------------------------------------ #
+    if kb_service_url:
+        from personal_kb.backend import HttpBackend
+        from personal_kb.config import get_personal_kb_api_key
+
+        api_key = get_personal_kb_api_key() or ""
+        logger.info("HTTP mode — connecting to KB service at %s", kb_service_url)
+        backend = HttpBackend(base_url=kb_service_url, api_key=api_key)
+        await backend.open()
+        try:
+            # No 'kb' object in HTTP mode; supply None so kb_from_lifespan
+            # still works if called (it will raise, which is correct).
+            yield {"backend": backend}
+        finally:
+            await backend.close()
+        return
+
+    # ------------------------------------------------------------------ #
+    # Local mode (byte-identical to previous implementation)              #
+    # ------------------------------------------------------------------ #
     db_url = get_database_url()
     if db_url:
         logger.info("Connecting to PostgreSQL database")
@@ -187,7 +216,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
             embedder,
             kb.query_llm,
             kb.synthesis_llm,
-            store=kb.store,
+            store=kb.knowledge_store,
             graph_builder=kb.graph_builder,
             graph_enricher=kb.graph_enricher,
             extraction_llm=kb.extraction_llm,
@@ -201,8 +230,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         else:
             logger.info("Explorer auto-start skipped (port %d in use)", port)
 
+    from personal_kb.backend import LocalBackend
+
+    local_backend = LocalBackend(kb)
     try:
-        yield {"kb": kb}
+        yield {"kb": kb, "backend": local_backend}
     finally:
         # Tear down the maps listener before closing the DB so its dedicated
         # asyncpg connection (Postgres) is closed cleanly. Best-effort.

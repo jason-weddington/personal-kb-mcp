@@ -90,11 +90,40 @@ def register_kb_ask(mcp: FastMCP, prefix: str = "kb_") -> None:
           Use for "what touches tag:python?" or "what depends on kb-00042?"
         - connection: Find paths between two nodes. Use for "how are X and Y related?"
         """
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan, kb_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
 
+        backend = backend_from_lifespan(ctx.lifespan_context)
+
+        if backend.is_remote:
+            if strategy != "auto":
+                return (
+                    f"Error: strategy '{strategy}' requires a local KB"
+                    " — only 'auto' is supported in HTTP mode."
+                )
+            try:
+                entries_with_context, agent_turns_used = await backend.ask_auto(
+                    question, scope, include_graph_context, limit
+                )
+            except Exception as exc:
+                from personal_kb.backend.http import BackendHttpError, _map_error
+
+                if isinstance(exc, BackendHttpError):
+                    return _map_error(exc, "")
+                return f"Error: {exc}"
+            if not entries_with_context:
+                return f"[Agent: {agent_turns_used} tool calls] No results found."
+            from personal_kb.tools.formatters import format_entry_full, format_result_list
+
+            header = f"[Agent: {agent_turns_used} tool calls]"
+            formatted = [
+                format_entry_full(entry, context=c) for entry, c in entries_with_context[:limit]
+            ]
+            return format_result_list(formatted, header=header)
+
+        # Local mode
         kb = kb_from_lifespan(ctx.lifespan_context)
         db = kb.db
         embedder = kb.embedder

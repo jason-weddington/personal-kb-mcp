@@ -124,12 +124,19 @@ def test_format_graph_hint():
 
 
 # --- collect_graph_hints ---
+# Helper: build a Backend from a raw DB for tests that only have ``db``.
+
+
+def _backend(db):
+    from personal_kb.tools._lifespan import backend_from_lifespan
+
+    return backend_from_lifespan({"db": db})
 
 
 @pytest.mark.asyncio
 async def test_collect_graph_hints_empty_results(db):
     """No hints when there are no search results."""
-    hints = await collect_graph_hints(db, [])
+    hints = await collect_graph_hints(_backend(db), [])
     assert hints == []
 
 
@@ -139,7 +146,7 @@ async def test_collect_graph_hints_no_graph_edges(db):
     entry = _make_entry()
     await insert_entry(db, entry)
     results = [_make_result(entry)]
-    hints = await collect_graph_hints(db, results)
+    hints = await collect_graph_hints(_backend(db), results)
     assert hints == []
 
 
@@ -159,7 +166,7 @@ async def test_collect_graph_hints_via_shared_tag(db):
 
     # Search returns only entry1 — should hint at entry2 via tag:python
     results = [_make_result(entry1)]
-    hints = await collect_graph_hints(db, results)
+    hints = await collect_graph_hints(_backend(db), results)
     assert len(hints) == 1
     assert "kb-00002" in hints[0]
     assert "tag:python" in hints[0]
@@ -179,7 +186,7 @@ async def test_collect_graph_hints_skips_result_entries(db):
 
     # Both entries in results — no hints
     results = [_make_result(entry1), _make_result(entry2)]
-    hints = await collect_graph_hints(db, results)
+    hints = await collect_graph_hints(_backend(db), results)
     assert hints == []
 
 
@@ -198,7 +205,7 @@ async def test_collect_graph_hints_max_limit(db):
 
     # Search returns only first entry
     results = [_make_result(entries[0])]
-    hints = await collect_graph_hints(db, results, max_hints=3)
+    hints = await collect_graph_hints(_backend(db), results, max_hints=3)
     assert len(hints) == 3
 
 
@@ -223,7 +230,7 @@ async def test_collect_graph_hints_direct_entry_edge(db):
 
     # Search returns only entry1 — should hint at entry2
     results = [_make_result(entry1)]
-    hints = await collect_graph_hints(db, results)
+    hints = await collect_graph_hints(_backend(db), results)
     assert len(hints) == 1
     assert "kb-00002" in hints[0]
     assert "supersedes" in hints[0]
@@ -247,7 +254,7 @@ async def test_collect_graph_hints_skips_inactive(db):
     await db.commit()
 
     results = [_make_result(entry1)]
-    hints = await collect_graph_hints(db, results)
+    hints = await collect_graph_hints(_backend(db), results)
     assert hints == []
 
 
@@ -264,7 +271,7 @@ async def test_collect_graph_hints_via_project(db):
     await builder.build_for_entry(entry2)
 
     results = [_make_result(entry1)]
-    hints = await collect_graph_hints(db, results)
+    hints = await collect_graph_hints(_backend(db), results)
     assert len(hints) == 1
     assert "kb-00002" in hints[0]
     assert "project:my-proj" in hints[0]

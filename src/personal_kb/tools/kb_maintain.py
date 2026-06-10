@@ -102,7 +102,7 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
         - list_contributors: Show contributor/team stats for active entries
         - list_audit: Recent audit events (optional: entry_id, since)
         """
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan, kb_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
@@ -110,6 +110,34 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
         if action not in _ACTIONS:
             return f"Unknown action '{action}'. Use: {', '.join(sorted(_ACTIONS))}"
 
+        backend = backend_from_lifespan(ctx.lifespan_context)
+
+        if backend.is_remote:
+            from personal_kb.backend.http import BackendHttpError, _map_error
+
+            if action == "deactivate":
+                if not entry_id:
+                    return "Error: entry_id is required for deactivate action."
+                try:
+                    entry = await backend.deactivate(entry_id)
+                except BackendHttpError as exc:
+                    return _map_error(exc, "")
+                return f"Deactivated entry {entry.id}: {entry.short_title}"
+            elif action == "reactivate":
+                if not entry_id:
+                    return "Error: entry_id is required for reactivate action."
+                try:
+                    entry = await backend.reactivate(entry_id)
+                except BackendHttpError as exc:
+                    return _map_error(exc, "")
+                return f"Reactivated entry {entry.id}: {entry.short_title}"
+            else:
+                return (
+                    f"Error: action {action} is not supported in HTTP mode"
+                    " — run it on the KB service host."
+                )
+
+        # Local mode
         kb = kb_from_lifespan(ctx.lifespan_context)
         db: Database = kb.db
         store: KnowledgeStore = kb.knowledge_store

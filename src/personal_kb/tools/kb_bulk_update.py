@@ -90,7 +90,7 @@ def register_kb_bulk_update(mcp: FastMCP, prefix: str = "kb_") -> None:
         Filters select which entries to update. Updates specify what to change.
         Use dry_run=true to preview before committing.
         """
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
@@ -101,15 +101,21 @@ def register_kb_bulk_update(mcp: FastMCP, prefix: str = "kb_") -> None:
         if not updates:
             return "Error: No updates specified."
 
-        kb = kb_from_lifespan(ctx.lifespan_context)
+        backend = backend_from_lifespan(ctx.lifespan_context)
 
         try:
-            results = await kb.bulk_update(
+            results = await backend.bulk_update(
                 filters=filters,
                 updates=updates,
                 dry_run=dry_run,
             )
         except Exception as exc:
+            from personal_kb.backend.http import BackendHttpError
+
+            if isinstance(exc, BackendHttpError):
+                from personal_kb.backend.http import _map_error
+
+                return _map_error(exc, "")
             logger.warning("Bulk update failed", exc_info=True)
             return f"Error: {exc}"
 

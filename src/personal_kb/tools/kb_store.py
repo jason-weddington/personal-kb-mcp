@@ -11,13 +11,9 @@ from pydantic import Field
 
 from personal_kb.confidence.decay import compute_effective_confidence
 from personal_kb.config import is_safety_skip
-from personal_kb.graph.builder import GraphBuilder, _as_list
-from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.graph.builder import _as_list
 from personal_kb.ingest.safety import detect_secrets_in_content
-from personal_kb.maps_index_writer import write_project_maps
 from personal_kb.models.entry import EntryType, KnowledgeEntry
-from personal_kb.search.embeddings import EmbeddingClient
-from personal_kb.store.knowledge_store import KnowledgeStore
 from personal_kb.tools.formatters import format_entry_compact
 from personal_kb.tools.map_lint import lint_map_body
 from personal_kb.tools.ttl import compute_expires_at
@@ -87,10 +83,16 @@ def _mental_map_has_pointer(
     return False
 
 
-def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
-    """Format the result of a store operation for the MCP response."""
-    from personal_kb.config import get_backend_warning
+def format_store_result(
+    entry: KnowledgeEntry,
+    is_update: bool = False,
+    include_backend_warning: bool = True,
+) -> str:
+    """Format the result of a store operation for the MCP response.
 
+    Pass ``include_backend_warning=False`` in HTTP mode to suppress the
+    SQLite-fallback warning (the remote service is not SQLite).
+    """
     action = "Updated" if is_update else "Created"
     anchor = entry.updated_at or entry.created_at or datetime.now(UTC)
     eff = compute_effective_confidence(entry.confidence_level, entry.entry_type, anchor)
@@ -98,30 +100,36 @@ def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
     line = f"{action} {entry.id} (v{entry.version})\n{compact}"
     if not entry.has_embedding:
         line += "\n  Note: Entry will be embedded when Ollama is available"
-    warning = get_backend_warning()
-    if warning:
-        line = f"{warning}\n\n{line}"
+    if include_backend_warning:
+        from personal_kb.config import get_backend_warning
+
+        warning = get_backend_warning()
+        if warning:
+            line = f"{warning}\n\n{line}"
     return line
 
 
-def _prepend_map_advisories(result: str, warnings: list[str]) -> str:
+def _prepend_map_advisories(
+    result: str,
+    warnings: list[str],
+    include_backend_warning: bool = True,
+) -> str:
     """Insert advisory mental_map lint lines into a store result.
 
     Advisories land ABOVE the Created/Updated compact block but BELOW any
-    backend warning that ``format_store_result`` already prepended (lines
-    46-48). The prepend stays at this tool layer — it is NOT threaded into the
-    shared ``format_store_result`` (which serves non-map stores too). The store
-    always succeeds; these warnings are informational only.
+    backend warning that ``format_store_result`` already prepended.
+    The store always succeeds; these warnings are informational only.
     """
     if not warnings:
         return result
-    from personal_kb.config import get_backend_warning
-
     advisory = "\n".join(warnings)
-    backend = get_backend_warning()
-    if backend and result.startswith(backend):
-        rest = result[len(backend) :].lstrip("\n")
-        return f"{backend}\n\n{advisory}\n\n{rest}"
+    if include_backend_warning:
+        from personal_kb.config import get_backend_warning
+
+        backend = get_backend_warning()
+        if backend and result.startswith(backend):
+            rest = result[len(backend) :].lstrip("\n")
+            return f"{backend}\n\n{advisory}\n\n{rest}"
     return f"{advisory}\n\n{result}"
 
 
@@ -231,31 +239,34 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         - mental_map: structural orientation node — pointers/relationships only,
           no retrievable values; requires at least one outbound pointer
         """
-        from personal_kb.tools._lifespan import kb_from_lifespan
+        from personal_kb.tools._lifespan import backend_from_lifespan
 
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        kb = kb_from_lifespan(ctx.lifespan_context)
-        db = kb.db
-        team = kb.config.attribution.team
+        backend = backend_from_lifespan(ctx.lifespan_context)
+        is_http = backend.is_remote
 
         # --- Deactivate path ---
         if deactivate_entry_id:
             try:
-                entry = await kb.deactivate(deactivate_entry_id)
-            except ValueError as e:
+                entry = await backend.deactivate(deactivate_entry_id)
+            except Exception as e:
+                from personal_kb.backend.http import BackendHttpError
+
+                if isinstance(e, BackendHttpError):
+                    from personal_kb.backend.http import _map_error
+
+                    return _map_error(e, "")
                 return f"Error: {e}"
-            # Remove outgoing graph edges
-            await db.execute(
-                "DELETE FROM graph_edges WHERE source = ?",
-                (deactivate_entry_id,),
-            )
-            await db.commit()
-            # Refresh the on-disk maps index BEFORE the early return; the
-            # re-query naturally excludes the now-inactive row. Best-effort.
-            if entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
-                await _refresh_maps_index(db, entry.project_ref, team)
+
+            # Local mode: refresh maps index for mental_map deactivations
+            if not is_http and entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
+                from personal_kb.tools._lifespan import kb_from_lifespan
+
+                kb = kb_from_lifespan(ctx.lifespan_context)
+                await _refresh_maps_index(kb.db, entry.project_ref, kb.config.attribution.team)
+
             reason = f" ({change_reason})" if change_reason else ""
             return f"Deactivated entry {entry.id}: {entry.short_title}{reason}"
 
@@ -270,42 +281,53 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 secret_err = _check_secrets(knowledge_details)
                 if secret_err:
                     return secret_err
-            # Compute expires_at from TTL if provided
-            expires_at = None
+            # Validate TTL (for early error feedback; the raw ttl is passed to backend)
             if ttl:
                 try:
-                    expires_at = compute_expires_at(ttl)
+                    compute_expires_at(ttl)
                 except ValueError as e:
                     return f"Error: {e}"
-            entry = await kb.update(
-                update_entry_id,
-                knowledge_details=knowledge_details or None,
-                change_reason=change_reason,
-                confidence_level=confidence_level,
-                tags=tags,
-                hints=hints,
-                updated_by=kb.config.attribution.contributor,
-                sensitivity=sensitivity,
-                expires_at=expires_at,
-                short_title=short_title or None,
-                long_title=long_title or None,
-                entry_type=entry_type,
-                project_ref=project_ref,
-                source_context=source_context,
-            )
-            entry = await kb.get(entry.id) or entry
-            # Refresh the on-disk maps index for mental_map updates. The
-            # entry type may have CHANGED in this update — we update the
-            # index whenever the refreshed entry is a mental_map.
-            if entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
-                await _refresh_maps_index(db, entry.project_ref, team)
-            result = format_store_result(entry, is_update=True)
-            # Advisory mental_map lint — gate on the RE-FETCHED entry's type
-            # (the entry_type param is None on metadata-only updates) and only
-            # when a new body was supplied. Lint never rejects; the update has
-            # already succeeded.
+
+            try:
+                _action, entry = await backend.store(
+                    short_title=short_title,
+                    long_title=long_title,
+                    knowledge_details=knowledge_details,
+                    entry_type=entry_type,
+                    project_ref=project_ref,
+                    source_context=source_context,
+                    confidence_level=confidence_level,
+                    tags=tags,
+                    hints=hints,
+                    sensitivity=sensitivity,
+                    ttl=ttl,
+                    update_entry_id=update_entry_id,
+                    change_reason=change_reason,
+                )
+            except Exception as e:
+                from personal_kb.backend.http import BackendHttpError
+
+                if isinstance(e, BackendHttpError):
+                    from personal_kb.backend.http import _map_error
+
+                    return _map_error(e, "")
+                return f"Error: {e}"
+
+            # Local mode: refresh maps index for mental_map updates
+            if not is_http and entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
+                from personal_kb.tools._lifespan import kb_from_lifespan
+
+                kb = kb_from_lifespan(ctx.lifespan_context)
+                await _refresh_maps_index(kb.db, entry.project_ref, kb.config.attribution.team)
+
+            result = format_store_result(entry, is_update=True, include_backend_warning=not is_http)
+            # Advisory mental_map lint — gate on the re-fetched entry's type
             if entry.entry_type == EntryType.MENTAL_MAP and knowledge_details:
-                result = _prepend_map_advisories(result, lint_map_body(knowledge_details))
+                result = _prepend_map_advisories(
+                    result,
+                    lint_map_body(knowledge_details),
+                    include_backend_warning=not is_http,
+                )
             return result
 
         # --- Create path ---
@@ -335,61 +357,59 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         ):
             return ORPHAN_MAP_ERROR
 
-        # Compute expires_at from TTL if provided
-        expires_at = None
+        # Validate TTL (for early error feedback; the raw ttl is passed to backend)
         if ttl:
             try:
-                expires_at = compute_expires_at(ttl)
+                compute_expires_at(ttl)
             except ValueError as e:
                 return f"Error: {e}"
 
-        entry = await kb.store(
-            short_title=short_title,
-            long_title=long_title,
-            knowledge_details=knowledge_details,
-            entry_type=entry_type,
-            project_ref=project_ref,
-            source_context=source_context,
-            confidence_level=confidence_level,
-            tags=tags,
-            hints=hints,
-            sensitivity=sensitivity,
-            expires_at=expires_at,
-        )
-        entry = await kb.get(entry.id) or entry
+        try:
+            _action, entry = await backend.store(
+                short_title=short_title,
+                long_title=long_title,
+                knowledge_details=knowledge_details,
+                entry_type=entry_type,
+                project_ref=project_ref,
+                source_context=source_context,
+                confidence_level=confidence_level,
+                tags=tags,
+                hints=hints,
+                sensitivity=sensitivity,
+                ttl=ttl,
+                change_reason=change_reason,
+            )
+        except Exception as e:
+            from personal_kb.backend.http import BackendHttpError
 
-        # Refresh the on-disk maps index for mental_map creates. Best-effort.
-        if entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
-            await _refresh_maps_index(db, entry.project_ref, team)
+            if isinstance(e, BackendHttpError):
+                from personal_kb.backend.http import _map_error
 
-        result = format_store_result(entry, is_update=False)
-        # Advisory mental_map lint — gated here at the call site (not inside
-        # format_store_result, which is shared by non-map stores). The store
-        # always succeeds; the entry is always created.
+                return _map_error(e, "")
+            return f"Error: {e}"
+
+        # Local mode: refresh maps index for mental_map creates
+        if not is_http and entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
+            from personal_kb.tools._lifespan import kb_from_lifespan
+
+            kb = kb_from_lifespan(ctx.lifespan_context)
+            await _refresh_maps_index(kb.db, entry.project_ref, kb.config.attribution.team)
+
+        result = format_store_result(entry, is_update=False, include_backend_warning=not is_http)
+        # Advisory mental_map lint
         if entry.entry_type == EntryType.MENTAL_MAP and knowledge_details:
-            result = _prepend_map_advisories(result, lint_map_body(knowledge_details))
+            result = _prepend_map_advisories(
+                result,
+                lint_map_body(knowledge_details),
+                include_backend_warning=not is_http,
+            )
         return result
 
 
-async def _build_graph(graph_builder: GraphBuilder, entry: KnowledgeEntry) -> None:
-    """Build graph edges for an entry, logging failures without raising."""
-    try:
-        await graph_builder.build_for_entry(entry)
-    except Exception:
-        logger.warning("Failed to build graph for entry %s", entry.id, exc_info=True)
-
-
 async def _refresh_maps_index(db: object, project_ref: str, team: str | None) -> None:
-    """Refresh the on-disk maps index for a project, logging on failure.
+    """Refresh the on-disk maps index for a project, logging on failure."""
+    from personal_kb.maps_index_writer import write_project_maps
 
-    Mirrors the ``_build_graph`` best-effort wrapper: a writer failure must
-    never bubble up into the store path. The store has already committed by
-    the time we get here.
-
-    After the local file refresh, fire ``notify_maps_changed`` so other
-    server instances (sharing the same Postgres) re-render their own
-    per-instance file. On SQLite this is a no-op.
-    """
     try:
         await write_project_maps(db, project_ref, team=team)  # type: ignore[arg-type]
     except Exception:
@@ -402,29 +422,6 @@ async def _refresh_maps_index(db: object, project_ref: str, team: str | None) ->
             project_ref,
             exc_info=True,
         )
-
-
-async def _enrich_graph(enricher: GraphEnricher | None, entry: KnowledgeEntry) -> None:
-    """Attempt to enrich graph via LLM, logging failures without raising."""
-    if enricher is None:
-        return
-    try:
-        await enricher.enrich_entry(entry)
-    except Exception:
-        logger.warning("Failed to enrich graph for entry %s", entry.id, exc_info=True)
-
-
-async def _embed_entry(
-    embedder: EmbeddingClient, store: KnowledgeStore, entry: KnowledgeEntry
-) -> None:
-    """Attempt to embed an entry, logging failures without raising."""
-    try:
-        embedding = await embedder.embed(entry.embedding_text)
-        if embedding is not None:
-            await embedder.store_embedding(entry.id, embedding)
-            await store.mark_embedding(entry.id, True)
-    except Exception:
-        logger.warning("Failed to embed entry %s", entry.id, exc_info=True)
 
 
 def _check_secrets(content: str) -> str | None:
