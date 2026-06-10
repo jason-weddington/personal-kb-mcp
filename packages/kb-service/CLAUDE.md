@@ -22,11 +22,11 @@ this file only summarizes:
 - **kb-01745** — lesson: FastAPI `HTTPBearer` returns 401 (not 403) on missing
   creds in 0.136 — watch for stale exact-status assertions copied from agent_gtd.
 
-Build status: **P1–P4 done** (full backend + SPA: settings/admin UI, explorer
-with graph viz / streaming ask / chat). P5 thin MCP client lives in the
-`personal_kb` repo. Dev deploy: systemd user unit `kb-service` on `kb-host-1`;
-`./deploy.sh` pulls main there, rebuilds the frontend, restarts the unit.
-Plan in kb-01742.
+Build status: **P1–P5 done, P6 dev done** — full backend + SPA, and the thin
+MCP client (HttpBackend + 16 tool shims, in the `personal_kb` repo) validated
+end-to-end against this service. Dev deploy: systemd user unit `kb-service` on
+`kb-host-1`; `./deploy.sh` pulls main there, rebuilds the frontend, restarts
+the unit. As-built + production-cutover runbook: **kb-01765**. Plan in kb-01742.
 
 ## Commands
 
