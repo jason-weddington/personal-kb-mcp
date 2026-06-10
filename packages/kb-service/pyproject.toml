@@ -8,7 +8,7 @@ dependencies = [
     "bcrypt>=4.0",
     "fastapi>=0.115",
     "httpx>=0.28",
-    "kb-core[postgres,ingest,anthropic]",
+    "kb-core[postgres,ingest,anthropic,safety]",
     "pydantic>=2.10",
     "pyjwt>=2.9",
     "python-multipart>=0.0.9",

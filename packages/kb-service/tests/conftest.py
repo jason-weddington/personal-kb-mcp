@@ -22,6 +22,53 @@ import kb_service.main as main_module
 from kb_service.main import app
 from kb_service.models import User
 
+# ─── kb-core config stub ─────────────────────────────────────────────────────
+
+
+class FakeIngestConfig:
+    """Stub for kb_core IngestConfig — exposes only skip_safety."""
+
+    def __init__(self, skip_safety: bool = False) -> None:
+        self.skip_safety = skip_safety
+
+
+class FakeKbConfig:
+    """Stub for kb_core KbConfig — exposes only .ingest."""
+
+    def __init__(self, skip_safety: bool = False) -> None:
+        self.ingest = FakeIngestConfig(skip_safety=skip_safety)
+
+
+# ─── graph-builder stub ──────────────────────────────────────────────────────
+
+
+class FakeGraphBuilder:
+    """Records build_for_entry calls."""
+
+    def __init__(self) -> None:
+        self.build_calls: list[KnowledgeEntry] = []
+        self._raise_on_build: Exception | None = None
+
+    async def build_for_entry(self, entry: KnowledgeEntry) -> None:
+        """Record the call; raise if configured to do so."""
+        self.build_calls.append(entry)
+        if self._raise_on_build is not None:
+            raise self._raise_on_build
+
+
+# ─── main fake KB ─────────────────────────────────────────────────────────────
+
+
+def make_entry(entry_id: str = "kb-00001") -> KnowledgeEntry:
+    """Build a minimal ``KnowledgeEntry`` for use in fake responses."""
+    return KnowledgeEntry(
+        id=entry_id,
+        short_title="Fake entry",
+        long_title="A fake knowledge entry",
+        knowledge_details="Fake details.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+
 
 class FakeCursor:
     """Fake DB cursor returned by FakeKbDb.execute."""
@@ -53,6 +100,7 @@ class FakeKbDb:
         self._kb = kb
         self.rows: list[tuple[Any, ...]] = []
         self.calls: list[tuple[str, Any]] = []
+        self.committed: int = 0
 
     async def execute(self, sql: str, params: Any = ()) -> FakeCursor:
         self.calls.append((sql, params))
@@ -66,7 +114,7 @@ class FakeKbDb:
         return FakeCursor(self.rows)
 
     async def commit(self) -> None:
-        pass
+        self.committed += 1
 
 
 class FakeGraph:
@@ -147,7 +195,16 @@ class FakeGraph:
 
 
 class FakeKnowledgeBase:
-    """Stand-in for the kb-core ``KnowledgeBase`` singleton."""
+    """Stand-in for the kb-core ``KnowledgeBase`` singleton.
+
+    Covers both the existing ``search``/``close`` surface and the full write
+    surface added in P2: store, store_batch, update, deactivate, reactivate,
+    bulk_update, get.  All write methods record their kwargs so tests can
+    assert on them.
+
+    Set ``_update_raises``, ``_deactivate_raises``, etc. to inject controlled
+    ``ValueError`` failures.
+    """
 
     def __init__(
         self,
@@ -162,10 +219,30 @@ class FakeKnowledgeBase:
             maps_projects if maps_projects is not None else {}
         )
         self.maps_rows: list[tuple[Any, ...]] | None = None
+
+        # call-recording lists
         self.search_calls: list[tuple[Any, str | None]] = []
+        self.store_calls: list[dict[str, Any]] = []
+        self.store_batch_calls: list[tuple[list[dict[str, Any]], bool]] = []
+        self.update_calls: list[tuple[str, dict[str, Any]]] = []
+        self.deactivate_calls: list[tuple[str, str]] = []
+        self.reactivate_calls: list[tuple[str, str]] = []
+        self.bulk_update_calls: list[dict[str, Any]] = []
+
+        # injectable errors (write surface)
+        self._update_raises: ValueError | None = None
+        self._deactivate_raises: ValueError | None = None
+        self._reactivate_raises: ValueError | None = None
+        self._bulk_update_raises: ValueError | None = None
+
+        # sub-objects expected by read/meta + write endpoints
         self.db = FakeKbDb(self)
         self.graph = FakeGraph()
-        # P2 extensions — initialized with mutable defaults; tests assign values
+        self.config = FakeKbConfig()
+        self.graph_builder = FakeGraphBuilder()
+        self.graph_enricher: None = None
+
+        # P2 read/meta + query state
         self.entries: dict[str, KnowledgeEntry] = {}
         self.preflight_result: str = "preflight context"
         self.preflight_calls: list[tuple[str, Any]] = []
@@ -255,6 +332,62 @@ class FakeKnowledgeBase:
 
     async def close(self) -> None:
         """No-op close."""
+
+    # ── write surface (P2) ───────────────────────────────────────────────────
+
+    async def store(self, **kwargs: Any) -> KnowledgeEntry:
+        """Record kwargs and return a fake entry."""
+        self.store_calls.append(kwargs)
+        return make_entry()
+
+    async def store_batch(
+        self, entries: list[dict[str, Any]], *, enrich: bool = True
+    ) -> list[KnowledgeEntry]:
+        """Record the call and return one fake entry per input dict."""
+        self.store_batch_calls.append((entries, enrich))
+        return [make_entry() for _ in entries]
+
+    async def update(self, entry_id: str, **kwargs: Any) -> KnowledgeEntry:
+        """Record kwargs; raise configured error if set."""
+        self.update_calls.append((entry_id, kwargs))
+        if self._update_raises is not None:
+            raise self._update_raises
+        return make_entry()
+
+    async def deactivate(self, entry_id: str, *, contributor: str) -> KnowledgeEntry:
+        """Record the call; raise configured error if set."""
+        self.deactivate_calls.append((entry_id, contributor))
+        if self._deactivate_raises is not None:
+            raise self._deactivate_raises
+        return make_entry()
+
+    async def reactivate(self, entry_id: str, *, contributor: str) -> KnowledgeEntry:
+        """Record the call; raise configured error if set."""
+        self.reactivate_calls.append((entry_id, contributor))
+        if self._reactivate_raises is not None:
+            raise self._reactivate_raises
+        return make_entry()
+
+    async def bulk_update(
+        self,
+        filters: dict[str, Any],
+        updates: dict[str, Any],
+        *,
+        contributor: str,
+        dry_run: bool = True,
+    ) -> list[tuple[KnowledgeEntry, KnowledgeEntry]]:
+        """Record the call; raise configured error if set."""
+        self.bulk_update_calls.append(
+            {
+                "filters": filters,
+                "updates": updates,
+                "contributor": contributor,
+                "dry_run": dry_run,
+            }
+        )
+        if self._bulk_update_raises is not None:
+            raise self._bulk_update_raises
+        return [(make_entry(), make_entry())]
 
 
 class FakeDbPool:

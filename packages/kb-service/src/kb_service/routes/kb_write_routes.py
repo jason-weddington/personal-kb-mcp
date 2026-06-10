@@ -1,0 +1,458 @@
+"""KB write endpoints: store, store_batch, deactivate, reactivate, and more.
+
+Endpoints: POST /api/kb/store, /store_batch, /entries/{id}/deactivate,
+/entries/{id}/reactivate, /bulk_update, /feedback.
+
+All six endpoints live under ``/api/kb`` and require authentication.
+``reactivate`` and ``bulk_update`` additionally require admin privileges
+(matching the ``kb_maintain`` KB_MANAGER gate described in kb-01742).
+
+LLM graph enrichment (store, store_batch) runs synchronously inside the
+request; a batch may take tens of seconds.  No streaming or timeout machinery
+is added in this item.
+"""
+
+import logging
+import re
+from datetime import UTC, datetime
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from kb_core.ingest.safety import detect_secrets_in_content
+from kb_core.models.entry import EntryType, KnowledgeEntry
+from kb_core.ttl import compute_expires_at
+
+from kb_service.attribution import resolve_attribution
+from kb_service.auth import get_current_user, require_admin
+from kb_service.models import User
+from kb_service.models_kb import (
+    BulkUpdatePair,
+    BulkUpdateRequest,
+    BulkUpdateResponse,
+    EntryActionResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+    StoreBatchRequest,
+    StoreBatchResponse,
+    StoreRequest,
+    StoreResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/kb", tags=["kb-write"])
+
+# Allowed filter / update keys for the bulk_update endpoint.
+# The engine silently ignores unknown keys; this endpoint rejects them (422).
+_BULK_FILTER_KEYS: frozenset[str] = frozenset(
+    {"contributor", "team", "project_ref", "entry_type", "tags", "entry_ids"}
+)
+_BULK_UPDATE_KEYS: frozenset[str] = frozenset(
+    {
+        "project_ref",
+        "entry_type",
+        "confidence_level",
+        "tags_add",
+        "tags_remove",
+        "team",
+    }
+)
+
+# kb-XXXXX reference pattern (5 digits, verified at kb_store.py:29).
+_KB_ID_RE: re.Pattern[str] = re.compile(r"kb-\d{5}")
+
+# ─── internal validation helpers ─────────────────────────────────────────────
+
+
+def _parse_ttl(ttl: str | None) -> datetime | None:
+    """Convert a TTL string to an expiry datetime, raising 422 on parse errors."""
+    if ttl is None:
+        return None
+    try:
+        return compute_expires_at(ttl)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _check_secrets(knowledge_details: str, kb: Any) -> None:
+    """Scan *knowledge_details* for secrets when safety is enabled.
+
+    A non-empty findings list raises 422 listing the detected types.
+    A ``None`` return (library missing) or an empty list means no rejection.
+    Gated on ``kb.config.ingest.skip_safety``.
+    """
+    if kb.config.ingest.skip_safety:
+        return
+    findings = detect_secrets_in_content(knowledge_details)
+    if findings:
+        types_str = ", ".join(findings)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Secret scan detected sensitive content: {types_str}",
+        )
+
+
+def _mental_map_has_pointer(
+    knowledge_details: str,
+    hints: dict[str, Any] | None,
+) -> bool:
+    r"""Return True when a mental_map entry has at least one outbound pointer.
+
+    A pointer is present when ANY of:
+
+    * ``re.compile(r"kb-\d{5}").search(knowledge_details)`` finds a match.
+    * ``hints["supersedes"]`` (scalar-or-list) contains a string full-matching
+      the pattern ``kb-\d{5}``.
+    * ``hints["related_entities"]`` (scalar-or-list) contains either a dict
+      with a non-empty ``"id"`` or ``"target"`` string key, or a bare non-empty
+      string.
+
+    ``tag``, ``project``, ``person``, and ``tool`` hints do NOT count.
+    Semantics verified against ``_mental_map_has_pointer`` in the MCP channel
+    (kb_store.py:46-87).  Private kb_core helpers are NOT imported.
+    """
+    if _KB_ID_RE.search(knowledge_details):
+        return True
+    if not hints:
+        return False
+    # Check hints["supersedes"]
+    supersedes = hints.get("supersedes")
+    if supersedes is not None:
+        items: list[Any] = supersedes if isinstance(supersedes, list) else [supersedes]
+        for item in items:
+            if isinstance(item, str) and re.fullmatch(r"kb-\d{5}", item):
+                return True
+    # Check hints["related_entities"]
+    related = hints.get("related_entities")
+    if related is not None:
+        rels: list[Any] = related if isinstance(related, list) else [related]
+        for item in rels:
+            if isinstance(item, dict):
+                id_val = item.get("id")
+                target_val = item.get("target")
+                if (isinstance(id_val, str) and id_val) or (
+                    isinstance(target_val, str) and target_val
+                ):
+                    return True
+            elif isinstance(item, str) and item:
+                return True
+    return False
+
+
+def _check_orphan_mental_map(
+    entry_type: EntryType,
+    knowledge_details: str,
+    hints: dict[str, Any] | None,
+) -> None:
+    """Raise 422 when a mental_map entry has no outbound pointers."""
+    if entry_type is not EntryType.MENTAL_MAP:
+        return
+    if not _mental_map_has_pointer(knowledge_details, hints):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A mental_map entry requires at least one outbound pointer "
+                "(a kb-XXXXX reference in knowledge_details, or a "
+                "supersedes/related_entities hint)."
+            ),
+        )
+
+
+def _map_value_error(exc: ValueError) -> HTTPException:
+    """Map a kb-core ``ValueError`` to HTTP 404 (not found) or 409 (conflict)."""
+    msg = str(exc)
+    if "not found" in msg:
+        return HTTPException(status_code=404, detail=msg)
+    return HTTPException(status_code=409, detail=msg)
+
+
+# ─── endpoints ───────────────────────────────────────────────────────────────
+
+
+@router.post("/store", response_model=StoreResponse)
+async def store(
+    body: StoreRequest,
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+) -> StoreResponse:
+    """Create or update a single knowledge base entry.
+
+    LLM graph enrichment runs synchronously inside the request and may take
+    several seconds.  Set ``update_entry_id`` to update an existing entry.
+    """
+    kb = request.app.state.kb
+    attr = await resolve_attribution(user)
+
+    if body.update_entry_id is None:
+        # ── CREATE path ──────────────────────────────────────────────────────
+        if not body.short_title or not body.long_title or not body.knowledge_details:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "short_title, long_title, and knowledge_details are required "
+                    "when creating a new entry."
+                ),
+            )
+        expires_at = _parse_ttl(body.ttl)
+        _check_secrets(body.knowledge_details, kb)
+        entry_type = body.entry_type or EntryType.FACTUAL_REFERENCE
+        _check_orphan_mental_map(entry_type, body.knowledge_details, body.hints)
+
+        entry: KnowledgeEntry = await kb.store(
+            short_title=body.short_title,
+            long_title=body.long_title,
+            knowledge_details=body.knowledge_details,
+            entry_type=entry_type,
+            project_ref=body.project_ref,
+            source_context=body.source_context,
+            confidence_level=(
+                body.confidence_level if body.confidence_level is not None else 0.9
+            ),
+            tags=body.tags,
+            hints=body.hints,
+            contributor=attr.contributor,
+            team=attr.team,
+            sensitivity=body.sensitivity,
+            expires_at=expires_at,
+        )
+        entry = await kb.get(entry.id) or entry
+        return StoreResponse(action="created", entry=entry)
+
+    # ── UPDATE path ──────────────────────────────────────────────────────────
+    entry_id = body.update_entry_id
+    expires_at = _parse_ttl(body.ttl)
+    if body.knowledge_details:
+        _check_secrets(body.knowledge_details, kb)
+    try:
+        entry = await kb.update(
+            entry_id,
+            knowledge_details=body.knowledge_details or None,
+            change_reason=body.change_reason,
+            confidence_level=body.confidence_level,
+            tags=body.tags,
+            hints=body.hints,
+            updated_by=user.email,
+            sensitivity=body.sensitivity,
+            expires_at=expires_at,
+            short_title=body.short_title or None,
+            long_title=body.long_title or None,
+            entry_type=body.entry_type,
+            project_ref=body.project_ref,
+            source_context=body.source_context,
+        )
+    except ValueError as exc:
+        raise _map_value_error(exc) from exc
+    entry = await kb.get(entry.id) or entry
+    return StoreResponse(action="updated", entry=entry)
+
+
+@router.post("/store_batch", response_model=StoreBatchResponse)
+async def store_batch(
+    body: StoreBatchRequest,
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+) -> StoreBatchResponse:
+    """Create multiple knowledge base entries in a single request.
+
+    LLM graph enrichment runs synchronously inside the request; a batch may
+    take tens of seconds.  All entries are validated up-front — any failure
+    rejects the entire batch (422 with the failing entry index in the detail).
+    """
+    kb = request.app.state.kb
+    attr = await resolve_attribution(user)
+
+    # ── up-front batch validation ─────────────────────────────────────────
+    for i, raw in enumerate(body.entries):
+        prefix = f"entry {i}: "
+        if raw.ttl is not None:
+            try:
+                compute_expires_at(raw.ttl)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=f"{prefix}{exc}") from exc
+        if not kb.config.ingest.skip_safety:
+            findings = detect_secrets_in_content(raw.knowledge_details)
+            if findings:
+                types_str = ", ".join(findings)
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{prefix}Secret scan detected sensitive content: {types_str}"
+                    ),
+                )
+        if raw.entry_type is EntryType.MENTAL_MAP and not _mental_map_has_pointer(
+            raw.knowledge_details, raw.hints
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{prefix}A mental_map entry requires at least one outbound "
+                    "pointer (a kb-XXXXX reference in knowledge_details, or a "
+                    "supersedes/related_entities hint)."
+                ),
+            )
+
+    # ── build facade dicts ────────────────────────────────────────────────
+    entry_dicts: list[dict[str, Any]] = []
+    for raw in body.entries:
+        expires_at = compute_expires_at(raw.ttl) if raw.ttl is not None else None
+        entry_dicts.append(
+            {
+                "short_title": raw.short_title,
+                "long_title": raw.long_title,
+                "knowledge_details": raw.knowledge_details,
+                "entry_type": raw.entry_type,
+                "project_ref": raw.project_ref,
+                "source_context": raw.source_context,
+                "confidence_level": raw.confidence_level,
+                "tags": raw.tags,
+                "hints": raw.hints,
+                "sensitivity": raw.sensitivity,
+                "expires_at": expires_at,
+                "contributor": attr.contributor,
+                "team": attr.team,
+            }
+        )
+
+    created: list[KnowledgeEntry] = await kb.store_batch(entry_dicts, enrich=True)
+
+    # Re-fetch each created entry to pick up has_embedding
+    refreshed: list[KnowledgeEntry] = []
+    for e in created:
+        fetched = await kb.get(e.id)
+        refreshed.append(fetched if fetched is not None else e)
+
+    return StoreBatchResponse(requested=len(body.entries), created=refreshed)
+
+
+@router.post("/entries/{entry_id}/deactivate", response_model=EntryActionResponse)
+async def deactivate(
+    entry_id: str,
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+) -> EntryActionResponse:
+    """Deactivate a knowledge base entry and clean up its outbound graph edges."""
+    kb = request.app.state.kb
+    try:
+        entry: KnowledgeEntry = await kb.deactivate(entry_id, contributor=user.email)
+    except ValueError as exc:
+        raise _map_value_error(exc) from exc
+    # Replicate the MCP channel's graph cleanup (kb_maintain reactivate path):
+    await kb.db.execute("DELETE FROM graph_edges WHERE source = ?", (entry_id,))
+    await kb.db.commit()
+    return EntryActionResponse(entry=entry)
+
+
+@router.post("/entries/{entry_id}/reactivate", response_model=EntryActionResponse)
+async def reactivate(
+    entry_id: str,
+    request: Request,
+    user: Annotated[User, Depends(require_admin)],
+) -> EntryActionResponse:
+    """Reactivate a previously deactivated entry and rebuild its graph (admin only).
+
+    Graph rebuild is best-effort: failures are logged as warnings and never
+    propagate to the caller.
+    """
+    kb = request.app.state.kb
+    try:
+        entry: KnowledgeEntry = await kb.reactivate(entry_id, contributor=user.email)
+    except ValueError as exc:
+        raise _map_value_error(exc) from exc
+
+    # Best-effort graph rebuild — mirrors kb_maintain's reactivate action.
+    try:
+        await kb.graph_builder.build_for_entry(entry)
+    except Exception as exc:
+        logger.warning("graph_builder.build_for_entry failed for %s: %s", entry_id, exc)
+    if kb.graph_enricher is not None:
+        try:
+            await kb.graph_enricher.enrich_entry(entry)
+        except Exception as exc:
+            logger.warning(
+                "graph_enricher.enrich_entry failed for %s: %s", entry_id, exc
+            )
+    return EntryActionResponse(entry=entry)
+
+
+@router.post("/bulk_update", response_model=BulkUpdateResponse)
+async def bulk_update(
+    body: BulkUpdateRequest,
+    request: Request,
+    user: Annotated[User, Depends(require_admin)],
+) -> BulkUpdateResponse:
+    """Bulk-update entries matching *filters* by applying *updates* (admin only).
+
+    ``dry_run`` defaults to ``True``; callers must explicitly set ``False`` to
+    persist changes.  Unknown filter or update keys cause a 422 — the engine
+    silently ignores them but this endpoint enforces the whitelist.
+    """
+    kb = request.app.state.kb
+
+    if not body.filters:
+        raise HTTPException(
+            status_code=422,
+            detail="filters must not be empty (mass-update guard).",
+        )
+    if not body.updates:
+        raise HTTPException(status_code=422, detail="updates must not be empty.")
+
+    unknown_filters = set(body.filters.keys()) - _BULK_FILTER_KEYS
+    if unknown_filters:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown filter key(s): {', '.join(sorted(unknown_filters))}. "
+                f"Allowed: {', '.join(sorted(_BULK_FILTER_KEYS))}."
+            ),
+        )
+    unknown_updates = set(body.updates.keys()) - _BULK_UPDATE_KEYS
+    if unknown_updates:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown update key(s): {', '.join(sorted(unknown_updates))}. "
+                f"Allowed: {', '.join(sorted(_BULK_UPDATE_KEYS))}."
+            ),
+        )
+
+    pairs: list[tuple[KnowledgeEntry, KnowledgeEntry]] = await kb.bulk_update(
+        body.filters,
+        body.updates,
+        contributor=user.email,
+        dry_run=body.dry_run,
+    )
+    results = [BulkUpdatePair(before=b, after=a) for b, a in pairs]
+    return BulkUpdateResponse(dry_run=body.dry_run, count=len(results), results=results)
+
+
+@router.post("/feedback", response_model=FeedbackResponse)
+async def feedback(
+    body: FeedbackRequest,
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+) -> FeedbackResponse:
+    """Record agent friction/quality feedback to the KB data DB.
+
+    Writes to the ``agent_feedback`` table created by kb-core's own schema
+    (postgres_backend.py:769).  The service adds no schema of its own.
+    ``feedback_type`` must be one of: ``missing``, ``unhelpful``, ``friction``.
+    """
+    kb = request.app.state.kb
+    attr = await resolve_attribution(user)
+    now = datetime.now(UTC).isoformat()
+    await kb.db.execute(
+        "INSERT INTO agent_feedback (feedback_type, tool_name,"
+        " query_or_params, detail, contributor, team, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            body.feedback_type,
+            body.tool_name,
+            body.query_or_params,
+            body.detail,
+            attr.contributor,
+            attr.team,
+            now,
+        ),
+    )
+    await kb.db.commit()
+    return FeedbackResponse(status="recorded", feedback_type=body.feedback_type)
