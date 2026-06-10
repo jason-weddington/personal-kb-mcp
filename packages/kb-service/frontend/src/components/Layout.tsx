@@ -3,6 +3,7 @@ import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom'
 import AppBar from '@mui/material/AppBar'
 import Box from '@mui/material/Box'
 import CssBaseline from '@mui/material/CssBaseline'
+import Divider from '@mui/material/Divider'
 import Drawer from '@mui/material/Drawer'
 import IconButton from '@mui/material/IconButton'
 import List from '@mui/material/List'
@@ -10,6 +11,7 @@ import ListItem from '@mui/material/ListItem'
 import ListItemButton from '@mui/material/ListItemButton'
 import ListItemIcon from '@mui/material/ListItemIcon'
 import ListItemText from '@mui/material/ListItemText'
+import ListSubheader from '@mui/material/ListSubheader'
 import Menu from '@mui/material/Menu'
 import MenuItem from '@mui/material/MenuItem'
 import Toolbar from '@mui/material/Toolbar'
@@ -18,6 +20,8 @@ import MenuIcon from '@mui/icons-material/Menu'
 import Brightness4Icon from '@mui/icons-material/Brightness4'
 import Brightness7Icon from '@mui/icons-material/Brightness7'
 import AccountCircleIcon from '@mui/icons-material/AccountCircle'
+import MailIcon from '@mui/icons-material/Mail'
+import PeopleIcon from '@mui/icons-material/People'
 import useMediaQuery from '@mui/material/useMediaQuery'
 import { useTheme } from '@mui/material/styles'
 import { useAuth } from '../contexts/AuthContext'
@@ -74,6 +78,49 @@ export function Layout() {
           </ListItem>
         ))}
       </List>
+
+      {/* Admin links — only shown to admins (server enforces 403 regardless) */}
+      {user?.isAdmin && (
+        <>
+          <Divider />
+          <List
+            subheader={
+              <ListSubheader disableSticky>Admin</ListSubheader>
+            }
+          >
+            <ListItem disablePadding>
+              <ListItemButton
+                component={Link}
+                to="/admin/invites"
+                selected={location.pathname === '/admin/invites'}
+                onClick={() => {
+                  if (!isDesktop) setMobileOpen(false)
+                }}
+              >
+                <ListItemIcon>
+                  <MailIcon />
+                </ListItemIcon>
+                <ListItemText primary="Invites" />
+              </ListItemButton>
+            </ListItem>
+            <ListItem disablePadding>
+              <ListItemButton
+                component={Link}
+                to="/admin/users"
+                selected={location.pathname === '/admin/users'}
+                onClick={() => {
+                  if (!isDesktop) setMobileOpen(false)
+                }}
+              >
+                <ListItemIcon>
+                  <PeopleIcon />
+                </ListItemIcon>
+                <ListItemText primary="Users" />
+              </ListItemButton>
+            </ListItem>
+          </List>
+        </>
+      )}
     </Box>
   )
 

@@ -1,5 +1,15 @@
 import { convertKeys, toCamelCase, toSnakeCase } from './utils'
-import type { AuthResponse, UserResponse } from './types'
+import type {
+  AuthResponse,
+  UserResponse,
+  ApiKeyCreated,
+  ApiKeysResponse,
+  Invite,
+  CreatedInvite,
+  PasswordResetIssued,
+  Settings,
+  AdminUser,
+} from './types'
 
 export class ApiError extends Error {
   status: number
@@ -84,5 +94,45 @@ export const api = {
       request<AuthResponse>('POST', '/auth/login', { email, password }),
     logout: (): Promise<void> => request<void>('POST', '/auth/logout'),
     me: (): Promise<UserResponse> => request<UserResponse>('GET', '/auth/me'),
+    changePassword: (
+      currentPassword: string,
+      newPassword: string,
+    ): Promise<void> =>
+      request<void>('POST', '/auth/password', { currentPassword, newPassword }),
+    resetPassword: (token: string, newPassword: string): Promise<void> =>
+      request<void>('POST', '/auth/password-reset', { token, newPassword }),
+  },
+  settings: {
+    get: (): Promise<Settings> => request<Settings>('GET', '/settings'),
+    put: (team: string): Promise<Settings> =>
+      request<Settings>('PUT', '/settings', { team }),
+  },
+  apiKeys: {
+    list: (): Promise<ApiKeysResponse> =>
+      request<ApiKeysResponse>('GET', '/auth/api-keys'),
+    create: (name: string): Promise<ApiKeyCreated> =>
+      request<ApiKeyCreated>('POST', '/auth/api-keys', { name }),
+    revoke: (id: string): Promise<void> =>
+      request<void>('DELETE', `/auth/api-keys/${id}`),
+  },
+  admin: {
+    invites: {
+      list: (): Promise<Invite[]> =>
+        request<Invite[]>('GET', '/admin/invites'),
+      create: (note: string): Promise<CreatedInvite> =>
+        request<CreatedInvite>('POST', '/admin/invites', { note }),
+      revoke: (token: string): Promise<void> =>
+        request<void>('DELETE', `/admin/invites/${token}`),
+    },
+    users: {
+      list: (): Promise<AdminUser[]> =>
+        request<AdminUser[]>('GET', '/admin/users'),
+      promote: (id: string): Promise<AdminUser> =>
+        request<AdminUser>('POST', `/admin/users/${id}/promote`),
+      issuePasswordReset: (id: string): Promise<PasswordResetIssued> =>
+        request<PasswordResetIssued>('POST', `/admin/users/${id}/password-reset`),
+      deleteUser: (id: string): Promise<void> =>
+        request<void>('DELETE', `/admin/users/${id}`),
+    },
   },
 }

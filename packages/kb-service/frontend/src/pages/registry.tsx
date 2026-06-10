@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react'
 import HomeIcon from '@mui/icons-material/Home'
+import SettingsIcon from '@mui/icons-material/Settings'
 import { Home } from './Home'
+import { Settings } from './Settings'
 
 export interface AppPage {
   path: string
@@ -15,5 +17,11 @@ export const appPages: AppPage[] = [
     label: 'Home',
     icon: <HomeIcon />,
     element: <Home />,
+  },
+  {
+    path: '/settings',
+    label: 'Settings',
+    icon: <SettingsIcon />,
+    element: <Settings />,
   },
 ]

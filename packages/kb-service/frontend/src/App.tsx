@@ -1,15 +1,23 @@
 import { Routes, Route } from 'react-router-dom'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
+import { ResetPassword } from './pages/ResetPassword'
+import { AdminInvites } from './pages/AdminInvites'
+import { AdminUsers } from './pages/AdminUsers'
 import { Layout } from './components/Layout'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { AdminRoute } from './components/AdminRoute'
 import { appPages } from './pages/registry'
 
 export function App() {
   return (
     <Routes>
+      {/* Public routes */}
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
+
+      {/* Authenticated routes (home, settings, …) */}
       <Route
         element={
           <ProtectedRoute>
@@ -20,6 +28,18 @@ export function App() {
         {appPages.map((page) => (
           <Route key={page.path} path={page.path} element={page.element} />
         ))}
+      </Route>
+
+      {/* Admin-only routes */}
+      <Route
+        element={
+          <AdminRoute>
+            <Layout />
+          </AdminRoute>
+        }
+      >
+        <Route path="/admin/invites" element={<AdminInvites />} />
+        <Route path="/admin/users" element={<AdminUsers />} />
       </Route>
     </Routes>
   )
