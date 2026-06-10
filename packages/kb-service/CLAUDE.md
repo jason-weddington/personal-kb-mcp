@@ -22,9 +22,9 @@ this file only summarizes:
 - **kb-01745** — lesson: FastAPI `HTTPBearer` returns 401 (not 403) on missing
   creds in 0.136 — watch for stale exact-status assertions copied from agent_gtd.
 
-Build status: **P1 done** (shell + auth + `/api/kb/search`). Pending: P2 full
-`kb_routes` (store/get/ask/summarize/ingest/preflight/maps/graph), P3 explorer,
-P4 React/MUI frontend, P5 thin MCP client, P6 deploy/cutover. Plan in kb-01742.
+Build status: **P1–P3 done**; **P4a done** (Vite/React 19/MUI 7 chassis, auth plumbing, FastAPI
+SPA serving). Pending: P4b (settings/admin UI), P4c (explorer), P5 thin MCP client, P6 deploy.
+Plan in kb-01742.
 
 ## Commands
 
@@ -32,13 +32,42 @@ P4 React/MUI frontend, P5 thin MCP client, P6 deploy/cutover. Plan in kb-01742.
 - Tests: `uv run pytest`
 - Lint: `uv run ruff check .` / format: `uv run ruff format .`
 - Types: `uv run mypy src`
-- Run server: `./serve.sh` (uvicorn on 127.0.0.1:8000)
+- Run server: `./serve.sh` (uvicorn on 127.0.0.1:8000); with a built `frontend/dist`,
+  FastAPI serves the SPA directly (no nginx needed)
+
+### Frontend
+
+- Install: `npm --prefix frontend install`
+- Dev server: `npm --prefix frontend run dev` (Vite on port 5173, proxies `/api` to :8000)
+- Build: `npm --prefix frontend run build` (produces `frontend/dist`)
+- Test: `npm --prefix frontend run test`
+- Lint: `npm --prefix frontend run lint`
 
 ## Layout
 
 ```
+frontend/            # Vite + React 19 + MUI 7 SPA
+  src/
+    api.ts           # typed fetch client (camelCase<->snake_case, kb-01449 401 guard)
+    types.ts         # UserResponse, AuthResponse (camelCase client forms)
+    utils.ts         # toSnakeCase / toCamelCase / convertKeys
+    theme.ts         # dark/light MUI theme pair
+    main.tsx         # app entry: StrictMode > BrowserRouter > AuthProvider > ThemeProvider
+    App.tsx          # routes: /login, /register (unprotected); ProtectedRoute+Layout
+    contexts/
+      AuthContext.tsx   # auth state + kb-01449 guards
+      ThemeContext.tsx  # dark/light toggle, persists to localStorage 'kb-theme'
+    components/
+      Layout.tsx        # AppBar + Drawer sidebar (DRAWER_WIDTH=240) + Outlet
+      ProtectedRoute.tsx
+    pages/
+      registry.tsx   # AppPage interface + appPages array (P4b/P4c append here)
+      Home.tsx       # placeholder landing page
+      Login.tsx      # email/password card, invite-only helper text
+      Register.tsx   # reads ?token= invite param; submit disabled without token
+    __tests__/       # vitest suites: utils, api 401-guard, AuthContext, ProtectedRoute, Register
 src/kb_service/
-  main.py            # FastAPI app + lifespan (opens the singleton KnowledgeBase)
+  main.py            # FastAPI app + lifespan + mount_frontend(app, FRONTEND_DIST)
   auth.py            # JWT + API-key auth, password hashing, invite registration
   database.py        # service-auth asyncpg pool + schema (4 tables)
   db_types.py        # DbPool Protocol
@@ -48,7 +77,7 @@ src/kb_service/
   routes/
     auth_routes.py   # /api/auth (register, login, me, password, api-keys)
     admin_routes.py  # /api/admin (invites, users, password-reset issue)
-    kb_routes.py     # /api/kb/search (the authed read endpoint)
+    kb_routes.py     # /api/kb/* (authed read/write endpoints)
 tests/               # hermetic — no live Postgres/Ollama/network
 ```
 

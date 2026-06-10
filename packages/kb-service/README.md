@@ -24,8 +24,21 @@ each pointing at its existing Postgres DB on the `git-host` pgvector cluster
 
 ## Status
 
-Bootstrapping. Architecture, decisions, and the phased build plan are captured in
-KB entry **`kb-01742`** (`kb_get kb-01742`); the engine seam is **`kb-01727`**.
+P1–P3 done (backend API). P4a done: Vite/React 19/MUI 7 frontend chassis with auth plumbing
+(kb-01449 guards), FastAPI SPA serving. Pending: P4b (settings/admin), P4c (explorer/chat),
+P5 thin MCP client, P6 deploy/cutover.
+
+Architecture and the phased build plan are in KB entry **`kb-01742`**; engine seam is **`kb-01727`**.
+
+## Frontend dev setup
+
+```bash
+npm --prefix frontend install
+npm --prefix frontend run dev     # Vite on :5173 — proxies /api to :8000
+npm --prefix frontend run build   # produces frontend/dist (served by FastAPI)
+npm --prefix frontend run test    # vitest
+npm --prefix frontend run lint    # eslint
+```
 
 ## Build sources
 

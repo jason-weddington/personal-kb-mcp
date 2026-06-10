@@ -4,9 +4,12 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from kb_core import Attribution, create_postgres
 
 from kb_service.config import (
@@ -28,6 +31,35 @@ from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
 
 logger = logging.getLogger(__name__)
+
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+def mount_frontend(app: FastAPI, dist_dir: Path) -> bool:
+    """Mount the built SPA from dist_dir onto app.
+
+    Returns True if the SPA was mounted, False if dist_dir/index.html
+    does not exist (no-op — all API routes continue to work normally).
+    """
+    if not (dist_dir / "index.html").is_file():
+        return False
+
+    assets_dir = dist_dir / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    resolved_dist = dist_dir.resolve()
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> FileResponse:
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        candidate = (dist_dir / full_path).resolve()
+        if candidate.is_file() and candidate.is_relative_to(resolved_dist):
+            return FileResponse(candidate)
+        return FileResponse(dist_dir / "index.html")
+
+    return True
 
 
 def _parse_int(env_var: str, default: int) -> int:
@@ -97,3 +129,6 @@ app.include_router(chat_router)
 async def health() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+mount_frontend(app, FRONTEND_DIST)
