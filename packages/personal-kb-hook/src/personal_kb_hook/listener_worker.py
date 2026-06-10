@@ -156,10 +156,10 @@ def main() -> None:
 
         if not isinstance(data, dict):
             return
-        if "map" not in data:
+        if "pointer" not in data:
             return
 
-        map_obj: Any = data["map"]
+        map_obj: Any = data["pointer"]
         if map_obj is None:
             return  # null map — no-op success
 

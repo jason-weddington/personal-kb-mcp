@@ -106,7 +106,7 @@ def test_request_url_and_headers(
 
     def capture_req(req: urllib.request.Request, timeout: float | None = None) -> _MockResponse:
         captured.append(req)
-        return _ok_response({"map": None})
+        return _ok_response({"pointer": None})
 
     cache_path = worker_env["cache_dir"] / "listener-s1.json"
     request_data = {"text": "hello", "project_ref": "my-proj", "operated": []}
@@ -130,7 +130,7 @@ def test_request_body_bytes(
 
     def capture_req(req: urllib.request.Request, timeout: float | None = None) -> _MockResponse:
         captured.append(req)
-        return _ok_response({"map": None})
+        return _ok_response({"pointer": None})
 
     cache_path = worker_env["cache_dir"] / "listener-s2.json"
     request_data = {
@@ -158,7 +158,7 @@ def test_request_trailing_slash_stripped(
 
     def capture_req(req: urllib.request.Request, timeout: float | None = None) -> _MockResponse:
         captured.append(req)
-        return _ok_response({"map": None})
+        return _ok_response({"pointer": None})
 
     cache_path = worker_env["cache_dir"] / "listener-s3.json"
     req_data = {"text": "x", "project_ref": None, "operated": []}
@@ -181,7 +181,7 @@ def test_project_ref_null_sent_in_body(
 
     def capture_req(req: urllib.request.Request, timeout: float | None = None) -> _MockResponse:
         captured.append(req)
-        return _ok_response({"map": None})
+        return _ok_response({"pointer": None})
 
     cache_path = worker_env["cache_dir"] / "listener-null.json"
     req_data = {"text": "x" * 300, "project_ref": None, "operated": []}
@@ -212,7 +212,7 @@ def test_valid_map_written_to_cache(
         {"text": "hello", "project_ref": "proj", "operated": []},
         cache_path,
         lambda *a, **kw: _ok_response(
-            {"map": {"id": "kb-00099", "short_title": "NewMap", "long_title": "Details"}}
+            {"pointer": {"id": "kb-00099", "short_title": "NewMap", "long_title": "Details"}}
         ),
     )
 
@@ -239,7 +239,9 @@ def test_missing_long_title_coerced_to_empty(
         tmp_path,
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
-        lambda *a, **kw: _ok_response({"map": {"id": "kb-00010", "short_title": "NoLongTitle"}}),
+        lambda *a, **kw: _ok_response(
+            {"pointer": {"id": "kb-00010", "short_title": "NoLongTitle"}}
+        ),
     )
     result = json.loads(cache_path.read_text(encoding="utf-8"))
     assert result["pending"]["long_title"] == ""
@@ -258,7 +260,7 @@ def test_none_long_title_coerced_to_empty(
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
         lambda *a, **kw: _ok_response(
-            {"map": {"id": "kb-00011", "short_title": "NullLT", "long_title": None}}
+            {"pointer": {"id": "kb-00011", "short_title": "NullLT", "long_title": None}}
         ),
     )
     result = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -278,7 +280,7 @@ def test_fresh_cache_gets_empty_whispered_ids(
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
         lambda *a, **kw: _ok_response(
-            {"map": {"id": "kb-00020", "short_title": "Fresh", "long_title": ""}}
+            {"pointer": {"id": "kb-00020", "short_title": "Fresh", "long_title": ""}}
         ),
     )
     result = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -306,7 +308,7 @@ def test_null_map_no_cache_write(
         tmp_path,
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
-        lambda *a, **kw: _ok_response({"map": None}),
+        lambda *a, **kw: _ok_response({"pointer": None}),
     )
     _assert_cache_untouched(cache_path)
 
@@ -340,7 +342,7 @@ def test_missing_map_key_no_cache_write(
         tmp_path,
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
-        lambda *a, **kw: _ok_response({"pointer": {"id": "kb-1", "short_title": "x"}}),
+        lambda *a, **kw: _ok_response({"map": {"id": "kb-1", "short_title": "x"}}),
     )
     _assert_cache_untouched(cache_path)
 
@@ -357,7 +359,7 @@ def test_invalid_map_empty_id_no_cache_write(
         tmp_path,
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
-        lambda *a, **kw: _ok_response({"map": {"id": "", "short_title": "Bad"}}),
+        lambda *a, **kw: _ok_response({"pointer": {"id": "", "short_title": "Bad"}}),
     )
     _assert_cache_untouched(cache_path)
 
@@ -374,7 +376,7 @@ def test_invalid_map_missing_short_title_no_cache_write(
         tmp_path,
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
-        lambda *a, **kw: _ok_response({"map": {"id": "kb-1"}}),
+        lambda *a, **kw: _ok_response({"pointer": {"id": "kb-1"}}),
     )
     _assert_cache_untouched(cache_path)
 
@@ -392,7 +394,7 @@ def test_invalid_map_non_str_long_title_no_cache_write(
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
         lambda *a, **kw: _ok_response(
-            {"map": {"id": "kb-1", "short_title": "Bad", "long_title": 42}}
+            {"pointer": {"id": "kb-1", "short_title": "Bad", "long_title": 42}}
         ),
     )
     _assert_cache_untouched(cache_path)
@@ -466,7 +468,7 @@ def test_non_dict_map_no_cache_write(
         tmp_path,
         {"text": "x", "project_ref": None, "operated": []},
         cache_path,
-        lambda *a, **kw: _ok_response({"map": "not-a-dict"}),
+        lambda *a, **kw: _ok_response({"pointer": "not-a-dict"}),
     )
     _assert_cache_untouched(cache_path)
 
@@ -484,7 +486,7 @@ def test_tmp_file_deleted_on_success(
     """Request tmp file is deleted after a successful run."""
     req_file = _make_request_file(tmp_path, {"text": "x", "project_ref": None, "operated": []})
     cache_path = worker_env["cache_dir"] / "listener-td1.json"
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _ok_response({"map": None}))
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _ok_response({"pointer": None}))
     monkeypatch.setattr(sys, "argv", ["w", str(req_file), str(cache_path)])
     listener_worker.main()
     assert not req_file.exists()
