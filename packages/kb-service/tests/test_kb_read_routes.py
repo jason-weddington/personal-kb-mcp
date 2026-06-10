@@ -48,6 +48,7 @@ ALL_ENDPOINTS = [
     ("GET", "/api/kb/graph/supersedes-chain", None),
     ("GET", "/api/kb/graph/scope-entries", None),
     ("GET", "/api/kb/graph/vocabulary", None),
+    ("GET", "/api/kb/graph/full", None),
     ("GET", "/api/kb/preflight", None),
     ("GET", "/api/kb/projects", None),
     ("GET", "/api/kb/contributors", None),
@@ -460,3 +461,92 @@ def test_list_endpoint_empty_rows_200(
     resp = client.get(path)
     assert resp.status_code == 200
     assert resp.json() == {"items": []}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/kb/graph/full
+# ---------------------------------------------------------------------------
+
+
+def test_graph_full_happy_path(client: TestClient, fake_kb: FakeKnowledgeBase) -> None:
+    """Full-graph dump applies inactive/orphan/edge filter rules correctly.
+
+    Seed:
+    - kb-00001: active entry node (conn_count=2), with entry metadata
+    - kb-00002: inactive entry node — must be excluded
+    - tool:sqlite: entity node (conn_count=1) — included; label derived from node_id
+    - orphan:x: entity node (conn_count=0) — excluded as orphan
+    Edges:
+    - kb-00001 -> tool:sqlite (valid)
+    - kb-00002 -> kb-00001 (touches excluded node — must be excluded)
+
+    rows_for insertion order (COLLISION TRAP — see conftest AC):
+      'is_active = 0'  → query 1 (inactive IDs)
+      'conn_count'     → query 2 (graph_nodes — contains 'FROM graph_edges' too)
+      'FROM graph_edges' → query 3 (edges only)
+      'is_active = 1'  → query 4 (entry metadata)
+    """
+    app.dependency_overrides[get_current_user] = fake_user
+
+    # Must insert in this EXACT order — first-match-wins on substring lookup
+    fake_kb.db.rows_for["is_active = 0"] = [("kb-00002",)]
+    fake_kb.db.rows_for["conn_count"] = [
+        ("kb-00001", "entry", None, 2),  # active entry node
+        ("kb-00002", "entry", None, 1),  # inactive → excluded
+        ("tool:sqlite", "tool", None, 1),  # entity with connections → included
+        ("orphan:x", "other", None, 0),  # orphan → excluded
+    ]
+    fake_kb.db.rows_for["FROM graph_edges"] = [
+        ("kb-00001", "tool:sqlite", "uses", None),  # valid
+        ("kb-00002", "kb-00001", "related", None),  # touches inactive → excluded
+    ]
+    fake_kb.db.rows_for["is_active = 1"] = [
+        (
+            "kb-00001",
+            "SQLite Entry",
+            "Using SQLite for storage",
+            "factual_reference",
+            None,
+            0.9,
+            "me",
+            "my-project",
+        ),
+    ]
+
+    resp = client.get("/api/kb/graph/full")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # ── nodes ────────────────────────────────────────────────────────────────
+    nodes_by_id = {n["id"]: n for n in data["nodes"]}
+
+    # Inactive entry excluded
+    assert "kb-00002" not in nodes_by_id
+    # Orphan entity excluded
+    assert "orphan:x" not in nodes_by_id
+
+    # Active entry: label == short_title; val == conn_count; properties include meta
+    entry_node = nodes_by_id["kb-00001"]
+    assert entry_node["label"] == "SQLite Entry"
+    assert entry_node["val"] == 2
+    assert entry_node["properties"]["project_ref"] == "my-project"
+
+    # Entity node: label derived from node_id split on ':'
+    tool_node = nodes_by_id["tool:sqlite"]
+    assert tool_node["label"] == "sqlite"
+    assert tool_node["val"] == 1
+
+    # ── edges ────────────────────────────────────────────────────────────────
+    edges = data["edges"]
+    edge_keys = [(e["source"], e["target"]) for e in edges]
+
+    # Valid edge present
+    assert ("kb-00001", "tool:sqlite") in edge_keys
+    # Edge touching excluded node absent
+    assert ("kb-00002", "kb-00001") not in edge_keys
+
+    # ── stats ─────────────────────────────────────────────────────────────────
+    assert data["stats"]["node_count"] == len(data["nodes"])
+    assert data["stats"]["edge_count"] == len(data["edges"])
+    assert data["stats"]["node_count"] == 2
+    assert data["stats"]["edge_count"] == 1

@@ -9,7 +9,7 @@ from typing import Annotated
 
 import bcrypt as _bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from kb_service.database import (
@@ -130,6 +130,35 @@ async def get_current_user_from_token(token: str) -> User:
             detail="User not found",
         )
     return User(**row_to_dict(row))
+
+
+async def get_current_user_sse(
+    token: Annotated[str | None, Query()] = None,
+) -> User:
+    """FastAPI dependency: authenticate SSE stream endpoints via JWT query param.
+
+    EventSource clients cannot set ``Authorization`` headers, so the JWT is
+    passed as ``?token=<jwt>`` instead.  Raises 401 when the token is absent,
+    invalid, or expired.
+
+    NOTE: API keys do NOT work on stream endpoints — JWT only.  Do NOT add a
+    Bearer-header fallback or API-key support to this dependency.
+
+    Args:
+        token: JWT passed as a URL query parameter (``?token=...``).
+
+    Returns:
+        Authenticated ``User``.
+
+    Raises:
+        HTTPException: 401 if token is missing, invalid, or expired.
+    """
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    return await get_current_user_from_token(token)
 
 
 async def require_admin(

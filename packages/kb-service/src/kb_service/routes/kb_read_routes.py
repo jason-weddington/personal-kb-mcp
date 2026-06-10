@@ -23,12 +23,14 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
 from kb_service.auth import get_current_user
+from kb_service.graph_export import extract_graph_data
 from kb_service.models import (
     GetEntryResult,
     GetRequest,
     GetResponse,
     GraphBfsEntry,
     GraphBfsResponse,
+    GraphFullResponse,
     GraphNeighbor,
     GraphNeighborsResponse,
     GraphPathHop,
@@ -122,6 +124,32 @@ async def get_entries(
         await touch_accessed(kb.db, found_ids)
 
     return GetResponse(results=results)
+
+
+@router.get("/graph/full", response_model=GraphFullResponse)
+async def graph_full(
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+) -> GraphFullResponse:
+    """Return the full graph as a node/edge list for visualisation.
+
+    Dumps every active node and edge from the kb-core graph store, filtered by
+    the same rules as the old personal_kb explorer:
+
+    - Inactive entry nodes are excluded.
+    - Non-entry nodes with no connections (orphans) are excluded.
+    - Edges touching any excluded node are excluded.
+
+    Args:
+        request: FastAPI request (provides ``app.state.kb``).
+        user: Authenticated user (JWT or API key via Bearer header).
+
+    Returns:
+        ``GraphFullResponse`` with nodes, edges, and summary stats.
+    """
+    kb = request.app.state.kb
+    result = await extract_graph_data(kb.db)
+    return GraphFullResponse(**result)
 
 
 @router.get("/graph/neighbors", response_model=GraphNeighborsResponse)

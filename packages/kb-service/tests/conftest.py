@@ -101,11 +101,16 @@ class FakeKbDb:
     def __init__(self, kb: "FakeKnowledgeBase | None" = None) -> None:
         self._kb = kb
         self.rows: list[tuple[Any, ...]] = []
+        self.rows_for: dict[str, list[tuple[Any, ...]]] = {}
         self.calls: list[tuple[str, Any]] = []
         self.committed: int = 0
 
     async def execute(self, sql: str, params: Any = ()) -> FakeCursor:
         self.calls.append((sql, params))
+        # rows_for: first-match-wins in insertion order (substring of SQL)
+        for key, rows in self.rows_for.items():
+            if key in sql:
+                return FakeCursor(rows)
         if self._kb is not None and "mental_map" in sql:
             maps_rows = (
                 self._kb.maps_rows
@@ -243,6 +248,9 @@ class FakeKnowledgeBase:
         self.config = FakeKbConfig()
         self.graph_builder = FakeGraphBuilder()
         self.graph_enricher: None = None
+
+        # P3 SSE query stream — None means classifier is skipped (explore fallback)
+        self.query_llm: Any | None = None
 
         # P2 read/meta + query state
         self.entries: dict[str, KnowledgeEntry] = {}

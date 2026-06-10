@@ -1,7 +1,7 @@
 """Pydantic models for the KB service: auth, admin, invites, search, and query."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from kb_core.models.entry import KnowledgeEntry
 from kb_core.models.search import SearchResult
@@ -398,6 +398,60 @@ class IngestUrlRequest(BaseModel):
     content: str | None = None
     project_ref: str | None = None
     dry_run: bool = False
+
+
+# --- Graph Full Visualisation Schemas (P3) ---
+
+
+class GraphFullNode(BaseModel):
+    """A single node in the full-graph visualisation dump."""
+
+    id: str
+    label: str
+    type: str
+    val: int
+    properties: dict[str, Any]
+
+
+class GraphFullEdge(BaseModel):
+    """A single edge in the full-graph visualisation dump."""
+
+    source: str
+    target: str
+    type: str
+    properties: dict[str, Any]
+
+
+class GraphFullStats(BaseModel):
+    """Summary statistics for the full-graph dump."""
+
+    node_count: int
+    edge_count: int
+
+
+class GraphFullResponse(BaseModel):
+    """Response for ``GET /api/kb/graph/full``."""
+
+    nodes: list[GraphFullNode]
+    edges: list[GraphFullEdge]
+    stats: GraphFullStats
+
+
+# --- SSE Query Stream Schemas (P3) ---
+
+
+class QueryStreamRequest(BaseModel):
+    """Request body for ``POST /api/kb/query/stream``.
+
+    ``question`` is required (no default).  Sending ``{}`` returns 422.
+    This is an intentional divergence from the old explorer's
+    ``body.get('question', '')`` default — empty questions are not useful.
+    """
+
+    question: str
+
+
+# --- KB Ingest Schemas ---
 
 
 class IngestFileResult(BaseModel):
