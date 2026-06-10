@@ -1,0 +1,192 @@
+"""Hermetic tests for GET/PUT /api/settings and the resolve_attribution seam."""
+
+import pytest
+from fastapi.testclient import TestClient
+from kb_core import Attribution
+
+import kb_service.attribution as attribution_module
+from kb_service.attribution import resolve_attribution
+from kb_service.auth import get_current_user
+from kb_service.main import app
+from tests.conftest import StatefulFakeDbPool, fake_admin_user, fake_user
+
+# ---------------------------------------------------------------------------
+# (a) GET default — no row stored
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_default_null(client: TestClient) -> None:
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.get("/api/settings")
+    assert resp.status_code == 200
+    assert resp.json() == {"team": None}
+
+
+# ---------------------------------------------------------------------------
+# (b) PUT round-trip — value stored and reflected on GET
+# ---------------------------------------------------------------------------
+
+
+def test_put_settings_round_trip(client: TestClient) -> None:
+    app.dependency_overrides[get_current_user] = fake_admin_user
+    resp = client.put("/api/settings", json={"team": "docs-platform"})
+    assert resp.status_code == 200
+    assert resp.json() == {"team": "docs-platform"}
+
+    # Subsequent GET as a regular user reflects the stored value.
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.get("/api/settings")
+    assert resp.status_code == 200
+    assert resp.json() == {"team": "docs-platform"}
+
+
+# ---------------------------------------------------------------------------
+# (c) PUT clear cases — null, blank string, empty body, absent-row no-op
+# ---------------------------------------------------------------------------
+
+
+def test_put_settings_clear_via_null(client: TestClient) -> None:
+    # First store something, then clear with null.
+    app.dependency_overrides[get_current_user] = fake_admin_user
+    client.put("/api/settings", json={"team": "docs-platform"})
+
+    resp = client.put("/api/settings", json={"team": None})
+    assert resp.status_code == 200
+    assert resp.json() == {"team": None}
+
+    app.dependency_overrides[get_current_user] = fake_user
+    assert client.get("/api/settings").json() == {"team": None}
+
+
+def test_put_settings_clear_via_blank_string(client: TestClient) -> None:
+    app.dependency_overrides[get_current_user] = fake_admin_user
+    client.put("/api/settings", json={"team": "docs-platform"})
+
+    resp = client.put("/api/settings", json={"team": "  "})
+    assert resp.status_code == 200
+    assert resp.json() == {"team": None}
+
+    app.dependency_overrides[get_current_user] = fake_user
+    assert client.get("/api/settings").json() == {"team": None}
+
+
+def test_put_settings_clear_via_empty_body(client: TestClient) -> None:
+    # Omitted field == null (full-replace semantics).
+    app.dependency_overrides[get_current_user] = fake_admin_user
+    client.put("/api/settings", json={"team": "docs-platform"})
+
+    resp = client.put("/api/settings", json={})
+    assert resp.status_code == 200
+    assert resp.json() == {"team": None}
+
+    app.dependency_overrides[get_current_user] = fake_user
+    assert client.get("/api/settings").json() == {"team": None}
+
+
+def test_put_settings_clear_absent_row_is_noop(client: TestClient) -> None:
+    # delete_setting on a row that never existed must not error.
+    app.dependency_overrides[get_current_user] = fake_admin_user
+    resp = client.put("/api/settings", json={"team": None})
+    assert resp.status_code == 200
+    assert resp.json() == {"team": None}
+
+
+# ---------------------------------------------------------------------------
+# (d) PUT as non-admin → 403
+# ---------------------------------------------------------------------------
+
+
+def test_put_settings_non_admin_forbidden(client: TestClient) -> None:
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.put("/api/settings", json={"team": "x"})
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# (e) GET without Authorization header → 401 (FastAPI 0.136 HTTPBearer)
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_unauthed_returns_401(client: TestClient) -> None:
+    # No dependency override — auth goes through the real HTTPBearer dependency.
+    resp = client.get("/api/settings")
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# (f) resolve_attribution unit tests (async — asyncio_mode = "auto")
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_attribution_team_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = StatefulFakeDbPool({"team": "docs-platform"})
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return pool
+
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+    result = await resolve_attribution(fake_user())
+    assert isinstance(result, Attribution)
+    assert result.contributor == "tester@example.com"
+    assert result.team == "docs-platform"
+
+
+async def test_resolve_attribution_team_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = StatefulFakeDbPool({})
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return pool
+
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+    result = await resolve_attribution(fake_user())
+    assert result.contributor == "tester@example.com"
+    assert result.team is None
+
+
+async def test_resolve_attribution_team_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Stored blank string ("  ") normalises to None.
+    pool = StatefulFakeDbPool({"team": "  "})
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return pool
+
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+    result = await resolve_attribution(fake_user())
+    assert result.team is None
+
+
+async def test_resolve_attribution_team_whitespace_trimmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Out-of-band whitespace in the stored value is trimmed.
+    pool = StatefulFakeDbPool({"team": " docs "})
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return pool
+
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+    result = await resolve_attribution(fake_user())
+    assert result.team == "docs"
+
+
+# ---------------------------------------------------------------------------
+# (g) PUT trim — leading/trailing whitespace is stripped on write and read
+# ---------------------------------------------------------------------------
+
+
+def test_put_settings_trims_whitespace(client: TestClient) -> None:
+    app.dependency_overrides[get_current_user] = fake_admin_user
+    resp = client.put("/api/settings", json={"team": "  docs-platform  "})
+    assert resp.status_code == 200
+    assert resp.json() == {"team": "docs-platform"}
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.get("/api/settings")
+    assert resp.status_code == 200
+    assert resp.json() == {"team": "docs-platform"}

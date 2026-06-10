@@ -158,3 +158,22 @@ class SearchResponse(BaseModel):
 
     results: list[SearchResult]
     filtered_count: int
+
+
+# --- App-Config / Settings Schemas ---
+
+
+class SettingsResponse(BaseModel):
+    """Response body for GET and PUT /api/settings."""
+
+    team: str | None
+
+
+class UpdateSettingsRequest(BaseModel):
+    """Request body for PUT /api/settings.
+
+    All fields default to None.  An omitted field is treated identically to an
+    explicit null — PUT is full-replace, not partial-patch.
+    """
+
+    team: str | None = None

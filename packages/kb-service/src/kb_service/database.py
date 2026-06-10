@@ -57,6 +57,14 @@ _SCHEMA_STATEMENTS: list[str] = [
         used_at TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS app_config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT REFERENCES users(id)
+    )
+    """,
 ]
 
 
