@@ -18,7 +18,7 @@ import argparse
 import json
 import sys
 
-from personal_kb_hook.index_reader import read_index
+from personal_kb_hook import http_index
 from personal_kb_hook.render import render_claude_json, render_directory
 from personal_kb_hook.resolver import resolve_project
 from personal_kb_hook.suppression import mark_emitted, should_emit
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> None:
         if not project_ref:
             return
 
-        index = read_index()
+        index = http_index.load_index()
         maps = index.get(project_ref) or []
         if not maps:
             return

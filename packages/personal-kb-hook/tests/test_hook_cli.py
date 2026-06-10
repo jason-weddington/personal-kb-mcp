@@ -19,6 +19,8 @@ def hook_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     db_path.parent.mkdir(parents=True)
     monkeypatch.setenv("KB_DB_PATH", str(db_path))
     monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
+    monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
+    monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("HOME", str(tmp_path))
     cache_root.mkdir()
@@ -332,7 +334,7 @@ def test_main_swallows_internal_exception(
     def boom(*args: object, **kwargs: object) -> None:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("personal_kb_hook.cli.read_index", boom)
+    monkeypatch.setattr("personal_kb_hook.http_index.load_index", boom)
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     rc, out = _run(
         monkeypatch,
@@ -352,3 +354,44 @@ def test_module_main_callable() -> None:
     # Smoke test: invoking with --help raises SystemExit but should not break.
     # We rely on the wrapper in main() to swallow SystemExit from --help.
     assert os.environ is not None
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: HTTP env set but urlopen fails -> local directory emitted
+# ---------------------------------------------------------------------------
+
+
+def test_http_env_set_urlopen_fails_emits_local_directory(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """PERSONAL_KB_URL/API_KEY set but urlopen raises -> local index used, no crash."""
+    import urllib.request
+
+    _write_index(
+        hook_env["maps_index"],
+        "personal-kb",
+        [{"id": "kb-1", "short_title": "auth", "long_title": "Authentication map"}],
+    )
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "test-api-key")
+
+    def raise_conn(*args: object, **kwargs: object) -> None:
+        import urllib.error
+
+        raise urllib.error.URLError("simulated connection failure")
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_conn)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(hook_env["root"]),
+            "session_id": "s-http-fail",
+        },
+    )
+    assert rc == 0
+    assert "personal-kb" in out
+    assert "auth" in out
