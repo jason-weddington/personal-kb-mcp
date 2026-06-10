@@ -19,7 +19,7 @@ import json
 import sys
 
 from personal_kb_hook import http_index
-from personal_kb_hook.render import render_claude_json, render_directory
+from personal_kb_hook.render import compose_directory, render_claude_json
 from personal_kb_hook.resolver import resolve_project
 from personal_kb_hook.suppression import mark_emitted, should_emit
 
@@ -90,7 +90,16 @@ def main(argv: list[str] | None = None) -> None:
 
         index = http_index.load_index()
         maps = index.get(project_ref) or []
-        if not maps:
+
+        # Collect cross-project map IDs (all projects except the resolved one).
+        cross_map_ids: list[str] = [
+            m["id"] for proj, proj_maps in index.items() if proj != project_ref for m in proj_maps
+        ]
+
+        # Emit only when at least one line has content (own maps OR cross roster).
+        map_ids = [m["id"] for m in maps]
+        all_map_ids = map_ids + cross_map_ids
+        if not all_map_ids:
             return
 
         session_id = payload.get("session_id")
@@ -99,16 +108,18 @@ def main(argv: list[str] | None = None) -> None:
         source = payload.get("source")
         source_str = source if isinstance(source, str) else None
 
-        map_ids = [m["id"] for m in maps]
         if not should_emit(
             session_id=session_id_str,
             scope=project_ref,
-            map_ids=map_ids,
+            map_ids=all_map_ids,
             source=source_str,
         ):
             return
 
-        directory = render_directory(project_ref, maps)
+        directory = compose_directory(project_ref, maps, index)
+        if directory is None:
+            return
+
         if args.format == "claude-json":
             output = render_claude_json(event_name, directory)
         else:
@@ -118,7 +129,7 @@ def main(argv: list[str] | None = None) -> None:
         mark_emitted(
             session_id=session_id_str,
             scope=project_ref,
-            map_ids=map_ids,
+            map_ids=all_map_ids,
         )
     except Exception:
         # Intentional broad catch: the hook must NEVER raise into the harness.

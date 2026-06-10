@@ -55,6 +55,56 @@ def render_directory(project_ref: str, maps: list[MapEntry]) -> str:
     return f"Maps for {project_ref} {_EM_DASH} {body}"
 
 
+def render_cross_directory(current_project: str, index: dict[str, list[MapEntry]]) -> str | None:
+    """Render the cross-project roster line (Line 2).
+
+    Format: ``Maps in other domains — {proj}: [{id}] {short_title}, [{id}]
+    {short_title}; {proj2}: ...``. SHORT titles only (no long_title). Projects
+    are sorted alphabetically; maps appear in index order within a project.
+    Maps within a project are joined with ``", "``; projects are joined with
+    ``"; "``. The resolved project (``current_project``) is excluded.
+
+    Returns ``None`` when no other project has maps.
+    """
+    parts: list[str] = []
+    for proj in sorted(index.keys()):
+        if proj == current_project:
+            continue
+        proj_maps = index[proj]
+        if not proj_maps:
+            continue
+        map_parts = [f"[{m['id']}] {m['short_title']}" for m in proj_maps]
+        parts.append(f"{proj}: {', '.join(map_parts)}")
+    if not parts:
+        return None
+    body = "; ".join(parts)
+    return f"Maps in other domains {_EM_DASH} {body}"
+
+
+def compose_directory(
+    project_ref: str,
+    maps: list[MapEntry],
+    index: dict[str, list[MapEntry]],
+) -> str | None:
+    """Compose the full injection string: line 1 and/or line 2.
+
+    * Line 1 (``render_directory``) — omitted when ``maps`` is empty.
+    * Line 2 (``render_cross_directory``) — omitted when no other project has maps.
+
+    The two lines are joined with a single newline when both are present.
+    Returns ``None`` when neither line has any content.
+    """
+    line1 = render_directory(project_ref, maps) if maps else None
+    line2 = render_cross_directory(project_ref, index)
+    if line1 and line2:
+        return f"{line1}\n{line2}"
+    if line1:
+        return line1
+    if line2:
+        return line2
+    return None
+
+
 def render_claude_json(event_name: str, directory: str) -> str:
     """Render the ``--format=claude-json`` envelope.
 
