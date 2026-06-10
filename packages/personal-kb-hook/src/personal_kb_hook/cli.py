@@ -127,8 +127,9 @@ def main(argv: list[str] | None = None) -> None:
             text_content, operated = manifest
             request_data: dict[str, Any] = {
                 "text": text_content,
-                "project_ref": project_ref_stop,
-                "operated": operated,
+                "cwd_project": project_ref_stop,
+                "operating": operated,
+                "source_label": project_ref_stop,
             }
 
             # Write request to a NamedTemporaryFile (worker will delete it)

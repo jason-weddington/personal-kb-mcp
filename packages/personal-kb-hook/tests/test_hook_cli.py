@@ -560,8 +560,8 @@ def test_stop_request_tmp_body_contains_expected_fields(
         body = json.load(fh)
 
     assert body["text"] == "B" * 300
-    assert body["project_ref"] == "personal-kb"
-    assert "mcp:personal-kb" in body["operated"]
+    assert body["cwd_project"] == "personal-kb"
+    assert "mcp:personal-kb" in body["operating"]
 
     # Cleanup tmp file
     os.unlink(req_tmp_path)
@@ -601,7 +601,7 @@ def test_stop_project_ref_null_when_no_kb_project(
     req_tmp_path = popen_calls[0][0][0][3]
     with open(req_tmp_path, encoding="utf-8") as fh:
         body = json.load(fh)
-    assert body["project_ref"] is None
+    assert body["cwd_project"] is None
 
     os.unlink(req_tmp_path)
 
