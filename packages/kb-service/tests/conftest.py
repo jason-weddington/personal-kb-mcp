@@ -23,13 +23,58 @@ from kb_service.main import app
 from kb_service.models import User
 
 
+class _FakeCursor:
+    """Minimal cursor returned by _FakeDb.execute."""
+
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    async def fetchall(self) -> list[tuple[Any, ...]]:
+        return self._rows
+
+
+class _FakeDb:
+    """Minimal db handle whose execute() returns a _FakeCursor.
+
+    Row source: if the FakeKnowledgeBase has ``maps_rows`` set (not None),
+    those rows are returned verbatim (lets tests exercise raw None/empty refs).
+    Otherwise rows are synthesised from the keys of ``maps_projects``.
+    """
+
+    def __init__(self, kb: "FakeKnowledgeBase") -> None:
+        self._kb = kb
+
+    async def execute(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | list[Any] = (),
+    ) -> _FakeCursor:
+        rows: list[tuple[Any, ...]] = (
+            self._kb.maps_rows
+            if self._kb.maps_rows is not None
+            else [(ref,) for ref in self._kb.maps_projects]
+        )
+        return _FakeCursor(rows=rows)
+
+
 class FakeKnowledgeBase:
     """Stand-in for the kb-core ``KnowledgeBase`` singleton."""
 
-    def __init__(self, results: list[SearchResult], filtered_count: int) -> None:
+    def __init__(
+        self,
+        results: list[SearchResult],
+        filtered_count: int,
+        *,
+        maps_projects: dict[str, list[dict[str, str]]] | None = None,
+    ) -> None:
         self.results = results
         self.filtered_count = filtered_count
+        self.maps_projects: dict[str, list[dict[str, str]]] = (
+            maps_projects if maps_projects is not None else {}
+        )
+        self.maps_rows: list[tuple[Any, ...]] | None = None
         self.search_calls: list[tuple[Any, str | None]] = []
+        self.db = _FakeDb(self)
 
     async def search(
         self, query: Any, *, contributor: str | None = None
@@ -37,6 +82,12 @@ class FakeKnowledgeBase:
         """Record the call and return the configured results."""
         self.search_calls.append((query, contributor))
         return self.results, self.filtered_count
+
+    async def maps_for_project(
+        self, project_ref: str, *, team: str | None = None
+    ) -> list[dict[str, str]]:
+        """Return configured maps for the given project_ref."""
+        return self.maps_projects.get(project_ref, [])
 
     async def close(self) -> None:
         """No-op close."""

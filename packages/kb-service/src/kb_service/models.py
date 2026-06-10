@@ -160,6 +160,38 @@ class SearchResponse(BaseModel):
     filtered_count: int
 
 
+# --- Maps Index Schemas ---
+
+
+class MapRef(BaseModel):
+    """A single mental-map entry reference."""
+
+    id: str
+    short_title: str
+    long_title: str
+
+
+class ProjectMaps(BaseModel):
+    """Maps for a single project.
+
+    Lossless round-trip contract: ``ProjectMaps.model_dump()`` equals exactly
+    one legacy JSONL index record, whose schema is:
+    ``{"project_ref": "<str>", "maps": [{"id": "<entry id>",
+    "short_title": "<str>", "long_title": "<str>"}, ...]}`` — one such JSON
+    object per line of maps_index.<role>.jsonl.  The P5 thin client/hook will
+    re-render local files from this response.
+    """
+
+    project_ref: str
+    maps: list[MapRef]
+
+
+class MapsIndexResponse(BaseModel):
+    """Response for ``GET /api/kb/maps-index``."""
+
+    projects: list[ProjectMaps]
+
+
 # --- App-Config / Settings Schemas ---
 
 
