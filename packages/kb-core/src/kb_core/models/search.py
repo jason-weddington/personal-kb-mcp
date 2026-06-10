@@ -28,3 +28,8 @@ class SearchResult(BaseModel):
     effective_confidence: float
     staleness_warning: str | None = None
     match_source: str  # "hybrid", "fts", "vector"
+    # Raw per-leg relevance signals. Populated by hybrid_search; None/False
+    # when the entry did not appear in that leg or the leg was unavailable.
+    vector_similarity: float | None = None  # cosine similarity (0..1, higher = more similar)
+    fts_matched: bool = False  # True when the entry appeared in the FTS leg
+    fts_rank: int | None = None  # 1-based rank in the FTS leg (None if not in FTS)

@@ -75,6 +75,12 @@ async def hybrid_search(
         if vec_results:
             match_source = "hybrid"
 
+    # Build per-leg signal maps for raw relevance fields on SearchResult.
+    # fts_rank_map: entry_id → 1-based rank in the FTS leg (only entries that appeared).
+    # vec_similarity_map: entry_id → cosine similarity (1 - cosine_distance, clamped 0..1).
+    fts_rank_map: dict[str, int] = {eid: rank + 1 for rank, (eid, _score) in enumerate(fts_results)}
+    vec_similarity_map: dict[str, float] = {eid: max(0.0, 1.0 - dist) for eid, dist in vec_results}
+
     # Compute RRF scores
     rrf_scores: dict[str, float] = {}
 
@@ -151,6 +157,9 @@ async def hybrid_search(
                 effective_confidence=eff_conf,
                 staleness_warning=warning,
                 match_source=match_source if vec_results else "fts",
+                vector_similarity=vec_similarity_map.get(entry_id),
+                fts_matched=entry_id in fts_rank_map,
+                fts_rank=fts_rank_map.get(entry_id),
             )
         )
 
