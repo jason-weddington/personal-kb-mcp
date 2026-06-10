@@ -1,6 +1,7 @@
 """Pydantic models for the KB service: auth, admin, invites, search, and query."""
 
 from datetime import datetime
+from typing import Literal
 
 from kb_core.models.entry import KnowledgeEntry
 from kb_core.models.search import SearchResult
@@ -371,3 +372,48 @@ class KbListResponse(BaseModel):
     """Response for ``GET /api/kb/projects``, ``/contributors``, and ``/teams``."""
 
     items: list[KbListItem]
+
+
+# --- KB Ingest Schemas ---
+
+
+class IngestTextRequest(BaseModel):
+    """Request body for ``POST /api/kb/ingest/text``."""
+
+    content: str = Field(min_length=1)
+    source_name: str = Field(min_length=1)
+    project_ref: str | None = None
+    dry_run: bool = False
+
+
+class IngestUrlRequest(BaseModel):
+    """Request body for ``POST /api/kb/ingest/url``.
+
+    When ``content`` is ``None``, the endpoint fetches and extracts the URL.
+    When ``content`` is provided, the pre-fetched text is used directly (useful
+    for authenticated/SSO/JS-rendered pages that the service cannot fetch).
+    """
+
+    url: str = Field(min_length=1)
+    content: str | None = None
+    project_ref: str | None = None
+    dry_run: bool = False
+
+
+class IngestFileResult(BaseModel):
+    """Lossless mirror of kb-core's ``FileResult`` dataclass for P5 round-trip.
+
+    Field-for-field copy of ``kb_core.ingest.ingester.FileResult`` (source of
+    truth: ingester.py:123-135).  Converted via ``dataclasses.asdict(result)``
+    in the route — ``FileResult`` is NOT imported into this module.
+    """
+
+    path: str
+    action: Literal["ingested", "skipped", "flagged", "error", "unchanged", "dry_run"]
+    reason: str | None = None
+    entry_count: int = 0
+    entry_ids: list[str] = []
+    summary: str | None = None
+    chunks_processed: int = 0
+    chunks_skipped: int = 0
+    chunks_flagged: int = 0

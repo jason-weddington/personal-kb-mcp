@@ -18,6 +18,7 @@ from kb_service.config import (
 from kb_service.database import close_db, init_db
 from kb_service.routes.admin_routes import router as admin_router
 from kb_service.routes.auth_routes import router as auth_router
+from kb_service.routes.ingest_routes import router as ingest_router
 from kb_service.routes.kb_read_routes import router as kb_read_router
 from kb_service.routes.kb_routes import router as kb_router
 from kb_service.routes.kb_write_routes import router as kb_write_router
@@ -87,6 +88,7 @@ app.include_router(maps_router)
 app.include_router(query_router)
 app.include_router(settings_router)
 app.include_router(kb_write_router)
+app.include_router(ingest_router)
 
 
 @app.get("/api/health")

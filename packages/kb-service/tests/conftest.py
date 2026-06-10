@@ -8,10 +8,12 @@ parametrizable, and ``database.get_db`` is replaced with a minimal fake pool.
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from kb_core.ingest.ingester import FileResult
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.search import SearchResult
 
@@ -254,6 +256,25 @@ class FakeKnowledgeBase:
         )
         self.summarize_return: str = "fake synthesized answer"
 
+        # P2 ingest state — mutable file_result returned by all four fake
+        # ingest methods; tests override fake_kb.file_result directly.
+        self.file_result: FileResult = FileResult(
+            path="doc.md",
+            action="ingested",
+            reason=None,
+            entry_count=1,
+            entry_ids=["kb-00002"],
+            summary=None,
+            chunks_processed=1,
+            chunks_skipped=0,
+            chunks_flagged=0,
+        )
+        self.ingest_text_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.ingest_url_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.ingest_url_content_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.ingest_file_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self._ingest_raises: RuntimeError | None = None
+
     async def search(
         self, query: Any, *, contributor: str | None = None
     ) -> tuple[list[SearchResult], int]:
@@ -388,6 +409,110 @@ class FakeKnowledgeBase:
         if self._bulk_update_raises is not None:
             raise self._bulk_update_raises
         return [(make_entry(), make_entry())]
+
+    # ── ingest surface (P2) ──────────────────────────────────────────────────
+
+    async def ingest_text(
+        self,
+        content: str,
+        source_name: str,
+        *,
+        project_ref: str | None = None,
+        dry_run: bool = False,
+        contributor: str | None = None,
+        team: str | None = None,
+    ) -> FileResult:
+        """Record call args/kwargs; raise configured error; return file_result."""
+        self.ingest_text_calls.append(
+            (
+                (content, source_name),
+                {
+                    "project_ref": project_ref,
+                    "dry_run": dry_run,
+                    "contributor": contributor,
+                    "team": team,
+                },
+            )
+        )
+        if self._ingest_raises is not None:
+            raise self._ingest_raises
+        return self.file_result
+
+    async def ingest_url(
+        self,
+        url: str,
+        *,
+        project_ref: str | None = None,
+        dry_run: bool = False,
+        contributor: str | None = None,
+        team: str | None = None,
+    ) -> FileResult:
+        """Record call args/kwargs; raise configured error; return file_result."""
+        self.ingest_url_calls.append(
+            (
+                (url,),
+                {
+                    "project_ref": project_ref,
+                    "dry_run": dry_run,
+                    "contributor": contributor,
+                    "team": team,
+                },
+            )
+        )
+        if self._ingest_raises is not None:
+            raise self._ingest_raises
+        return self.file_result
+
+    async def ingest_url_content(
+        self,
+        content: str,
+        source_url: str,
+        *,
+        project_ref: str | None = None,
+        dry_run: bool = False,
+        contributor: str | None = None,
+        team: str | None = None,
+    ) -> FileResult:
+        """Record call args/kwargs; raise configured error; return file_result."""
+        self.ingest_url_content_calls.append(
+            (
+                (content, source_url),
+                {
+                    "project_ref": project_ref,
+                    "dry_run": dry_run,
+                    "contributor": contributor,
+                    "team": team,
+                },
+            )
+        )
+        if self._ingest_raises is not None:
+            raise self._ingest_raises
+        return self.file_result
+
+    async def ingest_file(
+        self,
+        path: Path | str,
+        *,
+        project_ref: str | None = None,
+        dry_run: bool = False,
+        contributor: str | None = None,
+        team: str | None = None,
+    ) -> FileResult:
+        """Record call args/kwargs; raise configured error; return file_result."""
+        self.ingest_file_calls.append(
+            (
+                (path,),
+                {
+                    "project_ref": project_ref,
+                    "dry_run": dry_run,
+                    "contributor": contributor,
+                    "team": team,
+                },
+            )
+        )
+        if self._ingest_raises is not None:
+            raise self._ingest_raises
+        return self.file_result
 
 
 class FakeDbPool:
