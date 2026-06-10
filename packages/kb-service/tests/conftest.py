@@ -23,8 +23,8 @@ from kb_service.main import app
 from kb_service.models import User
 
 
-class _FakeCursor:
-    """Minimal cursor returned by _FakeDb.execute."""
+class FakeCursor:
+    """Fake DB cursor returned by FakeKbDb.execute."""
 
     def __init__(self, rows: list[tuple[Any, ...]]) -> None:
         self._rows = rows
@@ -33,28 +33,117 @@ class _FakeCursor:
         return self._rows
 
 
-class _FakeDb:
-    """Minimal db handle whose execute() returns a _FakeCursor.
+class FakeKbDb:
+    """Fake kb-core Database handle (NOT the asyncpg service-auth pool).
 
-    Row source: if the FakeKnowledgeBase has ``maps_rows`` set (not None),
-    those rows are returned verbatim (lets tests exercise raw None/empty refs).
-    Otherwise rows are synthesised from the keys of ``maps_projects``.
+    Implements: execute -> FakeCursor (recording calls), commit -> no-op.
+    Do NOT reuse or extend FakeDbPool — that is asyncpg-pool-shaped.
+
+    Dual row source so the SAME fake serves both maps-index and read/meta
+    routes:
+
+    * If the SQL targets the maps-index discovery (entry_type='mental_map'),
+      the cursor rows come from ``kb.maps_rows`` if set, otherwise are
+      synthesised from the keys of ``kb.maps_projects``.
+    * Otherwise the cursor returns ``self.rows`` verbatim — read/meta tests
+      assign ``kb.db.rows`` directly per case.
     """
 
-    def __init__(self, kb: "FakeKnowledgeBase") -> None:
+    def __init__(self, kb: "FakeKnowledgeBase | None" = None) -> None:
         self._kb = kb
+        self.rows: list[tuple[Any, ...]] = []
+        self.calls: list[tuple[str, Any]] = []
 
-    async def execute(
+    async def execute(self, sql: str, params: Any = ()) -> FakeCursor:
+        self.calls.append((sql, params))
+        if self._kb is not None and "mental_map" in sql:
+            maps_rows = (
+                self._kb.maps_rows
+                if self._kb.maps_rows is not None
+                else [(ref,) for ref in self._kb.maps_projects]
+            )
+            return FakeCursor(maps_rows)
+        return FakeCursor(self.rows)
+
+    async def commit(self) -> None:
+        pass
+
+
+class FakeGraph:
+    """Fake kb-core _GraphAccessor with settable return-value attributes."""
+
+    def __init__(self) -> None:
+        self.neighbors_result: list[tuple[str, str, str]] = []
+        self.bfs_result: list[tuple[str, int, list[str]]] = []
+        self.find_path_result: list[tuple[str, str, str]] | None = None
+        self.supersedes_chain_result: list[str] = []
+        self.entries_for_scope_result: list[str] = []
+        self.vocabulary_result: dict[str, list[str]] = {}
+        self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    async def neighbors(
         self,
-        sql: str,
-        params: tuple[Any, ...] | list[Any] = (),
-    ) -> _FakeCursor:
-        rows: list[tuple[Any, ...]] = (
-            self._kb.maps_rows
-            if self._kb.maps_rows is not None
-            else [(ref,) for ref in self._kb.maps_projects]
+        node_id: str,
+        edge_types: list[str] | None = None,
+        direction: str = "both",
+        limit: int = 50,
+    ) -> list[tuple[str, str, str]]:
+        self.calls.append(
+            (
+                "neighbors",
+                (node_id,),
+                {"edge_types": edge_types, "direction": direction, "limit": limit},
+            )
         )
-        return _FakeCursor(rows=rows)
+        return self.neighbors_result
+
+    async def bfs_entries(
+        self,
+        start_node: str,
+        max_depth: int = 2,
+        edge_types: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[tuple[str, int, list[str]]]:
+        self.calls.append(
+            (
+                "bfs_entries",
+                (start_node,),
+                {"max_depth": max_depth, "edge_types": edge_types, "limit": limit},
+            )
+        )
+        return self.bfs_result
+
+    async def find_path(
+        self,
+        source: str,
+        target: str,
+        max_depth: int = 4,
+    ) -> list[tuple[str, str, str]] | None:
+        self.calls.append(("find_path", (source, target), {"max_depth": max_depth}))
+        return self.find_path_result
+
+    async def supersedes_chain(self, entry_id: str) -> list[str]:
+        self.calls.append(("supersedes_chain", (entry_id,), {}))
+        return self.supersedes_chain_result
+
+    async def entries_for_scope(
+        self,
+        scope: str,
+        entry_type: str | None = None,
+        order_by: str = "created_at",
+    ) -> list[str]:
+        self.calls.append(
+            (
+                "entries_for_scope",
+                (scope,),
+                {"entry_type": entry_type, "order_by": order_by},
+            )
+        )
+        return self.entries_for_scope_result
+
+    async def vocabulary(self, max_nodes: int = 200) -> dict[str, list[str]]:
+        self.calls.append(("vocabulary", (), {"max_nodes": max_nodes}))
+        return self.vocabulary_result
 
 
 class FakeKnowledgeBase:
@@ -74,7 +163,12 @@ class FakeKnowledgeBase:
         )
         self.maps_rows: list[tuple[Any, ...]] | None = None
         self.search_calls: list[tuple[Any, str | None]] = []
-        self.db = _FakeDb(self)
+        self.db = FakeKbDb(self)
+        self.graph = FakeGraph()
+        # P2 extensions — initialized with mutable defaults; tests assign values
+        self.entries: dict[str, KnowledgeEntry] = {}
+        self.preflight_result: str = "preflight context"
+        self.preflight_calls: list[tuple[str, Any]] = []
         self.ask_calls: list[tuple[str, dict[str, Any]]] = []
         self.summarize_calls: list[tuple[str, dict[str, Any]]] = []
         self.ask_return: tuple[list[tuple[KnowledgeEntry, str]], int] = (
@@ -95,6 +189,15 @@ class FakeKnowledgeBase:
     ) -> list[dict[str, str]]:
         """Return configured maps for the given project_ref."""
         return self.maps_projects.get(project_ref, [])
+
+    async def get(self, entry_id: str) -> KnowledgeEntry | None:
+        """Return the configured entry for entry_id, or None on miss."""
+        return self.entries.get(entry_id)
+
+    async def preflight(self, project_ref: str, *, since: Any = None) -> str:
+        """Record the call and return the configured preflight_result."""
+        self.preflight_calls.append((project_ref, since))
+        return self.preflight_result
 
     async def ask(
         self,

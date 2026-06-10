@@ -259,3 +259,115 @@ class UpdateSettingsRequest(BaseModel):
     """
 
     team: str | None = None
+
+
+# --- KB Read / Meta Schemas (P2) ---
+
+
+class GetRequest(BaseModel):
+    """Request body for ``POST /api/kb/get``."""
+
+    ids: list[str] = Field(min_length=1, max_length=20)
+
+
+class PointerRotTarget(BaseModel):
+    """A single rotted pointer target found in a mental-map entry."""
+
+    target_id: str
+    superseded_by: str | None
+
+
+class GetEntryResult(BaseModel):
+    """Single result slot in a ``GetResponse``, order-preserving."""
+
+    id: str
+    found: bool
+    entry: KnowledgeEntry | None
+    pointer_rot: list[PointerRotTarget]
+
+
+class GetResponse(BaseModel):
+    """Response for ``POST /api/kb/get``."""
+
+    results: list[GetEntryResult]
+
+
+class GraphNeighbor(BaseModel):
+    """One neighbor in a graph-neighbors response."""
+
+    neighbor_id: str
+    edge_type: str
+    direction: str
+
+
+class GraphNeighborsResponse(BaseModel):
+    """Response for ``GET /api/kb/graph/neighbors``."""
+
+    neighbors: list[GraphNeighbor]
+
+
+class GraphBfsEntry(BaseModel):
+    """One entry in a BFS traversal response."""
+
+    entry_id: str
+    depth: int
+    path: list[str]
+
+
+class GraphBfsResponse(BaseModel):
+    """Response for ``GET /api/kb/graph/bfs``."""
+
+    entries: list[GraphBfsEntry]
+
+
+class GraphPathHop(BaseModel):
+    """One hop in a graph path response."""
+
+    source: str
+    edge_type: str
+    target: str
+
+
+class GraphPathResponse(BaseModel):
+    """Response for ``GET /api/kb/graph/path``."""
+
+    found: bool
+    hops: list[GraphPathHop]
+
+
+class SupersedesChainResponse(BaseModel):
+    """Response for ``GET /api/kb/graph/supersedes-chain``."""
+
+    chain: list[str]
+
+
+class ScopeEntriesResponse(BaseModel):
+    """Response for ``GET /api/kb/graph/scope-entries``."""
+
+    entry_ids: list[str]
+
+
+class GraphVocabularyResponse(BaseModel):
+    """Response for ``GET /api/kb/graph/vocabulary``."""
+
+    nodes: dict[str, list[str]]
+
+
+class PreflightResponse(BaseModel):
+    """Response for ``GET /api/kb/preflight``."""
+
+    project_ref: str
+    context: str
+
+
+class KbListItem(BaseModel):
+    """One row in a KB list response (project, contributor, or team)."""
+
+    name: str
+    entry_count: int
+
+
+class KbListResponse(BaseModel):
+    """Response for ``GET /api/kb/projects``, ``/contributors``, and ``/teams``."""
+
+    items: list[KbListItem]
