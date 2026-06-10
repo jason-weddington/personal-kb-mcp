@@ -454,6 +454,56 @@ class QueryStreamRequest(BaseModel):
 # --- KB Ingest Schemas ---
 
 
+# --- Chat Schemas ---
+
+
+class ChatStreamRequest(BaseModel):
+    """Request body for ``POST /api/chat/stream``.
+
+    All fields have defaults so the body can be omitted entirely (empty object
+    is valid — the route validates the ``token`` query param separately).
+    """
+
+    session_id: str | None = None
+    message: str = ""
+    seed_question: str | None = None
+    seed_answer: str | None = None
+    seed_entry_ids: list[str] = []
+    mode: str = ""
+
+
+class ChatCreateRequest(BaseModel):
+    """Request body for ``POST /api/chat/create``."""
+
+    chat_id: str
+    question: str
+    answer: str = ""
+    mode: str = ""
+
+
+class ChatOkResponse(BaseModel):
+    """Generic ok response for chat mutating endpoints."""
+
+    ok: bool
+    id: str | None = None
+
+
+class ChatListItem(BaseModel):
+    """One item in the chat history list."""
+
+    id: str
+    title: str
+    mode: str
+    updated_at: str
+
+
+class ChatMessageItem(BaseModel):
+    """One message in a chat thread."""
+
+    role: str
+    content: str
+
+
 class IngestFileResult(BaseModel):
     """Lossless mirror of kb-core's ``FileResult`` dataclass for P5 round-trip.
 

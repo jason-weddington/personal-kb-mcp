@@ -95,7 +95,7 @@ omit = [
 
 [tool.coverage.report]
 precision = 1
-fail_under = 82.9
+fail_under = 83.9
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]

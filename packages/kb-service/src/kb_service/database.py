@@ -65,6 +65,28 @@ _SCHEMA_STATEMENTS: list[str] = [
         updated_by TEXT REFERENCES users(id)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS chats (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        title TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS chat_messages (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chats_user_updated"
+    " ON chats(user_id, updated_at DESC)",
 ]
 
 

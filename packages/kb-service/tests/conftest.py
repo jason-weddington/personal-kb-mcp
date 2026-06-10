@@ -19,6 +19,7 @@ from kb_core.models.search import SearchResult
 
 import kb_service.attribution as attribution_module
 import kb_service.auth as auth_module
+import kb_service.chat_history as chat_history_module
 import kb_service.database as database
 import kb_service.main as main_module
 from kb_service.main import app
@@ -251,6 +252,11 @@ class FakeKnowledgeBase:
 
         # P3 SSE query stream — None means classifier is skipped (explore fallback)
         self.query_llm: Any | None = None
+
+        # P3 chat stream — all three default None (means unavailable)
+        self.synthesis_llm: Any | None = None
+        self.extraction_llm: Any | None = None
+        self.embedder: Any | None = None
 
         # P2 read/meta + query state
         self.entries: dict[str, KnowledgeEntry] = {}
@@ -543,15 +549,40 @@ class FakeDbPool:
 
 
 class StatefulFakeDbPool(FakeDbPool):
-    """FakeDbPool extended with a stateful app_config store.
+    """FakeDbPool extended with a stateful app_config store and optional user rows.
 
     Pass in a shared dict so that multiple calls to get_db() within the same
     test all see the same in-memory state — required for round-trip tests that
     PUT a setting then GET it back.
+
+    Pass ``users`` to pre-seed user rows for JWT authentication tests —
+    ``get_current_user_from_token`` does a real ``SELECT * FROM users WHERE id``
+    that would 401 on an empty pool.
     """
 
-    def __init__(self, app_config: dict[str, str]) -> None:
+    def __init__(
+        self,
+        app_config: dict[str, str],
+        users: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self._app_config = app_config
+        self._users: dict[str, dict[str, Any]] = users or {}
+        # in-memory chat store: {chat_id: {id, user_id, title, mode, updated_at}}
+        self._chats: dict[str, dict[str, Any]] = {}
+        # {chat_id: [{role, content}]}
+        self._chat_messages: dict[str, list[dict[str, str]]] = {}
+
+    async def fetch(self, sql: str, *args: Any) -> list[Any]:
+        if "FROM chats" in sql and "user_id = $1" in sql:
+            user_id = args[0]
+            limit = args[1] if len(args) > 1 else 50
+            rows = [c for c in self._chats.values() if c["user_id"] == user_id]
+            rows.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
+            return rows[:limit]
+        if "FROM chat_messages" in sql and "chat_id = $1" in sql:
+            chat_id = args[0]
+            return list(self._chat_messages.get(str(chat_id), []))
+        return []
 
     async def fetchrow(self, sql: str, *args: Any) -> Any | None:
         if "app_config" in sql and "SELECT value" in sql:
@@ -560,6 +591,16 @@ class StatefulFakeDbPool(FakeDbPool):
             if val is None:
                 return None
             return {"value": val}
+        if "FROM users WHERE id" in sql:
+            user_id = str(args[0])
+            return self._users.get(user_id)
+        if "FROM chats WHERE id = $1 AND user_id = $2" in sql:
+            chat_id = str(args[0])
+            user_id = str(args[1])
+            chat = self._chats.get(chat_id)
+            if chat is not None and chat["user_id"] == user_id:
+                return {"exists": 1}
+            return None
         return await super().fetchrow(sql, *args)
 
     async def execute(self, sql: str, *args: Any) -> str:
@@ -568,7 +609,60 @@ class StatefulFakeDbPool(FakeDbPool):
             self._app_config[args[0]] = args[1]
         elif "DELETE FROM app_config" in sql:
             self._app_config.pop(args[0], None)
+        elif "INSERT INTO chats" in sql:
+            # args: id, user_id, title, mode, created_at, updated_at
+            chat_id = str(args[0])
+            self._chats[chat_id] = {
+                "id": chat_id,
+                "user_id": str(args[1]),
+                "title": str(args[2]),
+                "mode": str(args[3]),
+                "created_at": str(args[4]),
+                "updated_at": str(args[5]),
+            }
+            self._chat_messages.setdefault(chat_id, [])
+        elif "INSERT INTO chat_messages" in sql:
+            # args: chat_id, role, content, created_at
+            chat_id = str(args[0])
+            self._chat_messages.setdefault(chat_id, []).append(
+                {"role": str(args[1]), "content": str(args[2])}
+            )
+        elif "UPDATE chats SET updated_at" in sql:
+            # args: updated_at, chat_id
+            chat_id = str(args[1])
+            if chat_id in self._chats:
+                self._chats[chat_id]["updated_at"] = str(args[0])
+        elif "DELETE FROM chats WHERE id = $1 AND user_id = $2" in sql:
+            chat_id = str(args[0])
+            user_id = str(args[1])
+            chat = self._chats.get(chat_id)
+            if chat is not None and chat["user_id"] == user_id:
+                del self._chats[chat_id]
+                self._chat_messages.pop(chat_id, None)
+                return "DELETE 1"
+            return "DELETE 0"
         return "OK"
+
+
+class FakeLLM:
+    """Scriptable LLM stub — returns responses in the order they were enqueued.
+
+    Call ``fake_llm.enqueue("...")`` before each expected ``generate_chat``
+    call.  When the queue is exhausted, subsequent calls return ``None``.
+    """
+
+    def __init__(self) -> None:
+        self._responses: list[str | None] = []
+
+    def enqueue(self, response: str | None) -> None:
+        """Add *response* to the tail of the response queue."""
+        self._responses.append(response)
+
+    async def generate_chat(self, messages: Any, *, system: Any = None) -> str | None:
+        """Pop and return the next scripted response (None when exhausted)."""
+        if self._responses:
+            return self._responses.pop(0)
+        return None
 
 
 def make_search_result() -> SearchResult:
@@ -653,5 +747,118 @@ def client(
 
     with TestClient(app) as test_client:
         yield test_client
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def chat_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[tuple[TestClient, str]]:
+    """TestClient pre-wired for chat route tests.
+
+    Provides:
+    - A ``StatefulFakeDbPool`` seeded with ``fake_user()``'s row so JWT
+      ``?token=`` auth on ``/api/chat/stream`` resolves correctly without a
+      real Postgres connection.
+    - All ``kb_service.chat_history`` module functions replaced with
+      in-memory dict-backed fakes so persistence is hermetic and inspectable.
+    - A ``FakeKnowledgeBase`` with one search result attached as
+      ``app.state.kb`` (tests set ``app.state.kb.synthesis_llm`` directly).
+    - A valid JWT ``token`` (string) for the seeded user.
+
+    Yields:
+        ``(TestClient, token_string)``
+    """
+    # ── in-memory chat store ─────────────────────────────────────────────────
+    _chats: dict[str, dict[str, Any]] = {}
+    _msgs: dict[str, list[dict[str, str]]] = {}
+
+    async def _create_chat(
+        chat_id: str, user_id: str, title: str, mode: str = ""
+    ) -> dict[str, str]:
+        now = datetime.now(UTC).isoformat()
+        _chats[chat_id] = {
+            "id": chat_id,
+            "user_id": user_id,
+            "title": title,
+            "mode": mode,
+            "updated_at": now,
+        }
+        _msgs.setdefault(chat_id, [])
+        return {"id": chat_id, "title": title, "mode": mode, "updated_at": now}
+
+    async def _save_message(chat_id: str, role: str, content: str) -> None:
+        _msgs.setdefault(chat_id, []).append({"role": role, "content": content})
+
+    async def _save_messages_bulk(chat_id: str, messages: list[dict[str, str]]) -> None:
+        _msgs.setdefault(chat_id, []).extend(messages)
+
+    async def _list_chats(user_id: str, limit: int = 50) -> list[dict[str, str]]:
+        return [
+            {k: v for k, v in c.items() if k != "user_id"}  # type: ignore[misc]
+            | {"id": c["id"]}
+            for c in _chats.values()
+            if c["user_id"] == user_id
+        ][:limit]
+
+    async def _get_messages(chat_id: str) -> list[dict[str, str]]:
+        return list(_msgs.get(chat_id, []))
+
+    async def _delete_chat(chat_id: str, user_id: str) -> bool:
+        c = _chats.get(chat_id)
+        if c is not None and c["user_id"] == user_id:
+            del _chats[chat_id]
+            _msgs.pop(chat_id, None)
+            return True
+        return False
+
+    async def _chat_exists(chat_id: str, user_id: str) -> bool:
+        c = _chats.get(chat_id)
+        return c is not None and c["user_id"] == user_id
+
+    monkeypatch.setattr(chat_history_module, "create_chat", _create_chat)
+    monkeypatch.setattr(chat_history_module, "save_message", _save_message)
+    monkeypatch.setattr(chat_history_module, "save_messages_bulk", _save_messages_bulk)
+    monkeypatch.setattr(chat_history_module, "list_chats", _list_chats)
+    monkeypatch.setattr(chat_history_module, "get_messages", _get_messages)
+    monkeypatch.setattr(chat_history_module, "delete_chat", _delete_chat)
+    monkeypatch.setattr(chat_history_module, "chat_exists", _chat_exists)
+
+    # ── KB + DB fakes ────────────────────────────────────────────────────────
+    fake_kb = FakeKnowledgeBase(results=[make_search_result()], filtered_count=1)
+    user = fake_user()
+    user_row: dict[str, Any] = {
+        "id": user.id,
+        "email": user.email,
+        "hashed_password": user.hashed_password,
+        "is_admin": 0,
+        "created_at": user.created_at.isoformat(),
+    }
+    _shared_pool = StatefulFakeDbPool({}, users={user.id: user_row})
+
+    async def _fake_init_db() -> None:
+        return None
+
+    async def _fake_close_db() -> None:
+        return None
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        return fake_kb
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return _shared_pool
+
+    monkeypatch.setattr(main_module, "init_db", _fake_init_db)
+    monkeypatch.setattr(main_module, "close_db", _fake_close_db)
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+    monkeypatch.setattr(database, "get_db", _fake_get_db)
+    monkeypatch.setattr(auth_module, "get_db", _fake_get_db)
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+
+    token = auth_module.create_token(user.id)
+
+    with TestClient(app) as test_client:
+        yield test_client, token
 
     app.dependency_overrides.clear()
