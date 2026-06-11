@@ -222,4 +222,86 @@ describe('Ask page', () => {
     // Form should be re-enabled in finally
     expect(screen.getByRole('button', { name: /^ask$/i })).not.toBeDisabled()
   })
+
+  describe('keyboard submit (Cmd/Ctrl+Enter)', () => {
+    beforeEach(() => {
+      vi.mocked(streamSSE).mockResolvedValue(undefined)
+    })
+
+    it('Ctrl+Enter fires submit when question is non-empty', async () => {
+      const user = userEvent.setup()
+      renderAsk()
+
+      const input = screen.getByLabelText(/question/i)
+      await user.type(input, 'my question')
+      await user.keyboard('{Control>}{Enter}{/Control}')
+
+      await waitFor(() => expect(vi.mocked(streamSSE)).toHaveBeenCalledTimes(1))
+    })
+
+    it('metaKey+Enter fires submit when question is non-empty', async () => {
+      const user = userEvent.setup()
+      renderAsk()
+
+      const input = screen.getByLabelText(/question/i)
+      await user.type(input, 'my question')
+      await user.keyboard('{Meta>}{Enter}{/Meta}')
+
+      await waitFor(() => expect(vi.mocked(streamSSE)).toHaveBeenCalledTimes(1))
+    })
+
+    it('plain Enter does not fire submit', async () => {
+      const user = userEvent.setup()
+      renderAsk()
+
+      const input = screen.getByLabelText(/question/i)
+      await user.type(input, 'my question')
+      await user.keyboard('{Enter}')
+
+      // Small pause to ensure no async submission triggered
+      await new Promise((r) => setTimeout(r, 30))
+      expect(vi.mocked(streamSSE)).not.toHaveBeenCalled()
+    })
+
+    it('Ctrl+Enter does not fire when question is blank', async () => {
+      const user = userEvent.setup()
+      renderAsk()
+
+      const input = screen.getByLabelText(/question/i)
+      await user.click(input)
+      await user.keyboard('{Control>}{Enter}{/Control}')
+
+      await new Promise((r) => setTimeout(r, 30))
+      expect(vi.mocked(streamSSE)).not.toHaveBeenCalled()
+    })
+
+    it('Ctrl+Enter does not fire while a request is in flight', async () => {
+      const user = userEvent.setup()
+
+      // Never-resolving stream to simulate in-flight request
+      vi.mocked(streamSSE).mockReturnValue(new Promise(() => {}))
+
+      renderAsk()
+
+      const input = screen.getByLabelText(/question/i)
+      await user.type(input, 'my question')
+
+      // Submit via button to start the in-flight request
+      await user.click(screen.getByRole('button', { name: /^ask$/i }))
+
+      // Wait until the button is in submitting state (disabled)
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /thinking/i })).toBeDisabled(),
+      )
+
+      // Clear call count so we only count keyboard attempt
+      vi.mocked(streamSSE).mockClear()
+
+      // Try keyboard shortcut while in-flight
+      await user.keyboard('{Control>}{Enter}{/Control}')
+
+      await new Promise((r) => setTimeout(r, 30))
+      expect(vi.mocked(streamSSE)).not.toHaveBeenCalled()
+    })
+  })
 })

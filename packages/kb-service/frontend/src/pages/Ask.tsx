@@ -81,6 +81,8 @@ export function Ask() {
     }
   }
 
+  const isDisabled = submitting || !question.trim()
+
   return (
     <Box>
       <Typography variant="h5" gutterBottom>
@@ -97,14 +99,15 @@ export function Ask() {
           fullWidth
           disabled={submitting}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && e.ctrlKey && !submitting && question.trim()) {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !isDisabled) {
+              e.preventDefault()
               void handleAsk()
             }
           }}
         />
         <Button
           variant="contained"
-          disabled={submitting || !question.trim()}
+          disabled={isDisabled}
           onClick={() => void handleAsk()}
           startIcon={submitting ? <CircularProgress size={18} /> : null}
         >
