@@ -7,6 +7,7 @@ import { EntryDetail } from '../pages/EntryDetail'
 // Mock api
 vi.mock('../api', () => ({
   getEntries: vi.fn(),
+  getGraphNeighbors: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
     detail: string
@@ -42,7 +43,7 @@ vi.mock('../contexts/EntryDrawerContext', () => ({
   EntryDrawerProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-import { getEntries } from '../api'
+import { getEntries, getGraphNeighbors } from '../api'
 
 function makeEntry(id: string, opts: { superseded_by?: string } = {}) {
   return {
@@ -74,6 +75,8 @@ function makeEntry(id: string, opts: { superseded_by?: string } = {}) {
 describe('EntryDetail superseded_by → openEntry', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Connections section should stay absent in these tests
+    vi.mocked(getGraphNeighbors).mockResolvedValue({ neighbors: [] })
     vi.mocked(getEntries).mockResolvedValue({
       results: [
         {

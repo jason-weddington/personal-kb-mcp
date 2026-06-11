@@ -16,6 +16,7 @@ import type {
   GetResponse,
   KbListResponse,
   GraphFullResponse,
+  GraphNeighborsResponse,
   ChatListItem,
   ChatMessageItem,
   ChatOkResponse,
@@ -214,6 +215,19 @@ export function listKbProjects(): Promise<KbListResponse> {
 
 export function getGraphFull(): Promise<GraphFullResponse> {
   return kbRequest<GraphFullResponse>('GET', '/kb/graph/full')
+}
+
+export function getGraphNeighbors(
+  nodeId: string,
+  direction: 'outgoing' | 'incoming' | 'both' = 'both',
+  limit = 50,
+): Promise<GraphNeighborsResponse> {
+  const params = new URLSearchParams({
+    node_id: nodeId,
+    direction,
+    limit: String(limit),
+  })
+  return kbRequest<GraphNeighborsResponse>('GET', `/kb/graph/neighbors?${params}`)
 }
 
 export function listChats(): Promise<ChatListItem[]> {

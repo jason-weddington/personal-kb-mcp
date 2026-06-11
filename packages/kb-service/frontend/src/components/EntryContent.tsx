@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
@@ -6,6 +7,7 @@ import MuiLink from '@mui/material/Link'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import { ResponseCard, MarkdownBody } from './ResponseCard'
+import { getEntries, getGraphNeighbors } from '../api'
 import type { KnowledgeEntry, PointerRotTarget, EntryType } from '../kbTypes'
 
 const ENTRY_TYPE_COLORS: Record<
@@ -17,6 +19,179 @@ const ENTRY_TYPE_COLORS: Record<
   pattern_convention: 'secondary',
   lesson_learned: 'warning',
   mental_map: 'success',
+}
+
+// Matches kb-core entry ids: kb-NNNNN (one or more digits)
+const ENTRY_ID_RE = /^kb-\d+$/
+
+interface NeighborItem {
+  id: string
+  title: string | undefined
+}
+
+interface ConnectionGroup {
+  edgeType: string
+  entryItems: NeighborItem[]
+  nonEntryItems: string[]
+}
+
+interface ConnectionsState {
+  groups: ConnectionGroup[]
+}
+
+/**
+ * Fetches and groups one-hop graph neighbors for a KB entry.
+ *
+ * Grouping strategy: neighbors are grouped by edge_type, with a small caption
+ * per group so the section stays scannable without clutter.
+ * Deduplication: neighbor_id is deduped (first occurrence wins for edge_type
+ * assignment) before grouping, covering the case where the same node appears
+ * in both directions.
+ *
+ * Returns null while loading or on error (section is simply omitted).
+ */
+function useEntryNeighbors(entryId: string): ConnectionsState | null {
+  const [state, setState] = useState<ConnectionsState | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    void (async () => {
+      setState(null)
+      try {
+        const resp = await getGraphNeighbors(entryId, 'both', 50)
+        if (cancelled) return
+
+        // Dedupe by neighbor_id — first occurrence wins edge_type assignment
+        const seen = new Set<string>()
+        const deduped = resp.neighbors.filter((n) => {
+          if (seen.has(n.neighbor_id)) return false
+          seen.add(n.neighbor_id)
+          return true
+        })
+
+        if (deduped.length === 0) {
+          return // section absent when no neighbors
+        }
+
+        // Resolve display titles for entry-id neighbors (chunked at 20 per request)
+        const entryNeighborIds = deduped
+          .filter((n) => ENTRY_ID_RE.test(n.neighbor_id))
+          .map((n) => n.neighbor_id)
+
+        const titleMap: Record<string, string> = {}
+        for (let i = 0; i < entryNeighborIds.length; i += 20) {
+          if (cancelled) return
+          const chunk = entryNeighborIds.slice(i, i + 20)
+          const batch = await getEntries(chunk)
+          for (const r of batch.results) {
+            if (r.found && r.entry) {
+              titleMap[r.id] = r.entry.short_title
+            }
+          }
+        }
+
+        if (cancelled) return
+
+        // Group by edge_type (insertion order preserved by Map)
+        const groupMap = new Map<
+          string,
+          { entryItems: NeighborItem[]; nonEntryItems: string[] }
+        >()
+        for (const n of deduped) {
+          if (!groupMap.has(n.edge_type)) {
+            groupMap.set(n.edge_type, { entryItems: [], nonEntryItems: [] })
+          }
+          const g = groupMap.get(n.edge_type)!
+          if (ENTRY_ID_RE.test(n.neighbor_id)) {
+            g.entryItems.push({ id: n.neighbor_id, title: titleMap[n.neighbor_id] })
+          } else {
+            g.nonEntryItems.push(n.neighbor_id)
+          }
+        }
+
+        const groups: ConnectionGroup[] = Array.from(groupMap.entries()).map(
+          ([edgeType, items]) => ({ edgeType, ...items }),
+        )
+
+        setState({ groups })
+      } catch {
+        // Silent failure — section is simply absent on error
+        if (!cancelled) setState(null)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [entryId])
+
+  return state
+}
+
+/**
+ * Renders the Connections section for an entry.
+ *
+ * Shows one-hop graph neighbors grouped by edge_type:
+ *   - Entry-id neighbors (kb-NNNNN) → clickable chips "[id] short_title"
+ *     that open the target in the entry drawer via onOpenEntry.
+ *   - Non-entry nodes (tag:foo, tech:postgres, etc.) → muted non-clickable
+ *     chips showing the prefixed id (informative only).
+ *
+ * Omitted entirely when loading, on fetch error, or when there are no neighbors.
+ */
+function EntryConnections({
+  entryId,
+  onOpenEntry,
+}: {
+  entryId: string
+  onOpenEntry: (id: string) => void
+}) {
+  const connections = useEntryNeighbors(entryId)
+
+  if (!connections || connections.groups.length === 0) return null
+
+  return (
+    <Box sx={{ mb: 2 }}>
+      <Typography variant="subtitle2" gutterBottom>
+        Connections
+      </Typography>
+      {connections.groups.map(({ edgeType, entryItems, nonEntryItems }) => (
+        <Box key={edgeType} sx={{ mb: 1 }}>
+          {/* Small caption per group so edge_type is visible without taking up much space */}
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            component="div"
+            sx={{ mb: 0.5 }}
+          >
+            {edgeType}
+          </Typography>
+          <Stack direction="row" spacing={0.5} flexWrap="wrap">
+            {entryItems.map((item) => (
+              <Chip
+                key={item.id}
+                label={`[${item.id}] ${item.title ?? item.id}`}
+                size="small"
+                clickable
+                onClick={() => onOpenEntry(item.id)}
+              />
+            ))}
+            {nonEntryItems.map((id) => (
+              // Non-entry node: informative only, not navigable
+              <Chip
+                key={id}
+                label={id}
+                size="small"
+                variant="outlined"
+                sx={{ opacity: 0.6 }}
+              />
+            ))}
+          </Stack>
+        </Box>
+      ))}
+    </Box>
+  )
 }
 
 interface Props {
@@ -96,6 +271,9 @@ export function EntryContent({ entry, pointerRot, onOpenEntry }: Props) {
           </Typography>
         )}
       </Stack>
+
+      {/* Connections section: one-hop graph neighbors, between metadata and body */}
+      <EntryConnections entryId={entry.id} onOpenEntry={onOpenEntry} />
 
       <Divider sx={{ mb: 2 }} />
 

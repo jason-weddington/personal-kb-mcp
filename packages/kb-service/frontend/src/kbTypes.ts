@@ -92,6 +92,16 @@ export interface KbListResponse {
 
 // ── Graph ────────────────────────────────────────────────────────────────────
 
+export interface GraphNeighbor {
+  neighbor_id: string
+  edge_type: string
+  direction: string
+}
+
+export interface GraphNeighborsResponse {
+  neighbors: GraphNeighbor[]
+}
+
 export interface GraphFullNode {
   id: string
   label: string

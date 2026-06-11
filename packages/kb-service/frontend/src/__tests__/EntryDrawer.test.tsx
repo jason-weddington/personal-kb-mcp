@@ -8,6 +8,7 @@ import type { GetResponse } from '../kbTypes'
 // Mock api — real EntryDrawerProvider + EntryDrawer used throughout
 vi.mock('../api', () => ({
   getEntries: vi.fn(),
+  getGraphNeighbors: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
     detail: string
@@ -20,7 +21,7 @@ vi.mock('../api', () => ({
   },
 }))
 
-import { getEntries } from '../api'
+import { getEntries, getGraphNeighbors } from '../api'
 
 // Helper entry factory
 function makeEntry(
@@ -90,12 +91,15 @@ function renderWithProvider(children: React.ReactNode) {
 describe('EntryDrawer', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Default: empty neighbors so Connections section stays absent in unrelated tests
+    vi.mocked(getGraphNeighbors).mockResolvedValue({ neighbors: [] })
   })
 
   // (a) Provider mounted, drawer closed → zero getEntries calls (kb-01449)
   it('(a) does not fetch when drawer is closed', () => {
     renderWithProvider(<div>content</div>)
     expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(0)
+    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
   })
 
   // (b) openEntry → drawer opens, getEntries called once, short_title visible
@@ -201,5 +205,143 @@ describe('EntryDrawer', () => {
     await waitFor(() =>
       expect(screen.getAllByText('Entry One')[0]).toBeInTheDocument(),
     )
+  })
+})
+
+describe('EntryDrawer — Connections section', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // Default: empty neighbors so section stays absent unless overridden
+    vi.mocked(getGraphNeighbors).mockResolvedValue({ neighbors: [] })
+  })
+
+  // (e) Closed drawer — getGraphNeighbors never called (kb-01449)
+  it('(e) closed drawer: getGraphNeighbors not called', () => {
+    renderWithProvider(<div>content</div>)
+    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
+  })
+
+  // (f) Entry neighbor chip is clickable and opens the neighbor in the drawer
+  it('(f) entry neighbor chip opens in drawer via openEntry', async () => {
+    vi.mocked(getEntries).mockImplementation(async (ids: string[]) => {
+      // Initial load of kb-00001, and title resolution for kb-00002
+      return makeGetResponse(ids[0], {
+        short_title: ids[0] === 'kb-00001' ? 'Main Entry' : 'Neighbor Entry',
+      })
+    })
+    vi.mocked(getGraphNeighbors).mockResolvedValue({
+      neighbors: [
+        { neighbor_id: 'kb-00002', edge_type: 'related', direction: 'outgoing' },
+      ],
+    })
+
+    renderWithProvider(<OpenButton entryId="kb-00001" />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
+
+    // Main entry loads
+    await waitFor(() =>
+      expect(screen.getAllByText('Main Entry')[0]).toBeInTheDocument(),
+    )
+
+    // Connections section header appears
+    await waitFor(() =>
+      expect(screen.getByText('Connections')).toBeInTheDocument(),
+    )
+
+    // Neighbor chip visible with resolved title; label: "[kb-00002] Neighbor Entry"
+    const neighborChip = await screen.findByRole('button', {
+      name: '[kb-00002] Neighbor Entry',
+    })
+    expect(neighborChip).toBeInTheDocument()
+
+    // Click neighbor chip → opens kb-00002 in the drawer
+    await user.click(neighborChip)
+
+    await waitFor(() =>
+      expect(screen.getAllByText('Neighbor Entry')[0]).toBeInTheDocument(),
+    )
+  })
+
+  // (g) Non-entry node chip is not clickable (no button role)
+  it('(g) non-entry neighbor chip is not clickable', async () => {
+    vi.mocked(getEntries).mockResolvedValue(
+      makeGetResponse('kb-00001', { short_title: 'My Entry' }),
+    )
+    vi.mocked(getGraphNeighbors).mockResolvedValue({
+      neighbors: [
+        { neighbor_id: 'tag:foo', edge_type: 'tagged', direction: 'outgoing' },
+      ],
+    })
+
+    renderWithProvider(<OpenButton entryId="kb-00001" />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
+
+    await waitFor(() =>
+      expect(screen.getAllByText('My Entry')[0]).toBeInTheDocument(),
+    )
+
+    // Non-entry chip present
+    await waitFor(() =>
+      expect(screen.getByText('tag:foo')).toBeInTheDocument(),
+    )
+
+    // Non-entry chip must NOT be a button
+    expect(screen.queryByRole('button', { name: 'tag:foo' })).toBeNull()
+  })
+
+  // (h) getGraphNeighbors error → Connections section absent; entry body still renders
+  it('(h) fetch error: Connections section absent, entry body unaffected', async () => {
+    vi.mocked(getEntries).mockResolvedValue(
+      makeGetResponse('kb-00001', { short_title: 'My Entry' }),
+    )
+    vi.mocked(getGraphNeighbors).mockRejectedValue(new Error('network error'))
+
+    renderWithProvider(<OpenButton entryId="kb-00001" />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
+
+    // Entry body still renders
+    await waitFor(() =>
+      expect(screen.getAllByText('My Entry')[0]).toBeInTheDocument(),
+    )
+
+    // Connections header must be absent
+    expect(screen.queryByText('Connections')).toBeNull()
+  })
+
+  // (i) Switching entries (via within-drawer navigation) refreshes getGraphNeighbors
+  it('(i) switching entries re-fetches getGraphNeighbors', async () => {
+    // kb-00001 supersedes kb-00002 so we can navigate within the drawer
+    vi.mocked(getEntries).mockImplementation(async (ids: string[]) => {
+      const id = ids[0]
+      if (id === 'kb-00001') {
+        return makeGetResponse('kb-00001', {
+          short_title: 'First Entry',
+          superseded_by: 'kb-00002',
+        })
+      }
+      return makeGetResponse(id, { short_title: `Entry ${id}` })
+    })
+    vi.mocked(getGraphNeighbors).mockResolvedValue({ neighbors: [] })
+
+    renderWithProvider(<OpenButton entryId="kb-00001" />)
+    const user = userEvent.setup()
+
+    // Open first entry
+    await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
+    await waitFor(() =>
+      expect(screen.getAllByText('First Entry')[0]).toBeInTheDocument(),
+    )
+    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledWith('kb-00001', 'both', 50)
+
+    // Navigate to second entry via superseded_by link inside the drawer
+    await user.click(screen.getByRole('button', { name: 'kb-00002' }))
+    await waitFor(() =>
+      expect(screen.getAllByText('Entry kb-00002')[0]).toBeInTheDocument(),
+    )
+    // Neighbors re-fetched for the new entry
+    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledWith('kb-00002', 'both', 50)
   })
 })
