@@ -8,9 +8,8 @@ import CircularProgress from '@mui/material/CircularProgress'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { streamSSE } from '../streaming'
+import { ResponseCard, MarkdownBody } from '../components/ResponseCard'
 import { getToken } from '../api'
 import type {
   ClassifiedEvent,
@@ -140,14 +139,9 @@ export function Ask() {
       {/* Summarize mode result */}
       {answer !== null && (
         <Box sx={{ mb: 2 }}>
-          <Box
-            sx={{
-              '& pre': { overflowX: 'auto', bgcolor: 'action.hover', p: 1.5, borderRadius: 1 },
-              '& code': { fontFamily: 'monospace', fontSize: '0.875em' },
-            }}
-          >
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
-          </Box>
+          <ResponseCard>
+            <MarkdownBody>{answer}</MarkdownBody>
+          </ResponseCard>
           {entryIds.length > 0 && (
             <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 1 }}>
               <Typography variant="body2">Sources:</Typography>
@@ -170,15 +164,7 @@ export function Ask() {
       {exploreEntries.length > 0 && (
         <Stack spacing={2}>
           {exploreEntries.map((e) => (
-            <Box
-              key={e.id}
-              sx={{
-                p: 2,
-                border: 1,
-                borderColor: 'divider',
-                borderRadius: 1,
-              }}
-            >
+            <ResponseCard key={e.id}>
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
                 <Typography
                   variant="subtitle2"
@@ -195,7 +181,7 @@ export function Ask() {
               <Typography variant="body2" color="text.secondary">
                 {e.context}
               </Typography>
-            </Box>
+            </ResponseCard>
           ))}
         </Stack>
       )}

@@ -122,10 +122,70 @@ describe('Ask page', () => {
       expect(chip).toHaveAttribute('href', '/entries/kb-00001')
     })
 
+    // Answer is wrapped in a ResponseCard
+    await waitFor(() => {
+      const answerEl = screen.getByText('A decision is a KB entry.')
+      expect(answerEl.closest('[data-testid="response-card"]')).not.toBeNull()
+    })
+
     // Form is re-enabled after stream
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /^ask$/i })).not.toBeDisabled(),
     )
+  })
+
+  it('explore mode: renders entry card inside a response-card', async () => {
+    const user = userEvent.setup()
+
+    let capturedOnEvent: OnEvent | null = null
+    let resolveStream!: () => void
+
+    vi.mocked(streamSSE).mockImplementation(
+      async (_url: string, _body: unknown, onEvent: OnEvent) => {
+        capturedOnEvent = onEvent
+        return new Promise<void>((resolve) => {
+          resolveStream = resolve
+        })
+      },
+    )
+
+    renderAsk()
+
+    await user.type(screen.getByLabelText(/question/i), 'Show me decisions')
+    await user.click(screen.getByRole('button', { name: /^ask$/i }))
+
+    await waitFor(() => expect(capturedOnEvent).not.toBeNull())
+
+    act(() => {
+      capturedOnEvent!('classified', { mode: 'explore' })
+      capturedOnEvent!('entries', {
+        entries: [
+          {
+            id: 'kb-00002',
+            short_title: 'Some entry',
+            entry_type: 'decision',
+            tags: [],
+            context: 'Some context.',
+          },
+        ],
+        turns_used: 1,
+      })
+      capturedOnEvent!('stream_end', {})
+      resolveStream()
+    })
+
+    // Entry link renders with correct href
+    await waitFor(() => {
+      const link = screen.getByRole('link', { name: 'Some entry' })
+      expect(link).toBeInTheDocument()
+      expect(link).toHaveAttribute('href', '/entries/kb-00002')
+    })
+
+    // Entry card is wrapped in a ResponseCard
+    await waitFor(() => {
+      const link = screen.getByRole('link', { name: 'Some entry' })
+      expect(link.closest('[data-testid="response-card"]')).not.toBeNull()
+    })
   })
 
   it('shows error Alert when streamSSE rejects', async () => {

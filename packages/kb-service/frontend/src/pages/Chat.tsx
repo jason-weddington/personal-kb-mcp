@@ -14,9 +14,8 @@ import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import DeleteIcon from '@mui/icons-material/Delete'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { streamSSE } from '../streaming'
+import { ResponseCard, MarkdownBody } from '../components/ResponseCard'
 import { getToken, listChats, getChatMessages, deleteChat, ApiError } from '../api'
 import type {
   ChatListItem as ChatListItemType,
@@ -327,34 +326,25 @@ function MessageBubble({ message }: { message: Message }) {
         mb: 1.5,
       }}
     >
-      <Paper
-        elevation={0}
-        sx={{
-          maxWidth: '80%',
-          px: 2,
-          py: 1,
-          bgcolor: isUser ? 'primary.main' : 'action.hover',
-          color: isUser ? 'primary.contrastText' : 'text.primary',
-          borderRadius: 2,
-        }}
-      >
-        {isUser ? (
+      {isUser ? (
+        <Paper
+          elevation={0}
+          sx={{
+            maxWidth: '80%',
+            px: 2,
+            py: 1,
+            bgcolor: 'primary.main',
+            color: 'primary.contrastText',
+            borderRadius: 2,
+          }}
+        >
           <Typography variant="body2">{message.content}</Typography>
-        ) : (
-          <Box
-            sx={{
-              '& p': { mt: 0, mb: 1 },
-              '& p:last-child': { mb: 0 },
-              '& pre': { overflowX: 'auto', bgcolor: 'action.selected', p: 1, borderRadius: 1 },
-              '& code': { fontFamily: 'monospace', fontSize: '0.875em' },
-            }}
-          >
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {message.content}
-            </ReactMarkdown>
-          </Box>
-        )}
-      </Paper>
+        </Paper>
+      ) : (
+        <ResponseCard sx={{ maxWidth: '80%' }}>
+          <MarkdownBody>{message.content}</MarkdownBody>
+        </ResponseCard>
+      )}
     </Box>
   )
 }
