@@ -281,16 +281,6 @@ def is_safety_skip() -> bool:
     return os.environ.get("KB_SKIP_SAFETY", "").upper() == "TRUE"
 
 
-def is_auto_explore() -> bool:
-    """Return True if KB_AUTO_EXPLORE is set to TRUE (default: TRUE)."""
-    return os.environ.get("KB_AUTO_EXPLORE", "TRUE").upper() == "TRUE"
-
-
-def get_explore_port() -> int:
-    """Return the explorer web server port from KB_EXPLORE_PORT (default: 8767)."""
-    return _parse_int("KB_EXPLORE_PORT", "8767")
-
-
 def is_pg_iam_auth() -> bool:
     """Return True if KB_PG_IAM_AUTH is set to TRUE (RDS/Aurora IAM auth)."""
     return os.environ.get("KB_PG_IAM_AUTH", "").upper() == "TRUE"
@@ -336,12 +326,6 @@ def get_aws_profile() -> str | None:
 
 
 _CONVENTION_PROFILE = "personal_kb_bedrock"
-
-
-def get_chat_history_db_path() -> Path:
-    """Return the chat history SQLite DB path, scoped by instance role."""
-    role = os.environ.get("KB_INSTANCE_ROLE", "").lower() or "default"
-    return Path(f"~/.local/share/personal_kb/chat_history_{role}.db").expanduser()
 
 
 _BACKEND_STATE_FILE = Path("~/.local/share/personal_kb/backend_state.json").expanduser()

@@ -17,11 +17,9 @@ from personal_kb.config import (
     get_contributor,
     get_database_url,
     get_db_path,
-    get_explore_port,
     get_log_level,
     get_personal_kb_url,
     get_query_provider,
-    is_auto_explore,
     is_manager_mode,
 )
 from personal_kb.maps_index_writer import write_project_maps
@@ -51,13 +49,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 
     HTTP mode (``PERSONAL_KB_URL`` set): opens an :class:`HttpBackend`
     that talks to the remote KB service.  The local DB, embedder, LLMs,
-    maps-index writer, and explorer auto-start are all skipped.
+    and maps-index writer are all skipped.
 
     Local mode (``PERSONAL_KB_URL`` unset): builds a
     :class:`~kb_core.knowledge_base.KnowledgeBase` from env config,
     wraps it in a :class:`LocalBackend`, and runs the full local startup
-    sequence (maps rebuild, LISTEN/NOTIFY, explorer auto-start) —
-    byte-identical to the previous implementation.
+    sequence (maps rebuild, LISTEN/NOTIFY).
 
     Both modes yield a dict with ``"kb"`` and ``"backend"`` keys so that
     :func:`kb_from_lifespan` and :func:`backend_from_lifespan` both work.
@@ -205,30 +202,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 
         async def listener_teardown() -> None:
             return None
-
-    # Auto-start explorer web server
-    if is_auto_explore():
-        from personal_kb.tools.kb_explore import start_explorer_server
-
-        port = get_explore_port()
-        started = await start_explorer_server(
-            db,
-            embedder,
-            kb.query_llm,
-            kb.synthesis_llm,
-            store=kb.knowledge_store,
-            graph_builder=kb.graph_builder,
-            graph_enricher=kb.graph_enricher,
-            extraction_llm=kb.extraction_llm,
-            contributor=contributor,
-            team=team,
-            port=port,
-            kill_existing=False,
-        )
-        if started:
-            logger.info("Explorer auto-started on http://127.0.0.1:%d", port)
-        else:
-            logger.info("Explorer auto-start skipped (port %d in use)", port)
 
     from personal_kb.backend import LocalBackend
 

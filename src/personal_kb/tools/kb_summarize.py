@@ -5,8 +5,8 @@ file is the FastMCP channel:
 
 * :func:`register_kb_summarize` registers the ``@tool``-decorated entry
   point, unpacks the lifespan context, and reads the agentic env flags.
-* :func:`summarize_question` is the historical channel-side helper used
-  by the web routes (``personal_kb.web.routes``) and the test suite. It
+* :func:`summarize_question` is the channel-side helper used
+  by the test suite. It
   forwards to :func:`kb_core.query.synthesize_answer` with explicit
   ``agentic`` / ``agentic_synthesis`` / ``max_tool_calls`` kwargs filled
   in from the env so legacy callers don't have to know about them.

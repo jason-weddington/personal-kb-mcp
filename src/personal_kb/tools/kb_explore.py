@@ -1,221 +1,11 @@
 """kb_explore MCP tool — open interactive graph explorer in browser."""
 
-import asyncio
-import contextlib
 import logging
-import signal
-import subprocess
-import tempfile
-import webbrowser
-from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
-from personal_kb.config import get_explore_port
-from personal_kb.db.backend import Database
-from personal_kb.explorer.graph_data import extract_graph_data
-from personal_kb.explorer.renderer import render_explorer_html
-from personal_kb.llm.provider import LLMProvider
-
-if TYPE_CHECKING:
-    from kb_core.search.embedder_protocol import Embedder
-
 logger = logging.getLogger(__name__)
-
-# Module-level reference to avoid duplicate server starts
-_web_server_task: asyncio.Task[Any] | None = None
-
-
-def _kill_port_holder(port: int) -> bool:
-    """Kill any process listening on the given TCP port. Returns True if killed.
-
-    Skips the current process to avoid self-termination when an in-process
-    server (e.g. from a previous kb_explore call) is still binding the port.
-    """
-    import os as _os
-
-    try:
-        result = subprocess.run(  # noqa: S603
-            ["lsof", "-ti", f"tcp:{port}"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        pids = result.stdout.strip()
-        if not pids:
-            return False
-        my_pid = _os.getpid()
-        killed = False
-        for pid_str in pids.splitlines():
-            pid = int(pid_str.strip())
-            if pid == my_pid:
-                continue  # Don't kill ourselves
-            logger.info("Killing existing server on port %d (pid %d)", port, pid)
-            try:
-                _os.kill(pid, signal.SIGTERM)
-                killed = True
-            except ProcessLookupError:
-                pass
-        return killed
-    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
-        return False
-
-
-async def _is_explorer_healthy(port: int) -> bool:
-    """Check if a healthy KB explorer is already running on the port."""
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.get(f"http://127.0.0.1:{port}/api/graph")
-            return resp.status_code == 200
-    except Exception:
-        return False
-
-
-async def start_explorer_server(
-    db: Database,
-    embedder: "Embedder | None" = None,
-    query_llm: LLMProvider | None = None,
-    synthesis_llm: LLMProvider | None = None,
-    *,
-    store: Any | None = None,
-    graph_builder: Any | None = None,
-    graph_enricher: Any | None = None,
-    extraction_llm: LLMProvider | None = None,
-    contributor: str | None = None,
-    team: str | None = None,
-    port: int | None = None,
-    kill_existing: bool = True,
-) -> bool:
-    """Start the explorer web server in the background.
-
-    Returns True if a server is running on the port (started or already healthy).
-    Does not open a browser.
-    """
-    global _web_server_task
-
-    if port is None:
-        port = get_explore_port()
-
-    # Already running in this process?
-    if _web_server_task is not None and not _web_server_task.done():
-        return True
-
-    # Another process already serving a healthy explorer?
-    if await _is_explorer_healthy(port):
-        if not kill_existing:
-            logger.info("Explorer already running on port %d — skipping", port)
-            return True
-        # Explicit kb_explore call — take over the port
-        _kill_port_holder(port)
-        await asyncio.sleep(0.3)
-    elif kill_existing:
-        # Port may be held by a dead/non-explorer process
-        if _kill_port_holder(port):
-            await asyncio.sleep(0.3)
-
-    try:
-        from personal_kb.web.app import create_app_with_deps
-
-        # W6b rewired ``create_app_with_deps`` onto the kb-core
-        # :class:`~kb_core.search.embedder_protocol.Embedder` protocol, so the
-        # facade's accessor type matches the web boundary directly — no more
-        # narrowing ignore.
-        app = create_app_with_deps(
-            db,
-            embedder,
-            query_llm,
-            synthesis_llm,
-            store=store,
-            graph_builder=graph_builder,
-            graph_enricher=graph_enricher,
-            extraction_llm=extraction_llm,
-            contributor=contributor,
-            team=team,
-        )
-        import uvicorn
-
-        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-        server = uvicorn.Server(config)
-
-        async def _safe_serve() -> None:
-            with contextlib.suppress(SystemExit):
-                await server.serve()
-
-        _web_server_task = asyncio.create_task(_safe_serve())
-        await asyncio.sleep(0.3)
-        if _web_server_task.done():
-            _web_server_task = None
-            return False
-        return True
-    except (OSError, SystemExit):
-        logger.debug("Web server failed to start on port %d", port)
-        return False
-
-
-async def explore_logic(
-    db: Database,
-    embedder: "Embedder | None" = None,
-    query_llm: LLMProvider | None = None,
-    synthesis_llm: LLMProvider | None = None,
-    *,
-    store: Any | None = None,
-    graph_builder: Any | None = None,
-    graph_enricher: Any | None = None,
-    extraction_llm: LLMProvider | None = None,
-    contributor: str | None = None,
-    team: str | None = None,
-) -> tuple[str, str]:
-    """Open the explorer in the browser — web server or temp file fallback.
-
-    Returns (html_content, summary_message).
-    """
-    port = get_explore_port()
-    started = await start_explorer_server(
-        db,
-        embedder,
-        query_llm,
-        synthesis_llm,
-        store=store,
-        graph_builder=graph_builder,
-        graph_enricher=graph_enricher,
-        extraction_llm=extraction_llm,
-        contributor=contributor,
-        team=team,
-        port=port,
-        kill_existing=True,
-    )
-
-    if started:
-        webbrowser.open(f"http://localhost:{port}")
-        data = await extract_graph_data(db)
-        stats = data["stats"]
-        summary = (
-            f"Explorer opened: {stats['node_count']} nodes, "
-            f"{stats['edge_count']} edges. "
-            f"http://localhost:{port} (query-enabled)"
-        )
-        return render_explorer_html(data), summary
-
-    # Fallback: static temp file (no query support)
-    data = await extract_graph_data(db)
-    html = render_explorer_html(data)
-
-    with tempfile.NamedTemporaryFile(
-        suffix=".html", prefix="kb_explore_", delete=False, mode="w", encoding="utf-8"
-    ) as f:
-        f.write(html)
-        path = f.name
-
-    webbrowser.open(f"file://{path}")
-
-    stats = data["stats"]
-    summary = (
-        f"Explorer opened: {stats['node_count']} nodes, {stats['edge_count']} edges. File: {path}"
-    )
-    return html, summary
 
 
 def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
@@ -224,44 +14,16 @@ def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
     @mcp.tool(
         name=f"{prefix}explore",
         description=(
-            "Open an interactive graph explorer in the browser. "
-            "Starts a local server with LLM-powered query support and multi-turn chat. "
-            "Falls back to a static HTML file if the port is in use."
+            "Open the interactive KB graph explorer. "
+            "The explorer is hosted — returns the URL to open in a browser."
         ),
     )
     async def kb_explore(ctx: Context | None = None) -> str:
-        """Open interactive graph explorer in the browser."""
-        from personal_kb.tools._lifespan import backend_from_lifespan
+        """Return the hosted KB explorer URL."""
+        from personal_kb.config import get_personal_kb_url
 
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        backend = backend_from_lifespan(ctx.lifespan_context)
-
-        if backend.is_remote:
-            from personal_kb.config import get_personal_kb_url
-
-            url = get_personal_kb_url() or "the KB service"
-            return f"KB explorer is hosted at {url} — open it in a browser."
-
-        # Local mode
-        from personal_kb.tools._lifespan import kb_from_lifespan
-
-        kb = kb_from_lifespan(ctx.lifespan_context)
-
-        # The web channel takes a loose tuple — DO NOT touch web/ per W6a
-        # scope. Pull each piece through the facade's public accessors so the
-        # source-of-truth still flows from the KnowledgeBase.
-        _, summary = await explore_logic(
-            kb.db,
-            kb.embedder,
-            kb.query_llm,
-            kb.synthesis_llm,
-            store=kb.knowledge_store,
-            graph_builder=kb.graph_builder,
-            graph_enricher=kb.graph_enricher,
-            extraction_llm=kb.extraction_llm,
-            contributor=kb.config.attribution.contributor,
-            team=kb.config.attribution.team,
-        )
-        return summary
+        url = get_personal_kb_url() or "the KB service"
+        return f"KB explorer is hosted at {url} — open it in a browser."
