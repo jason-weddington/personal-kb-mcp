@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { ResetPassword } from './pages/ResetPassword'
@@ -29,6 +29,8 @@ export function App() {
         {appPages.map((page) => (
           <Route key={page.path} path={page.path} element={page.element} />
         ))}
+        {/* /ask is merged into Home — redirect deep links */}
+        <Route path="/ask" element={<Navigate to="/" replace />} />
         {/* Entry detail — navigation-only, no nav link */}
         <Route path="/entries/:id" element={<EntryDetail />} />
       </Route>

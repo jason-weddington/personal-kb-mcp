@@ -1,8 +1,12 @@
+/**
+ * AskPanel behaviour tests (formerly Ask page tests — extracted to AskPanel).
+ * All original Ask behaviours are covered here against the extracted component.
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { Ask } from '../pages/Ask'
+import { AskPanel } from '../components/AskPanel'
 
 // Mock AuthContext
 vi.mock('../contexts/AuthContext', () => ({
@@ -49,15 +53,15 @@ import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 
 type OnEvent = (event: string, data: Record<string, unknown>) => void
 
-function renderAsk() {
+function renderAskPanel() {
   return render(
     <MemoryRouter>
-      <Ask />
+      <AskPanel />
     </MemoryRouter>,
   )
 }
 
-describe('Ask page', () => {
+describe('AskPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(useEntryDrawer).mockReturnValue({
@@ -67,7 +71,7 @@ describe('Ask page', () => {
   })
 
   it('Ask button is disabled when question is empty', () => {
-    renderAsk()
+    renderAskPanel()
     expect(screen.getByRole('button', { name: /^ask$/i })).toBeDisabled()
   })
 
@@ -87,7 +91,7 @@ describe('Ask page', () => {
       },
     )
 
-    renderAsk()
+    renderAskPanel()
 
     await user.type(screen.getByLabelText(/question/i), 'What is a decision?')
     await user.click(screen.getByRole('button', { name: /^ask$/i }))
@@ -163,7 +167,7 @@ describe('Ask page', () => {
       },
     )
 
-    renderAsk()
+    renderAskPanel()
 
     await user.type(screen.getByLabelText(/question/i), 'Show me decisions')
     await user.click(screen.getByRole('button', { name: /^ask$/i }))
@@ -210,7 +214,7 @@ describe('Ask page', () => {
 
     vi.mocked(streamSSE).mockRejectedValue(new Error('Network failure'))
 
-    renderAsk()
+    renderAskPanel()
 
     await user.type(screen.getByLabelText(/question/i), 'test question')
     await user.click(screen.getByRole('button', { name: /^ask$/i }))
@@ -230,7 +234,7 @@ describe('Ask page', () => {
 
     it('Ctrl+Enter fires submit when question is non-empty', async () => {
       const user = userEvent.setup()
-      renderAsk()
+      renderAskPanel()
 
       const input = screen.getByLabelText(/question/i)
       await user.type(input, 'my question')
@@ -241,7 +245,7 @@ describe('Ask page', () => {
 
     it('metaKey+Enter fires submit when question is non-empty', async () => {
       const user = userEvent.setup()
-      renderAsk()
+      renderAskPanel()
 
       const input = screen.getByLabelText(/question/i)
       await user.type(input, 'my question')
@@ -252,7 +256,7 @@ describe('Ask page', () => {
 
     it('plain Enter does not fire submit', async () => {
       const user = userEvent.setup()
-      renderAsk()
+      renderAskPanel()
 
       const input = screen.getByLabelText(/question/i)
       await user.type(input, 'my question')
@@ -265,7 +269,7 @@ describe('Ask page', () => {
 
     it('Ctrl+Enter does not fire when question is blank', async () => {
       const user = userEvent.setup()
-      renderAsk()
+      renderAskPanel()
 
       const input = screen.getByLabelText(/question/i)
       await user.click(input)
@@ -281,7 +285,7 @@ describe('Ask page', () => {
       // Never-resolving stream to simulate in-flight request
       vi.mocked(streamSSE).mockReturnValue(new Promise(() => {}))
 
-      renderAsk()
+      renderAskPanel()
 
       const input = screen.getByLabelText(/question/i)
       await user.type(input, 'my question')

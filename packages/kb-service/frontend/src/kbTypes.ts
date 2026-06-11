@@ -90,6 +90,23 @@ export interface KbListResponse {
   items: KbProject[]
 }
 
+// ── Maps ─────────────────────────────────────────────────────────────────────
+
+export interface MapRef {
+  id: string
+  short_title: string
+  long_title: string
+}
+
+export interface ProjectMaps {
+  project_ref: string
+  maps: MapRef[]
+}
+
+export interface MapsIndexResponse {
+  projects: ProjectMaps[]
+}
+
 // ── Graph ────────────────────────────────────────────────────────────────────
 
 export interface GraphNeighbor {

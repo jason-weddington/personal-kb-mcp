@@ -15,6 +15,7 @@ import type {
   SearchResponse,
   GetResponse,
   KbListResponse,
+  MapsIndexResponse,
   GraphFullResponse,
   GraphNeighborsResponse,
   ChatListItem,
@@ -211,6 +212,14 @@ export function getEntries(ids: string[]): Promise<GetResponse> {
 
 export function listKbProjects(): Promise<KbListResponse> {
   return kbRequest<KbListResponse>('GET', '/kb/projects')
+}
+
+export function listKbContributors(): Promise<KbListResponse> {
+  return kbRequest<KbListResponse>('GET', '/kb/contributors')
+}
+
+export function getMapsIndex(): Promise<MapsIndexResponse> {
+  return kbRequest<MapsIndexResponse>('GET', '/kb/maps-index')
 }
 
 export function getGraphFull(): Promise<GraphFullResponse> {

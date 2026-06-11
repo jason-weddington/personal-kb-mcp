@@ -1,15 +1,13 @@
 import type { ReactElement } from 'react'
-import HomeIcon from '@mui/icons-material/Home'
+import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer'
 import SettingsIcon from '@mui/icons-material/Settings'
 import SearchIcon from '@mui/icons-material/Search'
 import BubbleChartIcon from '@mui/icons-material/BubbleChart'
-import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer'
 import ChatIcon from '@mui/icons-material/Chat'
 import { Home } from './Home'
 import { Settings } from './Settings'
 import { Search } from './Search'
 import { Graph } from './Graph'
-import { Ask } from './Ask'
 import { Chat } from './Chat'
 
 export interface AppPage {
@@ -23,14 +21,8 @@ export const appPages: AppPage[] = [
   {
     path: '/',
     label: 'Home',
-    icon: <HomeIcon />,
-    element: <Home />,
-  },
-  {
-    path: '/ask',
-    label: 'Ask',
     icon: <QuestionAnswerIcon />,
-    element: <Ask />,
+    element: <Home />,
   },
   {
     path: '/search',
