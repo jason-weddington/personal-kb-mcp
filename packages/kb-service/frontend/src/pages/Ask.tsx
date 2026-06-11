@@ -1,16 +1,17 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
+import MuiLink from '@mui/material/Link'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { streamSSE } from '../streaming'
 import { ResponseCard, MarkdownBody } from '../components/ResponseCard'
 import { getToken } from '../api'
+import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import type {
   ClassifiedEvent,
   StatusEvent,
@@ -20,6 +21,7 @@ import type {
 } from '../kbTypes'
 
 export function Ask() {
+  const { openEntry } = useEntryDrawer()
   const [question, setQuestion] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [mode, setMode] = useState<string | null>(null)
@@ -150,8 +152,7 @@ export function Ask() {
                   key={id}
                   label={id}
                   size="small"
-                  component={Link}
-                  to={`/entries/${id}`}
+                  onClick={() => openEntry(id)}
                   clickable
                 />
               ))}
@@ -166,14 +167,14 @@ export function Ask() {
           {exploreEntries.map((e) => (
             <ResponseCard key={e.id}>
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                <Typography
+                <MuiLink
+                  component="button"
                   variant="subtitle2"
-                  component={Link}
-                  to={`/entries/${e.id}`}
+                  onClick={() => openEntry(e.id)}
                   sx={{ textDecoration: 'none', color: 'primary.main' }}
                 >
                   {e.short_title}
-                </Typography>
+                </MuiLink>
                 <Typography variant="caption" color="text.secondary">
                   {e.id}
                 </Typography>

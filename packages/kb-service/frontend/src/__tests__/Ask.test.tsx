@@ -17,6 +17,13 @@ vi.mock('../contexts/AuthContext', () => ({
   AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+// Mock EntryDrawerContext
+const openEntryMock = vi.fn()
+vi.mock('../contexts/EntryDrawerContext', () => ({
+  useEntryDrawer: vi.fn(),
+  EntryDrawerProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
 // Mock streaming
 vi.mock('../streaming', () => ({
   streamSSE: vi.fn(),
@@ -38,6 +45,7 @@ vi.mock('../api', () => ({
 }))
 
 import { streamSSE } from '../streaming'
+import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 
 type OnEvent = (event: string, data: Record<string, unknown>) => void
 
@@ -52,6 +60,10 @@ function renderAsk() {
 describe('Ask page', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(useEntryDrawer).mockReturnValue({
+      openEntry: openEntryMock,
+      closeEntry: vi.fn(),
+    })
   })
 
   it('Ask button is disabled when question is empty', () => {
@@ -59,7 +71,7 @@ describe('Ask page', () => {
     expect(screen.getByRole('button', { name: /^ask$/i })).toBeDisabled()
   })
 
-  it('shows mode Chip, live status line, markdown answer, and entry chip link', async () => {
+  it('shows mode Chip, live status line, markdown answer, and entry chip calls openEntry', async () => {
     const user = userEvent.setup()
 
     // Controlled mock: capture onEvent, resolve on demand
@@ -115,12 +127,14 @@ describe('Ask page', () => {
       expect(screen.getByText('A decision is a KB entry.')).toBeInTheDocument(),
     )
 
-    // Entry chip linking to /entries/kb-00001
+    // Entry chip is now a button (no longer a link); clicking it calls openEntry
     await waitFor(() => {
-      const chip = screen.getByRole('link', { name: 'kb-00001' })
+      const chip = screen.getByRole('button', { name: 'kb-00001' })
       expect(chip).toBeInTheDocument()
-      expect(chip).toHaveAttribute('href', '/entries/kb-00001')
     })
+
+    await user.click(screen.getByRole('button', { name: 'kb-00001' }))
+    expect(openEntryMock).toHaveBeenCalledWith('kb-00001')
 
     // Answer is wrapped in a ResponseCard
     await waitFor(() => {
@@ -134,7 +148,7 @@ describe('Ask page', () => {
     )
   })
 
-  it('explore mode: renders entry card inside a response-card', async () => {
+  it('explore mode: renders entry card inside a response-card, title click calls openEntry', async () => {
     const user = userEvent.setup()
 
     let capturedOnEvent: OnEvent | null = null
@@ -174,17 +188,20 @@ describe('Ask page', () => {
       resolveStream()
     })
 
-    // Entry link renders with correct href
+    // Entry title renders as a button (MUI Link component="button")
     await waitFor(() => {
-      const link = screen.getByRole('link', { name: 'Some entry' })
-      expect(link).toBeInTheDocument()
-      expect(link).toHaveAttribute('href', '/entries/kb-00002')
+      const button = screen.getByRole('button', { name: 'Some entry' })
+      expect(button).toBeInTheDocument()
     })
+
+    // Clicking it calls openEntry with the entry id
+    await user.click(screen.getByRole('button', { name: 'Some entry' }))
+    expect(openEntryMock).toHaveBeenCalledWith('kb-00002')
 
     // Entry card is wrapped in a ResponseCard
     await waitFor(() => {
-      const link = screen.getByRole('link', { name: 'Some entry' })
-      expect(link.closest('[data-testid="response-card"]')).not.toBeNull()
+      const button = screen.getByRole('button', { name: 'Some entry' })
+      expect(button.closest('[data-testid="response-card"]')).not.toBeNull()
     })
   })
 

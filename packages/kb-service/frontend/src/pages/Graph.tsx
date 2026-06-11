@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -15,6 +14,7 @@ import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import ForceGraph2D from 'react-force-graph-2d'
 import { getGraphFull } from '../api'
+import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import type { GraphFullResponse, GraphFullNode, GraphFullEdge } from '../kbTypes'
 
 // Legacy 8-type colour palette from personal_kb explorer renderer.py
@@ -34,7 +34,7 @@ const FALLBACK_COLOR = '#666'
 const DRAWER_WIDTH = 320
 
 export function Graph() {
-  const navigate = useNavigate()
+  const { openEntry } = useEntryDrawer()
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(800)
 
@@ -236,7 +236,7 @@ export function Graph() {
           <NodeDrawerContent
             node={drawerNode}
             onClose={() => setDrawerNode(null)}
-            onNavigate={navigate}
+            onOpenEntry={openEntry}
           />
         )}
       </Drawer>
@@ -247,11 +247,11 @@ export function Graph() {
 function NodeDrawerContent({
   node,
   onClose,
-  onNavigate,
+  onOpenEntry,
 }: {
   node: GraphFullNode
   onClose: () => void
-  onNavigate: (path: string) => void
+  onOpenEntry: (id: string) => void
 }) {
   const isEntryLink =
     node.type === 'entry' && /^kb-\d{5}$/.test(node.id)
@@ -298,7 +298,7 @@ function NodeDrawerContent({
             size="small"
             onClick={() => {
               onClose()
-              onNavigate(`/entries/${node.id}`)
+              onOpenEntry(node.id)
             }}
           >
             Open entry

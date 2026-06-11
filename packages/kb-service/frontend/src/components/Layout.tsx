@@ -16,6 +16,7 @@ import useMediaQuery from '@mui/material/useMediaQuery'
 import { useTheme } from '@mui/material/styles'
 import { useAuth } from '../contexts/AuthContext'
 import { useThemeMode } from '../contexts/ThemeContext'
+import { EntryDrawerProvider } from '../contexts/EntryDrawerContext'
 import Sidebar from './Sidebar'
 
 export function Layout() {
@@ -42,6 +43,7 @@ export function Layout() {
   }
 
   return (
+    <EntryDrawerProvider>
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <CssBaseline />
       <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
@@ -97,5 +99,6 @@ export function Layout() {
         <Outlet />
       </Box>
     </Box>
+    </EntryDrawerProvider>
   )
 }

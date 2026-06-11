@@ -18,6 +18,13 @@ vi.mock('../contexts/AuthContext', () => ({
   AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+// Mock EntryDrawerContext
+const openEntryMock = vi.fn()
+vi.mock('../contexts/EntryDrawerContext', () => ({
+  useEntryDrawer: vi.fn(),
+  EntryDrawerProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
 // Mock api wrappers
 vi.mock('../api', () => ({
   searchKb: vi.fn(),
@@ -36,6 +43,7 @@ vi.mock('../api', () => ({
 }))
 
 import { searchKb, listKbProjects } from '../api'
+import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 
 const PROJECTS_RESPONSE = { items: [{ name: 'proj-a', entry_count: 5 }] }
 
@@ -98,6 +106,10 @@ describe('Search page', () => {
     vi.clearAllMocks()
     vi.mocked(listKbProjects).mockResolvedValue(PROJECTS_RESPONSE)
     vi.mocked(searchKb).mockResolvedValue(SEARCH_RESPONSE)
+    vi.mocked(useEntryDrawer).mockReturnValue({
+      openEntry: openEntryMock,
+      closeEntry: vi.fn(),
+    })
   })
 
   it('renders the search form and project list loads', async () => {
@@ -156,5 +168,22 @@ describe('Search page', () => {
         screen.getByText('This entry is over 6 months old'),
       ).toBeInTheDocument(),
     )
+  })
+
+  it('clicking a result card calls openEntry with the entry id', async () => {
+    const user = userEvent.setup()
+    renderSearch()
+
+    await user.type(screen.getByLabelText(/query/i), 'test')
+    await user.click(screen.getByRole('button', { name: /^search$/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText('My Entry Title')).toBeInTheDocument(),
+    )
+
+    // Click the result card (CardActionArea renders as a button)
+    await user.click(screen.getByText('My Entry Title'))
+
+    expect(openEntryMock).toHaveBeenCalledWith('kb-00001')
   })
 })

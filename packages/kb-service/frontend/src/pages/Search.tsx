@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -16,6 +15,7 @@ import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { searchKb, listKbProjects } from '../api'
+import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import type {
   SearchResult,
   KbProject,
@@ -40,7 +40,7 @@ const ENTRY_TYPE_COLORS: Record<EntryType, 'default' | 'primary' | 'secondary' |
 }
 
 export function Search() {
-  const navigate = useNavigate()
+  const { openEntry } = useEntryDrawer()
   const [query, setQuery] = useState('')
   const [projectRef, setProjectRef] = useState('')
   const [entryType, setEntryType] = useState('any')
@@ -196,7 +196,7 @@ export function Search() {
       {results && (
         <Stack spacing={2}>
           {results.map((r) => (
-            <ResultCard key={r.entry.id} result={r} onNavigate={navigate} />
+            <ResultCard key={r.entry.id} result={r} onOpenEntry={openEntry} />
           ))}
           {results.length === 0 && (
             <Typography color="text.secondary">No results found.</Typography>
@@ -209,15 +209,15 @@ export function Search() {
 
 function ResultCard({
   result,
-  onNavigate,
+  onOpenEntry,
 }: {
   result: SearchResult
-  onNavigate: (path: string) => void
+  onOpenEntry: (id: string) => void
 }) {
   const { entry, effective_confidence, match_source, staleness_warning } = result
   return (
     <Card variant="outlined">
-      <CardActionArea onClick={() => onNavigate(`/entries/${entry.id}`)}>
+      <CardActionArea onClick={() => onOpenEntry(entry.id)}>
         <CardContent>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 0.5 }}>
             <Typography variant="subtitle1" component="span" sx={{ fontWeight: 600 }}>
