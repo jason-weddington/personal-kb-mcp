@@ -54,7 +54,13 @@ export function Search() {
 
   useEffect(() => {
     listKbProjects()
-      .then((r) => setProjects(r.items))
+      .then((r) =>
+        setProjects(
+          [...r.items].sort((a, b) =>
+            a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+          ),
+        ),
+      )
       .catch(() => {
         // non-fatal — projects list stays empty
       })
