@@ -22,11 +22,15 @@ this file only summarizes:
 - **kb-01745** — lesson: FastAPI `HTTPBearer` returns 401 (not 403) on missing
   creds in 0.136 — watch for stale exact-status assertions copied from agent_gtd.
 
-Build status: **P1–P5 done, P6 dev done** — full backend + SPA, and the thin
-MCP client (HttpBackend + 16 tool shims, in the `personal_kb` repo) validated
-end-to-end against this service. Dev deploy: systemd user unit `kb-service` on
-`kb-host-1`; `./deploy.sh` pulls main there, rebuilds the frontend, restarts
-the unit. As-built + production-cutover runbook: **kb-01765**. Plan in kb-01742.
+Build status: **P1–P5 done, P6 dev done, listener shipped** — full backend +
+SPA, thin MCP client (HttpBackend + 16 tool shims in the `personal_kb` repo),
+and the anticipatory listener: `POST /api/kb/listener` (rules A+B over
+`operated_via` hints + unanimous-3 Sonnet; kill switch `KB_LISTENER_ENABLED`,
+default OFF) with whisper-next-turn injection in `personal-kb-hook`. Eval
+harness + datasets in `evals/listener/`. Dev deploy: systemd user unit
+`kb-service` on `kb-host-1`; `./deploy.sh` pulls main there, rebuilds the
+frontend, restarts the unit. Runbooks: as-built/cutover **kb-01765**, listener
+design **kb-01725**, per-machine hook setup **kb-01784**. Plan in kb-01742.
 
 ## Commands
 
