@@ -81,7 +81,15 @@ class AnthropicLLMClient:
         *,
         system: str | None = None,
     ) -> str | None:
-        """Generate text from a conversation history."""
+        """Generate text from a conversation history.
+
+        Prompt caching is enabled via the top-level ``cache_control`` kwarg
+        (SDK ≥ 0.40). This places the cache breakpoint on the last cacheable
+        block of the request — the correct multi-turn pattern — so each turn
+        reuses the prefix built by the previous turn (5-min TTL, refreshed on
+        read). Requests below the model's minimum cacheable token count
+        silently no-op (``cache_creation_input_tokens=0``), which is harmless.
+        """
         try:
             client = self._get_client()
             if client is None:
@@ -92,6 +100,7 @@ class AnthropicLLMClient:
                 "model": self._config.model,
                 "max_tokens": 4096,
                 "messages": api_messages,
+                "cache_control": {"type": "ephemeral"},
             }
             if system is not None:
                 kwargs["system"] = system
