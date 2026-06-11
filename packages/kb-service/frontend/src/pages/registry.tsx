@@ -27,10 +27,10 @@ export const appPages: AppPage[] = [
     element: <Home />,
   },
   {
-    path: '/settings',
-    label: 'Settings',
-    icon: <SettingsIcon />,
-    element: <Settings />,
+    path: '/ask',
+    label: 'Ask',
+    icon: <QuestionAnswerIcon />,
+    element: <Ask />,
   },
   {
     path: '/search',
@@ -39,21 +39,21 @@ export const appPages: AppPage[] = [
     element: <Search />,
   },
   {
+    path: '/chat',
+    label: 'Chat',
+    icon: <ChatIcon />,
+    element: <Chat />,
+  },
+  {
     path: '/graph',
     label: 'Graph',
     icon: <BubbleChartIcon />,
     element: <Graph />,
   },
   {
-    path: '/ask',
-    label: 'Ask',
-    icon: <QuestionAnswerIcon />,
-    element: <Ask />,
-  },
-  {
-    path: '/chat',
-    label: 'Chat',
-    icon: <ChatIcon />,
-    element: <Chat />,
+    path: '/settings',
+    label: 'Settings',
+    icon: <SettingsIcon />,
+    element: <Settings />,
   },
 ]
