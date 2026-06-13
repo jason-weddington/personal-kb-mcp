@@ -9,14 +9,27 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { AdminRoute } from './components/AdminRoute'
 import { appPages } from './pages/registry'
 import { EntryDetail } from './pages/EntryDetail'
+import { useAuth } from './contexts/AuthContext'
 
 export function App() {
+  const { authMode } = useAuth()
+  const noAuth = authMode === 'none'
+
   return (
     <Routes>
-      {/* Public routes */}
-      <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
-      <Route path="/reset-password" element={<ResetPassword />} />
+      {/* Public auth routes — skipped entirely in no-auth (local) mode */}
+      <Route
+        path="/login"
+        element={noAuth ? <Navigate to="/" replace /> : <Login />}
+      />
+      <Route
+        path="/register"
+        element={noAuth ? <Navigate to="/" replace /> : <Register />}
+      />
+      <Route
+        path="/reset-password"
+        element={noAuth ? <Navigate to="/" replace /> : <ResetPassword />}
+      />
 
       {/* Authenticated routes (home, settings, search, graph, ask, chat, …) */}
       <Route

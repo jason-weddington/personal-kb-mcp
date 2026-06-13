@@ -58,3 +58,13 @@ export interface AdminUser {
   isAdmin: boolean
   createdAt: string
 }
+
+// ─── Runtime / auth-mode ────────────────────────────────────────────────────
+// Mirrors the backend FROZEN contract GET /api/kb/runtime -> {"auth":"none"|"jwt"}
+// (kb_service/models.py RuntimeResponse). 'none' = local SQLite single-user
+// daemon (no auth); 'jwt' = hosted Postgres with JWT auth.
+export type AuthMode = 'none' | 'jwt'
+
+export interface RuntimeInfo {
+  auth: AuthMode
+}

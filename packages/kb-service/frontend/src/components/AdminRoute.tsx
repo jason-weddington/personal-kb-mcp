@@ -9,7 +9,7 @@ interface AdminRouteProps {
 }
 
 export function AdminRoute({ children }: AdminRouteProps) {
-  const { isAuthenticated, user, loading } = useAuth()
+  const { isAuthenticated, user, loading, authMode } = useAuth()
 
   if (loading) {
     return (
@@ -22,6 +22,11 @@ export function AdminRoute({ children }: AdminRouteProps) {
         <CircularProgress />
       </Box>
     )
+  }
+
+  // No-auth (local) mode: admin is a hosted-only concept — no admin surface.
+  if (authMode === 'none') {
+    return <Navigate to="/" replace />
   }
 
   if (!isAuthenticated) {

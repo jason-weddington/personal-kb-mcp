@@ -46,7 +46,8 @@ function renderRegister(initialEntry: string) {
   vi.mocked(useAuth).mockReturnValue({
     isAuthenticated: false,
     user: null,
-    loading: false,
+    authMode: 'jwt',
+    loading:false,
     login: vi.fn(),
     register: mockRegister,
     logout: vi.fn(),

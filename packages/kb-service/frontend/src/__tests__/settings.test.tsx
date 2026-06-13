@@ -45,7 +45,8 @@ function mockAdminUser() {
   vi.mocked(useAuth).mockReturnValue({
     isAuthenticated: true,
     user: { id: 'u1', email: 'admin@example.com', isAdmin: true, createdAt: '' },
-    loading: false,
+    authMode: 'jwt',
+    loading:false,
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),
@@ -56,7 +57,8 @@ function mockNonAdminUser() {
   vi.mocked(useAuth).mockReturnValue({
     isAuthenticated: true,
     user: { id: 'u2', email: 'user@example.com', isAdmin: false, createdAt: '' },
-    loading: false,
+    authMode: 'jwt',
+    loading:false,
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),

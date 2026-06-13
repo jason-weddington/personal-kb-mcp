@@ -5,6 +5,9 @@ import { AuthProvider, useAuth } from '../contexts/AuthContext'
 
 // Mock the api module
 vi.mock('../api', () => ({
+  // The startup runtime fetch drives loading — default it to jwt so the
+  // existing token/me() bootstrap assertions hold.
+  getRuntime: vi.fn(() => Promise.resolve({ auth: 'jwt' })),
   api: {
     auth: {
       me: vi.fn(),

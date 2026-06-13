@@ -52,7 +52,8 @@ describe('AdminRoute', () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: true,
       user: { id: 'u1', email: 'user@example.com', isAdmin: false, createdAt: '' },
-      loading: false,
+      authMode: 'jwt',
+      loading:false,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),
@@ -83,7 +84,8 @@ describe('AdminRoute', () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: false,
       user: null,
-      loading: true,
+      authMode: 'jwt',
+      loading:true,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),
@@ -105,7 +107,8 @@ describe('AdminRoute', () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: false,
       user: null,
-      loading: false,
+      authMode: 'jwt',
+      loading:false,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),
@@ -135,7 +138,8 @@ describe('AdminRoute', () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: true,
       user: { id: 'u1', email: 'admin@example.com', isAdmin: true, createdAt: '' },
-      loading: false,
+      authMode: 'jwt',
+      loading:false,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),
@@ -159,7 +163,8 @@ describe('AdminInvites — create invite dialog shows URL once', () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: true,
       user: { id: 'u1', email: 'admin@example.com', isAdmin: true, createdAt: '' },
-      loading: false,
+      authMode: 'jwt',
+      loading:false,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),

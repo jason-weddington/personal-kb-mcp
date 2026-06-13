@@ -21,7 +21,7 @@ import Sidebar from './Sidebar'
 
 export function Layout() {
   const navigate = useNavigate()
-  const { user, logout } = useAuth()
+  const { user, logout, authMode } = useAuth()
   const { mode, toggleTheme } = useThemeMode()
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('md'))
@@ -71,10 +71,15 @@ export function Layout() {
             open={Boolean(anchorEl)}
             onClose={handleUserMenuClose}
           >
-            <MenuItem disabled>
-              <Typography variant="body2">{user?.email}</Typography>
-            </MenuItem>
-            <MenuItem onClick={handleLogout}>Logout</MenuItem>
+            {/* No-auth (local) mode has no session: omit email + Logout. */}
+            {authMode === 'jwt' && (
+              <MenuItem disabled>
+                <Typography variant="body2">{user?.email}</Typography>
+              </MenuItem>
+            )}
+            {authMode === 'jwt' && (
+              <MenuItem onClick={handleLogout}>Logout</MenuItem>
+            )}
           </Menu>
         </Toolbar>
       </AppBar>

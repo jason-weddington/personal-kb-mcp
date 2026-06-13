@@ -6,11 +6,12 @@ import {
   useCallback,
 } from 'react'
 import type { ReactNode } from 'react'
-import { api } from '../api'
-import type { UserResponse } from '../types'
+import { api, getRuntime } from '../api'
+import type { AuthMode, UserResponse } from '../types'
 
 interface AuthContextValue {
   isAuthenticated: boolean
+  authMode: AuthMode
   user: UserResponse | null
   loading: boolean
   login(email: string, password: string): Promise<void>
@@ -30,15 +31,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   })
 
-  const [loading, setLoading] = useState<boolean>(
+  // Default to 'jwt' so the hosted behaviour holds while the runtime fetch is
+  // pending or (in tests) unmocked — switched to 'none' only once the backend
+  // confirms local mode.
+  const [authMode, setAuthMode] = useState<AuthMode>('jwt')
+
+  // Loading is driven by BOTH the runtime fetch and (when a token exists) the
+  // me() bootstrap. CRUX: runtimeLoading starts true UNCONDITIONALLY — not from
+  // token presence — so in no-auth mode ProtectedRoute/AdminRoute show their
+  // spinner instead of flashing /login before authMode is known.
+  const [runtimeLoading, setRuntimeLoading] = useState<boolean>(true)
+  const [authLoading, setAuthLoading] = useState<boolean>(
     () => Boolean(localStorage.getItem('kb-token')),
   )
+  const loading = runtimeLoading || authLoading
+
+  // Fetch the runtime auth mode once at startup (no auth required).
+  useEffect(() => {
+    let cancelled = false
+    getRuntime()
+      .then((rt) => {
+        if (!cancelled) setAuthMode(rt.auth)
+      })
+      .catch(() => {
+        // Network/unknown failure: keep the hosted default.
+        if (!cancelled) setAuthMode('jwt')
+      })
+      .finally(() => {
+        if (!cancelled) setRuntimeLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
     const token = localStorage.getItem('kb-token')
     if (!token) {
-      // no token — no request, loading stays false
+      // no token — no request, authLoading stays false
       return
     }
     api.auth
@@ -59,7 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .finally(() => {
         if (!cancelled) {
-          setLoading(false)
+          setAuthLoading(false)
         }
       })
     return () => {
@@ -92,7 +123,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value: AuthContextValue = {
-    isAuthenticated: user !== null,
+    // In no-auth mode the session is synthesized: authenticated with no token
+    // and no synthetic user object. In jwt mode the user-derived check holds.
+    isAuthenticated: authMode === 'none' ? true : user !== null,
+    authMode,
     user,
     loading,
     login,

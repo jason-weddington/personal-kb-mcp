@@ -564,14 +564,19 @@ function TeamCard() {
 // ─── Settings Page ────────────────────────────────────────────────────────────
 
 export function Settings() {
+  const { authMode } = useAuth()
+  // In no-auth (local) mode there is no session, no API keys, and no team —
+  // AccountCard, ApiAccessCard (and its MCP snippet) and TeamCard are all
+  // hosted-only surfaces, so render them only in jwt mode.
+  const isJwt = authMode === 'jwt'
   return (
     <Box>
       <Typography variant="h5" sx={{ mb: 3 }}>
         Settings
       </Typography>
-      <AccountCard />
-      <ApiAccessCard />
-      <TeamCard />
+      {isJwt && <AccountCard />}
+      {isJwt && <ApiAccessCard />}
+      {isJwt && <TeamCard />}
     </Box>
   )
 }

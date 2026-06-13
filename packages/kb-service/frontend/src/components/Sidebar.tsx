@@ -24,7 +24,7 @@ interface SidebarProps {
 export default function Sidebar({ open, isMobile = false, onClose }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { user } = useAuth()
+  const { user, authMode } = useAuth()
 
   const isSelected = (path: string) =>
     path === '/' ? location.pathname === '/' : location.pathname.startsWith(path)
@@ -71,7 +71,7 @@ export default function Sidebar({ open, isMobile = false, onClose }: SidebarProp
           ))}
         </List>
 
-        {user?.isAdmin && (
+        {authMode === 'jwt' && user?.isAdmin && (
           <>
             <Divider />
             <Typography

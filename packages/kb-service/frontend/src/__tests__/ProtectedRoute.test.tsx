@@ -16,7 +16,8 @@ describe('ProtectedRoute', () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: false,
       user: null,
-      loading: true,
+      authMode: 'jwt',
+      loading:true,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),
@@ -38,7 +39,8 @@ describe('ProtectedRoute', () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: false,
       user: null,
-      loading: false,
+      authMode: 'jwt',
+      loading:false,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),
@@ -68,7 +70,8 @@ describe('ProtectedRoute', () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: true,
       user: { id: '1', email: 'a@b.com', isAdmin: false, createdAt: '' },
-      loading: false,
+      authMode: 'jwt',
+      loading:false,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),

@@ -9,6 +9,7 @@ import type {
   PasswordResetIssued,
   Settings,
   AdminUser,
+  RuntimeInfo,
 } from './types'
 import type {
   SearchRequest,
@@ -200,6 +201,16 @@ async function kbRequest<T>(
   }
 
   return (await res.json()) as T
+}
+
+/**
+ * Report the active runtime auth mode (unauthenticated, no Bearer required).
+ * Backed by GET /api/kb/runtime returning the flat contract {"auth":"none"|"jwt"}.
+ * Uses kbRequest (raw snake_case, token-null-guarded) since the path lives under
+ * the /api/kb prefix and the `auth` key needs no camelCase conversion.
+ */
+export function getRuntime(): Promise<RuntimeInfo> {
+  return kbRequest<RuntimeInfo>('GET', '/kb/runtime')
 }
 
 export function searchKb(req: SearchRequest): Promise<SearchResponse> {
