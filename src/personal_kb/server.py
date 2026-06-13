@@ -8,21 +8,13 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastmcp import FastMCP
-from kb_core.knowledge_base import KnowledgeBase
 
-from personal_kb import maps_index_writer
 from personal_kb.config import (
-    build_kb_config,
-    check_backend_fallback,
     get_contributor,
-    get_database_url,
-    get_db_path,
     get_log_level,
     get_personal_kb_url,
-    get_query_provider,
     is_manager_mode,
 )
-from personal_kb.maps_index_writer import write_project_maps
 from personal_kb.tools.kb_ask import register_kb_ask
 from personal_kb.tools.kb_bulk_update import register_kb_bulk_update
 from personal_kb.tools.kb_explore import register_kb_explore
@@ -45,19 +37,17 @@ from personal_kb.tools.kb_summarize import register_kb_summarize
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-    """Manage the backend lifecycle.
+    """Manage the backend lifecycle — HTTP-only path with optional local daemon.
 
-    HTTP mode (``PERSONAL_KB_URL`` set): opens an :class:`HttpBackend`
-    that talks to the remote KB service.  The local DB, embedder, LLMs,
-    and maps-index writer are all skipped.
+    Reading B (kb-01807): ``PERSONAL_KB_URL`` is ALWAYS set. The MCP server
+    opens an :class:`HttpBackend` against that URL in every mode. When the
+    URL targets a loopback host (``127.0.0.1`` / ``localhost``), the
+    lifespan runs :func:`ensure_daemon` as a pre-step — spawning a
+    detached, singleton ``kb-service`` daemon if ``/api/health`` is
+    unhealthy. For a remote (non-loopback) URL, no spawn occurs.
 
-    Local mode (``PERSONAL_KB_URL`` unset): builds a
-    :class:`~kb_core.knowledge_base.KnowledgeBase` from env config,
-    wraps it in a :class:`LocalBackend`, and runs the full local startup
-    sequence (maps rebuild, LISTEN/NOTIFY).
-
-    Both modes yield a dict with ``"kb"`` and ``"backend"`` keys so that
-    :func:`kb_from_lifespan` and :func:`backend_from_lifespan` both work.
+    The daemon outlives the MCP session: the ``finally`` block closes
+    ONLY the HTTP client, never the daemon process.
     """
     # Configure logging to stderr (stdout is MCP stdio transport)
     log_level = getattr(logging, get_log_level())
@@ -76,150 +66,38 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     logger = logging.getLogger(__name__)
 
     kb_service_url = get_personal_kb_url()
-
-    # ------------------------------------------------------------------ #
-    # HTTP mode                                                            #
-    # ------------------------------------------------------------------ #
-    if kb_service_url:
-        from personal_kb.backend import HttpBackend
-        from personal_kb.config import get_personal_kb_api_key
-
-        api_key = get_personal_kb_api_key() or ""
-        logger.info("HTTP mode — connecting to KB service at %s", kb_service_url)
-        backend = HttpBackend(base_url=kb_service_url, api_key=api_key)
-        await backend.open()
-        try:
-            # No 'kb' object in HTTP mode; supply None so kb_from_lifespan
-            # still works if called (it will raise, which is correct).
-            yield {"backend": backend}
-        finally:
-            await backend.close()
-        return
-
-    # ------------------------------------------------------------------ #
-    # Local mode (byte-identical to previous implementation)              #
-    # ------------------------------------------------------------------ #
-    db_url = get_database_url()
-    if db_url:
-        logger.info("Connecting to PostgreSQL database")
-    else:
-        logger.info("Opening SQLite database at %s", get_db_path())
-
-    # Check for accidental backend fallback (e.g. missing KB_DATABASE_URL)
-    check_backend_fallback()
-
-    # Build the engine config + open the facade.
-    kb_config = build_kb_config()
-
-    # Ollama parity: the legacy ``_create_synthesis_llm`` returned ``None`` for
-    # the "ollama" provider (no Sonnet equivalent). Preserve that — pass
-    # ``synthesis_llm=None`` to the facade so the engine doesn't build a
-    # separate synthesis client. Anthropic/Bedrock keep their Sonnet override
-    # via :func:`build_provider_config`.
-    query_provider = get_query_provider()
-    if query_provider == "ollama":
-        kb = await KnowledgeBase.create(kb_config, synthesis_llm=None)
-    else:
-        kb = await KnowledgeBase.create(kb_config)
-
-    db = kb.db
-    embedder = kb.embedder
-
-    # Pre-check Ollama availability (non-blocking, just logs)
-    ollama_ok = False
-    if embedder is not None:
-        try:
-            ollama_ok = await embedder.is_available()  # type: ignore[attr-defined]
-        except Exception:
-            ollama_ok = False
-    if ollama_ok:
-        logger.info("Ollama available — vector search enabled")
-    else:
-        logger.warning("Ollama unavailable — vector search disabled, FTS-only mode")
-
-    extraction_provider = kb.config.providers.extraction.provider
-    if kb.extraction_llm is not None:
-        logger.info("Extraction LLM: %s", extraction_provider)
-    else:
-        logger.warning(
-            "Extraction LLM not available (%s) — graph enrichment disabled", extraction_provider
+    if not kb_service_url:
+        msg = (
+            "PERSONAL_KB_URL is not set. "
+            "Local mode expects setup.sh to write PERSONAL_KB_URL=http://localhost:<port>; "
+            "remote mode expects the team KB URL. Set the variable and retry."
         )
+        raise RuntimeError(msg)
 
-    if kb.query_llm is not None:
-        logger.info("Query LLM: %s", query_provider)
-    else:
-        logger.warning("Query LLM not available (%s) — query planning disabled", query_provider)
+    from personal_kb.backend import HttpBackend
+    from personal_kb.config import get_personal_kb_api_key
+    from personal_kb.daemon import ensure_daemon, is_loopback_url
 
-    if kb.synthesis_llm is not None:
-        logger.info("Synthesis LLM: Sonnet 4.6 (%s)", query_provider)
-    else:
-        logger.info("Synthesis LLM: using query LLM (no Sonnet override available)")
-
-    contributor = kb.config.attribution.contributor
-    team = kb.config.attribution.team
-    if contributor:
-        logger.info("Contributor: %s, Team: %s", contributor, team or "(not set)")
-    elif db_url:
-        logger.warning(
-            "KB_CONTRIBUTOR not set — entries will have no attribution. "
-            "Set KB_CONTRIBUTOR for multi-user provenance."
+    # Loopback URLs trigger the spawn pre-step.  Remote URLs go straight
+    # to HttpBackend.open() — no daemon, no pidfile, no health poll.
+    if is_loopback_url(kb_service_url):
+        logger.info(
+            "Local mode — ensuring kb-service daemon at %s before connecting",
+            kb_service_url,
         )
+        await ensure_daemon(kb_service_url)
 
-    # Startup rebuild: converge any drift from when this instance wasn't
-    # running. Best-effort — a failure here must not abort startup.
+    api_key = get_personal_kb_api_key() or ""
+    logger.info("Opening HttpBackend at %s", kb_service_url)
+    backend = HttpBackend(base_url=kb_service_url, api_key=api_key)
+    await backend.open()
     try:
-        await maps_index_writer.rebuild_all_projects(db, team=team)
-    except Exception:
-        logger.warning("Startup maps_index rebuild failed", exc_info=True)
-
-    # Live-refresh listener: peer instances NOTIFY 'kb_maps_changed' after
-    # they write; we re-render this project's line via write_project_maps,
-    # and on every (re)connect we do a full rebuild to re-sync any events
-    # missed while disconnected. SQLite returns a no-op teardown.
-    async def _on_change(project_ref: str) -> None:
-        try:
-            await write_project_maps(db, project_ref, team=team)
-        except Exception:
-            logger.warning(
-                "maps_index on_change refresh failed for %s",
-                project_ref,
-                exc_info=True,
-            )
-
-    async def _on_reconnect() -> None:
-        try:
-            await maps_index_writer.rebuild_all_projects(db, team=team)
-        except Exception:
-            logger.warning("maps_index on_reconnect rebuild failed", exc_info=True)
-
-    try:
-        listener_teardown = await db.start_maps_listener(
-            on_change=_on_change,
-            on_reconnect=_on_reconnect,
-        )
-    except Exception:
-        logger.warning("Starting maps_index listener failed", exc_info=True)
-
-        async def listener_teardown() -> None:
-            return None
-
-    from personal_kb.backend import LocalBackend
-
-    local_backend = LocalBackend(kb)
-    try:
-        yield {"kb": kb, "backend": local_backend}
+        # No 'kb' object — every backend operation goes through HTTP.
+        yield {"backend": backend}
     finally:
-        # Tear down the maps listener before closing the DB so its dedicated
-        # asyncpg connection (Postgres) is closed cleanly. Best-effort.
-        try:
-            await listener_teardown()
-        except Exception:
-            logger.warning("maps_index listener teardown failed", exc_info=True)
-        # The facade owns everything it built (DB, embedder, LLMs) — close()
-        # releases them in reverse construction order, swallowing teardown
-        # failures.
-        await kb.close()
-        logger.info("Database connection closed")
+        # Close ONLY the backend.  The daemon (if we spawned one) outlives
+        # this session — it serves future MCP processes too.
+        await backend.close()
 
 
 _ROLE_PREFIXES = {
