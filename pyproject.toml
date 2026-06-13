@@ -45,6 +45,19 @@ iam = [
     "boto3>=1.28",
 ]
 safety = []  # backwards compat — deps moved to core in v0.60.0
+# Local-mode bundle (kb-01807) — pulls in the personal-kb-web-service package
+# so its ``kb-service`` console script lands in the SAME venv as ``personal-kb``.
+# The MCP server's lifespan auto-spawns the daemon with
+# ``kb-service serve --port <port>`` (see ``personal_kb.daemon._build_spawn_argv``),
+# which only works if that binary is on PATH for the venv ``uvx`` resolved.
+# Install via:
+#   ``uvx --from "git+https://github.com/jason-weddington/personal-kb-mcp.git[local]" personal-kb``
+#   ``uv tool install --from "git+https://github.com/jason-weddington/personal-kb-mcp.git[local]" personal-kb``
+# Without this extra, ensure_daemon() raises ``RuntimeError: kb-service not on PATH``
+# on the first MCP lifespan in local mode.
+local = [
+    "personal-kb-web-service",
+]
 
 [dependency-groups]
 dev = [
@@ -75,6 +88,31 @@ members = ["packages/*"]
 [tool.uv.sources]
 personal-kb-hook = { workspace = true }
 kb-core = { workspace = true }
+# Local-mode bundle (kb-01807) — uvx-from-git uses this source to fetch the
+# web-service when the ``[local]`` extra is requested, putting the
+# ``kb-service`` console script on PATH for the same venv. The repo lives on
+# the home-lab git host (git-host); there is no public mirror today, so
+# installers must have SSH access to that host. The personal-kb-hook install
+# command at the top of this file uses the same scheme.
+#
+# NOTE on the kb-core source override below: the web-service's pyproject
+# pins kb-core to the same git+ssh URL, and uv refuses to resolve the same
+# package from two different sources (workspace path vs git+ssh). The
+# ``override-dependencies`` line forces every consumer in the resolution
+# graph to use the git+ssh URL for kb-core, eliminating the conflict and
+# letting ``uvx --from 'git+...personal-kb[local]' personal-kb`` succeed.
+# (Workspace-editable development of kb-core still works for non-``[local]``
+# resolutions because ``kb-core = { workspace = true }`` is the default.)
+personal-kb-web-service = { git = "ssh://git@git-host/home/git/repos/personal-kb-web-service", rev = "main" }
+
+[tool.uv]
+# Force kb-core to a single, canonical git source whenever it appears in
+# the resolution graph. Required so the ``[local]`` extra (which pulls in
+# personal-kb-web-service, which also depends on kb-core from git+ssh)
+# doesn't trip "Requirements contain conflicting URLs for package kb-core".
+override-dependencies = [
+    "kb-core @ git+ssh://git@git-host/~/repos/personal_kb?subdirectory=packages/kb-core&rev=main",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

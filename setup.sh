@@ -16,7 +16,22 @@ warn() { echo -e "  ${YELLOW}!${NC} $1"; }
 fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 step() { echo -e "\n${BOLD}$1${NC}"; }
 
-PKG="git+https://github.com/jason-weddington/personal-kb-mcp.git[safety]"
+# Local-mode bundle: ``[local]`` pulls in personal-kb-web-service so the
+# ``kb-service`` console script lands on PATH for the same venv. The MCP
+# server's lifespan auto-spawns ``kb-service serve --port 8765`` on first
+# use; without the ``[local]`` extra that spawn fails with
+# ``RuntimeError: kb-service not on PATH``. ``[safety]`` stays in for the
+# detect-secrets / scrubadub deps used by ingest.
+PKG="git+https://github.com/jason-weddington/personal-kb-mcp.git[local,safety]"
+
+# Local-mode hook env — the MCP server (a thin HTTP client) reads
+# PERSONAL_KB_URL to decide the kb-service base URL, and bails at startup
+# if it's unset. PERSONAL_KB_API_KEY must be non-empty so the
+# personal-kb-hook stays wired (the hook silently disables itself on an
+# empty key); the no-auth daemon ignores the value. These are non-secret
+# constants, safe to write into mcpServers/env directly.
+LOCAL_KB_URL="http://localhost:8765"
+LOCAL_SENTINEL_KEY="local-no-auth"
 
 echo -e "\n${BOLD}Personal Knowledge MCP Server — Setup${NC}"
 
@@ -137,7 +152,10 @@ fi
 
 step "Setup complete!"
 
-# Build the MCP config JSON
+# Build the MCP config JSON — local-mode wiring:
+#   PERSONAL_KB_URL/PERSONAL_KB_API_KEY are required (the thin client
+#   refuses to start without a URL after the LocalBackend deletion;
+#   ``local-no-auth`` is a non-secret sentinel the daemon ignores).
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     MCP_JSON=$(cat <<ENDJSON
 {
@@ -147,6 +165,8 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
       "command": "uvx",
       "args": ["--from", "$PKG", "personal-kb"],
       "env": {
+        "PERSONAL_KB_URL": "$LOCAL_KB_URL",
+        "PERSONAL_KB_API_KEY": "$LOCAL_SENTINEL_KEY",
         "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY"
       }
     }
@@ -163,6 +183,8 @@ else
       "command": "uvx",
       "args": ["--from", "$PKG", "personal-kb"],
       "env": {
+        "PERSONAL_KB_URL": "$LOCAL_KB_URL",
+        "PERSONAL_KB_API_KEY": "$LOCAL_SENTINEL_KEY",
         "KB_EXTRACTION_PROVIDER": "ollama",
         "KB_QUERY_PROVIDER": "ollama"
       }
