@@ -225,12 +225,11 @@ async def test_create_server_team_tool_names():
         assert "kb_search" not in tool_names
 
 
-# --- Lifespan: maps_index rebuild + listener wiring -----------------------------
+# --- Lifespan: HttpBackend-over-loopback ----------------------------------------
 #
 # The maps_index rebuild + LISTEN/NOTIFY wiring previously lived in the
 # server.py lifespan's local-mode branch.  Under Reading B (kb-01807) the
 # local-mode branch was replaced with an HttpBackend-over-loopback path that
-# spawns a daemon (see ``test_daemon_spawn.py``), so the lifespan-level test
-# for rebuild + teardown was removed.  The maps_index_writer module itself
-# is unchanged and still tested in ``tests/test_maps_index_writer.py`` and
-# ``tests/test_listen_notify.py``.
+# spawns a daemon (see ``test_daemon_spawn.py``).  The maps_index writer and
+# the NOTIFY/LISTEN machinery have since been deleted entirely, so there is
+# no rebuild/teardown wiring left to test here.

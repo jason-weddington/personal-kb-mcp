@@ -3,11 +3,10 @@
 Production lifespans:
 
 * **HTTP mode** — ``{"backend": HttpBackend}``
-* **Local mode** — ``{"kb": KnowledgeBase, "backend": LocalBackend}``
 
 Test lifespans supply a loose ``{"db": ..., "store": ..., ...}`` tuple that
-:func:`kb_from_lifespan` wraps in an ephemeral :class:`KnowledgeBase`.
-:func:`backend_from_lifespan` wraps that KB in a :class:`LocalBackend`.
+:func:`kb_from_lifespan` wraps in an ephemeral :class:`KnowledgeBase` for the
+tool code paths that still operate on a local KB facade.
 
 :func:`kb_from_lifespan` keeps working unchanged for existing tool tests.
 """
@@ -90,24 +89,17 @@ def kb_from_lifespan(lifespan: dict[str, Any]) -> KnowledgeBase:
 def backend_from_lifespan(lifespan: dict[str, Any]) -> Backend:
     """Return the :class:`~personal_kb.backend.protocol.Backend` for this lifespan.
 
-    * Production HTTP mode: returns the :class:`HttpBackend` stored under
-      ``"backend"``.
-    * Production local mode: returns the :class:`LocalBackend` stored under
-      ``"backend"``.
-    * Test loose-dict lifespans: builds an ephemeral
-      :class:`~kb_core.knowledge_base.KnowledgeBase` via
-      :func:`kb_from_lifespan`, then wraps it in a :class:`LocalBackend`.
+    The backend is always pre-built (an :class:`HttpBackend`) and stored under
+    ``"backend"`` — by ``server.py`` in production, or injected by tests. The
+    in-process local backend has been removed, so there is no fallback: a
+    lifespan with no ``"backend"`` key is a programming error.
     """
-    from personal_kb.backend.local import LocalBackend as _LocalBackend
-
-    # Production path: backend is pre-built by server.py lifespan
+    # Production path: backend is pre-built by server.py lifespan (or injected by tests)
     backend = lifespan.get("backend")
     if backend is not None:
         return cast("Backend", backend)
 
-    # Test loose-dict path: build an ephemeral KB + LocalBackend
-    kb = kb_from_lifespan(lifespan)
-    return _LocalBackend(kb)
+    raise RuntimeError('no backend in lifespan; tests must inject an HttpBackend under "backend"')
 
 
 __all__ = ["backend_from_lifespan", "kb_from_lifespan"]

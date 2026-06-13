@@ -1,8 +1,22 @@
-"""Tests for the bulk_update feature (store + tool)."""
+"""Tests for the bulk_update feature (store + tool).
 
+The store-level tests drive ``KnowledgeStore.bulk_update`` directly. The
+tool-level tests either exercise the pure ``_format_result`` formatter or
+drive the *registered* ``kb_bulk_update`` tool over an HTTP backend (the
+only backend that remains — the in-process LocalBackend was deleted). HTTP
+tests inject ``ctx.lifespan_context = {"backend": <HttpBackend>}`` over an
+``httpx.MockTransport`` and assert on the tool's returned string.
+"""
+
+import json
+from typing import Any
+from unittest.mock import MagicMock
+
+import httpx
 import pytest
 import pytest_asyncio
 
+from personal_kb.backend.http import HttpBackend
 from personal_kb.models.entry import EntryType
 from personal_kb.store.knowledge_store import KnowledgeStore
 
@@ -215,30 +229,105 @@ async def test_bulk_update_skips_inactive(populated_store: KnowledgeStore):
 
 
 # --- Tool-level tests ---
+#
+# The registered tool only has an HTTP path now (LocalBackend is gone), so the
+# tool-driven tests below inject an HttpBackend over httpx.MockTransport. The
+# pure ``_format_result`` formatter is tested directly without any backend.
 
 
-@pytest_asyncio.fixture
-async def _lifespan(db, store):
-    """Minimal lifespan dict for tool tests."""
-    return {"db": db, "store": store, "contributor": "tester", "team": "test-team"}
+def _make_http_backend(handler) -> HttpBackend:
+    """Build an HttpBackend backed by a MockTransport sync handler."""
+    transport = httpx.MockTransport(handler)
+    backend = HttpBackend(base_url="http://kb.test", api_key="testkey")
+    backend._client = httpx.AsyncClient(
+        base_url="http://kb.test",
+        headers={"Authorization": "Bearer testkey"},
+        transport=transport,
+    )
+    return backend
+
+
+def _make_ctx(handler) -> MagicMock:
+    """Return a MagicMock Context whose lifespan injects an HttpBackend."""
+    ctx = MagicMock()
+    ctx.lifespan_context = {"backend": _make_http_backend(handler)}
+    return ctx
+
+
+def _register_tool() -> Any:
+    """Register kb_bulk_update on a mock MCP and return the captured callable."""
+    from personal_kb.tools.kb_bulk_update import register_kb_bulk_update
+
+    tools: dict[str, Any] = {}
+
+    def capture(**_kw):
+        def decorator(fn):
+            tools[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    mcp = MagicMock()
+    mcp.tool = capture
+    register_kb_bulk_update(mcp)
+    return next(iter(tools.values()))
+
+
+_ENTRY_BEFORE: dict[str, Any] = {
+    "id": "kb-00001",
+    "short_title": "Test Entry",
+    "long_title": "Test long title",
+    "knowledge_details": "Some details",
+    "entry_type": "factual_reference",
+    "confidence_level": 0.9,
+    "is_active": True,
+    "version": 1,
+    "has_embedding": False,
+    "tags": ["python"],
+    "project_ref": None,
+    "source_context": None,
+    "created_at": "2026-01-01T00:00:00+00:00",
+    "updated_at": "2026-01-01T00:00:00+00:00",
+    "last_accessed": None,
+    "expires_at": None,
+    "superseded_by": None,
+    "sensitivity": None,
+    "contributor": None,
+    "team": None,
+}
+_ENTRY_AFTER: dict[str, Any] = {**_ENTRY_BEFORE, "project_ref": "new-project", "version": 2}
 
 
 @pytest.mark.asyncio
-async def test_tool_requires_filters(_lifespan):
-    """Tool rejects calls with empty filters."""
-    from personal_kb.tools.kb_bulk_update import _format_result
+async def test_tool_requires_filters():
+    """Tool rejects calls with empty filters before any backend call."""
+    called: list[bool] = []
 
-    result = _format_result([], dry_run=False)
-    assert "No entries matched" in result
+    def handler(req: httpx.Request) -> httpx.Response:
+        called.append(True)
+        return httpx.Response(200, json={"results": []})
+
+    kb_bulk_update = _register_tool()
+    ctx = _make_ctx(handler)
+    result = await kb_bulk_update(filters={}, updates={"project_ref": "x"}, ctx=ctx)
+    assert "Error" in result
+    assert not called  # validation happens before the backend is hit
 
 
 @pytest.mark.asyncio
 async def test_tool_requires_updates():
-    """_format_result handles empty results."""
-    from personal_kb.tools.kb_bulk_update import _format_result
+    """Tool rejects calls with empty updates before any backend call."""
+    called: list[bool] = []
 
-    result = _format_result([], dry_run=True)
-    assert "No entries matched" in result
+    def handler(req: httpx.Request) -> httpx.Response:
+        called.append(True)
+        return httpx.Response(200, json={"results": []})
+
+    kb_bulk_update = _register_tool()
+    ctx = _make_ctx(handler)
+    result = await kb_bulk_update(filters={"contributor": "alice"}, updates={}, ctx=ctx)
+    assert "Error" in result
+    assert not called
 
 
 @pytest.mark.asyncio
@@ -292,6 +381,97 @@ async def test_format_result_committed():
     result = _format_result([(before, after)], dry_run=False)
     assert "DRY RUN" not in result
     assert "1 entries updated" in result
+
+
+# --- Tool-driven HTTP-contract tests ---
+
+
+@pytest.mark.asyncio
+async def test_tool_http_committed_renders_diff():
+    """Committed apply formats the before/after diff from the backend pairs."""
+    captured: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(req.content))
+        return httpx.Response(
+            200, json={"results": [{"before": _ENTRY_BEFORE, "after": _ENTRY_AFTER}]}
+        )
+
+    kb_bulk_update = _register_tool()
+    ctx = _make_ctx(handler)
+    result = await kb_bulk_update(
+        filters={"contributor": "alice"},
+        updates={"project_ref": "new-project"},
+        dry_run=False,
+        ctx=ctx,
+    )
+    assert "DRY RUN" not in result
+    assert "1 entries updated" in result
+    assert "kb-00001" in result
+    assert "project_ref" in result
+    assert "new-project" in result
+    assert captured[0]["dry_run"] is False
+
+
+@pytest.mark.asyncio
+async def test_tool_http_dry_run_preview():
+    """Dry run passes dry_run=True and renders the DRY RUN preview output."""
+    captured: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(req.content))
+        return httpx.Response(
+            200, json={"results": [{"before": _ENTRY_BEFORE, "after": _ENTRY_AFTER}]}
+        )
+
+    kb_bulk_update = _register_tool()
+    ctx = _make_ctx(handler)
+    result = await kb_bulk_update(
+        filters={"contributor": "alice"},
+        updates={"project_ref": "new-project"},
+        dry_run=True,
+        ctx=ctx,
+    )
+    assert "DRY RUN" in result
+    assert "would be" in result
+    assert captured[0]["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_tool_http_no_matching_entries():
+    """An empty results list maps to the 'No entries matched' message."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": []})
+
+    kb_bulk_update = _register_tool()
+    ctx = _make_ctx(handler)
+    result = await kb_bulk_update(
+        filters={"contributor": "nobody"},
+        updates={"project_ref": "x"},
+        dry_run=False,
+        ctx=ctx,
+    )
+    assert "No entries matched" in result
+
+
+@pytest.mark.asyncio
+async def test_tool_http_admin_required_error():
+    """A 403 from the service maps to an admin-required error string."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"detail": "Admin only"})
+
+    kb_bulk_update = _register_tool()
+    ctx = _make_ctx(handler)
+    result = await kb_bulk_update(
+        filters={"project_ref": "x"},
+        updates={"project_ref": "y"},
+        dry_run=False,
+        ctx=ctx,
+    )
+    assert "Error" in result
+    assert "admin" in result.lower()
 
 
 @pytest.mark.asyncio

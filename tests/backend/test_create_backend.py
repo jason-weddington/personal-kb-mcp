@@ -5,18 +5,24 @@ from unittest.mock import MagicMock
 import pytest
 
 
-def test_create_backend_returns_local_when_no_url(monkeypatch):
-    """create_backend() returns LocalBackend when PERSONAL_KB_URL is unset."""
+def test_create_backend_raises_when_no_url(monkeypatch):
+    """create_backend() raises ValueError when PERSONAL_KB_URL is unset.
+
+    The in-process local backend has been removed, so a URL is always
+    required — with or without a ``kb`` argument.
+    """
     monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
     monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
 
     from personal_kb.backend import create_backend
-    from personal_kb.backend.local import LocalBackend as _LocalBackend
 
-    kb = MagicMock()
-    backend = create_backend(kb)
-    assert isinstance(backend, _LocalBackend)
-    assert backend.is_remote is False
+    # No kb argument
+    with pytest.raises(ValueError, match="PERSONAL_KB_URL"):
+        create_backend()
+
+    # Even with a kb argument (now vestigial)
+    with pytest.raises(ValueError, match="PERSONAL_KB_URL"):
+        create_backend(MagicMock())
 
 
 def test_create_backend_returns_http_when_url_set(monkeypatch):
@@ -33,25 +39,13 @@ def test_create_backend_returns_http_when_url_set(monkeypatch):
 
 
 def test_create_backend_empty_url_treated_as_unset(monkeypatch):
-    """An empty PERSONAL_KB_URL string is treated the same as unset."""
+    """An empty PERSONAL_KB_URL string is treated the same as unset (raises)."""
     monkeypatch.setenv("PERSONAL_KB_URL", "")
 
     from personal_kb.backend import create_backend
-    from personal_kb.backend.local import LocalBackend
 
-    kb = MagicMock()
-    backend = create_backend(kb)
-    assert isinstance(backend, LocalBackend)
-
-
-def test_create_backend_raises_when_no_url_and_no_kb(monkeypatch):
-    """create_backend() raises ValueError when URL unset and no kb provided."""
-    monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
-
-    from personal_kb.backend import create_backend
-
-    with pytest.raises(ValueError, match="requires a KnowledgeBase"):
-        create_backend()
+    with pytest.raises(ValueError, match="PERSONAL_KB_URL"):
+        create_backend(MagicMock())
 
 
 def test_create_backend_env_read_at_call_time(monkeypatch):
@@ -60,13 +54,10 @@ def test_create_backend_env_read_at_call_time(monkeypatch):
     import personal_kb.backend as backend_pkg  # noqa: F401
     from personal_kb.backend import create_backend
 
-    # Start: no URL → local
+    # Start: no URL → raises
     monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
-    kb = MagicMock()
-    from personal_kb.backend.local import LocalBackend
-
-    b1 = create_backend(kb)
-    assert isinstance(b1, LocalBackend)
+    with pytest.raises(ValueError, match="PERSONAL_KB_URL"):
+        create_backend(MagicMock())
 
     # Now set URL → HTTP (env read at call time)
     monkeypatch.setenv("PERSONAL_KB_URL", "http://kb.test")
@@ -75,10 +66,10 @@ def test_create_backend_env_read_at_call_time(monkeypatch):
     b2 = create_backend()
     assert isinstance(b2, HttpBackend)
 
-    # Remove again → local
+    # Remove again → raises
     monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
-    b3 = create_backend(kb)
-    assert isinstance(b3, LocalBackend)
+    with pytest.raises(ValueError, match="PERSONAL_KB_URL"):
+        create_backend(MagicMock())
 
 
 def test_create_backend_api_key_empty_string_yields_empty(monkeypatch):

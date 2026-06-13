@@ -28,8 +28,8 @@ Coverage map:
 * :func:`test_spawn_timeout_raises_with_log_path` — AC: timeout
   RuntimeError message includes the daemon log path.
 * :func:`test_lifespan_opens_http_backend_over_loopback` — AC:
-  "in local mode the lifespan opens an HttpBackend over loopback (NOT
-  a LocalBackend)."
+  "in local mode the lifespan opens an HttpBackend over loopback (not an
+  in-process local backend)."
 """
 
 from __future__ import annotations
@@ -344,7 +344,7 @@ async def test_spawn_timeout_raises_with_log_path(
 async def test_lifespan_opens_http_backend_over_loopback(
     state_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """In local mode the lifespan opens an HttpBackend (NOT a LocalBackend).
+    """In local mode the lifespan opens an HttpBackend over loopback.
 
     Mocks ``ensure_daemon`` so we don't need a real subprocess.
     """

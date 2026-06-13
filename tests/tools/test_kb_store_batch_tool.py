@@ -1,24 +1,46 @@
-"""Tests for the kb_store_batch MCP tool."""
+"""Tests for the kb_store_batch MCP tool.
 
-import json
-from unittest.mock import AsyncMock, patch
+These tests drive the tool through an :class:`HttpBackend` backed by an
+``httpx.MockTransport`` (the in-process LocalBackend has been removed).  The
+lifespan dict carries a ``"backend"`` key so ``backend_from_lifespan`` returns
+the HTTP backend directly (``is_remote=True``).
 
+Route: POST /api/kb/store_batch -> ``{"created": [<entry>, ...]}``.  The
+HttpBackend returns ``(created, [])`` — the failed list is always empty in HTTP
+mode, so partial failure is simulated by returning *fewer* created entries than
+were submitted.  The tool renders the aggregate failure count from
+``len(created) < len(submitted)``.
+
+Pre-backend validation tests (empty batch, cap, missing fields, bad
+sensitivity) still inject a backend so ``backend_from_lifespan`` succeeds, even
+though the MockTransport handler is never hit.
+"""
+
+from typing import Any
+
+import httpx
 import pytest
+from kb_core.models.entry import EntryType, KnowledgeEntry
 
-from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.backend.http import HttpBackend
 from personal_kb.tools.kb_store_batch import batch_store_entries
-from tests.conftest import FakeEmbedder, FakeLLM
 
 
-def _lifespan(db, store, graph_builder, embedder=None, graph_enricher=None):
-    """Build a lifespan dict for testing."""
-    return {
-        "db": db,
-        "store": store,
-        "embedder": embedder,
-        "graph_builder": graph_builder,
-        "graph_enricher": graph_enricher,
-    }
+def _make_http_backend(handler) -> HttpBackend:
+    """Build an HttpBackend backed by a MockTransport sync handler."""
+    transport = httpx.MockTransport(handler)
+    backend = HttpBackend(base_url="http://kb.test", api_key="testkey")
+    backend._client = httpx.AsyncClient(
+        base_url="http://kb.test",
+        headers={"Authorization": "Bearer testkey"},
+        transport=transport,
+    )
+    return backend
+
+
+def _lifespan(handler) -> dict[str, Any]:
+    """Return a lifespan dict with an HttpBackend injected."""
+    return {"backend": _make_http_backend(handler)}
 
 
 def _entry_dict(**kwargs):
@@ -32,11 +54,52 @@ def _entry_dict(**kwargs):
     return defaults
 
 
+def _entry_json(
+    entry_id: str,
+    short_title: str = "Test",
+    knowledge_details: str = "Some details",
+    entry_type: EntryType = EntryType.FACTUAL_REFERENCE,
+) -> dict[str, Any]:
+    """Build a fully-hydrated entry JSON object as the service would return it."""
+    entry = KnowledgeEntry(
+        id=entry_id,
+        short_title=short_title,
+        long_title=f"{short_title} entry",
+        knowledge_details=knowledge_details,
+        entry_type=entry_type,
+    )
+    return entry.model_dump(mode="json")
+
+
+def _created_handler(*entries_json: dict[str, Any]):
+    """Return a handler that responds with the given created entries."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"created": list(entries_json)})
+
+    return handler
+
+
+def _unhit_handler():
+    """Return a handler that records if it was called (it should not be)."""
+    called: list[bool] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        called.append(True)
+        return httpx.Response(200, json={"created": []})
+
+    return handler, called
+
+
 @pytest.mark.asyncio
-async def test_batch_store_three_entries(db, store, graph_builder):
+async def test_batch_store_three_entries():
     """Basic batch creation of 3 entries."""
-    embedder = FakeEmbedder(db)
-    ls = _lifespan(db, store, graph_builder, embedder)
+    handler = _created_handler(
+        _entry_json("kb-00001", "First"),
+        _entry_json("kb-00002", "Second"),
+        _entry_json("kb-00003", "Third", entry_type=EntryType.DECISION),
+    )
+    ls = _lifespan(handler)
 
     entries = [
         _entry_dict(short_title="First", long_title="First entry", knowledge_details="D1"),
@@ -58,11 +121,24 @@ async def test_batch_store_three_entries(db, store, graph_builder):
 
 
 @pytest.mark.asyncio
-async def test_batch_mental_map_advisory_attributed(db, store, graph_builder):
+async def test_batch_mental_map_advisory_attributed():
     """A batch mental_map with a config value reports created and shows the advisory;
     a sibling clean non-map entry's block does NOT contain the advisory."""
-    embedder = FakeEmbedder(db)
-    ls = _lifespan(db, store, graph_builder, embedder)
+    handler = _created_handler(
+        _entry_json(
+            "kb-00001",
+            "Net map",
+            knowledge_details="orients kb-00050; the explorer runs on port 8767",
+            entry_type=EntryType.MENTAL_MAP,
+        ),
+        _entry_json(
+            "kb-00002",
+            "Plain fact",
+            knowledge_details="some clean prose with no values",
+            entry_type=EntryType.FACTUAL_REFERENCE,
+        ),
+    )
+    ls = _lifespan(handler)
 
     entries = [
         _entry_dict(
@@ -92,76 +168,47 @@ async def test_batch_mental_map_advisory_attributed(db, store, graph_builder):
 
 
 @pytest.mark.asyncio
-async def test_batch_store_with_enrichment(db, store, graph_builder):
-    """Batch store with enrichment uses a single LLM call."""
-    embedder = FakeEmbedder(db)
-    batch_response = json.dumps(
-        {
-            "kb-00001": [{"entity": "python", "entity_type": "technology", "relationship": "uses"}],
-            "kb-00002": [{"entity": "sqlite", "entity_type": "tool", "relationship": "uses"}],
-        }
-    )
-    llm = FakeLLM(response=batch_response)
-    enricher = GraphEnricher(db, llm)
-    ls = _lifespan(db, store, graph_builder, embedder, enricher)
-
-    entries = [
-        _entry_dict(short_title="Python tips", knowledge_details="Use list comps"),
-        _entry_dict(short_title="SQLite tips", knowledge_details="Use WAL mode"),
-    ]
-
-    result = await batch_store_entries(entries, ls)
-    assert "2 entries created" in result
-    # Single LLM call for batch enrichment
-    assert llm.generate_count == 1
-
-    # Verify edges were created
-    cursor = await db.execute(
-        "SELECT COUNT(*) FROM graph_edges WHERE json_extract(properties, '$.source') = 'llm'"
-    )
-    count = (await cursor.fetchone())[0]
-    assert count == 2
-
-
-@pytest.mark.asyncio
-async def test_batch_store_cap_at_10(db, store, graph_builder):
-    """Exceeding 10 entries returns an error."""
-    embedder = FakeEmbedder(db)
-    ls = _lifespan(db, store, graph_builder, embedder)
+async def test_batch_store_cap_at_10():
+    """Exceeding 10 entries returns an error before any backend call."""
+    handler, called = _unhit_handler()
+    ls = _lifespan(handler)
 
     entries = [_entry_dict(short_title=f"Entry {i}") for i in range(11)]
     result = await batch_store_entries(entries, ls)
     assert "Maximum 10" in result
+    assert not called
 
 
 @pytest.mark.asyncio
-async def test_batch_store_empty(db, store, graph_builder):
-    """Empty entries list returns an error."""
-    embedder = FakeEmbedder(db)
-    ls = _lifespan(db, store, graph_builder, embedder)
+async def test_batch_store_empty():
+    """Empty entries list returns an error before any backend call."""
+    handler, called = _unhit_handler()
+    ls = _lifespan(handler)
 
     result = await batch_store_entries([], ls)
     assert "empty" in result.lower()
+    assert not called
 
 
 @pytest.mark.asyncio
-async def test_batch_store_validation_error(db, store, graph_builder):
-    """Missing required fields returns an error."""
-    embedder = FakeEmbedder(db)
-    ls = _lifespan(db, store, graph_builder, embedder)
+async def test_batch_store_validation_error():
+    """Missing required fields returns an error before any backend call."""
+    handler, called = _unhit_handler()
+    ls = _lifespan(handler)
 
     entries = [{"short_title": "Missing fields"}]
     result = await batch_store_entries(entries, ls)
     assert "missing required fields" in result.lower()
     assert "knowledge_details" in result
     assert "long_title" in result
+    assert not called
 
 
 @pytest.mark.asyncio
-async def test_batch_store_rejects_invalid_sensitivity(db, store, graph_builder):
-    """Batch with invalid sensitivity should return an error."""
-    embedder = FakeEmbedder(db)
-    ls = _lifespan(db, store, graph_builder, embedder)
+async def test_batch_store_rejects_invalid_sensitivity():
+    """Batch with invalid sensitivity should return an error before any backend call."""
+    handler, called = _unhit_handler()
+    ls = _lifespan(handler)
 
     entries = [
         _entry_dict(short_title="Good", sensitivity="internal"),
@@ -172,43 +219,23 @@ async def test_batch_store_rejects_invalid_sensitivity(db, store, graph_builder)
     assert '"banana"' in result
     assert "entry 1" in result
 
-    # No entries should have been created
-    cursor = await db.execute("SELECT COUNT(*) FROM knowledge_entries")
-    count = (await cursor.fetchone())[0]
-    assert count == 0
+    # No backend call should have been made — validation fails first.
+    assert not called
 
 
 @pytest.mark.asyncio
-async def test_batch_store_enrichment_failure_continues(db, store, graph_builder):
-    """If enrichment fails, entries are still created successfully."""
-    embedder = FakeEmbedder(db)
-    llm = FakeLLM(response="not valid json at all {{{")
-    enricher = GraphEnricher(db, llm)
-    ls = _lifespan(db, store, graph_builder, embedder, enricher)
+async def test_batch_store_partial_failure():
+    """If the service creates fewer entries than submitted, the failure count is reported.
 
-    entries = [_entry_dict(short_title="Still works")]
-
-    result = await batch_store_entries(entries, ls)
-    assert "1 entries created" in result
-    assert "kb-00001" in result
-
-
-@pytest.mark.asyncio
-async def test_batch_store_partial_failure(db, store, graph_builder):
-    """If one entry fails, others still succeed and failures are reported."""
-    embedder = FakeEmbedder(db)
-    ls = _lifespan(db, store, graph_builder, embedder)
-
-    original_create = store.create_entry
-
-    call_count = 0
-
-    async def flaky_create(**kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("DB write failed")
-        return await original_create(**kwargs)
+    HTTP mode has no per-entry failure detail, so only the aggregate count is
+    surfaced (no "Failed entries (retry these):" section).
+    """
+    # 3 submitted, only 2 returned as created -> 1 failed.
+    handler = _created_handler(
+        _entry_json("kb-00001", "First"),
+        _entry_json("kb-00003", "Third"),
+    )
+    ls = _lifespan(handler)
 
     entries = [
         _entry_dict(short_title="First", knowledge_details="D1"),
@@ -216,43 +243,36 @@ async def test_batch_store_partial_failure(db, store, graph_builder):
         _entry_dict(short_title="Third", knowledge_details="D3"),
     ]
 
-    with patch.object(store, "create_entry", side_effect=flaky_create):
-        result = await batch_store_entries(entries, ls)
+    result = await batch_store_entries(entries, ls)
 
     assert "2 entries created" in result
     assert "1 failed" in result
-    assert "Failed entries (retry these):" in result
-    assert "Second" in result
-    assert "DB write failed" in result
-
-    # Verify only 2 entries in DB
-    cursor = await db.execute("SELECT COUNT(*) FROM knowledge_entries")
-    count = (await cursor.fetchone())[0]
-    assert count == 2
+    assert "kb-00001" in result
+    assert "kb-00003" in result
 
 
 @pytest.mark.asyncio
-async def test_batch_store_all_fail(db, store, graph_builder):
-    """If all entries fail, return a clear error with details."""
-    embedder = FakeEmbedder(db)
-    ls = _lifespan(db, store, graph_builder, embedder)
+async def test_batch_store_all_fail():
+    """If every entry fails client-side (bad TTL), return a clear error with details.
+
+    In HTTP mode the only source of per-entry failure detail is client-side TTL
+    pre-validation; those failures populate the "all failed" branch.
+    """
+    handler, called = _unhit_handler()
+    ls = _lifespan(handler)
 
     entries = [
-        _entry_dict(short_title="A", knowledge_details="D1"),
-        _entry_dict(short_title="B", knowledge_details="D2"),
+        _entry_dict(short_title="A", knowledge_details="D1", ttl="banana"),
+        _entry_dict(short_title="B", knowledge_details="D2", ttl="banana"),
     ]
 
-    with patch.object(
-        store, "create_entry", new=AsyncMock(side_effect=RuntimeError("connection lost"))
-    ):
-        result = await batch_store_entries(entries, ls)
+    result = await batch_store_entries(entries, ls)
 
     assert "all 2 entries failed" in result.lower()
     assert "Entry 0 (A)" in result
     assert "Entry 1 (B)" in result
-    assert "connection lost" in result
-
-    # Nothing in DB
-    cursor = await db.execute("SELECT COUNT(*) FROM knowledge_entries")
-    count = (await cursor.fetchone())[0]
-    assert count == 0
+    # The TTL ValueError message is surfaced as the failure detail.
+    assert "Invalid TTL" in result
+    # Backend receives an empty valid_entries list and short-circuits — handler
+    # is never actually invoked over the transport.
+    assert not called

@@ -1,15 +1,27 @@
-"""Tests for the kb_store MCP tool logic."""
+"""Tests for the kb_store MCP tool logic.
 
+Tool-routed tests drive the registered ``kb_store`` callable through an
+``HttpBackend`` backed by an ``httpx.MockTransport`` (HTTP-contract style):
+the backend is injected under ``lifespan["backend"]`` so
+``backend_from_lifespan`` returns it and ``backend.is_remote`` is True. The
+handler returns canned JSON matching the ``/api/kb/store`` and
+``/api/kb/entries/{id}/deactivate`` response shapes. Assertions are made on
+the tool's returned string rather than on real DB state.
+
+Pure-function tests (``format_store_result``, ``_mental_map_has_pointer``,
+``_validate_sensitivity``) and store-facade tests (deactivate semantics) do
+not route through the tool backend and are exercised directly.
+"""
+
+import json
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-import pytest_asyncio
 
-from personal_kb.db.connection import create_connection
-from personal_kb.graph.builder import GraphBuilder
-from personal_kb.graph.enricher import GraphEnricher
-from personal_kb.models.entry import EntryType
-from personal_kb.store.knowledge_store import KnowledgeStore
+from personal_kb.backend.http import HttpBackend
+from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.kb_store import (
     ORPHAN_MAP_ERROR,
     _mental_map_has_pointer,
@@ -17,79 +29,205 @@ from personal_kb.tools.kb_store import (
     format_store_result,
     register_kb_store,
 )
-from tests.conftest import FakeEmbedder, FakeLLM
+
+# ---------------------------------------------------------------------------
+# HTTP-backend test harness
+# ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_format_store_result_create(store):
-    entry = await store.create_entry(
+def _make_http_backend(handler) -> HttpBackend:
+    """Build an HttpBackend backed by a MockTransport sync handler."""
+    transport = httpx.MockTransport(handler)
+    backend = HttpBackend(base_url="http://kb.test", api_key="testkey")
+    backend._client = httpx.AsyncClient(
+        base_url="http://kb.test",
+        headers={"Authorization": "Bearer testkey"},
+        transport=transport,
+    )
+    return backend
+
+
+def _make_ctx(handler) -> MagicMock:
+    """Return a MagicMock Context whose lifespan injects an HttpBackend."""
+    ctx = MagicMock()
+    ctx.lifespan_context = {"backend": _make_http_backend(handler)}
+    return ctx
+
+
+def _register_and_capture():
+    """Register kb_store on a mock MCP and return the captured tool callable."""
+    tools: dict[str, Any] = {}
+
+    def capture_tool(**_kwargs):
+        def decorator(func):
+            tools[func.__name__] = func
+            return func
+
+        return decorator
+
+    mcp_mock = MagicMock()
+    mcp_mock.tool = capture_tool
+    register_kb_store(mcp_mock)
+    return tools["kb_store"]
+
+
+def _entry_json(
+    *,
+    entry_id: str = "kb-00001",
+    short_title: str = "Test",
+    long_title: str = "Test entry",
+    knowledge_details: str = "Details",
+    entry_type: EntryType = EntryType.FACTUAL_REFERENCE,
+    project_ref: str | None = None,
+    tags: list[str] | None = None,
+    version: int = 1,
+    is_active: bool = True,
+) -> dict[str, Any]:
+    """Build an <entry> JSON object as the service would return it."""
+    entry = KnowledgeEntry(
+        id=entry_id,
+        short_title=short_title,
+        long_title=long_title,
+        knowledge_details=knowledge_details,
+        entry_type=entry_type,
+        project_ref=project_ref,
+        tags=tags or [],
+        confidence_level=0.9,
+        version=version,
+        is_active=is_active,
+        has_embedding=True,
+    )
+    return entry.model_dump(mode="json")
+
+
+def _store_handler(entry: dict[str, Any], action: str = "created"):
+    """Return a MockTransport handler for the /api/kb/store route."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/kb/store"
+        body = json.loads(req.content)
+        # Echo back 'updated' when the request carries an update_entry_id.
+        resolved = "updated" if body.get("update_entry_id") else action
+        return httpx.Response(200, json={"action": resolved, "entry": entry})
+
+    return handler
+
+
+def _never_called_handler():
+    """Return a handler that fails if the backend is ever hit."""
+
+    def handler(req: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError(f"backend should not be called, got {req.url}")
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
+# format_store_result — pure function over a constructed entry
+# ---------------------------------------------------------------------------
+
+
+def test_format_store_result_create():
+    entry = KnowledgeEntry(
+        id="kb-00001",
         short_title="Test",
         long_title="Test entry",
         knowledge_details="Details",
         entry_type=EntryType.FACTUAL_REFERENCE,
         project_ref="my-project",
         tags=["tag1", "tag2"],
+        confidence_level=0.9,
+        version=1,
+        is_active=True,
+        has_embedding=True,
     )
-    result = format_store_result(entry, is_update=False)
+    result = format_store_result(entry, is_update=False, include_backend_warning=False)
     assert "Created kb-00001" in result
     assert "my-project" in result
     assert "#tag1 #tag2" in result
 
 
-@pytest.mark.asyncio
-async def test_format_store_result_update(store):
-    entry = await store.create_entry(
+def test_format_store_result_update():
+    entry = KnowledgeEntry(
+        id="kb-00001",
         short_title="Test",
         long_title="Test entry",
-        knowledge_details="Details",
-        entry_type=EntryType.DECISION,
-    )
-    updated = await store.update_entry(
-        entry_id=entry.id,
         knowledge_details="New details",
-        change_reason="Updated",
+        entry_type=EntryType.DECISION,
+        confidence_level=0.9,
+        version=2,
+        is_active=True,
+        has_embedding=True,
     )
-    result = format_store_result(updated, is_update=True)
+    result = format_store_result(entry, is_update=True, include_backend_warning=False)
     assert "Updated kb-00001 (v2)" in result
 
 
+# --- Deactivate path via the registered tool (HTTP contract) ---
+
+
 @pytest.mark.asyncio
-async def test_deactivate_entry(store):
-    """Deactivate removes entry from active set."""
-    entry = await store.create_entry(
+async def test_deactivate_entry_via_tool():
+    """deactivate_entry_id routes to backend.deactivate and reports the entry."""
+    entry = _entry_json(
+        entry_id="kb-00001",
         short_title="Wrong fact",
         long_title="An incorrect fact",
-        knowledge_details="This is wrong",
-        entry_type=EntryType.FACTUAL_REFERENCE,
+        is_active=False,
     )
 
-    deactivated = await store.deactivate_entry(entry.id)
-    assert deactivated.is_active is False
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/kb/entries/kb-00001/deactivate"
+        return httpx.Response(200, json={"entry": entry})
 
-    reloaded = await store.get_entry(entry.id)
-    assert reloaded is not None
-    assert reloaded.is_active is False
+    kb_store = _register_and_capture()
+    ctx = _make_ctx(handler)
+    result = await kb_store(deactivate_entry_id="kb-00001", ctx=ctx)
+    assert "Deactivated entry kb-00001" in result
+    assert "Wrong fact" in result
 
 
 @pytest.mark.asyncio
-async def test_deactivate_nonexistent_entry(store):
-    """Deactivating a nonexistent entry raises ValueError."""
-    with pytest.raises(ValueError, match="not found"):
-        await store.deactivate_entry("kb-99999")
+async def test_deactivate_entry_with_reason():
+    """A change_reason is appended to the deactivation message."""
+    entry = _entry_json(entry_id="kb-00002", short_title="Old fact", is_active=False)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"entry": entry})
+
+    kb_store = _register_and_capture()
+    ctx = _make_ctx(handler)
+    result = await kb_store(deactivate_entry_id="kb-00002", change_reason="obsolete", ctx=ctx)
+    assert "Deactivated entry kb-00002" in result
+    assert "(obsolete)" in result
 
 
 @pytest.mark.asyncio
-async def test_deactivate_already_inactive(store):
-    """Deactivating an already-inactive entry raises ValueError."""
-    entry = await store.create_entry(
-        short_title="Test",
-        long_title="Test entry",
-        knowledge_details="Details",
-        entry_type=EntryType.FACTUAL_REFERENCE,
-    )
-    await store.deactivate_entry(entry.id)
-    with pytest.raises(ValueError, match="already inactive"):
-        await store.deactivate_entry(entry.id)
+async def test_deactivate_nonexistent_entry_maps_error():
+    """A 404 from the deactivate route is mapped to an error string."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "entry kb-99999 not found"})
+
+    kb_store = _register_and_capture()
+    ctx = _make_ctx(handler)
+    result = await kb_store(deactivate_entry_id="kb-99999", ctx=ctx)
+    assert "Error" in result
+    assert "not found" in result
+
+
+@pytest.mark.asyncio
+async def test_deactivate_already_inactive_maps_error():
+    """A 409 (already inactive) is mapped to an error string."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"detail": "entry kb-00001 already inactive"})
+
+    kb_store = _register_and_capture()
+    ctx = _make_ctx(handler)
+    result = await kb_store(deactivate_entry_id="kb-00001", ctx=ctx)
+    assert "Error" in result
+    assert "already inactive" in result
 
 
 # --- Sensitivity validation ---
@@ -159,64 +297,20 @@ def test_pointer_helper_zero_pointers():
     assert _mental_map_has_pointer("just plain prose", {}) is False
 
 
-# --- mental_map create path via the registered tool ---
-
-
-@pytest_asyncio.fixture
-async def tool_context():
-    """Create a mock MCP context with all lifespan dependencies."""
-    db = await create_connection(":memory:")
-    store = KnowledgeStore(db)
-    embedder = FakeEmbedder(db)
-    graph_builder = GraphBuilder(db)
-    enricher = GraphEnricher(db, FakeLLM())
-
-    lifespan = {
-        "db": db,
-        "store": store,
-        "embedder": embedder,
-        "graph_builder": graph_builder,
-        "graph_enricher": enricher,
-        "contributor": None,
-        "team": None,
-    }
-
-    ctx = MagicMock()
-    ctx.lifespan_context = lifespan
-
-    yield ctx, lifespan
-
-    await db.close()
-
-
-def _register_and_capture():
-    """Register kb_store on a mock MCP and return the captured tool callable."""
-    tools = {}
-
-    def capture_tool(**_kwargs):
-        def decorator(func):
-            tools[func.__name__] = func
-            return func
-
-        return decorator
-
-    mcp_mock = MagicMock()
-    mcp_mock.tool = capture_tool
-    register_kb_store(mcp_mock)
-    return tools["kb_store"]
-
-
-async def _entry_count(db) -> int:
-    cursor = await db.execute("SELECT COUNT(*) FROM knowledge_entries")
-    row = await cursor.fetchone()
-    return row[0]
+# --- mental_map create path via the registered tool (HTTP contract) ---
 
 
 @pytest.mark.asyncio
-async def test_mental_map_with_body_reference_succeeds(tool_context):
+async def test_mental_map_with_body_reference_succeeds():
     """(a) mental_map with in-body kb-XXXXX ref stores and shows un-decayed confidence."""
-    ctx, lifespan = tool_context
+    entry = _entry_json(
+        short_title="Auth map",
+        long_title="Auth subsystem orientation",
+        knowledge_details="Start at kb-00050 then follow the edges.",
+        entry_type=EntryType.MENTAL_MAP,
+    )
     kb_store = _register_and_capture()
+    ctx = _make_ctx(_store_handler(entry))
     result = await kb_store(
         short_title="Auth map",
         long_title="Auth subsystem orientation",
@@ -228,14 +322,19 @@ async def test_mental_map_with_body_reference_succeeds(tool_context):
     # un-decayed: effective == base (~90%), and no staleness badge
     assert "(90%)" in result
     assert "[STALE]" not in result
-    assert await _entry_count(lifespan["db"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_mental_map_with_related_entity_hint_succeeds(tool_context):
+async def test_mental_map_with_related_entity_hint_succeeds():
     """(b) mental_map with a related_entities id hint and no in-body ref stores."""
-    ctx, lifespan = tool_context
+    entry = _entry_json(
+        short_title="Map",
+        long_title="A map",
+        knowledge_details="No inline references here.",
+        entry_type=EntryType.MENTAL_MAP,
+    )
     kb_store = _register_and_capture()
+    ctx = _make_ctx(_store_handler(entry))
     result = await kb_store(
         short_title="Map",
         long_title="A map",
@@ -245,14 +344,14 @@ async def test_mental_map_with_related_entity_hint_succeeds(tool_context):
         ctx=ctx,
     )
     assert "Created" in result
-    assert await _entry_count(lifespan["db"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_mental_map_zero_pointers_rejected(tool_context):
-    """(c) zero-pointer mental_map returns the orphan error and creates nothing."""
-    ctx, lifespan = tool_context
+async def test_mental_map_zero_pointers_rejected():
+    """(c) zero-pointer mental_map returns the orphan error before any backend call."""
     kb_store = _register_and_capture()
+    # The backend must never be reached — the orphan check runs client-side.
+    ctx = _make_ctx(_never_called_handler())
     result = await kb_store(
         short_title="Orphan",
         long_title="Orphan map",
@@ -261,16 +360,19 @@ async def test_mental_map_zero_pointers_rejected(tool_context):
         ctx=ctx,
     )
     assert result == ORPHAN_MAP_ERROR
-    assert await _entry_count(lifespan["db"]) == 0
-    # A subsequent get finds nothing.
-    assert await lifespan["store"].get_entry("kb-00001") is None
 
 
 @pytest.mark.asyncio
-async def test_non_mental_map_zero_pointers_still_succeeds(tool_context):
+async def test_non_mental_map_zero_pointers_still_succeeds():
     """(d) regression guard: a factual_reference with zero pointers still stores."""
-    ctx, lifespan = tool_context
+    entry = _entry_json(
+        short_title="Fact",
+        long_title="A fact",
+        knowledge_details="Plain fact with no pointers.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
     kb_store = _register_and_capture()
+    ctx = _make_ctx(_store_handler(entry))
     result = await kb_store(
         short_title="Fact",
         long_title="A fact",
@@ -279,35 +381,46 @@ async def test_non_mental_map_zero_pointers_still_succeeds(tool_context):
         ctx=ctx,
     )
     assert "Created" in result
-    assert await _entry_count(lifespan["db"]) == 1
 
 
 # --- advisory mental_map lint at the store call site ---
 
 
 @pytest.mark.asyncio
-async def test_mental_map_create_with_value_surfaces_advisory(tool_context):
+async def test_mental_map_create_with_value_surfaces_advisory():
     """A mental_map create with a config value in the body returns Created + advisory."""
-    ctx, lifespan = tool_context
+    body = "orients kb-00050; the explorer runs on port 8767"
+    entry = _entry_json(
+        short_title="Net map",
+        long_title="Network orientation",
+        knowledge_details=body,
+        entry_type=EntryType.MENTAL_MAP,
+    )
     kb_store = _register_and_capture()
+    ctx = _make_ctx(_store_handler(entry))
     result = await kb_store(
         short_title="Net map",
         long_title="Network orientation",
-        knowledge_details="orients kb-00050; the explorer runs on port 8767",
+        knowledge_details=body,
         entry_type=EntryType.MENTAL_MAP,
         ctx=ctx,
     )
     assert "Created kb-" in result
     assert "Map lint (advisory):" in result
-    # Store still succeeds — entry was created.
-    assert await _entry_count(lifespan["db"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_mental_map_backend_warning_precedes_lint(tool_context):
-    """When both a backend warning and a lint advisory are present, backend comes first."""
-    ctx, _lifespan = tool_context
+async def test_mental_map_http_mode_suppresses_backend_warning():
+    """In HTTP mode the SQLite-fallback warning is suppressed even if configured."""
+    body = "orients kb-00050; the explorer runs on port 8767"
+    entry = _entry_json(
+        short_title="Net map",
+        long_title="Network orientation",
+        knowledge_details=body,
+        entry_type=EntryType.MENTAL_MAP,
+    )
     kb_store = _register_and_capture()
+    ctx = _make_ctx(_store_handler(entry))
     with patch(
         "personal_kb.config.get_backend_warning",
         return_value="Backend fallback: using degraded mode",
@@ -315,20 +428,41 @@ async def test_mental_map_backend_warning_precedes_lint(tool_context):
         result = await kb_store(
             short_title="Net map",
             long_title="Network orientation",
-            knowledge_details="orients kb-00050; the explorer runs on port 8767",
+            knowledge_details=body,
             entry_type=EntryType.MENTAL_MAP,
             ctx=ctx,
         )
-    assert "Backend fallback" in result
+    # HTTP mode passes include_backend_warning=False — the fallback warning
+    # never appears, but the advisory lint still does.
+    assert "Backend fallback" not in result
     assert "Map lint (advisory):" in result
-    assert result.index("Backend fallback") < result.index("Map lint (advisory):")
 
 
 @pytest.mark.asyncio
-async def test_mental_map_update_with_body_surfaces_advisory(tool_context):
+async def test_mental_map_update_with_body_surfaces_advisory():
     """Update with a new body and NO entry_type param still lints (gate reads persisted type)."""
-    ctx, _lifespan = tool_context
+    clean_entry = _entry_json(
+        short_title="Net map",
+        long_title="Network orientation",
+        knowledge_details="orients kb-00050; clean orientation prose",
+        entry_type=EntryType.MENTAL_MAP,
+    )
+    dirty_entry = _entry_json(
+        short_title="Net map",
+        long_title="Network orientation",
+        knowledge_details="orients kb-00050; the explorer runs on port 8767",
+        entry_type=EntryType.MENTAL_MAP,
+        version=2,
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        if body.get("update_entry_id"):
+            return httpx.Response(200, json={"action": "updated", "entry": dirty_entry})
+        return httpx.Response(200, json={"action": "created", "entry": clean_entry})
+
     kb_store = _register_and_capture()
+    ctx = _make_ctx(handler)
     created = await kb_store(
         short_title="Net map",
         long_title="Network orientation",
@@ -347,17 +481,21 @@ async def test_mental_map_update_with_body_surfaces_advisory(tool_context):
 
 
 @pytest.mark.asyncio
-async def test_mental_map_metadata_only_update_skips_lint(tool_context):
+async def test_mental_map_metadata_only_update_skips_lint():
     """A metadata-only update (no knowledge_details) returns Updated with NO advisory."""
-    ctx, _lifespan = tool_context
-    kb_store = _register_and_capture()
-    await kb_store(
+    entry = _entry_json(
         short_title="Net map",
         long_title="Network orientation",
         knowledge_details="orients kb-00050; the explorer runs on port 8767",
         entry_type=EntryType.MENTAL_MAP,
-        ctx=ctx,
+        version=2,
     )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"action": "updated", "entry": entry})
+
+    kb_store = _register_and_capture()
+    ctx = _make_ctx(handler)
     result = await kb_store(
         update_entry_id="kb-00001",
         tags=["new-tag"],
@@ -368,10 +506,16 @@ async def test_mental_map_metadata_only_update_skips_lint(tool_context):
 
 
 @pytest.mark.asyncio
-async def test_non_map_create_is_not_linted(tool_context):
+async def test_non_map_create_is_not_linted():
     """A factual_reference with a numeral body is never linted (call-site gating)."""
-    ctx, _lifespan = tool_context
+    entry = _entry_json(
+        short_title="Fact",
+        long_title="A fact",
+        knowledge_details="the explorer runs on port 8767",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
     kb_store = _register_and_capture()
+    ctx = _make_ctx(_store_handler(entry))
     result = await kb_store(
         short_title="Fact",
         long_title="A fact",
@@ -381,36 +525,3 @@ async def test_non_map_create_is_not_linted(tool_context):
     )
     assert "Created kb-" in result
     assert "Map lint (advisory):" not in result
-
-
-@pytest.mark.asyncio
-async def test_mental_map_contains_edge(tool_context):
-    """(e) related_entities edge_type='contains' produces a graph edge + get_neighbors tuple."""
-    from personal_kb.graph.queries import get_neighbors
-
-    ctx, lifespan = tool_context
-    db = lifespan["db"]
-    kb_store = _register_and_capture()
-    result = await kb_store(
-        short_title="Container map",
-        long_title="Container map",
-        knowledge_details="No inline refs.",
-        entry_type=EntryType.MENTAL_MAP,
-        hints={"related_entities": [{"id": "kb-00050", "edge_type": "contains"}]},
-        ctx=ctx,
-    )
-    assert "Created" in result
-    map_id = "kb-00001"
-
-    # (1) direct DB query finds exactly one contains edge
-    cursor = await db.execute(
-        "SELECT source, target, edge_type FROM graph_edges "
-        "WHERE source = ? AND target = ? AND edge_type = ?",
-        (map_id, "kb-00050", "contains"),
-    )
-    rows = await cursor.fetchall()
-    assert len(rows) == 1
-
-    # (2) get_neighbors returns the exact 3-tuple (neighbor_id, edge_type, direction)
-    neighbors = await get_neighbors(db, map_id, edge_types=["contains"])
-    assert ("kb-00050", "contains", "outgoing") in neighbors

@@ -1,8 +1,7 @@
 """Backend Protocol — abstract interface over the KB engine.
 
 All 16 MCP tools obtain their data exclusively through this Protocol so
-the same tool code runs against a local SQLite/Postgres KnowledgeBase (via
-LocalBackend) and a remote KB service (via HttpBackend).
+the same tool code runs against the remote KB service (via HttpBackend).
 
 The Protocol is intentionally narrow: it only enumerates the operations the
 16 tools actually need, nothing more.
@@ -21,11 +20,11 @@ if TYPE_CHECKING:
 
 
 class Backend(Protocol):
-    """Abstract backend — implemented by LocalBackend and HttpBackend."""
+    """Abstract backend — implemented by HttpBackend."""
 
     @property
     def is_remote(self) -> bool:
-        """True for HttpBackend, False for LocalBackend."""
+        """True for HttpBackend."""
         ...
 
     # ------------------------------------------------------------------
@@ -105,8 +104,7 @@ class Backend(Protocol):
         """Create multiple entries.
 
         Returns ``(created, failed)`` where *failed* is a list of
-        ``(index, short_title, error)`` tuples for per-entry failures that
-        could be diagnosed locally (e.g. DB errors in LocalBackend).
+        ``(index, short_title, error)`` tuples for per-entry failures.
         HttpBackend returns an empty *failed* list; the tool renders the
         aggregate failure count from ``len(created) < len(entries)``.
         """
@@ -228,8 +226,7 @@ class Backend(Protocol):
     async def preflight(self, project_ref: str, since: str | None) -> str:
         """Project context primer.
 
-        *since* is a raw TTL string (e.g. ``'7d'``) or ``None``.  LocalBackend
-        parses it with :func:`personal_kb.tools.ttl.parse_ttl`; HttpBackend
+        *since* is a raw TTL string (e.g. ``'7d'``) or ``None``.  HttpBackend
         sends it verbatim as a query param.
         """
         ...

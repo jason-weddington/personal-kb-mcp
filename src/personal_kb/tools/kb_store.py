@@ -260,13 +260,6 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     return _map_error(e, "")
                 return f"Error: {e}"
 
-            # Local mode: refresh maps index for mental_map deactivations
-            if not is_http and entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
-                from personal_kb.tools._lifespan import kb_from_lifespan
-
-                kb = kb_from_lifespan(ctx.lifespan_context)
-                await _refresh_maps_index(kb.db, entry.project_ref, kb.config.attribution.team)
-
             reason = f" ({change_reason})" if change_reason else ""
             return f"Deactivated entry {entry.id}: {entry.short_title}{reason}"
 
@@ -312,13 +305,6 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
 
                     return _map_error(e, "")
                 return f"Error: {e}"
-
-            # Local mode: refresh maps index for mental_map updates
-            if not is_http and entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
-                from personal_kb.tools._lifespan import kb_from_lifespan
-
-                kb = kb_from_lifespan(ctx.lifespan_context)
-                await _refresh_maps_index(kb.db, entry.project_ref, kb.config.attribution.team)
 
             result = format_store_result(entry, is_update=True, include_backend_warning=not is_http)
             # Advisory mental_map lint — gate on the re-fetched entry's type
@@ -388,13 +374,6 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 return _map_error(e, "")
             return f"Error: {e}"
 
-        # Local mode: refresh maps index for mental_map creates
-        if not is_http and entry.entry_type == EntryType.MENTAL_MAP and entry.project_ref:
-            from personal_kb.tools._lifespan import kb_from_lifespan
-
-            kb = kb_from_lifespan(ctx.lifespan_context)
-            await _refresh_maps_index(kb.db, entry.project_ref, kb.config.attribution.team)
-
         result = format_store_result(entry, is_update=False, include_backend_warning=not is_http)
         # Advisory mental_map lint
         if entry.entry_type == EntryType.MENTAL_MAP and knowledge_details:
@@ -404,24 +383,6 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 include_backend_warning=not is_http,
             )
         return result
-
-
-async def _refresh_maps_index(db: object, project_ref: str, team: str | None) -> None:
-    """Refresh the on-disk maps index for a project, logging on failure."""
-    from personal_kb.maps_index_writer import write_project_maps
-
-    try:
-        await write_project_maps(db, project_ref, team=team)  # type: ignore[arg-type]
-    except Exception:
-        logger.warning("Failed to refresh maps index for project %s", project_ref, exc_info=True)
-    try:
-        await db.notify_maps_changed(project_ref)  # type: ignore[attr-defined]
-    except Exception:
-        logger.warning(
-            "Failed to NOTIFY kb_maps_changed for project %s",
-            project_ref,
-            exc_info=True,
-        )
 
 
 def _check_secrets(content: str) -> str | None:

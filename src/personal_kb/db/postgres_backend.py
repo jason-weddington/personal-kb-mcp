@@ -5,8 +5,6 @@ Channel-rewiring wave removes this.
 """
 
 from kb_core.db.postgres_backend import (
-    _LISTENER_RECONNECT_DELAY,
-    NOTIFY_CHANNEL,
     PostgresBackend,
     PostgresCursor,
     PostgresRow,
@@ -15,8 +13,6 @@ from kb_core.db.postgres_backend import (
 )
 
 __all__ = [
-    "NOTIFY_CHANNEL",
-    "_LISTENER_RECONNECT_DELAY",
     "PostgresBackend",
     "PostgresCursor",
     "PostgresRow",

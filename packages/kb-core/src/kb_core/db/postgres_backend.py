@@ -7,7 +7,6 @@ backend translates them to ``$N`` at execute time.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -15,14 +14,11 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import ssl as ssl_module
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Callable
 
     import asyncpg
 
     from kb_core.db.backend import Cursor, Row
-
-NOTIFY_CHANNEL = "kb_maps_changed"
-_LISTENER_RECONNECT_DELAY = 5.0
 
 # When set, all execute() calls route to this connection instead of the pool.
 _txn_conn: ContextVar[asyncpg.Connection | None] = ContextVar("_txn_conn", default=None)
@@ -148,17 +144,12 @@ class PostgresBackend:
     ) -> None:
         """Initialize with an asyncpg connection pool.
 
-        ``url``/``password``/``ssl`` are retained so
-        ``start_maps_listener`` can open a DEDICATED long-lived
-        ``asyncpg.connect`` for ``LISTEN`` (not pulled from the pool —
-        a held pool conn would starve the pool, default max 10).
+        ``url``/``password``/``ssl`` are retained for connection metadata.
         """
         self._pool = pool
         self._url = url
         self._password = password
         self._ssl = ssl
-        self._listener_conn: asyncpg.Connection | None = None
-        self._listener_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def _conn(self) -> AsyncIterator[asyncpg.Connection]:
@@ -240,178 +231,8 @@ class PostgresBackend:
         """No-op — asyncpg auto-commits each statement."""
 
     async def close(self) -> None:
-        """Close the connection pool and the dedicated listener connection (if any)."""
-        # Guarded: the listener connection may never have been opened, or
-        # may have been closed already by an explicit teardown.
-        conn = getattr(self, "_listener_conn", None)
-        if conn is not None:
-            try:
-                if not conn.is_closed():
-                    await conn.close()
-            except Exception:
-                logger.debug("listener connection close failed", exc_info=True)
-            self._listener_conn = None
+        """Close the connection pool."""
         await self._pool.close()
-
-    # -- NOTIFY / LISTEN (LISTEN/NOTIFY-backed live refresh of maps_index) --
-
-    async def notify_maps_changed(self, project_ref: str) -> None:
-        """Fire ``pg_notify('kb_maps_changed', project_ref)`` on a pooled conn.
-
-        Uses the parameterized ``SELECT pg_notify(channel, payload)`` form
-        — never the ``NOTIFY channel, 'literal'`` form — so arbitrary
-        ``project_ref`` strings are safe (no identifier-quoting attack
-        surface). Best-effort: a NOTIFY failure logs a warning and returns;
-        the local index write has already succeeded.
-        """
-        if not project_ref:
-            return
-        try:
-            async with self._conn() as conn:
-                await conn.execute("SELECT pg_notify($1, $2)", NOTIFY_CHANNEL, project_ref)
-        except Exception:
-            logger.warning("pg_notify(%s, %s) failed", NOTIFY_CHANNEL, project_ref, exc_info=True)
-
-    async def start_maps_listener(
-        self,
-        on_change: Callable[[str], Awaitable[None]],
-        on_reconnect: Callable[[], Awaitable[None]],
-    ) -> Callable[[], Awaitable[None]]:
-        """Open a dedicated LISTEN connection and dispatch NOTIFY payloads.
-
-        Returns an async teardown callable that cancels the background task
-        and closes the dedicated connection. Reconnects indefinitely with a
-        5.0s sleep on drop; calls ``on_reconnect()`` on every successful
-        (re)connect so the app can rebuild the index and re-sync missed
-        events.
-        """
-        task = asyncio.create_task(
-            self._listener_loop(on_change, on_reconnect),
-            name="kb_maps_listener",
-        )
-        self._listener_task = task
-
-        async def _teardown() -> None:
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    # Expected when the listener task is cancelled.
-                    pass
-                except Exception:
-                    # Best-effort teardown — log and continue closing.
-                    logger.debug("listener task raised during cancellation", exc_info=True)
-            self._listener_task = None
-            conn = self._listener_conn
-            if conn is not None:
-                try:
-                    if not conn.is_closed():
-                        await conn.close()
-                except Exception:
-                    logger.debug(
-                        "listener connection close during teardown failed",
-                        exc_info=True,
-                    )
-                self._listener_conn = None
-
-        return _teardown
-
-    async def _listener_loop(
-        self,
-        on_change: Callable[[str], Awaitable[None]],
-        on_reconnect: Callable[[], Awaitable[None]],
-    ) -> None:
-        """Reconnecting LISTEN loop. Exits only on cancellation."""
-        import asyncpg as _asyncpg
-
-        # asyncpg's add_listener callbacks run synchronously on the read
-        # loop, so the NOTIFY callback schedules on_change as a task rather
-        # than awaiting it inline. Outstanding tasks are tracked to satisfy
-        # RUF006 (no fire-and-forget tasks).
-        pending: set[asyncio.Task[None]] = set()
-        while True:
-            connect_kwargs: dict[str, Any] = {}
-            if self._password is not None:
-                connect_kwargs["password"] = self._password
-            if self._ssl is not None:
-                connect_kwargs["ssl"] = self._ssl
-            try:
-                conn = await _asyncpg.connect(self._url, **connect_kwargs)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning(
-                    "maps listener connect failed; retrying in %.1fs",
-                    _LISTENER_RECONNECT_DELAY,
-                    exc_info=True,
-                )
-                await asyncio.sleep(_LISTENER_RECONNECT_DELAY)
-                continue
-
-            self._listener_conn = conn
-            disconnect_event = asyncio.Event()
-
-            def _termination_listener(_conn: Any, _event: asyncio.Event = disconnect_event) -> None:
-                _event.set()
-
-            async def _dispatch_change(payload_inner: str) -> None:
-                """Async wrapper: invoke on_change without leaking its return."""
-                await on_change(payload_inner)
-
-            def _notify_callback(_conn: Any, _pid: int, _channel: str, payload: str) -> None:
-                # The callback runs in asyncpg's protocol layer; we cannot
-                # await here. Schedule the application coroutine on the
-                # same event loop so it runs as a task. Hold a strong
-                # reference until the task completes.
-                try:
-                    t: asyncio.Task[None] = asyncio.create_task(_dispatch_change(payload))
-                except RuntimeError:
-                    logger.debug("could not schedule on_change for %s", payload)
-                    return
-                pending.add(t)
-                t.add_done_callback(pending.discard)
-
-            try:
-                # Trigger the app-level rebuild on EVERY successful (re)connect
-                # so events missed while disconnected are reconciled.
-                try:
-                    await on_reconnect()
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning("on_reconnect callback raised", exc_info=True)
-
-                conn.add_termination_listener(_termination_listener)
-                await conn.add_listener(NOTIFY_CHANNEL, _notify_callback)
-
-                # Wait until the connection drops (or we're cancelled).
-                await disconnect_event.wait()
-            except asyncio.CancelledError:
-                # Teardown path. Best-effort cleanup of conn, then exit.
-                try:
-                    if not conn.is_closed():
-                        await conn.close()
-                except Exception:
-                    logger.debug("listener conn close on cancel failed", exc_info=True)
-                self._listener_conn = None
-                raise
-            except Exception:
-                logger.warning(
-                    "maps listener loop error; reconnecting in %.1fs",
-                    _LISTENER_RECONNECT_DELAY,
-                    exc_info=True,
-                )
-            finally:
-                try:
-                    if not conn.is_closed():
-                        await conn.close()
-                except Exception:
-                    logger.debug("listener conn close on drop failed", exc_info=True)
-                if self._listener_conn is conn:
-                    self._listener_conn = None
-
-            await asyncio.sleep(_LISTENER_RECONNECT_DELAY)
 
     # -- FTS (tsvector + GIN) --
 

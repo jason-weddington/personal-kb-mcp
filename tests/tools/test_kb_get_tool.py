@@ -1,60 +1,129 @@
-"""Tests for the kb_get MCP tool."""
+"""Tests for the kb_get MCP tool.
 
+The in-process local backend has been removed, so these tests drive the real
+``kb_get`` tool against an :class:`HttpBackend` backed by ``httpx.MockTransport``.
+Each test feeds canned ``/api/kb/get`` JSON (matching the service route shape:
+``{"results": [{"id", "found", "entry", "pointer_rot"}]}``) and asserts on the
+tool's rendered string output. Real-DB persistence (``last_accessed`` touch,
+pointer-rot *computation*) is covered at the service + kb_core layers; here we
+verify the tool's rendering of the HTTP contract.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import MagicMock
+
+import httpx
 import pytest
 
-from personal_kb.db.queries import (
-    deactivate_entry_db,
-    get_entry,
-    update_entry,
-)
-from personal_kb.graph.builder import GraphBuilder
-from personal_kb.models.entry import EntryType
+from personal_kb.backend.http import HttpBackend
+from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.formatters import format_entry_full, format_result_list
-from personal_kb.tools.kb_get import _MAX_IDS, _render_pointer_rot
+from personal_kb.tools.kb_get import register_kb_get
 
 
-async def _kb_get_logic(db, ids: list[str]) -> str:
-    """Replicate kb_get logic for testing without MCP context.
+def _make_entry(
+    entry_id: str,
+    short_title: str = "Title",
+    long_title: str = "Long title",
+    knowledge_details: str = "Details",
+    entry_type: EntryType = EntryType.FACTUAL_REFERENCE,
+    tags: list[str] | None = None,
+    project_ref: str | None = None,
+) -> KnowledgeEntry:
+    return KnowledgeEntry(
+        id=entry_id,
+        short_title=short_title,
+        long_title=long_title,
+        knowledge_details=knowledge_details,
+        entry_type=entry_type,
+        tags=tags or [],
+        project_ref=project_ref,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
 
-    Uses ``backend_from_lifespan`` so this helper stays in lockstep with
-    the real kb_get tool body — both go through the same
-    LocalBackend.get_entries() path.
+
+def _make_http_backend(handler) -> HttpBackend:
+    transport = httpx.MockTransport(handler)
+    backend = HttpBackend(base_url="http://kb.test", api_key="testkey")
+    backend._client = httpx.AsyncClient(
+        base_url="http://kb.test",
+        headers={"Authorization": "Bearer testkey"},
+        transport=transport,
+    )
+    return backend
+
+
+def _register() -> Any:
+    """Register kb_get on a mock MCP and return the captured tool function."""
+    tools: dict[str, Any] = {}
+
+    def capture(**_kw):
+        def decorator(fn):
+            tools[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    mcp = MagicMock()
+    mcp.tool = capture
+    register_kb_get(mcp)
+    return next(iter(tools.values()))
+
+
+def _ctx_for(results_map: dict[str, dict[str, Any]]) -> MagicMock:
+    """Build a ctx whose /api/kb/get returns canned results per requested id.
+
+    ``results_map`` maps an id → a partial result dict (without ``id``); a
+    requested id absent from the map is rendered as ``found=False``.
     """
-    if len(ids) > _MAX_IDS:
-        return f"Error: Maximum {_MAX_IDS} IDs per request (got {len(ids)})."
 
-    from personal_kb.tools._lifespan import backend_from_lifespan
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/kb/get"
+        body = json.loads(req.content)
+        results = []
+        for eid in body.get("ids", []):
+            spec = results_map.get(eid)
+            if spec is None:
+                results.append({"id": eid, "found": False, "entry": None})
+            else:
+                results.append({"id": eid, **spec})
+        return httpx.Response(200, json={"results": results})
 
-    backend = backend_from_lifespan({"db": db})
-    entries_data = await backend.get_entries(ids)
+    ctx = MagicMock()
+    ctx.lifespan_context = {"backend": _make_http_backend(handler)}
+    return ctx
 
-    formatted: list[str] = []
-    for eid, entry, rot_pairs in entries_data:
-        if entry is None:
-            formatted.append(f"[{eid}] not found")
-        else:
-            rendered = format_entry_full(entry)
-            note = _render_pointer_rot(rot_pairs)
-            if note is not None:
-                rendered = f"{rendered}\n{note}"
-            formatted.append(rendered)
 
-    return format_result_list(formatted)
+def _found(
+    entry: KnowledgeEntry, pointer_rot: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    return {
+        "found": True,
+        "entry": entry.model_dump(mode="json"),
+        "pointer_rot": pointer_rot or [],
+    }
 
 
 @pytest.mark.asyncio
-async def test_get_single_entry(db, store):
+async def test_get_single_entry():
     """Retrieve a single entry by ID."""
-    entry = await store.create_entry(
+    entry = _make_entry(
+        "kb-00001",
         short_title="Test",
         long_title="Test entry",
         knowledge_details="Full details here",
-        entry_type=EntryType.FACTUAL_REFERENCE,
         tags=["python"],
         project_ref="my-proj",
     )
+    kb_get = _register()
+    ctx = _ctx_for({entry.id: _found(entry)})
 
-    result = await _kb_get_logic(db, [entry.id])
+    result = await kb_get(entry_id=entry.id, ctx=ctx)
     assert entry.id in result
     assert "Full details here" in result
     assert "#python" in result
@@ -62,22 +131,22 @@ async def test_get_single_entry(db, store):
 
 
 @pytest.mark.asyncio
-async def test_get_multiple_entries(db, store):
+async def test_get_multiple_entries():
     """Retrieve multiple entries at once."""
-    e1 = await store.create_entry(
-        short_title="First",
-        long_title="First entry",
-        knowledge_details="First details",
-        entry_type=EntryType.FACTUAL_REFERENCE,
+    e1 = _make_entry(
+        "kb-00001", short_title="First", long_title="First entry", knowledge_details="First details"
     )
-    e2 = await store.create_entry(
+    e2 = _make_entry(
+        "kb-00002",
         short_title="Second",
         long_title="Second entry",
         knowledge_details="Second details",
         entry_type=EntryType.DECISION,
     )
+    kb_get = _register()
+    ctx = _ctx_for({e1.id: _found(e1), e2.id: _found(e2)})
 
-    result = await _kb_get_logic(db, [e1.id, e2.id])
+    result = await kb_get(entry_id=[e1.id, e2.id], ctx=ctx)
     assert e1.id in result
     assert e2.id in result
     assert "First details" in result
@@ -86,24 +155,28 @@ async def test_get_multiple_entries(db, store):
 
 
 @pytest.mark.asyncio
-async def test_get_missing_entry(db):
+async def test_get_missing_entry():
     """Missing IDs show 'not found'."""
-    result = await _kb_get_logic(db, ["kb-99999"])
+    kb_get = _register()
+    ctx = _ctx_for({})
+    result = await kb_get(entry_id="kb-99999", ctx=ctx)
     assert "kb-99999" in result
     assert "not found" in result
 
 
 @pytest.mark.asyncio
-async def test_get_mixed_found_and_missing(db, store):
+async def test_get_mixed_found_and_missing():
     """Mix of found and missing entries."""
-    entry = await store.create_entry(
+    entry = _make_entry(
+        "kb-00001",
         short_title="Exists",
         long_title="Existing entry",
         knowledge_details="Real content",
-        entry_type=EntryType.FACTUAL_REFERENCE,
     )
+    kb_get = _register()
+    ctx = _ctx_for({entry.id: _found(entry)})
 
-    result = await _kb_get_logic(db, [entry.id, "kb-99999"])
+    result = await kb_get(entry_id=[entry.id, "kb-99999"], ctx=ctx)
     assert entry.id in result
     assert "Real content" in result
     assert "kb-99999" in result
@@ -112,279 +185,119 @@ async def test_get_mixed_found_and_missing(db, store):
 
 
 @pytest.mark.asyncio
-async def test_get_inactive_entry_skipped(db, store):
-    """Inactive entries are treated as not found."""
-    entry = await store.create_entry(
-        short_title="Soon gone",
-        long_title="Will be deactivated",
-        knowledge_details="Should not appear after deactivation",
-        entry_type=EntryType.FACTUAL_REFERENCE,
-    )
-    await store.deactivate_entry(entry.id)
-
-    result = await _kb_get_logic(db, [entry.id])
+async def test_get_inactive_entry_skipped():
+    """Inactive entries are treated as not found by the service."""
+    kb_get = _register()
+    # Service reports an inactive entry as found=False
+    ctx = _ctx_for({"kb-00001": {"found": False, "entry": None}})
+    result = await kb_get(entry_id="kb-00001", ctx=ctx)
     assert "not found" in result
-    assert "Should not appear" not in result
 
 
 @pytest.mark.asyncio
-async def test_get_cap_at_20(db):
-    """Exceeding 20 IDs returns an error."""
+async def test_get_cap_at_20():
+    """Exceeding 20 IDs returns an error (before any backend call)."""
+    kb_get = _register()
+    ctx = _ctx_for({})
     ids = [f"kb-{i:05d}" for i in range(1, 22)]
-    result = await _kb_get_logic(db, ids)
+    result = await kb_get(entry_id=ids, ctx=ctx)
     assert "Maximum 20" in result
 
 
-@pytest.mark.asyncio
-async def test_get_updates_last_accessed(db, store):
-    """kb_get should update last_accessed — explicit retrieval resets decay clock."""
-    entry = await store.create_entry(
-        short_title="Decay test",
-        long_title="Access-aware decay",
-        knowledge_details="Explicit retrieval should reset the decay clock.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
-    )
-
-    # Initially NULL
-    fetched = await get_entry(db, entry.id)
-    assert fetched is not None
-    assert fetched.last_accessed is None
-
-    # kb_get should touch last_accessed
-    await _kb_get_logic(db, [entry.id])
-
-    fetched = await get_entry(db, entry.id)
-    assert fetched is not None
-    assert fetched.last_accessed is not None
+# --- Pointer-rot rendering tests for mental_map (§7.4) -----------------------
+# The service computes pointer_rot; the tool renders it. These tests feed canned
+# pointer_rot pairs and assert the rendered block.
 
 
 @pytest.mark.asyncio
-async def test_get_does_not_touch_missing_entries(db, store):
-    """kb_get should not touch last_accessed for missing/inactive entries."""
-    entry = await store.create_entry(
-        short_title="Will deactivate",
-        long_title="Inactive entry",
-        knowledge_details="Should not get accessed.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
-    )
-    await store.deactivate_entry(entry.id)
-
-    await _kb_get_logic(db, [entry.id, "kb-99999"])
-
-    fetched = await get_entry(db, entry.id)
-    assert fetched is not None
-    assert fetched.last_accessed is None
-
-
-# --- Pointer-rot tests for mental_map (§7.4) ---------------------------------
-
-
-async def _make_superseded(db, target_id: str, replacement_id: str) -> None:
-    """Mark ``target_id`` as superseded by ``replacement_id``.
-
-    KnowledgeStore.create_entry has no superseded_by parameter, so we re-fetch
-    the row, copy with superseded_by set, and persist via the DB-level
-    update_entry. Caller is responsible for the replacement existing or not —
-    we only mutate the target.
-    """
-    target = await get_entry(db, target_id)
-    assert target is not None
-    mutated = target.model_copy(update={"superseded_by": replacement_id})
-    await update_entry(db, mutated)
-
-
-async def _seed_graph(builder: GraphBuilder, *entries) -> None:
-    """Populate graph_nodes for the given entries via the builder.
-
-    graph_edges has a FOREIGN KEY on graph_nodes(node_id), so both source and
-    target nodes must exist before ``_add_edge`` can run. KnowledgeStore.
-    create_entry does not author graph nodes — that's normally the enricher's
-    job — so tests have to seed the graph explicitly.
-    """
-    for entry in entries:
-        await builder.build_for_entry(entry)
-
-
-@pytest.mark.asyncio
-async def test_mental_map_renders_superseded_pointer(db, store, graph_builder):
+async def test_mental_map_renders_superseded_pointer():
     """(a) Map with one superseded pointer target renders 'superseded by' line."""
-    target = await store.create_entry(
-        short_title="Old fact",
-        long_title="Old factual entry",
-        knowledge_details="The old way.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
+    mmap = _make_entry(
+        "kb-00010", short_title="Map", long_title="Mental map", entry_type=EntryType.MENTAL_MAP
     )
-    replacement = await store.create_entry(
-        short_title="New fact",
-        long_title="New factual entry",
-        knowledge_details="The new way.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
+    kb_get = _register()
+    ctx = _ctx_for(
+        {mmap.id: _found(mmap, [{"target_id": "kb-00001", "superseded_by": "kb-00002"}])}
     )
-    await _make_superseded(db, target.id, replacement.id)
 
-    mmap = await store.create_entry(
-        short_title="Map",
-        long_title="Mental map",
-        knowledge_details="Orientation map.",
-        entry_type=EntryType.MENTAL_MAP,
-    )
-    await _seed_graph(graph_builder, target, replacement, mmap)
-    await graph_builder._add_edge(mmap.id, target.id, "references")
-
-    refetched = await get_entry(db, target.id)
-    assert refetched is not None and refetched.superseded_by == replacement.id
-
-    result = await _kb_get_logic(db, [mmap.id])
+    result = await kb_get(entry_id=mmap.id, ctx=ctx)
     assert "  Pointer-rot:" in result
-    assert f"    [{target.id}] superseded by [{replacement.id}]" in result
+    assert "    [kb-00001] superseded by [kb-00002]" in result
     assert "deactivated" not in result
 
 
 @pytest.mark.asyncio
-async def test_mental_map_renders_deactivated_pointer(db, store, graph_builder):
+async def test_mental_map_renders_deactivated_pointer():
     """(b) Map with one deactivated (not-superseded) target renders 'deactivated'."""
-    target = await store.create_entry(
-        short_title="Dead",
-        long_title="Deactivated target",
-        knowledge_details="Gone.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
+    mmap = _make_entry(
+        "kb-00010", short_title="Map", long_title="Mental map", entry_type=EntryType.MENTAL_MAP
     )
-    await deactivate_entry_db(db, target.id)
+    kb_get = _register()
+    ctx = _ctx_for({mmap.id: _found(mmap, [{"target_id": "kb-00001", "superseded_by": None}])})
 
-    mmap = await store.create_entry(
-        short_title="Map",
-        long_title="Mental map",
-        knowledge_details="Orientation map.",
-        entry_type=EntryType.MENTAL_MAP,
-    )
-    await _seed_graph(graph_builder, target, mmap)
-    await graph_builder._add_edge(mmap.id, target.id, "references")
-
-    refetched = await get_entry(db, target.id)
-    assert refetched is not None
-    assert refetched.is_active is False
-    assert refetched.superseded_by is None
-
-    result = await _kb_get_logic(db, [mmap.id])
+    result = await kb_get(entry_id=mmap.id, ctx=ctx)
     assert "  Pointer-rot:" in result
-    assert f"    [{target.id}] deactivated" in result
+    assert "    [kb-00001] deactivated" in result
     assert "superseded by" not in result
 
 
 @pytest.mark.asyncio
-async def test_mental_map_all_healthy_targets_silent(db, store, graph_builder):
+async def test_mental_map_all_healthy_targets_silent():
     """(c) Map with all-healthy targets renders NO rot note."""
-    t1 = await store.create_entry(
-        short_title="Healthy 1",
-        long_title="First healthy",
-        knowledge_details="Active and current.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
+    mmap = _make_entry(
+        "kb-00010", short_title="Map", long_title="Mental map", entry_type=EntryType.MENTAL_MAP
     )
-    t2 = await store.create_entry(
-        short_title="Healthy 2",
-        long_title="Second healthy",
-        knowledge_details="Active and current.",
-        entry_type=EntryType.DECISION,
-    )
+    kb_get = _register()
+    ctx = _ctx_for({mmap.id: _found(mmap, [])})
 
-    mmap = await store.create_entry(
-        short_title="Map",
-        long_title="Mental map",
-        knowledge_details="Orientation map.",
-        entry_type=EntryType.MENTAL_MAP,
-    )
-    await _seed_graph(graph_builder, t1, t2, mmap)
-    await graph_builder._add_edge(mmap.id, t1.id, "references")
-    await graph_builder._add_edge(mmap.id, t2.id, "contains")
-
-    result = await _kb_get_logic(db, [mmap.id])
+    result = await kb_get(entry_id=mmap.id, ctx=ctx)
     assert "Pointer-rot" not in result
     assert "superseded by" not in result
     assert "deactivated" not in result
 
 
 @pytest.mark.asyncio
-async def test_non_map_pointing_at_superseded_target_silent(db, store, graph_builder):
-    """(d) Non-mental_map entry pointing at a superseded target renders NO rot note.
+async def test_non_map_pointing_at_superseded_target_silent():
+    """(d) Non-mental_map entry renders NO rot note; byte-identical to baseline.
 
-    Also asserts byte-identical output to the no-edge baseline: the map-only
-    check must not change rendering for the 4 pre-existing entry types.
+    The service returns no pointer_rot for non-map entries, so the rendered
+    output equals format_entry_full + the format_result_list wrapper.
     """
-    target = await store.create_entry(
-        short_title="Old",
-        long_title="Old fact",
-        knowledge_details="The old way.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
-    )
-    replacement = await store.create_entry(
-        short_title="New",
-        long_title="New fact",
-        knowledge_details="The new way.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
-    )
-    await _make_superseded(db, target.id, replacement.id)
-
-    non_map = await store.create_entry(
+    non_map = _make_entry(
+        "kb-00020",
         short_title="A decision",
         long_title="A decision pointing somewhere",
         knowledge_details="Points at the old fact.",
         entry_type=EntryType.DECISION,
     )
-    await _seed_graph(graph_builder, target, replacement, non_map)
-    await graph_builder._add_edge(non_map.id, target.id, "references")
+    kb_get = _register()
+    ctx = _ctx_for({non_map.id: _found(non_map, [])})
 
-    result = await _kb_get_logic(db, [non_map.id])
+    result = await kb_get(entry_id=non_map.id, ctx=ctx)
     assert "Pointer-rot" not in result
     assert "superseded by" not in result
     assert "deactivated" not in result
 
-    # Byte-identical guarantee: the helper returns None for non-map entries,
-    # so the rendered output equals format_entry_full + the format_result_list
-    # wrapper — no extra bytes appended.
-    fetched = await get_entry(db, non_map.id)
-    assert fetched is not None
-    expected = format_result_list([format_entry_full(fetched)])
-    # Drop the last_accessed-touched timestamp from comparison by re-fetching
-    # the rendered baseline through the same code path on a fresh row state.
+    expected = format_result_list([format_entry_full(non_map)])
     assert result == expected
 
 
 @pytest.mark.asyncio
-async def test_mental_map_superseded_and_deactivated_renders_superseded_form(
-    db, store, graph_builder
-):
-    """(e) Target both superseded AND deactivated → SUPERSEDED form (precedence)."""
-    target = await store.create_entry(
-        short_title="Both",
-        long_title="Both rotted",
-        knowledge_details="Superseded and deactivated.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
-    )
-    replacement = await store.create_entry(
-        short_title="Replacement",
-        long_title="The replacement",
-        knowledge_details="Live.",
-        entry_type=EntryType.FACTUAL_REFERENCE,
-    )
-    await _make_superseded(db, target.id, replacement.id)
-    await deactivate_entry_db(db, target.id)
+async def test_mental_map_superseded_and_deactivated_renders_superseded_form():
+    """(e) Target both superseded AND deactivated → SUPERSEDED form (precedence).
 
-    refetched = await get_entry(db, target.id)
-    assert refetched is not None
-    assert refetched.superseded_by == replacement.id
-    assert refetched.is_active is False
-
-    mmap = await store.create_entry(
-        short_title="Map",
-        long_title="Mental map",
-        knowledge_details="Orientation map.",
-        entry_type=EntryType.MENTAL_MAP,
+    The service applies precedence and reports the superseded_by value, so the
+    tool renders the superseded form only.
+    """
+    mmap = _make_entry(
+        "kb-00010", short_title="Map", long_title="Mental map", entry_type=EntryType.MENTAL_MAP
     )
-    await _seed_graph(graph_builder, target, replacement, mmap)
-    await graph_builder._add_edge(mmap.id, target.id, "references")
+    kb_get = _register()
+    ctx = _ctx_for(
+        {mmap.id: _found(mmap, [{"target_id": "kb-00001", "superseded_by": "kb-00002"}])}
+    )
 
-    result = await _kb_get_logic(db, [mmap.id])
+    result = await kb_get(entry_id=mmap.id, ctx=ctx)
     assert "  Pointer-rot:" in result
-    # Precedence: superseded form wins; the deactivated form must NOT appear.
-    assert f"    [{target.id}] superseded by [{replacement.id}]" in result
-    assert f"    [{target.id}] deactivated" not in result
+    assert "    [kb-00001] superseded by [kb-00002]" in result
+    assert "    [kb-00001] deactivated" not in result

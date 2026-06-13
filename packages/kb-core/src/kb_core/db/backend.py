@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator
 
 
 @runtime_checkable
@@ -144,48 +144,4 @@ class Database(Protocol):
 
     async def apply_schema(self, *, embedding_dim: int = 1024) -> None:
         """Apply all DDL for this backend."""
-        ...
-
-    async def notify_maps_changed(self, project_ref: str) -> None:
-        """Notify other server instances that a project's maps changed.
-
-        On Postgres this fires ``SELECT pg_notify('kb_maps_changed', $1)``
-        with ``project_ref`` as the payload. On SQLite this is a no-op
-        (there are no peer instances to notify). Best-effort: failures
-        must log and not raise — the local file write has already
-        succeeded.
-        """
-        ...
-
-    async def start_maps_listener(
-        self,
-        on_change: Callable[[str], Awaitable[None]],
-        on_reconnect: Callable[[], Awaitable[None]],
-    ) -> Callable[[], Awaitable[None]]:
-        """Subscribe to NOTIFY('kb_maps_changed') from peer instances.
-
-        Returns an async teardown callable. Awaiting the teardown stops the
-        listener task and closes the dedicated long-lived connection used
-        for ``LISTEN`` (Postgres). The caller is responsible for awaiting
-        the teardown during lifespan cleanup before ``db.close()``.
-
-        Backend behavior:
-
-        * On Postgres: a dedicated ``asyncpg.connect`` (NOT a pooled
-          connection — a held pool conn would starve the pool) is opened
-          and ``LISTEN kb_maps_changed`` is issued. ``on_change(payload)``
-          is invoked for each NOTIFY payload (the project_ref string).
-          On every successful (re)connect of that dedicated connection,
-          ``on_reconnect()`` is invoked so the app can trigger a full
-          rebuild and re-sync events missed while disconnected. Reconnect
-          retries indefinitely with a 5.0s sleep on failure; the loop
-          exits cleanly only on cancellation (teardown).
-        * On SQLite: no task is started, the callbacks are never invoked,
-          and the returned teardown is a no-op closure.
-
-        The backend MUST NOT import ``maps_index_writer`` — the reconnect
-        rebuild is driven via the app-supplied ``on_reconnect`` callback
-        from ``server.py``. (Layering: the db layer cannot depend on the
-        writer/tools layer.)
-        """
         ...

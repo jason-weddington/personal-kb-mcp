@@ -1059,9 +1059,9 @@ class KnowledgeBase:
     ) -> list[dict[str, str]]:
         """Return active ``mental_map`` entries for a project as dicts.
 
-        Returns plain data ``{"id", "short_title", "long_title"}`` — the
-        on-disk JSONL writer stays channel-side (it imports
-        ``personal_kb.config.get_maps_index_path`` which is env-driven).
+        Returns plain data ``{"id", "short_title", "long_title"}`` computed
+        live, in-memory, from the database — callers (e.g. the hosted
+        service's maps route) render this directly without any on-disk index.
 
         Uses the exact same predicate as :func:`build_project_context`'s
         maps section: active + ``entry_type='mental_map'`` + matching
