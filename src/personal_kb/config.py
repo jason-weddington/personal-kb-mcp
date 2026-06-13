@@ -275,10 +275,13 @@ def get_pg_region() -> str:
 def get_personal_kb_url() -> str | None:
     """Return the personal-kb service URL from PERSONAL_KB_URL, or None.
 
-    An empty string is treated as unset (returns None), so both
-    ``PERSONAL_KB_URL=`` and an absent env var select the local engine.
-    Read at **call time** — not at module load time — so tests can
-    monkeypatch the env after importing this module.
+    An empty string is treated as unset (returns None). Since the in-process
+    local backend was removed (commit 14ff626), a None return is no longer a
+    "select the local engine" signal — there is no in-process fallback, and
+    callers such as :func:`personal_kb.backend.create_backend` and the server
+    lifespan will raise when the URL is missing. Read at **call time** — not
+    at module load time — so tests can monkeypatch the env after importing
+    this module.
     """
     return os.environ.get("PERSONAL_KB_URL") or None
 
