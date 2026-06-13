@@ -59,8 +59,12 @@ def _synthetic_user() -> User:
 
     ``hashed_password=''`` is required because ``User.hashed_password`` is a
     non-optional ``str`` (models.py); ``is_admin=True`` is set only so that
-    ``require_admin`` does not 403 the synthetic user — the service/auth pool is
-    disabled in no-auth mode, so admin-gated DB writes are still inert.
+    ``require_admin`` does not 403 the synthetic user. Note the scope of what
+    "admin" buys you here: the service/auth pool (users / api_keys / invites /
+    password_resets) is disabled in no-auth mode, so admin-gated writes against
+    the **auth DB** are inert. Admin-gated writes against the **data DB** via
+    ``app.state.kb`` (e.g. ``kb_store`` and other kb-core entry mutations) are
+    *live* — no-auth mode does not gate the data DB.
     """
     return User(
         id="local",
