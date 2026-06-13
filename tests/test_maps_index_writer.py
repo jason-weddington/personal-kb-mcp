@@ -1,10 +1,10 @@
 """Tests for the on-disk JSONL maps index writer (MCP-side).
 
-The reader half is exercised in the standalone ``personal-kb-hook`` package's
-own test suite (``packages/personal-kb-hook/tests/test_index_reader.py``). The
-round-trip test below requires both — it imports the writer from the main
-package and the reader from the standalone hook package, so it doubles as a
-cross-package contract test.
+The round-trip test below requires a local JSONL reader. The
+``personal-kb-hook`` package's ``read_index`` function has been removed
+(AC-4), so a minimal inline parser is used here instead. This file still
+doubles as a cross-package contract test (writer in main package, reader
+inline here).
 """
 
 import json
@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from personal_kb_hook.index_reader import read_index
 
 from personal_kb.db.connection import create_connection
 from personal_kb.maps_index_writer import (
@@ -22,6 +21,31 @@ from personal_kb.maps_index_writer import (
     write_project_maps,
 )
 from personal_kb.preflight import _maps_sql
+
+
+def _read_jsonl(path: Path) -> dict[str, list[dict]]:
+    """Minimal JSONL reader: open *path*, parse non-empty lines, index by project_ref.
+
+    Returns ``{}`` when the file is missing. Used in place of the removed
+    ``personal_kb_hook.index_reader.read_index`` for cross-package round-trip tests.
+    """
+    if not path.exists():
+        return {}
+    result: dict[str, list[dict]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        project_ref = obj.get("project_ref")
+        maps = obj.get("maps", [])
+        if isinstance(project_ref, str) and project_ref:
+            result[project_ref] = maps
+    return result
+
 
 # ---------------------------------------------------------------------------
 # DB fixture
@@ -77,7 +101,7 @@ async def test_writer_emits_parseable_jsonl_and_reader_roundtrips(maps_db, tmp_p
     obj = json.loads(lines[0])
     assert obj["project_ref"] == "demo"
 
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     assert set(table.keys()) == {"demo"}
     ids = [m["id"] for m in table["demo"]]
     # ORDER BY created_at DESC → newer (10-min-old) first
@@ -100,7 +124,7 @@ async def test_writer_includes_all_maps(maps_db, tmp_path: Path) -> None:
     index_path = tmp_path / "maps_index.jsonl"
     await write_project_maps(maps_db, "big", path=index_path)
 
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     # All 6 written (no LIMIT); newest (age=0) first per ORDER BY created_at DESC.
     assert len(table["big"]) == 6
     assert table["big"][0]["id"] == "kb-00"
@@ -115,7 +139,7 @@ async def test_on_disk_equals_preflight_maps_sql(maps_db, tmp_path: Path) -> Non
     index_path = tmp_path / "maps_index.jsonl"
     await write_project_maps(maps_db, "p", path=index_path)
 
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     written = [(m["id"], m["short_title"], m["long_title"]) for m in table["p"]]
 
     sql, _ = _maps_sql(None)
@@ -132,14 +156,14 @@ async def test_deactivating_last_map_removes_project_line(maps_db, tmp_path: Pat
 
     index_path = tmp_path / "maps_index.jsonl"
     await write_project_maps(maps_db, "solo", path=index_path)
-    assert "solo" in read_index(index_path)
+    assert "solo" in _read_jsonl(index_path)
 
     # Deactivate the map.
     await maps_db.execute("UPDATE knowledge_entries SET is_active = 0 WHERE id = ?", ["kb-X"])
     await maps_db.commit()
     await write_project_maps(maps_db, "solo", path=index_path)
 
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     assert "solo" not in table
 
 
@@ -153,7 +177,7 @@ async def test_writer_preserves_other_projects(maps_db, tmp_path: Path) -> None:
     await write_project_maps(maps_db, "alpha", path=index_path)
     await write_project_maps(maps_db, "beta", path=index_path)
 
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     assert set(table.keys()) == {"alpha", "beta"}
 
     # Rewrite alpha; beta must remain.
@@ -161,35 +185,10 @@ async def test_writer_preserves_other_projects(maps_db, tmp_path: Path) -> None:
     await maps_db.commit()
     await write_project_maps(maps_db, "alpha", path=index_path)
 
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     assert set(table.keys()) == {"alpha", "beta"}
     alpha_ids = [m["id"] for m in table["alpha"]]
     assert alpha_ids[0] == "kb-3"
-
-
-# ---------------------------------------------------------------------------
-# Reader tolerance
-# ---------------------------------------------------------------------------
-
-
-def test_reader_missing_file_returns_empty(tmp_path: Path) -> None:
-    assert read_index(tmp_path / "nope.jsonl") == {}
-
-
-def test_reader_skips_garbage_lines(tmp_path: Path) -> None:
-    """A garbage line is skipped; the valid line is returned."""
-    path = tmp_path / "maps_index.jsonl"
-    valid = json.dumps(
-        {"project_ref": "good", "maps": [{"id": "kb-1", "short_title": "s", "long_title": "l"}]}
-    )
-    path.write_text(
-        valid + '\nthis is not json\n{"missing": "project_ref"}\n',
-        encoding="utf-8",
-    )
-
-    table = read_index(path)
-    assert list(table.keys()) == ["good"]
-    assert table["good"][0]["id"] == "kb-1"
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +206,7 @@ async def test_rebuild_all_projects_multi_project(maps_db, tmp_path: Path) -> No
     index_path = tmp_path / "maps_index.default.jsonl"
     await rebuild_all_projects(maps_db, path=index_path)
 
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     expected: dict[str, list[dict[str, str]]] = {}
     for project_ref in ("alpha", "beta"):
         rows = await _fetch_maps_for_project(maps_db, project_ref, None)
@@ -239,7 +238,7 @@ async def test_rebuild_all_projects_skips_zero_map_projects(maps_db, tmp_path: P
 
     index_path = tmp_path / "maps_index.default.jsonl"
     await rebuild_all_projects(maps_db, path=index_path)
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     assert "active" in table
     assert "gone" not in table
 
@@ -260,7 +259,7 @@ async def test_rebuild_all_projects_includes_all_maps(maps_db, tmp_path: Path) -
     index_path = tmp_path / "maps_index.default.jsonl"
     await rebuild_all_projects(maps_db, path=index_path)
 
-    table = read_index(index_path)
+    table = _read_jsonl(index_path)
     assert len(table["bigp"]) == 6
     # ORDER BY created_at DESC: newest (age=0) first
     assert table["bigp"][0]["id"] == "kb-00"
@@ -275,7 +274,7 @@ async def test_rebuild_all_projects_threads_team(maps_db, tmp_path: Path) -> Non
     # team=None → BOTH show up (no team clause filter)
     none_path = tmp_path / "team_none.jsonl"
     await rebuild_all_projects(maps_db, team=None, path=none_path)
-    none_table = read_index(none_path)
+    none_table = _read_jsonl(none_path)
     assert {m["id"] for m in none_table["p"]} == {"kb-no-team", "kb-acme"}
 
     # team='acme' → both kb-acme (team-matched) AND kb-no-team (NULL team OK)
@@ -287,7 +286,7 @@ async def test_rebuild_all_projects_threads_team(maps_db, tmp_path: Path) -> Non
 
     acme_path = tmp_path / "team_acme.jsonl"
     await rebuild_all_projects(maps_db, team="acme", path=acme_path)
-    acme_table = read_index(acme_path)
+    acme_table = _read_jsonl(acme_path)
     acme_ids = {m["id"] for m in acme_table["p"]}
     assert "kb-other" not in acme_ids
     assert "kb-acme" in acme_ids
@@ -304,7 +303,7 @@ async def test_rebuild_all_projects_uses_default_path(
     await rebuild_all_projects(maps_db)
     expected = tmp_path / "maps_index.personal.jsonl"
     assert expected.exists()
-    table = read_index(expected)
+    table = _read_jsonl(expected)
     assert "proj" in table
 
 

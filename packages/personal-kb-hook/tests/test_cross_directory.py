@@ -286,20 +286,27 @@ def test_two_line_emission_local_jsonl(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """personal-kb + agent-gtd + home-network in index → two-line output."""
-    _write_multi_index(
-        hook_env["maps_index"],
-        {
-            "personal-kb": [
-                {"id": "kb-1", "short_title": "auth", "long_title": "Auth map"},
-            ],
-            "agent-gtd": [
-                {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"},
-            ],
-            "home-network": [
-                {"id": "hn-1", "short_title": "topology", "long_title": "Network layout"},
-            ],
-        },
-    )
+    import urllib.request
+
+    service_response = {
+        "projects": [
+            {
+                "project_ref": "personal-kb",
+                "maps": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
+            },
+            {
+                "project_ref": "agent-gtd",
+                "maps": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"}],
+            },
+            {
+                "project_ref": "home-network",
+                "maps": [{"id": "hn-1", "short_title": "topology", "long_title": "Network layout"}],
+            },
+        ]
+    }
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "test-api-key")
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen(service_response))
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     rc, out = _run(
         monkeypatch,
@@ -335,13 +342,23 @@ def test_two_line_claude_json_envelope(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """--format=claude-json: additionalContext contains the two-line string."""
-    _write_multi_index(
-        hook_env["maps_index"],
-        {
-            "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth"}],
-            "agent-gtd": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
-        },
-    )
+    import urllib.request
+
+    service_response = {
+        "projects": [
+            {
+                "project_ref": "personal-kb",
+                "maps": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth"}],
+            },
+            {
+                "project_ref": "agent-gtd",
+                "maps": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
+            },
+        ]
+    }
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "test-api-key")
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen(service_response))
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     rc, out = _run(
         monkeypatch,
@@ -370,15 +387,20 @@ def test_roster_only_local_jsonl(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """personal-kb resolved but absent from index; agent-gtd has maps → line 2 only."""
-    _write_multi_index(
-        hook_env["maps_index"],
-        {
-            "agent-gtd": [
-                {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"},
-            ],
+    import urllib.request
+
+    service_response = {
+        "projects": [
+            {
+                "project_ref": "agent-gtd",
+                "maps": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"}],
+            },
             # personal-kb intentionally absent
-        },
-    )
+        ]
+    }
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "test-api-key")
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen(service_response))
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     rc, out = _run(
         monkeypatch,
@@ -407,13 +429,23 @@ def test_suppression_second_prompt_silent_with_cross_project(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """Same session / same union of ids → second prompt is suppressed."""
-    _write_multi_index(
-        hook_env["maps_index"],
-        {
-            "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth"}],
-            "agent-gtd": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
-        },
-    )
+    import urllib.request
+
+    service_response = {
+        "projects": [
+            {
+                "project_ref": "personal-kb",
+                "maps": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth"}],
+            },
+            {
+                "project_ref": "agent-gtd",
+                "maps": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
+            },
+        ]
+    }
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "test-api-key")
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen(service_response))
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     payload = {
         "hook_event_name": "UserPromptSubmit",
@@ -433,13 +465,32 @@ def test_suppression_new_cross_project_map_retriggers(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """New cross-project map id → re-triggers even though own maps unchanged."""
-    _write_multi_index(
-        hook_env["maps_index"],
+    import urllib.request
+
+    # Use a mutable store so we can update the response between calls.
+    projects_v1 = [
         {
-            "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth"}],
-            "agent-gtd": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
+            "project_ref": "personal-kb",
+            "maps": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth"}],
         },
-    )
+        {
+            "project_ref": "agent-gtd",
+            "maps": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
+        },
+    ]
+    response_store: list[list[dict]] = [projects_v1]
+
+    def mutable_urlopen(req: object, timeout: float = 3.0) -> object:
+        body = json.dumps({"projects": response_store[0]}).encode("utf-8")
+        mock_resp = unittest.mock.MagicMock()
+        mock_resp.read.return_value = body
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = unittest.mock.MagicMock(return_value=False)
+        return mock_resp
+
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "test-api-key")
+    monkeypatch.setattr(urllib.request, "urlopen", mutable_urlopen)
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     payload = {
         "hook_event_name": "UserPromptSubmit",
@@ -456,17 +507,20 @@ def test_suppression_new_cross_project_map_retriggers(
     assert rc2 == 0
     assert out2 == ""
 
-    # Add a new cross-project map id
-    _write_multi_index(
-        hook_env["maps_index"],
+    # Add a new cross-project map id by updating the response store.
+    response_store[0] = [
         {
-            "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth"}],
-            "agent-gtd": [
+            "project_ref": "personal-kb",
+            "maps": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth"}],
+        },
+        {
+            "project_ref": "agent-gtd",
+            "maps": [
                 {"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"},
                 {"id": "gtd-2", "short_title": "inbox", "long_title": "Inbox"},  # NEW
             ],
         },
-    )
+    ]
     # Third call → re-triggered because gtd-2 is a new id
     rc3, out3 = _run(monkeypatch, payload)
     assert rc3 == 0
@@ -483,18 +537,24 @@ def test_banned_tokens_not_in_cross_directory_output(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """Cross-project roster in CLI output contains no banned imperative tokens."""
-    _write_multi_index(
-        hook_env["maps_index"],
-        {
-            # personal-kb has no maps → roster-only output
-            "agent-gtd": [
-                {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"},
-            ],
-            "home-network": [
-                {"id": "hn-1", "short_title": "topology", "long_title": "Network layout"},
-            ],
-        },
-    )
+    import urllib.request
+
+    # personal-kb has no maps → roster-only output
+    service_response = {
+        "projects": [
+            {
+                "project_ref": "agent-gtd",
+                "maps": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"}],
+            },
+            {
+                "project_ref": "home-network",
+                "maps": [{"id": "hn-1", "short_title": "topology", "long_title": "Network layout"}],
+            },
+        ]
+    }
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "test-api-key")
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen(service_response))
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     rc, out = _run(
         monkeypatch,

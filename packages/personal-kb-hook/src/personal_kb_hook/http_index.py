@@ -3,11 +3,12 @@
 Provides :func:`load_index`, which attempts an authenticated HTTP GET
 request to ``{PERSONAL_KB_URL}/api/kb/maps-index`` when both
 ``PERSONAL_KB_URL`` and ``PERSONAL_KB_API_KEY`` are present and
-non-empty in the environment at call time. On success the service
-response is mapped to the same ``dict[project_ref, list[MapEntry]]``
-shape as :func:`~personal_kb_hook.index_reader.read_index`. On any
-failure — or when either env var is absent or empty — the function
-falls back to the local on-disk JSONL reader without raising.
+non-empty in the environment at call time.
+
+On any failure — or when either env var is absent or empty, or the URL
+scheme is unsupported, or the response shape is wrong — ``load_index``
+returns an empty dict ``{}``. A successful HTTP response is authoritative
+even when its ``projects`` list is empty.
 
 This module is **stdlib-only** (``urllib.request``, ``urllib.parse``,
 ``json``, ``os``, ``socket``, ``logging``). The package's
@@ -23,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from personal_kb_hook.index_reader import MapEntry, read_index
+from personal_kb_hook.index_reader import MapEntry
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,11 @@ def load_index() -> dict[str, list[MapEntry]]:
 
     A successful HTTP response is **authoritative even when empty**
     (``{"projects": []}``) — no fallback to local disk in that case.
-    Fallback to :func:`~personal_kb_hook.index_reader.read_index`
-    happens only on failure.
+
+    On any failure — or when either env var is absent or empty, or the
+    URL scheme is unsupported, or the response shape is wrong — returns
+    an empty dict ``{}``. Failure is always silent (``DEBUG`` log only,
+    no stdout, no exception raised).
 
     Failure taxonomy (all silent — ``DEBUG`` log only, no stdout):
     connection error / DNS failure (``URLError``), non-2xx status
@@ -106,21 +110,22 @@ def load_index() -> dict[str, list[MapEntry]]:
     scheme, or any unexpected ``Exception``.
 
     Returns:
-        Mapping from project_ref to list of MapEntry records.
+        Mapping from project_ref to list of MapEntry records, or ``{}``
+        on any failure or when env vars are absent/empty.
     """
     url = os.environ.get("PERSONAL_KB_URL", "")
     key = os.environ.get("PERSONAL_KB_API_KEY", "")
     if not url or not key:
-        return read_index()
+        return {}
 
     try:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in ("http", "https"):
             logger.debug(
-                "PERSONAL_KB_URL scheme %r is not http/https; using local fallback",
+                "PERSONAL_KB_URL scheme %r is not http/https; returning empty index",
                 parsed.scheme,
             )
-            return read_index()
+            return {}
 
         endpoint = url.rstrip("/") + "/api/kb/maps-index"
         req = urllib.request.Request(  # noqa: S310
@@ -132,12 +137,12 @@ def load_index() -> dict[str, list[MapEntry]]:
 
         data = json.loads(body)
         if not isinstance(data, dict):
-            logger.debug("HTTP response body is not a JSON object; using local fallback")
-            return read_index()
+            logger.debug("HTTP response body is not a JSON object; returning empty index")
+            return {}
         projects = data.get("projects")
         if not isinstance(projects, list):
-            logger.debug("HTTP response body missing list 'projects' key; using local fallback")
-            return read_index()
+            logger.debug("HTTP response body missing list 'projects' key; returning empty index")
+            return {}
 
         return _map_projects(projects)
 
@@ -148,11 +153,11 @@ def load_index() -> dict[str, list[MapEntry]]:
         json.JSONDecodeError,
         UnicodeDecodeError,
     ) as exc:
-        logger.debug("HTTP maps-index fetch failed (%s); using local fallback", exc)
-        return read_index()
+        logger.debug("HTTP maps-index fetch failed (%s); returning empty index", exc)
+        return {}
     except Exception as exc:
         logger.debug(
-            "Unexpected error in HTTP maps-index fetch (%s); using local fallback",
+            "Unexpected error in HTTP maps-index fetch (%s); returning empty index",
             exc,
         )
-        return read_index()
+        return {}

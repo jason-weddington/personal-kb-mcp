@@ -4,6 +4,8 @@ import io
 import json
 import os
 import subprocess
+import unittest.mock
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,20 @@ def _write_index(path: Path, project_ref: str, maps: list[dict[str, str]]) -> No
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {"project_ref": project_ref, "maps": maps}
     path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+
+def _make_fake_urlopen(projects: list[dict[str, Any]]) -> Any:
+    """Return a fake urlopen that serves ``projects`` as the HTTP index response."""
+
+    def fake_urlopen(req: object, timeout: float = 3.0) -> object:
+        body = json.dumps({"projects": projects}).encode("utf-8")
+        mock_resp = unittest.mock.MagicMock()
+        mock_resp.read.return_value = body
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = unittest.mock.MagicMock(return_value=False)
+        return mock_resp
+
+    return fake_urlopen
 
 
 def _run(
@@ -122,14 +138,18 @@ def test_missing_event_silent(monkeypatch: pytest.MonkeyPatch, hook_env: dict[st
 # ---------------------------------------------------------------------------
 
 
-def _surface_fixture(hook_env: dict[str, Path]) -> dict[str, Any]:
-    _write_index(
-        hook_env["maps_index"],
-        "personal-kb",
-        [
-            {"id": "kb-1", "short_title": "auth", "long_title": "Authentication map"},
-            {"id": "kb-2", "short_title": "ingest", "long_title": "Ingestion flow"},
-        ],
+def _surface_fixture(hook_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Set up HTTP mock and .kb_project for a SessionStart test."""
+    maps = [
+        {"id": "kb-1", "short_title": "auth", "long_title": "Authentication map"},
+        {"id": "kb-2", "short_title": "ingest", "long_title": "Ingestion flow"},
+    ]
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        _make_fake_urlopen([{"project_ref": "personal-kb", "maps": maps}]),
     )
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     return {
@@ -142,7 +162,7 @@ def _surface_fixture(hook_env: dict[str, Path]) -> dict[str, Any]:
 def test_format_text_emits_directory_string(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
-    payload = _surface_fixture(hook_env)
+    payload = _surface_fixture(hook_env, monkeypatch)
     rc, out = _run(monkeypatch, payload, ["--format=text"])
     assert rc == 0
     assert out.startswith("Maps for personal-kb — ")
@@ -154,7 +174,7 @@ def test_format_claude_json_envelope(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     # Use a different session_id so suppression scratch does not leak between tests
-    payload = _surface_fixture(hook_env)
+    payload = _surface_fixture(hook_env, monkeypatch)
     payload["session_id"] = "session-claude-json"
     rc, out = _run(monkeypatch, payload, ["--format=claude-json"])
     assert rc == 0
@@ -168,7 +188,7 @@ def test_format_claude_json_envelope(
 def test_suppressed_re_emit_text_empty(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
-    payload = _surface_fixture(hook_env)
+    payload = _surface_fixture(hook_env, monkeypatch)
     payload["session_id"] = "session-suppress-text"
     rc1, out1 = _run(monkeypatch, payload, ["--format=text"])
     assert rc1 == 0
@@ -182,7 +202,7 @@ def test_suppressed_re_emit_text_empty(
 def test_suppressed_re_emit_claude_json_empty(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
-    payload = _surface_fixture(hook_env)
+    payload = _surface_fixture(hook_env, monkeypatch)
     payload["session_id"] = "session-suppress-json"
     rc1, out1 = _run(monkeypatch, payload, ["--format=claude-json"])
     assert rc1 == 0
@@ -363,26 +383,19 @@ def test_module_main_callable() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_http_env_set_urlopen_fails_emits_local_directory(
+def test_http_env_set_urlopen_fails_returns_empty(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
-    """PERSONAL_KB_URL/API_KEY set but urlopen raises -> local index used, no crash."""
-    import urllib.request
+    """PERSONAL_KB_URL/API_KEY set but urlopen raises -> empty output (no local fallback)."""
+    import urllib.error as _urllib_error
 
-    _write_index(
-        hook_env["maps_index"],
-        "personal-kb",
-        [{"id": "kb-1", "short_title": "auth", "long_title": "Authentication map"}],
-    )
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
 
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "test-api-key")
 
     def raise_conn(*args: object, **kwargs: object) -> None:
-        import urllib.error
-
-        raise urllib.error.URLError("simulated connection failure")
+        raise _urllib_error.URLError("simulated connection failure")
 
     monkeypatch.setattr(urllib.request, "urlopen", raise_conn)
 
@@ -395,8 +408,7 @@ def test_http_env_set_urlopen_fails_emits_local_directory(
         },
     )
     assert rc == 0
-    assert "personal-kb" in out
-    assert "auth" in out
+    assert out == ""
 
 
 # ---------------------------------------------------------------------------
@@ -935,10 +947,19 @@ def test_directory_and_whisper_composed_text(
     _write_listener_cache(cache_path, _pending_map("kb-00099", "Authflow", "Auth details"), [])
 
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
-    _write_index(
-        hook_env["maps_index"],
-        "personal-kb",
-        [{"id": "kb-00001", "short_title": "ingest", "long_title": "Ingestion flow"}],
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        _make_fake_urlopen(
+            [
+                {
+                    "project_ref": "personal-kb",
+                    "maps": [
+                        {"id": "kb-00001", "short_title": "ingest", "long_title": "Ingestion flow"}
+                    ],
+                }
+            ]
+        ),
     )
 
     rc, out = _run(
@@ -971,10 +992,19 @@ def test_directory_and_whisper_composed_claude_json(
     _write_listener_cache(cache_path, _pending_map("kb-00099", "Authflow", "Auth details"), [])
 
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
-    _write_index(
-        hook_env["maps_index"],
-        "personal-kb",
-        [{"id": "kb-00001", "short_title": "ingest", "long_title": "Ingestion flow"}],
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        _make_fake_urlopen(
+            [
+                {
+                    "project_ref": "personal-kb",
+                    "maps": [
+                        {"id": "kb-00001", "short_title": "ingest", "long_title": "Ingestion flow"}
+                    ],
+                }
+            ]
+        ),
     )
 
     rc, out = _run(
@@ -1073,10 +1103,17 @@ def test_extract_manifest_raising_still_emits_directory(
     monkeypatch.setattr(listener, "read_listener_cache", boom)
 
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
-    _write_index(
-        hook_env["maps_index"],
-        "personal-kb",
-        [{"id": "kb-00001", "short_title": "auth", "long_title": "Auth flow"}],
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        _make_fake_urlopen(
+            [
+                {
+                    "project_ref": "personal-kb",
+                    "maps": [{"id": "kb-00001", "short_title": "auth", "long_title": "Auth flow"}],
+                }
+            ]
+        ),
     )
 
     rc, out = _run(

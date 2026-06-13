@@ -35,14 +35,6 @@ def http_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     }
 
 
-def _write_local_index(path: Path, entries: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [json.dumps(e) for e in entries]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-LOCAL_PROJECT = "local-proj"
-LOCAL_MAPS = [{"id": "kb-local-1", "short_title": "local", "long_title": "Local entry"}]
 REMOTE_PROJECT = "remote-proj"
 REMOTE_MAPS = [{"id": "kb-remote-1", "short_title": "remote", "long_title": "Remote entry"}]
 
@@ -100,7 +92,7 @@ def test_env_gating_no_urlopen(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """urlopen is never called when either env var is absent or empty."""
+    """urlopen is never called when either env var is absent or empty; returns {}."""
     if url is not None:
         monkeypatch.setenv("PERSONAL_KB_URL", url)
     if key is not None:
@@ -111,14 +103,8 @@ def test_env_gating_no_urlopen(
 
     monkeypatch.setattr(urllib.request, "urlopen", must_not_be_called)
 
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
-
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
-    assert result[LOCAL_PROJECT][0]["id"] == "kb-local-1"
+    assert result == {}
 
 
 # ---------------------------------------------------------------------------
@@ -130,15 +116,9 @@ def test_happy_path_returns_remote_content(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Valid HTTP response with content is returned; local file is NOT consulted."""
+    """Valid HTTP response with content is returned."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    # Give the local file CONFLICTING content to prove it is NOT used.
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     monkeypatch.setattr(
         urllib.request,
@@ -149,28 +129,21 @@ def test_happy_path_returns_remote_content(
     result = http_index.load_index()
     assert REMOTE_PROJECT in result
     assert result[REMOTE_PROJECT][0]["id"] == "kb-remote-1"
-    # Local content must NOT appear — the remote response is authoritative.
-    assert LOCAL_PROJECT not in result
 
 
 # ---------------------------------------------------------------------------
-# (c) Timeout -> local fallback
+# (c) Timeout -> returns empty index
 # ---------------------------------------------------------------------------
 
 
-def test_timeout_falls_back_to_local(
+def test_timeout_returns_empty(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A socket timeout triggers silent local fallback."""
+    """A socket timeout returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     def raise_timeout(*args: object, **kwargs: object) -> _MockResponse:
         raise TimeoutError("timed out")
@@ -178,28 +151,23 @@ def test_timeout_falls_back_to_local(
     monkeypatch.setattr(urllib.request, "urlopen", raise_timeout)
 
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
+    assert result == {}
     assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
-# (d) Malformed JSON body -> local fallback
+# (d) Malformed JSON body -> returns empty index
 # ---------------------------------------------------------------------------
 
 
-def test_malformed_json_falls_back_to_local(
+def test_malformed_json_returns_empty(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A non-JSON response body triggers silent local fallback."""
+    """A non-JSON response body returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     monkeypatch.setattr(
         urllib.request,
@@ -208,28 +176,23 @@ def test_malformed_json_falls_back_to_local(
     )
 
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
+    assert result == {}
     assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
-# (e) Wrong top-level shape -> local fallback
+# (e) Wrong top-level shape -> returns empty index
 # ---------------------------------------------------------------------------
 
 
-def test_wrong_shape_projects_not_list_falls_back(
+def test_wrong_shape_projects_not_list_returns_empty(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Body {"projects": "nope"} (non-list projects) triggers silent local fallback."""
+    """Body {"projects": "nope"} (non-list projects) returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     monkeypatch.setattr(
         urllib.request,
@@ -238,28 +201,23 @@ def test_wrong_shape_projects_not_list_falls_back(
     )
 
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
+    assert result == {}
     assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
-# (f) HTTPError 401 -> local fallback
+# (f) HTTPError 401 -> returns empty index
 # ---------------------------------------------------------------------------
 
 
-def test_http_error_401_falls_back_to_local(
+def test_http_error_401_returns_empty(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A 401 HTTPError triggers silent local fallback."""
+    """A 401 HTTPError returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "bad-key")
-
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     def raise_401(*args: object, **kwargs: object) -> _MockResponse:
         raise urllib.error.HTTPError(
@@ -273,7 +231,7 @@ def test_http_error_401_falls_back_to_local(
     monkeypatch.setattr(urllib.request, "urlopen", raise_401)
 
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
+    assert result == {}
     assert capsys.readouterr().out == ""
 
 
@@ -289,8 +247,6 @@ def test_http_request_contract_url_and_auth_header(
     """Request URL has trailing slash stripped; Authorization header is exact."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com/")  # trailing slash
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "my-secret-key")
-
-    _write_local_index(http_env["maps_index"], [])
 
     captured: list[urllib.request.Request] = []
 
@@ -323,8 +279,6 @@ def test_tolerance_skips_malformed_map_records(
     """Malformed map records are skipped; valid ones are returned."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(http_env["maps_index"], [])
 
     projects = [
         {
@@ -366,7 +320,7 @@ def test_tolerance_skips_malformed_map_records(
 
 
 # ---------------------------------------------------------------------------
-# (i) Successful-but-empty response is authoritative — no fallback
+# (i) Successful-but-empty response is authoritative — returns {}
 # ---------------------------------------------------------------------------
 
 
@@ -374,15 +328,9 @@ def test_empty_response_is_authoritative_no_local_fallback(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """200 with {"projects": []} returns {} even when local file has content."""
+    """200 with {"projects": []} returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    # Populate the local file with conflicting content.
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     monkeypatch.setattr(
         urllib.request,
@@ -391,29 +339,22 @@ def test_empty_response_is_authoritative_no_local_fallback(
     )
 
     result = http_index.load_index()
-    # HTTP response wins — empty dict, local content NOT surfaced.
     assert result == {}
-    assert LOCAL_PROJECT not in result
 
 
 # ---------------------------------------------------------------------------
-# Extra: socket.timeout also triggers fallback (variant of timeout test)
+# Extra: socket.timeout also returns empty (variant of timeout test)
 # ---------------------------------------------------------------------------
 
 
-def test_socket_timeout_falls_back_to_local(
+def test_socket_timeout_returns_empty(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """TimeoutError (socket.timeout alias) also triggers silent local fallback."""
+    """TimeoutError (socket.timeout alias) returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     def raise_socket_timeout(*args: object, **kwargs: object) -> _MockResponse:
         raise TimeoutError("socket timed out")
@@ -421,27 +362,22 @@ def test_socket_timeout_falls_back_to_local(
     monkeypatch.setattr(urllib.request, "urlopen", raise_socket_timeout)
 
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
+    assert result == {}
     assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
-# Extra: URL with non-http scheme causes fallback (scheme validation)
+# Extra: URL with non-http scheme returns empty (scheme validation)
 # ---------------------------------------------------------------------------
 
 
-def test_invalid_scheme_falls_back_to_local(
+def test_invalid_scheme_returns_empty(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-http(s) PERSONAL_KB_URL scheme silently falls back to local."""
+    """A non-http(s) PERSONAL_KB_URL scheme silently returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "ftp://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     def must_not_be_called(*args: object, **kwargs: object) -> _MockResponse:
         raise AssertionError("urlopen must not be called for ftp:// scheme")
@@ -449,7 +385,7 @@ def test_invalid_scheme_falls_back_to_local(
     monkeypatch.setattr(urllib.request, "urlopen", must_not_be_called)
 
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
+    assert result == {}
 
 
 # ---------------------------------------------------------------------------
@@ -464,8 +400,6 @@ def test_duplicate_project_ref_last_wins(
     """Duplicate project_ref entries in the response follow last-wins semantics."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(http_env["maps_index"], [])
 
     projects = [
         {
@@ -505,8 +439,6 @@ def test_long_title_none_coerced_to_empty_string(
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
 
-    _write_local_index(http_env["maps_index"], [])
-
     projects = [
         {
             "project_ref": "null-lt-proj",
@@ -528,23 +460,18 @@ def test_long_title_none_coerced_to_empty_string(
 
 
 # ---------------------------------------------------------------------------
-# Extra: URLError (DNS / connection failure) -> local fallback
+# Extra: URLError (DNS / connection failure) -> returns empty index
 # ---------------------------------------------------------------------------
 
 
-def test_urlerror_falls_back_to_local(
+def test_urlerror_returns_empty(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A URLError (DNS / connection failure) triggers silent local fallback."""
+    """A URLError (DNS / connection failure) returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     def raise_urlerror(*args: object, **kwargs: object) -> _MockResponse:
         raise urllib.error.URLError("name or service not known")
@@ -552,28 +479,23 @@ def test_urlerror_falls_back_to_local(
     monkeypatch.setattr(urllib.request, "urlopen", raise_urlerror)
 
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
+    assert result == {}
     assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
-# Extra: non-JSON-object top-level (e.g. a JSON array) -> local fallback
+# Extra: non-JSON-object top-level (e.g. a JSON array) -> returns empty index
 # ---------------------------------------------------------------------------
 
 
-def test_json_array_top_level_falls_back(
+def test_json_array_top_level_returns_empty(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A top-level JSON array (not an object) triggers silent local fallback."""
+    """A top-level JSON array (not an object) returns {}."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(
-        http_env["maps_index"],
-        [{"project_ref": LOCAL_PROJECT, "maps": LOCAL_MAPS}],
-    )
 
     monkeypatch.setattr(
         urllib.request,
@@ -582,7 +504,7 @@ def test_json_array_top_level_falls_back(
     )
 
     result = http_index.load_index()
-    assert LOCAL_PROJECT in result
+    assert result == {}
     assert capsys.readouterr().out == ""
 
 
@@ -598,8 +520,6 @@ def test_returned_entries_are_map_entry_typed(
     """Returned entries contain exactly the id/short_title/long_title keys."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
-
-    _write_local_index(http_env["maps_index"], [])
 
     projects = [
         {
