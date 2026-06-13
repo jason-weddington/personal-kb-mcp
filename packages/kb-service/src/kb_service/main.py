@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from kb_core import Attribution, create_postgres
 
+from kb_service.auth import _auth_mode
 from kb_service.config import (
     build_agentic_config,
     build_embedding_config,
@@ -80,7 +81,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     on ``app.state.kb``. The Ollama embedder is opened ONCE here (it is not
     per-request safe).
     """
-    await init_db()
+    # In no-auth (local) mode the service/auth pool is disabled, so skip
+    # init_db()/close_db() — they would otherwise raise RuntimeError when
+    # KB_SERVICE_DATABASE_URL is unset. The kb-core data DB (below) still opens.
+    no_auth = _auth_mode() == "none"
+    if not no_auth:
+        await init_db()
 
     app.state.kb = await create_postgres(
         os.environ["KB_DATABASE_URL"],
@@ -97,7 +103,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     await app.state.kb.close()
-    await close_db()
+    if not no_auth:
+        await close_db()
 
 
 app = FastAPI(title="Personal KB Web Service", version="0.1.0", lifespan=lifespan)

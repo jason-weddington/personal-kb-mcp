@@ -9,10 +9,26 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from kb_core.models.search import SearchQuery
 
-from kb_service.auth import get_current_user
-from kb_service.models import SearchRequest, SearchResponse, User
+from kb_service.auth import _auth_mode, get_current_user
+from kb_service.models import (
+    RuntimeResponse,
+    SearchRequest,
+    SearchResponse,
+    User,
+)
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
+
+
+@router.get("/runtime", response_model=RuntimeResponse)
+async def runtime() -> RuntimeResponse:
+    """Report the active runtime auth mode (unauthenticated).
+
+    The SPA calls this before any user is known, to decide whether to render
+    the login flow. The response shape is the frozen cross-item contract
+    ``{"auth": "none"|"jwt"}``.
+    """
+    return RuntimeResponse(auth=_auth_mode())
 
 
 @router.post("/search", response_model=SearchResponse)

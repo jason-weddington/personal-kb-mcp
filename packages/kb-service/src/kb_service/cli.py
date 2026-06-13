@@ -78,6 +78,19 @@ async def _make_admin(email: str) -> str:
         await close_db()
 
 
+def _serve(host: str, port: int) -> None:
+    """Run the FastAPI app under uvicorn in the foreground.
+
+    Console-script entry point so a thin client (e.g. the ``personal_kb`` MCP
+    server, installed via a git+ssh dependency) can spawn the daemon with
+    ``kb-service serve --port <n>`` without needing a uvicorn invocation of its
+    own.
+    """
+    import uvicorn
+
+    uvicorn.run("kb_service.main:app", host=host, port=port)
+
+
 def _run(coro: Coroutine[Any, Any, str]) -> None:
     """Run an async command coroutine, printing the result or erroring out."""
     try:
@@ -109,12 +122,23 @@ def main() -> None:
     )
     ma.add_argument("--email", required=True, help="Email of the user to promote.")
 
+    sv = subparsers.add_parser(
+        "serve",
+        help="Run the web service with uvicorn (foreground).",
+    )
+    sv.add_argument(
+        "--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)."
+    )
+    sv.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000).")
+
     args = parser.parse_args()
 
     if args.command == "create-admin":
         _run(_create_admin(args.email, args.password))
     elif args.command == "make-admin":
         _run(_make_admin(args.email))
+    elif args.command == "serve":
+        _serve(args.host, args.port)
     else:
         parser.print_help(sys.stderr)
         sys.exit(1)

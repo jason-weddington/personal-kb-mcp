@@ -73,3 +73,65 @@ def test_routers_mounted() -> None:
     assert "/api/admin/invites" in paths
     assert "/api/kb/search" in paths
     assert "/api/health" in paths
+
+
+# --- No-auth (KB_AUTH_MODE=none) single-user mode ---------------------------
+
+
+def test_no_auth_search_no_header_uses_synthetic_contributor(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In no-auth mode, search succeeds with no Authorization header and
+    forwards the synthetic local user's email as the telemetry contributor.
+
+    Crucially, this does NOT override get_current_user — the real dependency
+    must return the synthetic user on its own.
+    """
+    monkeypatch.setenv("KB_AUTH_MODE", "none")
+    resp = client.post("/api/kb/search", json={"query": "anything"})
+    assert resp.status_code == 200
+    kb: FakeKnowledgeBase = app.state.kb
+    assert kb.search_calls
+    _query, contributor = kb.search_calls[-1]
+    assert contributor == "local@localhost"
+
+
+def test_runtime_reports_none_mode(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /api/kb/runtime returns {'auth': 'none'} in no-auth mode."""
+    monkeypatch.setenv("KB_AUTH_MODE", "none")
+    resp = client.get("/api/kb/runtime")
+    assert resp.status_code == 200
+    assert resp.json() == {"auth": "none"}
+
+
+def test_runtime_reports_jwt_mode_by_default(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /api/kb/runtime returns {'auth': 'jwt'} when KB_AUTH_MODE is unset."""
+    monkeypatch.delenv("KB_AUTH_MODE", raising=False)
+    resp = client.get("/api/kb/runtime")
+    assert resp.status_code == 200
+    assert resp.json() == {"auth": "jwt"}
+
+
+def test_jwt_mode_search_still_requires_auth(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In the default jwt mode, search with no Authorization header still 401s.
+
+    Preserves the gate semantics of test_search_requires_auth.
+    """
+    monkeypatch.delenv("KB_AUTH_MODE", raising=False)
+    resp = client.post("/api/kb/search", json={"query": "anything"})
+    assert resp.status_code == 401
+
+
+def test_invalid_auth_mode_surfaces_value_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invalid KB_AUTH_MODE surfaces a ValueError listing valid choices."""
+    monkeypatch.setenv("KB_AUTH_MODE", "off")
+    with pytest.raises(ValueError, match="Choose from: jwt, none"):
+        client.get("/api/kb/runtime")

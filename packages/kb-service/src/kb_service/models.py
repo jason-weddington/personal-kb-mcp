@@ -136,6 +136,20 @@ class ApiKeyListResponse(BaseModel):
     keys: list[ApiKeyInfo]
 
 
+# --- Runtime / Meta Schemas ---
+
+
+class RuntimeResponse(BaseModel):
+    """Response for ``GET /api/kb/runtime`` — the active auth mode.
+
+    FROZEN cross-item contract: the body is exactly ``{"auth": "none"|"jwt"}``.
+    The frontend SPA item branches on these two string literals; do NOT rename
+    or add fields without updating that item.
+    """
+
+    auth: Literal["none", "jwt"]
+
+
 # --- KB Search Schemas ---
 
 

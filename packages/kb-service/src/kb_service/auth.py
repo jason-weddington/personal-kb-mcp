@@ -5,7 +5,7 @@ import os
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 import bcrypt as _bcrypt
 import jwt
@@ -22,7 +22,53 @@ SECRET_KEY = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 ALGORITHM = "HS256"
 TOKEN_EXPIRY_HOURS = 72
 
-_bearer = HTTPBearer()
+# auto_error=False so a missing Authorization header yields ``credentials=None``
+# (instead of an automatic 401) — the 401-on-missing decision is made in the
+# dependency body, which lets no-auth mode bypass it entirely.
+_bearer = HTTPBearer(auto_error=False)
+
+_VALID_AUTH_MODES = {"jwt", "none"}
+
+
+def _auth_mode() -> Literal["jwt", "none"]:
+    """Return the active auth mode from ``KB_AUTH_MODE`` (read per-request).
+
+    The env var is read on EVERY call and never cached into a module constant,
+    because ``conftest.py`` imports ``kb_service.main`` (hence this module) at
+    collection time — a module-level read would freeze the value before any
+    test could ``monkeypatch.setenv`` it. Defaults to ``'jwt'`` so all hosted
+    behavior is byte-for-byte unchanged.
+
+    Returns:
+        Either ``'jwt'`` (default, JWT/API-key auth) or ``'none'`` (single-user
+        no-auth local mode).
+
+    Raises:
+        ValueError: If ``KB_AUTH_MODE`` is set to an unrecognized value.
+    """
+    raw = os.environ.get("KB_AUTH_MODE", "jwt").lower()
+    if raw in _VALID_AUTH_MODES:
+        return "none" if raw == "none" else "jwt"
+    choices = ", ".join(sorted(_VALID_AUTH_MODES))
+    msg = f"KB_AUTH_MODE={raw!r} is not valid. Choose from: {choices}"
+    raise ValueError(msg)
+
+
+def _synthetic_user() -> User:
+    """Return the single synthetic admin user used in no-auth (local) mode.
+
+    ``hashed_password=''`` is required because ``User.hashed_password`` is a
+    non-optional ``str`` (models.py); ``is_admin=True`` is set only so that
+    ``require_admin`` does not 403 the synthetic user — the service/auth pool is
+    disabled in no-auth mode, so admin-gated DB writes are still inert.
+    """
+    return User(
+        id="local",
+        email="local@localhost",
+        is_admin=True,
+        hashed_password="",
+        created_at=datetime.now(UTC),
+    )
 
 
 def generate_api_key() -> str:
@@ -102,9 +148,22 @@ async def _authenticate_api_key(token: str) -> User:
 
 
 async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> User:
-    """FastAPI dependency: authenticate via JWT or API key."""
+    """FastAPI dependency: authenticate via JWT or API key.
+
+    In ``'none'`` (no-auth) mode this returns the synthetic local admin user
+    without any DB access. In ``'jwt'`` mode (the default) a missing credential
+    raises 401 and a present credential runs the unchanged JWT-then-API-key
+    path.
+    """
+    if _auth_mode() == "none":
+        return _synthetic_user()
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
     token = credentials.credentials
     try:
         return await get_current_user_from_token(token)
@@ -153,6 +212,8 @@ async def get_current_user_sse(
     Raises:
         HTTPException: 401 if token is missing, invalid, or expired.
     """
+    if _auth_mode() == "none":
+        return _synthetic_user()
     if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
