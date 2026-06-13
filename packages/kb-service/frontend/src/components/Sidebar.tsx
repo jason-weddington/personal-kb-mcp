@@ -58,17 +58,21 @@ export default function Sidebar({ open, isMobile = false, onClose }: SidebarProp
     >
       <Box sx={{ overflow: 'auto' }}>
         <List dense>
-          {appPages.map((page) => (
-            <ListItem key={page.path} disablePadding>
-              <ListItemButton
-                selected={isSelected(page.path)}
-                onClick={() => handleNavClick(page.path)}
-              >
-                <ListItemIcon>{page.icon}</ListItemIcon>
-                <ListItemText primary={page.label} />
-              </ListItemButton>
-            </ListItem>
-          ))}
+          {appPages
+            // Hide hosted-only pages (e.g. Chat) in no-auth (local) mode —
+            // their backend endpoints hit the auth DB and 500 without one.
+            .filter((page) => authMode === 'jwt' || !page.requiresAuth)
+            .map((page) => (
+              <ListItem key={page.path} disablePadding>
+                <ListItemButton
+                  selected={isSelected(page.path)}
+                  onClick={() => handleNavClick(page.path)}
+                >
+                  <ListItemIcon>{page.icon}</ListItemIcon>
+                  <ListItemText primary={page.label} />
+                </ListItemButton>
+              </ListItem>
+            ))}
         </List>
 
         {authMode === 'jwt' && user?.isAdmin && (

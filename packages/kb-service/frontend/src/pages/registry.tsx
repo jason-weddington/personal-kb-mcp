@@ -15,6 +15,14 @@ export interface AppPage {
   label: string
   icon: ReactElement
   element: ReactElement
+  /**
+   * Marks the page as hosted-only (jwt auth required). In no-auth (local)
+   * mode such pages are hidden from the sidebar AND their route redirects to
+   * "/". Currently used for /chat, whose history endpoints hit the auth DB
+   * (get_db) — unreachable when KB_AUTH_MODE=none. Chat persistence in local
+   * mode is explicitly out-of-scope for v1, so hiding is the consistent fix.
+   */
+  requiresAuth?: boolean
 }
 
 export const appPages: AppPage[] = [
@@ -35,6 +43,7 @@ export const appPages: AppPage[] = [
     label: 'Chat',
     icon: <ChatIcon />,
     element: <Chat />,
+    requiresAuth: true,
   },
   {
     path: '/graph',

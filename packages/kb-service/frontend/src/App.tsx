@@ -40,7 +40,20 @@ export function App() {
         }
       >
         {appPages.map((page) => (
-          <Route key={page.path} path={page.path} element={page.element} />
+          <Route
+            key={page.path}
+            path={page.path}
+            element={
+              // Hosted-only pages (e.g. Chat) redirect to Home in no-auth
+              // (local) mode — their backend endpoints hit the auth DB and
+              // 500 without one. Mirrors the Settings card gating.
+              page.requiresAuth && noAuth ? (
+                <Navigate to="/" replace />
+              ) : (
+                page.element
+              )
+            }
+          />
         ))}
         {/* /ask is merged into Home — redirect deep links */}
         <Route path="/ask" element={<Navigate to="/" replace />} />
