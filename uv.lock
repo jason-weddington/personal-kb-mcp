@@ -1730,7 +1730,7 @@ source = { editable = "packages/personal-kb-hook" }
 [[package]]
 name = "personal-kb-web-service"
 version = "0.1.0"
-source = { git = "ssh://git@git-host/home/git/repos/personal-kb-web-service?rev=main#991ce1d545fadb508ff2cdb343399af5b40042e0" }
+source = { git = "ssh://git@git-host/home/git/repos/personal-kb-web-service?rev=main#5bb9f363661e2da1b9f0542596279aeacac307a2" }
 dependencies = [
     { name = "asyncpg" },
     { name = "bcrypt" },
