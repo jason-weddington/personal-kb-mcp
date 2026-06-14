@@ -1,8 +1,11 @@
 """Tests for the KB service shell: health, auth gate, and search serialization."""
 
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 
+import kb_service.main as main_module
 from kb_service.auth import get_current_user
 from kb_service.main import app
 from tests.conftest import FakeKnowledgeBase, fake_user
@@ -135,3 +138,124 @@ def test_invalid_auth_mode_surfaces_value_error(
     monkeypatch.setenv("KB_AUTH_MODE", "off")
     with pytest.raises(ValueError, match="Choose from: jwt, none"):
         client.get("/api/kb/runtime")
+
+
+# --- _open_kb branch selection ---------------------------------------------
+
+
+async def test_open_kb_postgres_branch_when_url_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``KB_DATABASE_URL`` set -> ``create_postgres`` runs, ``create_sqlite`` does NOT.
+
+    This pins the branch logic in ``_open_kb`` so a regression that flips
+    the branch (or accidentally calls both factories) trips the test.
+    Mirrors the setenv/delenv pattern used in the no-auth tests above.
+    """
+    postgres_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    sqlite_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        postgres_calls.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    async def _fake_create_sqlite(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        sqlite_calls.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+    monkeypatch.setattr(main_module, "create_sqlite", _fake_create_sqlite)
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://x/y")
+
+    kb = await main_module._open_kb()
+
+    assert isinstance(kb, FakeKnowledgeBase)
+    assert len(postgres_calls) == 1
+    assert postgres_calls[0][0] == ("postgresql://x/y",)
+    assert sqlite_calls == []
+
+
+async def test_open_kb_sqlite_branch_with_default_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``KB_DATABASE_URL`` unset AND ``KB_DB_PATH`` unset -> ``create_sqlite``
+    is called with the literal default path ``~/.local/share/personal_kb/
+    knowledge.db`` (RAW string — main.py does NOT expanduser; kb-core does).
+    """
+    postgres_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    sqlite_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        postgres_calls.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    async def _fake_create_sqlite(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        sqlite_calls.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+    monkeypatch.setattr(main_module, "create_sqlite", _fake_create_sqlite)
+    monkeypatch.delenv("KB_DATABASE_URL", raising=False)
+    monkeypatch.delenv("KB_DB_PATH", raising=False)
+
+    kb = await main_module._open_kb()
+
+    assert isinstance(kb, FakeKnowledgeBase)
+    assert len(sqlite_calls) == 1
+    args, kwargs = sqlite_calls[0]
+    assert args == ("~/.local/share/personal_kb/knowledge.db",)
+    # create_sqlite must NOT receive pool_min/pool_max (its signature has none).
+    assert "pool_min" not in kwargs
+    assert "pool_max" not in kwargs
+    assert postgres_calls == []
+
+
+async def test_open_kb_sqlite_branch_when_url_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``KB_DATABASE_URL`` set but EMPTY also falls through to SQLite.
+
+    The branch test is ``if database_url:`` — both ``None`` and ``""`` go to
+    SQLite, matching the AC pin (`set AND non-empty -> Postgres`).
+    """
+    postgres_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    sqlite_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        postgres_calls.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    async def _fake_create_sqlite(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        sqlite_calls.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+    monkeypatch.setattr(main_module, "create_sqlite", _fake_create_sqlite)
+    monkeypatch.setenv("KB_DATABASE_URL", "")
+    monkeypatch.delenv("KB_DB_PATH", raising=False)
+
+    await main_module._open_kb()
+
+    assert len(sqlite_calls) == 1
+    assert sqlite_calls[0][0] == ("~/.local/share/personal_kb/knowledge.db",)
+    assert postgres_calls == []
+
+
+async def test_open_kb_sqlite_uses_kb_db_path_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``KB_DB_PATH`` overrides the default and is forwarded raw."""
+    sqlite_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    async def _fake_create_sqlite(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        sqlite_calls.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    monkeypatch.setattr(main_module, "create_sqlite", _fake_create_sqlite)
+    monkeypatch.delenv("KB_DATABASE_URL", raising=False)
+    monkeypatch.setenv("KB_DB_PATH", "/var/data/custom_kb.db")
+
+    await main_module._open_kb()
+
+    assert len(sqlite_calls) == 1
+    assert sqlite_calls[0][0] == ("/var/data/custom_kb.db",)

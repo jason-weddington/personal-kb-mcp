@@ -5,12 +5,13 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from kb_core import Attribution, create_postgres
+from kb_core import Attribution, create_postgres, create_sqlite
 
 from kb_service.auth import _auth_mode
 from kb_service.config import (
@@ -31,6 +32,9 @@ from kb_service.routes.listener_routes import router as listener_router
 from kb_service.routes.maps_routes import router as maps_router
 from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
+
+if TYPE_CHECKING:
+    from kb_core import KnowledgeBase
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +76,62 @@ def _parse_int(env_var: str, default: int) -> int:
     return int(raw)
 
 
+# Default SQLite data-DB path mirrors personal_kb.config.get_db_path (line 57).
+# The raw string (including the leading ``~``) is passed through to kb-core's
+# ``_open_sqlite``, which handles tilde expansion and parent-dir mkdir.
+_DEFAULT_KB_DB_PATH = "~/.local/share/personal_kb/knowledge.db"
+
+
+async def _open_kb() -> "KnowledgeBase":
+    """Open the kb-core data DB, branching on ``KB_DATABASE_URL``.
+
+    * ``KB_DATABASE_URL`` set AND non-empty -> ``create_postgres`` with the
+      same kwargs as the original lifespan (hosted Postgres mode is
+      byte-for-byte unchanged).
+    * ``KB_DATABASE_URL`` unset OR empty -> ``create_sqlite`` opening the
+      SQLite file at ``KB_DB_PATH`` (default ``~/.local/share/personal_kb/
+      knowledge.db``). The path is passed RAW; kb-core expands ``~`` and
+      mkdir's the parent dir downstream.
+
+    Extracting this out of ``lifespan`` lets tests monkeypatch
+    ``create_postgres`` and ``create_sqlite`` independently — driving
+    lifespan via ``TestClient`` would otherwise reach an un-patched
+    factory on whichever branch the env happens to take.
+    """
+    database_url = os.environ.get("KB_DATABASE_URL")
+    if database_url:
+        return await create_postgres(
+            database_url,
+            embedding_dim=_parse_int("KB_EMBEDDING_DIM", 1024),
+            pool_min=_parse_int("KB_PG_POOL_MIN", 1),
+            pool_max=_parse_int("KB_PG_POOL_MAX", 5),
+            embedding=build_embedding_config(),
+            providers=build_provider_config(),
+            ingest=build_ingest_config(),
+            agentic=build_agentic_config(),
+            attribution=Attribution(),
+        )
+
+    sqlite_path = os.environ.get("KB_DB_PATH", _DEFAULT_KB_DB_PATH)
+    return await create_sqlite(
+        sqlite_path,
+        embedding_dim=_parse_int("KB_EMBEDDING_DIM", 1024),
+        embedding=build_embedding_config(),
+        providers=build_provider_config(),
+        ingest=build_ingest_config(),
+        agentic=build_agentic_config(),
+        attribution=Attribution(),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage application lifecycle.
 
     Opens the service-auth tables (KB_SERVICE_DATABASE_URL) and a single
-    kb-core ``KnowledgeBase`` singleton (KB_DATABASE_URL), storing the latter
-    on ``app.state.kb``. The Ollama embedder is opened ONCE here (it is not
-    per-request safe).
+    kb-core ``KnowledgeBase`` singleton (KB_DATABASE_URL or default SQLite),
+    storing the latter on ``app.state.kb``. The Ollama embedder is opened
+    ONCE here (it is not per-request safe).
     """
     # In no-auth (local) mode the service/auth pool is disabled, so skip
     # init_db()/close_db() — they would otherwise raise RuntimeError when
@@ -88,17 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not no_auth:
         await init_db()
 
-    app.state.kb = await create_postgres(
-        os.environ["KB_DATABASE_URL"],
-        embedding_dim=_parse_int("KB_EMBEDDING_DIM", 1024),
-        pool_min=_parse_int("KB_PG_POOL_MIN", 1),
-        pool_max=_parse_int("KB_PG_POOL_MAX", 5),
-        embedding=build_embedding_config(),
-        providers=build_provider_config(),
-        ingest=build_ingest_config(),
-        agentic=build_agentic_config(),
-        attribution=Attribution(),
-    )
+    app.state.kb = await _open_kb()
 
     yield
 

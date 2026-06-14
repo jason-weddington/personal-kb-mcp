@@ -756,6 +756,11 @@ def client(
     async def _fake_get_db() -> StatefulFakeDbPool:
         return _shared_pool
 
+    # Force the Postgres branch of _open_kb so the un-patched create_sqlite
+    # is never reached. KB_DATABASE_URL is set NOWHERE in the suite today;
+    # without this, _open_kb would fall through to create_sqlite and open the
+    # user's real ~/.local/share/personal_kb/knowledge.db.
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://test/test")
     monkeypatch.setattr(main_module, "init_db", _fake_init_db)
     monkeypatch.setattr(main_module, "close_db", _fake_close_db)
     monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
@@ -868,6 +873,9 @@ def chat_client(
     async def _fake_get_db() -> StatefulFakeDbPool:
         return _shared_pool
 
+    # Force the Postgres branch of _open_kb so the un-patched create_sqlite
+    # is never reached. See the `client` fixture for the full rationale.
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://test/test")
     monkeypatch.setattr(main_module, "init_db", _fake_init_db)
     monkeypatch.setattr(main_module, "close_db", _fake_close_db)
     monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
