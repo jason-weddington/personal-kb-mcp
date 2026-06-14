@@ -4,6 +4,26 @@ The injected text is intentionally factual — never imperative. Imperative
 phrasing trips prompt-injection defenses and gets surfaced to the user
 instead of read by the model. ``BANNED_TOKENS`` is the closed checklist
 the unit tests assert against.
+
+Multi-KB Line-2 rendering
+-------------------------
+:func:`render_cross_directory` and :func:`compose_directory` operate over
+the post-P1 index shape ``dict[str, list[tuple[str, MapEntry]]]`` — each
+list element is a ``(label, MapEntry)`` tuple carrying the source KB
+roster label.
+
+* When exactly ONE distinct label is present across the whole index, Line 2
+  is byte-identical to the pre-P1 single-KB output:
+  ``Maps in other domains — {proj}: [{id}] {short}, ...``.
+* When MORE THAN ONE distinct label is present, each cross-project group is
+  prefixed with the source label and a forward slash:
+  ``Maps in other domains — {label}/{proj}: [{id}] {short}, ...; {label2}/{proj2}: ...``,
+  sorted by ``(label, project_ref)``.
+
+Within a single project group, multiple ``(label, MapEntry)`` tuples
+appearing under the same ``project_ref`` are bucketed by their label so
+each label produces its own ``{label}/{proj}: ...`` group — preserving the
+guarantee that every Line-2 cell names exactly one source KB.
 """
 
 from __future__ import annotations
@@ -55,28 +75,68 @@ def render_directory(project_ref: str, maps: list[MapEntry]) -> str:
     return f"Maps for {project_ref} {_EM_DASH} {body}"
 
 
-def render_cross_directory(current_project: str, index: dict[str, list[MapEntry]]) -> str | None:
+def render_cross_directory(
+    current_project: str,
+    index: dict[str, list[tuple[str, MapEntry]]],
+) -> str | None:
     """Render the cross-project roster line (Line 2).
 
-    Format: ``Maps in other domains — {proj}: [{id}] {short_title}, [{id}]
-    {short_title}; {proj2}: ...``. SHORT titles only (no long_title). Projects
-    are sorted alphabetically; maps appear in index order within a project.
-    Maps within a project are joined with ``", "``; projects are joined with
-    ``"; "``. The resolved project (``current_project``) is excluded.
+    The ``index`` value is the post-P1 fan-out shape: each project_ref maps
+    to a list of ``(label, MapEntry)`` tuples carrying their source KB label.
+
+    * When exactly ONE distinct label appears in the index, the output is
+      byte-identical to the pre-P1 single-KB form:
+      ``Maps in other domains — {proj}: [{id}] {short}, ...; {proj2}: ...``
+      with projects sorted alphabetically and maps in index order.
+    * When MORE THAN ONE distinct label appears, each group is prefixed
+      with the source label and a forward slash, and groups are sorted by
+      ``(label, project_ref)``:
+      ``Maps in other domains — {label}/{proj}: [{id}] {short}, ...; {label2}/{proj2}: ...``.
+
+    Within a single project, if entries arrive under more than one label,
+    each label produces its own ``{label}/{proj}: ...`` group so every cell
+    names exactly one source KB. SHORT titles only (no long_title). The
+    resolved project (``current_project``) is excluded.
 
     Returns ``None`` when no other project has maps.
     """
-    parts: list[str] = []
-    for proj in sorted(index.keys()):
+    # Collect all distinct labels actually present in the (filtered) index
+    # to decide between byte-identical single-KB output and the multi-KB
+    # label-prefixed form.
+    distinct_labels: set[str] = set()
+    for proj, pairs in index.items():
         if proj == current_project:
             continue
-        proj_maps = index[proj]
-        if not proj_maps:
-            continue
-        map_parts = [f"[{m['id']}] {m['short_title']}" for m in proj_maps]
-        parts.append(f"{proj}: {', '.join(map_parts)}")
-    if not parts:
+        for label, _entry in pairs:
+            distinct_labels.add(label)
+    if not distinct_labels:
         return None
+    multi_label = len(distinct_labels) > 1
+
+    # Build (label, project_ref) -> ordered list[MapEntry] bucketing.
+    # In single-label mode we still iterate label-bucketed but the prefix
+    # is dropped, and we sort by project_ref (matching pre-P1 ordering).
+    grouped: dict[tuple[str, str], list[MapEntry]] = {}
+    for proj, pairs in index.items():
+        if proj == current_project:
+            continue
+        for label, entry in pairs:
+            grouped.setdefault((label, proj), []).append(entry)
+
+    # Drop any (label, proj) whose entry list is empty — defence-in-depth,
+    # _map_projects already guarantees this.
+    keys = [(label, proj) for (label, proj), entries in grouped.items() if entries]
+    if not keys:
+        return None
+    keys.sort()  # sort by (label, project_ref)
+
+    parts: list[str] = []
+    for label, proj in keys:
+        entries = grouped[(label, proj)]
+        map_parts = [f"[{m['id']}] {m['short_title']}" for m in entries]
+        prefix = f"{label}/{proj}" if multi_label else proj
+        parts.append(f"{prefix}: {', '.join(map_parts)}")
+
     body = "; ".join(parts)
     return f"Maps in other domains {_EM_DASH} {body}"
 
@@ -84,7 +144,7 @@ def render_cross_directory(current_project: str, index: dict[str, list[MapEntry]
 def compose_directory(
     project_ref: str,
     maps: list[MapEntry],
-    index: dict[str, list[MapEntry]],
+    index: dict[str, list[tuple[str, MapEntry]]],
 ) -> str | None:
     """Compose the full injection string: line 1 and/or line 2.
 

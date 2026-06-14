@@ -18,7 +18,13 @@ from personal_kb_hook.render import BANNED_TOKENS, render_directory
 
 @pytest.fixture
 def hook_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """Isolate the hook's filesystem touchpoints to ``tmp_path``."""
+    """Isolate the hook's filesystem touchpoints to ``tmp_path``.
+
+    Pins ``HOME`` and ``XDG_CONFIG_HOME`` under ``tmp_path`` so
+    :func:`personal_kb_hook.roster.load_roster` finds no ``kbs.json`` and
+    falls back to its single 'personal' env-var entry — the legacy
+    byte-identical fallback path P1 must preserve.
+    """
     db_path = tmp_path / "kb" / "knowledge.db"
     db_path.parent.mkdir(parents=True)
     monkeypatch.setenv("KB_DB_PATH", str(db_path))
@@ -27,6 +33,9 @@ def hook_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Pin XDG_CONFIG_HOME explicitly: any stray ~/.config/personal_kb/kbs.json
+    # on the build machine MUST NOT leak into these tests.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     cache_root.mkdir()
     # The hook expands ~/.cache/... — make HOME point at tmp_path.
     (tmp_path / ".cache" / "personal_kb").mkdir(parents=True, exist_ok=True)
@@ -1127,3 +1136,243 @@ def test_extract_manifest_raising_still_emits_directory(
     assert rc == 0
     assert "Maps for personal-kb" in out
     assert "auth" in out
+
+
+# ===========================================================================
+# P1 flagship tests: byte-identical legacy identity + one-KB-down never-raise
+# ===========================================================================
+
+
+def test_byte_identical_absent_roster_single_kb(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """ABSENT roster (no kbs.json) + legacy env vars → emitted directory is
+    byte-identical to the pre-P1 single-KB output.
+
+    Asserts the exact pre-change golden string for both Line 1
+    (``Maps for {project} — ...``) and Line 2
+    (``Maps in other domains — {proj}: ...``) with NO label prefix anywhere
+    (only the single 'personal' label is present).
+    """
+    # No kbs.json exists under XDG_CONFIG_HOME (the fixture pins it under
+    # tmp_path/.config which is never created). Legacy fallback fires.
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
+    service_response = [
+        {
+            "project_ref": "personal-kb",
+            "maps": [
+                {"id": "kb-1", "short_title": "auth", "long_title": "Authentication map"},
+            ],
+        },
+        {
+            "project_ref": "agent-gtd",
+            "maps": [
+                {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"},
+            ],
+        },
+    ]
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen(service_response))
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(hook_env["root"]),
+            "session_id": "s-byte-identical-absent-roster",
+        },
+        ["--format=text"],
+    )
+    assert rc == 0
+    # Exact pre-change golden string. The 'personal/' label prefix MUST NOT
+    # appear anywhere — single-label mode is byte-identical to pre-P1.
+    expected = (
+        "Maps for personal-kb — [kb-1] auth: Authentication map\n"
+        "Maps in other domains — agent-gtd: [gtd-1] tasks"
+    )
+    assert out == expected, f"output drifted: {out!r}"
+    assert "personal/" not in out
+
+
+def test_one_kb_down_error_isolation_emits_surviving(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A 2-label roster where ONE KB's maps-index fast-raises:
+    the surviving KB's maps are emitted and NO exception propagates.
+    """
+    import urllib.error
+
+    # Wire a 2-KB roster via kbs.json + key_file indirection.
+    config_dir = hook_env["root"] / ".config" / "personal_kb"
+    config_dir.mkdir(parents=True)
+    key_file_p = hook_env["root"] / "personal.key"
+    key_file_t = hook_env["root"] / "team.key"
+    key_file_p.write_text("p-secret\n", encoding="utf-8")
+    key_file_t.write_text("t-secret\n", encoding="utf-8")
+    (config_dir / "kbs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "label": "personal",
+                    "url": "https://personal.kb/",
+                    "key_file": str(key_file_p),
+                },
+                {
+                    "label": "team",
+                    "url": "https://team.kb/",
+                    "key_file": str(key_file_t),
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # personal KB returns one map; team KB raises immediately.
+    def fake_urlopen(req: Any, timeout: float = 3.0) -> Any:
+        full = req.full_url
+        if "personal.kb" in full:
+            body = json.dumps(
+                {
+                    "projects": [
+                        {
+                            "project_ref": "agent-gtd",
+                            "maps": [
+                                {
+                                    "id": "gtd-1",
+                                    "short_title": "tasks",
+                                    "long_title": "Tasks",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+            mock_resp = unittest.mock.MagicMock()
+            mock_resp.read.return_value = body
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = unittest.mock.MagicMock(return_value=False)
+            return mock_resp
+        raise urllib.error.URLError("team kb is down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(hook_env["root"]),
+            "session_id": "s-one-kb-down-isolate",
+        },
+        ["--format=text"],
+    )
+    # Exit cleanly, no exception escaped.
+    assert rc == 0
+    # Surviving KB's data flowed through. Single-label-after-isolation:
+    # only 'personal' contributed, so output stays in the byte-identical
+    # single-KB form (no label prefix).
+    assert out.startswith("Maps in other domains — ")
+    assert "agent-gtd:" in out
+    assert "[gtd-1] tasks" in out
+    # Team's label must not appear (it contributed nothing).
+    assert "team/" not in out
+
+
+def test_one_kb_down_wall_deadline_elapsed_lt_3p5s(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A 2-label roster where one KB's urlopen BLOCKS past the 3.0s wall
+    deadline: the hook emits the surviving KB's maps and elapsed wall time
+    is < 3.5s. Proves the single ``wait(timeout=3.0)`` deadline actually
+    fires — not a 1.5s fast-fail per call (which would not exercise the cap).
+    """
+    import threading
+    import time
+
+    config_dir = hook_env["root"] / ".config" / "personal_kb"
+    config_dir.mkdir(parents=True)
+    key_file_p = hook_env["root"] / "personal.key"
+    key_file_t = hook_env["root"] / "team.key"
+    key_file_p.write_text("p-secret\n", encoding="utf-8")
+    key_file_t.write_text("t-secret\n", encoding="utf-8")
+    (config_dir / "kbs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "label": "personal",
+                    "url": "https://personal.kb/",
+                    "key_file": str(key_file_p),
+                },
+                {
+                    "label": "slow",
+                    "url": "https://slow.kb/",
+                    "key_file": str(key_file_t),
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    block_event = threading.Event()  # never set during the timed window
+
+    def fake_urlopen(req: Any, timeout: float = 3.0) -> Any:
+        full = req.full_url
+        if "personal.kb" in full:
+            body = json.dumps(
+                {
+                    "projects": [
+                        {
+                            "project_ref": "agent-gtd",
+                            "maps": [
+                                {
+                                    "id": "gtd-1",
+                                    "short_title": "tasks",
+                                    "long_title": "Tasks",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+            mock_resp = unittest.mock.MagicMock()
+            mock_resp.read.return_value = body
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = unittest.mock.MagicMock(return_value=False)
+            return mock_resp
+        # Slow KB blocks; release after a hard ceiling so we never wedge.
+        block_event.wait(timeout=10.0)
+        body = json.dumps({"projects": []}).encode("utf-8")
+        mock_resp = unittest.mock.MagicMock()
+        mock_resp.read.return_value = body
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = unittest.mock.MagicMock(return_value=False)
+        return mock_resp
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+
+    start = time.monotonic()
+    try:
+        rc, out = _run(
+            monkeypatch,
+            {
+                "hook_event_name": "SessionStart",
+                "cwd": str(hook_env["root"]),
+                "session_id": "s-one-kb-down-wall",
+            },
+            ["--format=text"],
+        )
+    finally:
+        block_event.set()
+    elapsed = time.monotonic() - start
+
+    # The single wait(3.0) deadline must have fired — wall time is bounded.
+    assert elapsed < 3.5, f"hook took {elapsed:.2f}s (>= 3.5s wall budget)"
+    assert rc == 0
+    # Surviving KB's data flowed through.
+    assert "agent-gtd:" in out
+    assert "[gtd-1] tasks" in out
+    # Slow KB contributed nothing.
+    assert "slow/" not in out

@@ -1,12 +1,13 @@
-"""Tests for cross-project directory rendering (Gate 0 — map title roster).
+"""Tests for cross-project directory rendering (Gate 0 + P1 multi-KB).
 
 Covers:
 * ``render_cross_directory`` unit tests (format, ordering, banned tokens)
 * ``compose_directory`` unit tests (line-1-only, line-2-only, both, neither)
-* CLI integration: two-line emission (local JSONL + HTTP mock)
+* Multi-KB label-prefixed Line-2 format (P1)
+* CLI integration: two-line emission (legacy single-KB fallback via env)
 * CLI integration: roster-only when the resolved project has no maps
 * CLI integration: suppression union (new cross-project map re-triggers)
-* BANNED_TOKENS guard over the cross-project roster output
+* BANNED_TOKENS guard over single- and multi-KB roster output
 """
 
 from __future__ import annotations
@@ -28,6 +29,24 @@ from personal_kb_hook.render import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from personal_kb_hook.index_reader import MapEntry
+
+
+# ---------------------------------------------------------------------------
+# Helpers for the new (label, MapEntry) tuple shape
+# ---------------------------------------------------------------------------
+
+
+def _wrap(
+    label: str, mapping: dict[str, list[dict[str, str]]]
+) -> dict[str, list[tuple[str, MapEntry]]]:
+    """Wrap ``{proj: [entry,...]}`` as the post-P1 ``{proj: [(label, entry),...]}``.
+
+    A common shorthand for tests that only exercise the single-label case
+    (the byte-identical legacy form).
+    """
+    return {proj: [(label, dict(entry)) for entry in entries] for proj, entries in mapping.items()}
+
 
 # ---------------------------------------------------------------------------
 # render_cross_directory unit tests
@@ -35,15 +54,18 @@ if TYPE_CHECKING:
 
 
 def test_render_cross_directory_basic_format() -> None:
-    """Two other projects → correct em-dash heading and semicolon-joined entries."""
-    index: dict[str, list[Any]] = {
-        "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
-        "agent-gtd": [
-            {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"},
-            {"id": "gtd-2", "short_title": "inbox", "long_title": "Inbox flow"},
-        ],
-        "home-network": [{"id": "hn-1", "short_title": "dns", "long_title": "DNS config"}],
-    }
+    """Two other projects (single-label) → byte-identical pre-P1 form."""
+    index = _wrap(
+        "personal",
+        {
+            "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
+            "agent-gtd": [
+                {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"},
+                {"id": "gtd-2", "short_title": "inbox", "long_title": "Inbox flow"},
+            ],
+            "home-network": [{"id": "hn-1", "short_title": "dns", "long_title": "DNS config"}],
+        },
+    )
     result = render_cross_directory("personal-kb", index)
     assert result is not None
     assert result.startswith("Maps in other domains — ")
@@ -59,6 +81,8 @@ def test_render_cross_directory_basic_format() -> None:
     assert "Task tracker" not in result
     assert "DNS config" not in result
     assert "Auth map" not in result
+    # Single-label mode: no label-prefix anywhere.
+    assert "personal/" not in result
 
 
 def test_render_cross_directory_empty_index_returns_none() -> None:
@@ -68,28 +92,35 @@ def test_render_cross_directory_empty_index_returns_none() -> None:
 
 def test_render_cross_directory_only_current_project_returns_none() -> None:
     """Only the current project present → None."""
-    index: dict[str, list[Any]] = {
-        "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
-    }
+    index = _wrap(
+        "personal",
+        {"personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}]},
+    )
     assert render_cross_directory("personal-kb", index) is None
 
 
 def test_render_cross_directory_other_projects_all_empty_returns_none() -> None:
     """Other projects present but all have zero maps → None."""
-    index: dict[str, list[Any]] = {
-        "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
-        "agent-gtd": [],
-    }
+    index = _wrap(
+        "personal",
+        {
+            "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
+            "agent-gtd": [],
+        },
+    )
     assert render_cross_directory("personal-kb", index) is None
 
 
 def test_render_cross_directory_projects_sorted_alphabetically() -> None:
-    """Other projects appear in alphabetical order."""
-    index: dict[str, list[Any]] = {
-        "zebra-proj": [{"id": "z-1", "short_title": "zeta", "long_title": ""}],
-        "alpha-proj": [{"id": "a-1", "short_title": "alpha", "long_title": ""}],
-        "middle-proj": [{"id": "m-1", "short_title": "mid", "long_title": ""}],
-    }
+    """Other projects appear in alphabetical order (single-label)."""
+    index = _wrap(
+        "personal",
+        {
+            "zebra-proj": [{"id": "z-1", "short_title": "zeta", "long_title": ""}],
+            "alpha-proj": [{"id": "a-1", "short_title": "alpha", "long_title": ""}],
+            "middle-proj": [{"id": "m-1", "short_title": "mid", "long_title": ""}],
+        },
+    )
     result = render_cross_directory("current", index)
     assert result is not None
     idx_alpha = result.index("alpha-proj")
@@ -100,13 +131,16 @@ def test_render_cross_directory_projects_sorted_alphabetically() -> None:
 
 def test_render_cross_directory_maps_in_index_order() -> None:
     """Maps within a project appear in index order (not sorted)."""
-    index: dict[str, list[Any]] = {
-        "other-proj": [
-            {"id": "m-1", "short_title": "first", "long_title": ""},
-            {"id": "m-2", "short_title": "second", "long_title": ""},
-            {"id": "m-3", "short_title": "third", "long_title": ""},
-        ],
-    }
+    index = _wrap(
+        "personal",
+        {
+            "other-proj": [
+                {"id": "m-1", "short_title": "first", "long_title": ""},
+                {"id": "m-2", "short_title": "second", "long_title": ""},
+                {"id": "m-3", "short_title": "third", "long_title": ""},
+            ],
+        },
+    )
     result = render_cross_directory("current", index)
     assert result is not None
     assert result.index("first") < result.index("second") < result.index("third")
@@ -114,12 +148,15 @@ def test_render_cross_directory_maps_in_index_order() -> None:
 
 def test_render_cross_directory_comma_join_within_project() -> None:
     """Maps within a project are joined with ', ' (comma-space)."""
-    index: dict[str, list[Any]] = {
-        "other": [
-            {"id": "m-1", "short_title": "alpha", "long_title": ""},
-            {"id": "m-2", "short_title": "beta", "long_title": ""},
-        ],
-    }
+    index = _wrap(
+        "personal",
+        {
+            "other": [
+                {"id": "m-1", "short_title": "alpha", "long_title": ""},
+                {"id": "m-2", "short_title": "beta", "long_title": ""},
+            ],
+        },
+    )
     result = render_cross_directory("current", index)
     assert result is not None
     assert "[m-1] alpha, [m-2] beta" in result
@@ -127,10 +164,13 @@ def test_render_cross_directory_comma_join_within_project() -> None:
 
 def test_render_cross_directory_semicolon_join_between_projects() -> None:
     """Projects are joined with '; ' (semicolon-space)."""
-    index: dict[str, list[Any]] = {
-        "aaa": [{"id": "a-1", "short_title": "alpha", "long_title": ""}],
-        "bbb": [{"id": "b-1", "short_title": "beta", "long_title": ""}],
-    }
+    index = _wrap(
+        "personal",
+        {
+            "aaa": [{"id": "a-1", "short_title": "alpha", "long_title": ""}],
+            "bbb": [{"id": "b-1", "short_title": "beta", "long_title": ""}],
+        },
+    )
     result = render_cross_directory("current", index)
     assert result is not None
     # Both projects present, aaa before bbb, separated by '; '
@@ -139,9 +179,7 @@ def test_render_cross_directory_semicolon_join_between_projects() -> None:
 
 def test_render_cross_directory_uses_em_dash() -> None:
     """The heading uses U+2014 EM DASH, not a hyphen."""
-    index: dict[str, list[Any]] = {
-        "other": [{"id": "m-1", "short_title": "foo", "long_title": ""}],
-    }
+    index = _wrap("personal", {"other": [{"id": "m-1", "short_title": "foo", "long_title": ""}]})
     result = render_cross_directory("current", index)
     assert result is not None
     assert "—" in result  # U+2014 EM DASH
@@ -149,20 +187,111 @@ def test_render_cross_directory_uses_em_dash() -> None:
 
 
 def test_render_cross_directory_no_banned_tokens() -> None:
-    """The roster output contains no banned imperative tokens."""
-    index: dict[str, list[Any]] = {
-        "agent-gtd": [
-            {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"},
-        ],
-        "home-network": [
-            {"id": "hn-1", "short_title": "topology", "long_title": "Network layout"},
-        ],
-    }
+    """The roster output contains no banned imperative tokens (single-label)."""
+    index = _wrap(
+        "personal",
+        {
+            "agent-gtd": [
+                {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"},
+            ],
+            "home-network": [
+                {"id": "hn-1", "short_title": "topology", "long_title": "Network layout"},
+            ],
+        },
+    )
     result = render_cross_directory("personal-kb", index)
     assert result is not None
     lowered = result.lower()
     for tok in BANNED_TOKENS:
         assert tok not in lowered, f"banned token {tok!r} found in: {result}"
+
+
+# ---------------------------------------------------------------------------
+# Multi-KB Line-2 format (P1)
+# ---------------------------------------------------------------------------
+
+
+def test_render_cross_directory_multi_label_prefixed_format() -> None:
+    """More than one distinct label → groups prefixed with ``{label}/{proj}``."""
+    index: dict[str, list[tuple[str, MapEntry]]] = {
+        "alpha-proj": [
+            ("personal", {"id": "kb-a-1", "short_title": "alpha", "long_title": ""}),
+        ],
+        "beta-proj": [
+            ("team", {"id": "kb-b-1", "short_title": "beta", "long_title": ""}),
+        ],
+    }
+    result = render_cross_directory("personal-kb", index)
+    assert result is not None
+    assert result.startswith("Maps in other domains — ")
+    # Both groups prefixed with their label.
+    assert "personal/alpha-proj:" in result
+    assert "team/beta-proj:" in result
+    # Sort by (label, project_ref): personal/alpha-proj < team/beta-proj
+    assert result.index("personal/alpha-proj:") < result.index("team/beta-proj:")
+    # Short titles preserved.
+    assert "[kb-a-1] alpha" in result
+    assert "[kb-b-1] beta" in result
+
+
+def test_render_cross_directory_multi_label_shared_project_split_by_label() -> None:
+    """A project_ref present under two labels yields two label-prefixed groups."""
+    index: dict[str, list[tuple[str, MapEntry]]] = {
+        "shared": [
+            ("personal", {"id": "kb-p-1", "short_title": "p-share", "long_title": ""}),
+            ("team", {"id": "kb-t-1", "short_title": "t-share", "long_title": ""}),
+        ],
+    }
+    result = render_cross_directory("not-shared", index)
+    assert result is not None
+    assert "personal/shared:" in result
+    assert "team/shared:" in result
+    # Sort by (label, project_ref): personal/shared before team/shared.
+    assert result.index("personal/shared:") < result.index("team/shared:")
+
+
+def test_render_cross_directory_single_label_byte_identical_no_prefix() -> None:
+    """Exactly one distinct label → byte-identical to pre-P1 form (no prefix)."""
+    index = _wrap(
+        "personal",
+        {
+            "agent-gtd": [{"id": "gtd-1", "short_title": "tasks", "long_title": ""}],
+            "home-network": [{"id": "hn-1", "short_title": "dns", "long_title": ""}],
+        },
+    )
+    result = render_cross_directory("personal-kb", index)
+    assert result == "Maps in other domains — agent-gtd: [gtd-1] tasks; home-network: [hn-1] dns"
+    # Make sure label prefix is absent for the single-KB case (byte-identical).
+    assert "personal/" not in result
+
+
+def test_render_cross_directory_multi_label_no_banned_tokens() -> None:
+    """The label-prefixed roster output also passes BANNED_TOKENS."""
+    index: dict[str, list[tuple[str, MapEntry]]] = {
+        "agent-gtd": [
+            ("personal", {"id": "gtd-1", "short_title": "tasks", "long_title": "Task tracker"}),
+        ],
+        "home-network": [
+            ("team", {"id": "hn-1", "short_title": "topology", "long_title": "Network layout"}),
+        ],
+    }
+    result = render_cross_directory("personal-kb", index)
+    assert result is not None
+    # Sanity: prefix IS present.
+    assert "personal/agent-gtd:" in result
+    assert "team/home-network:" in result
+    lowered = result.lower()
+    for tok in BANNED_TOKENS:
+        assert tok not in lowered, f"banned token {tok!r} found in: {result}"
+
+
+def test_render_cross_directory_separator_is_slash_not_banned() -> None:
+    """The chosen '/' separator and label literals introduce no banned tokens."""
+    # Sanity check at the unit level: '/' is not in BANNED_TOKENS, and
+    # neither 'personal' nor 'team' (the canonical labels) is banned.
+    assert "/" not in BANNED_TOKENS
+    for label in ("personal", "team"):
+        assert label.lower() not in BANNED_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -172,11 +301,15 @@ def test_render_cross_directory_no_banned_tokens() -> None:
 
 def test_compose_directory_both_lines() -> None:
     """Own maps + cross-project maps → two lines joined by a single newline."""
-    index: dict[str, list[Any]] = {
-        "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
-        "agent-gtd": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
-    }
-    result = compose_directory("personal-kb", index["personal-kb"], index)
+    index = _wrap(
+        "personal",
+        {
+            "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
+            "agent-gtd": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
+        },
+    )
+    own_maps = [entry for (_label, entry) in index["personal-kb"]]
+    result = compose_directory("personal-kb", own_maps, index)
     assert result is not None
     lines = result.split("\n")
     assert len(lines) == 2
@@ -186,10 +319,12 @@ def test_compose_directory_both_lines() -> None:
 
 def test_compose_directory_line1_only_when_no_other_projects() -> None:
     """Own maps, no other projects → line 1 only (no newline)."""
-    index: dict[str, list[Any]] = {
-        "personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}],
-    }
-    result = compose_directory("personal-kb", index["personal-kb"], index)
+    index = _wrap(
+        "personal",
+        {"personal-kb": [{"id": "kb-1", "short_title": "auth", "long_title": "Auth map"}]},
+    )
+    own_maps = [entry for (_label, entry) in index["personal-kb"]]
+    result = compose_directory("personal-kb", own_maps, index)
     assert result is not None
     assert "\n" not in result
     assert result.startswith("Maps for personal-kb — ")
@@ -197,9 +332,10 @@ def test_compose_directory_line1_only_when_no_other_projects() -> None:
 
 def test_compose_directory_line2_only_when_no_own_maps() -> None:
     """No own maps, other project has maps → line 2 only (no leading newline)."""
-    index: dict[str, list[Any]] = {
-        "agent-gtd": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
-    }
+    index = _wrap(
+        "personal",
+        {"agent-gtd": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}]},
+    )
     result = compose_directory("personal-kb", [], index)
     assert result is not None
     assert "\n" not in result
@@ -216,16 +352,16 @@ def test_compose_directory_line1_unchanged_format() -> None:
     """Line 1 produced by compose_directory is byte-identical to render_directory."""
     from personal_kb_hook.render import render_directory
 
-    maps: list[Any] = [
+    raw_maps: list[MapEntry] = [
         {"id": "kb-1", "short_title": "auth", "long_title": "Authentication map"},
         {"id": "kb-2", "short_title": "ingest", "long_title": "Ingestion flow"},
     ]
-    index: dict[str, list[Any]] = {"personal-kb": maps}
-    composed = compose_directory("personal-kb", maps, index)
+    index = _wrap("personal", {"personal-kb": [dict(m) for m in raw_maps]})
+    composed = compose_directory("personal-kb", raw_maps, index)
     assert composed is not None
     # Only one line (no other projects)
     assert "\n" not in composed
-    assert composed == render_directory("personal-kb", maps)
+    assert composed == render_directory("personal-kb", raw_maps)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +378,10 @@ def hook_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
     monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
     monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
+    # Point HOME / XDG_CONFIG_HOME at tmp_path so load_roster finds no
+    # kbs.json → falls back to PERSONAL_KB_URL/KEY (set per test).
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     (tmp_path / ".cache" / "personal_kb").mkdir(parents=True, exist_ok=True)
     return {
         "root": tmp_path,
@@ -250,13 +389,6 @@ def hook_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         # role unset → "default" → CLI globs maps_index.*.jsonl
         "maps_index": db_path.parent / "maps_index.default.jsonl",
     }
-
-
-def _write_multi_index(path: Path, projects: dict[str, list[dict[str, str]]]) -> None:
-    """Write one JSONL line per project record to the index file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [json.dumps({"project_ref": ref, "maps": maps}) for ref, maps in projects.items()]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _run(
@@ -278,7 +410,7 @@ def _run(
 
 
 # ---------------------------------------------------------------------------
-# CLI: two-line emission (local JSONL)
+# CLI: two-line emission (single-KB legacy fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -323,7 +455,7 @@ def test_two_line_emission_local_jsonl(
     # Line 1: existing format unchanged
     assert lines[0].startswith("Maps for personal-kb — ")
     assert "[kb-1] auth: Auth map" in lines[0]
-    # Line 2: cross-project roster
+    # Line 2: cross-project roster — single-KB byte-identical form (no label prefix)
     assert lines[1].startswith("Maps in other domains — ")
     assert "agent-gtd:" in lines[1]
     assert "home-network:" in lines[1]
@@ -336,6 +468,8 @@ def test_two_line_emission_local_jsonl(
     assert "Network layout" not in lines[1]
     # Alphabetical: agent-gtd before home-network
     assert lines[1].index("agent-gtd") < lines[1].index("home-network")
+    # No label prefix (single-KB legacy form)
+    assert "personal/" not in lines[1]
 
 
 def test_two_line_claude_json_envelope(
@@ -428,7 +562,7 @@ def test_roster_only_local_jsonl(
 def test_suppression_second_prompt_silent_with_cross_project(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
-    """Same session / same union of ids → second prompt is suppressed."""
+    """Same session / same union of keys → second prompt is suppressed."""
     import urllib.request
 
     service_response = {
@@ -478,7 +612,7 @@ def test_suppression_new_cross_project_map_retriggers(
             "maps": [{"id": "gtd-1", "short_title": "tasks", "long_title": "Tasks"}],
         },
     ]
-    response_store: list[list[dict]] = [projects_v1]
+    response_store: list[list[dict[str, Any]]] = [projects_v1]
 
     def mutable_urlopen(req: object, timeout: float = 3.0) -> object:
         body = json.dumps({"projects": response_store[0]}).encode("utf-8")
@@ -529,7 +663,7 @@ def test_suppression_new_cross_project_map_retriggers(
 
 
 # ---------------------------------------------------------------------------
-# CLI: BANNED_TOKENS over cross-project roster output
+# CLI: BANNED_TOKENS over cross-project roster output (single-KB)
 # ---------------------------------------------------------------------------
 
 
@@ -577,7 +711,7 @@ def test_banned_tokens_not_in_cross_directory_output(
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_urlopen(service_response: dict[str, Any]):  # type: ignore[return]
+def _make_fake_urlopen(service_response: dict[str, Any]) -> Any:
     """Return a fake urlopen function that yields ``service_response`` as JSON."""
 
     def fake_urlopen(req: object, timeout: float = 3.0) -> Any:

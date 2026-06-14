@@ -29,9 +29,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from personal_kb_hook import http_index, listener
+from personal_kb_hook.index_reader import MapKey
 from personal_kb_hook.paths import get_listener_cache_path
 from personal_kb_hook.render import compose_directory, render_claude_json, render_whisper
 from personal_kb_hook.resolver import resolve_project
+from personal_kb_hook.roster import load_roster
 from personal_kb_hook.suppression import mark_emitted, should_emit
 
 _SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop"})
@@ -206,16 +208,36 @@ def main(argv: list[str] | None = None) -> None:
             _flush_whisper()
             return
 
-        index = http_index.load_index()
-        maps = index.get(project_ref) or []
+        # Roster fan-out: load_index queries each (label,url,key) entry
+        # concurrently and returns the merged shape
+        # ``dict[str, list[tuple[label, MapEntry]]]``. Absent roster
+        # synthesis (the single legacy 'personal' entry from
+        # PERSONAL_KB_URL/KEY) is the responsibility of P0's load_roster.
+        roster = load_roster()
+        index = http_index.load_index(roster)
 
-        # Collect cross-project map IDs (all projects except the resolved one).
-        cross_map_ids: list[str] = [
-            m["id"] for proj, proj_maps in index.items() if proj != project_ref for m in proj_maps
+        # Maps OWNED by the resolved project — drop the label, since Line 1
+        # never carries source attribution (a single project's maps cannot
+        # come from more than one KB in v1; if they did, label-merging
+        # would happen at the project level, but Line 1's API is still
+        # ``render_directory(project_ref, list[MapEntry])``).
+        own_pairs = index.get(project_ref) or []
+        maps = [entry for (_label, entry) in own_pairs]
+
+        # Collect cross-project map KEYS (all projects except the resolved
+        # one), carrying the source label so suppression sets cannot
+        # collide across KBs that share an id namespace.
+        cross_map_ids: list[MapKey] = [
+            MapKey(label=label, id=entry["id"])
+            for proj, pairs in index.items()
+            if proj != project_ref
+            for (label, entry) in pairs
         ]
 
         # Emit only when at least one line has content (own maps OR cross roster).
-        map_ids = [m["id"] for m in maps]
+        map_ids: list[MapKey] = [
+            MapKey(label=label, id=entry["id"]) for (label, entry) in own_pairs
+        ]
         all_map_ids = map_ids + cross_map_ids
 
         # Early return (b): empty index

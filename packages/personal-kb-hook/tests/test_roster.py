@@ -514,15 +514,31 @@ def test_kb_entry_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wiring guard: load_roster MUST NOT be referenced by other modules in P0.
+# Wiring guard (post-P1): load_roster is wired into cli.py (the directory
+# pipeline) but MUST remain UNWIRED from the Stop / listener / whisper path
+# (listener, listener_worker). The fan-out into http_index.load_index is
+# satisfied via cli.py passing the roster as an explicit argument — the
+# http_index module itself only consumes the roster parameter and does
+# not import load_roster.
 # ---------------------------------------------------------------------------
 
 
-def test_load_roster_not_wired_into_other_modules() -> None:
-    """No P0 wiring: load_roster MUST NOT appear in http_index/listener/cli."""
-    for module in (http_index, listener, listener_worker, cli):
+def test_load_roster_wired_into_cli_only() -> None:
+    """P1 wiring: ``load_roster`` is referenced by cli.py — and ONLY cli.py.
+
+    The Stop / listener / whisper path is explicitly out of scope for P1
+    (per the acceptance criteria) — load_roster MUST NOT leak into
+    listener or listener_worker. http_index takes the roster as an
+    explicit parameter from cli.py and does not import load_roster.
+    """
+    cli_src = inspect.getsource(cli)
+    assert "load_roster" in cli_src, (
+        "P1 wiring guard: 'load_roster' must be wired into cli.py for the "
+        "SessionStart/UserPromptSubmit directory pipeline fan-out."
+    )
+    for module in (http_index, listener, listener_worker):
         src = inspect.getsource(module)
         assert "load_roster" not in src, (
-            f"P0 wiring guard: 'load_roster' must not appear in "
-            f"{module.__name__}; it is wired in P1/P2."
+            f"P1 scope guard: 'load_roster' must NOT appear in "
+            f"{module.__name__} — only cli.py wires it in P1."
         )
