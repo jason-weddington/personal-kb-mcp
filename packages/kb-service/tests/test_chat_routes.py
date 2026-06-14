@@ -403,3 +403,69 @@ def test_messages_empty_chat(
     assert resp.status_code == 200
     # Has 1 message (the user question)
     assert isinstance(resp.json(), list)
+
+
+# ─── no-auth mode: clean 404 instead of 500 ──────────────────────────────────
+
+
+def test_create_returns_404_in_no_auth_mode(
+    chat_client: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /api/chat/create returns 404 (not 500) in KB_AUTH_MODE=none."""
+    tc, _ = chat_client
+    monkeypatch.setenv("KB_AUTH_MODE", "none")
+    resp = tc.post(
+        "/api/chat/create",
+        json={"chat_id": "x", "question": "hi"},
+    )
+    assert resp.status_code == 404
+    assert "no-auth" in resp.json()["detail"]
+
+
+def test_history_returns_404_in_no_auth_mode(
+    chat_client: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /api/chat/history returns 404 (not 500) in KB_AUTH_MODE=none."""
+    tc, _ = chat_client
+    monkeypatch.setenv("KB_AUTH_MODE", "none")
+    resp = tc.get("/api/chat/history")
+    assert resp.status_code == 404
+
+
+def test_messages_returns_404_in_no_auth_mode(
+    chat_client: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /api/chat/{id}/messages returns 404 (not 500) in KB_AUTH_MODE=none."""
+    tc, _ = chat_client
+    monkeypatch.setenv("KB_AUTH_MODE", "none")
+    resp = tc.get("/api/chat/some-id/messages")
+    assert resp.status_code == 404
+
+
+def test_delete_returns_404_in_no_auth_mode(
+    chat_client: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DELETE /api/chat/{id} returns 404 (not 500) in KB_AUTH_MODE=none."""
+    tc, _ = chat_client
+    monkeypatch.setenv("KB_AUTH_MODE", "none")
+    resp = tc.delete("/api/chat/some-id")
+    assert resp.status_code == 404
+
+
+def test_stream_returns_404_in_no_auth_mode(
+    chat_client: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /api/chat/stream returns 404 (not 500) in KB_AUTH_MODE=none.
+
+    A token query param is supplied so the request does not 422 on missing
+    parameter validation; the router-level guard fires before the route body
+    is entered.
+    """
+    tc, _ = chat_client
+    monkeypatch.setenv("KB_AUTH_MODE", "none")
+    resp = tc.post(
+        "/api/chat/stream",
+        params={"token": "irrelevant"},
+        json={"message": "hi"},
+    )
+    assert resp.status_code == 404

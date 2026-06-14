@@ -32,7 +32,7 @@ from fastapi.responses import StreamingResponse
 
 from kb_service import chat_history
 from kb_service.attribution import resolve_attribution
-from kb_service.auth import get_current_user, get_current_user_from_token
+from kb_service.auth import _auth_mode, get_current_user, get_current_user_from_token
 from kb_service.chat import ChatSession, cache_session, get_session
 from kb_service.chat_history import derive_title
 from kb_service.models import (
@@ -47,7 +47,35 @@ from kb_service.sse import sse_event
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+async def _block_in_no_auth_mode() -> None:
+    """Router-level guard: return 404 for every ``/api/chat/*`` hit in no-auth mode.
+
+    Chat persistence reads/writes the service-auth Postgres pool (``chats`` /
+    ``chat_messages`` tables), but ``main.py`` deliberately leaves that pool
+    uninitialized when ``KB_AUTH_MODE=none`` — so a direct HTTP hit to any
+    chat endpoint would otherwise surface as an opaque 500 from
+    ``database.get_db()``. The SPA already hides the chat UI in no-auth mode
+    (Sidebar + route redirect, fix 991ce1d), so this is defense-in-depth:
+    map a known-broken backend state to a clean ``404 Not Found`` instead
+    of an uninitialized-pool stack trace.
+
+    ``_auth_mode()`` is read per-call (not cached) so this stays consistent
+    with the rest of the codebase, where ``KB_AUTH_MODE`` can be flipped at
+    runtime (e.g. by tests via ``monkeypatch.setenv``).
+    """
+    if _auth_mode() == "none":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat is not available in single-user no-auth mode",
+        )
+
+
+router = APIRouter(
+    prefix="/api/chat",
+    tags=["chat"],
+    dependencies=[Depends(_block_in_no_auth_mode)],
+)
 
 
 @router.post("/stream")
