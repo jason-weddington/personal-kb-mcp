@@ -334,3 +334,39 @@ def test_readme_documents_kb_service_binary_name() -> None:
         "the local-mode walkthrough has drifted from the spawn argv pinned "
         "in personal_kb.daemon."
     )
+
+
+# ---------------------------------------------------------------------------
+# D. README local-mode blocks never set KB_DATABASE_URL
+# ---------------------------------------------------------------------------
+
+
+def test_readme_local_examples_never_set_kb_database_url() -> None:
+    """Every local-mode README block leaves ``KB_DATABASE_URL`` unset.
+
+    The documented local install relies on the web-service's SQLite
+    default (kb-service opens ``~/.local/share/personal_kb/knowledge.db``
+    when ``KB_DATABASE_URL`` is unset/empty). A local-mode block that
+    set ``KB_DATABASE_URL`` would silently flip the daemon to Postgres
+    and break onboarding — the user would need a running Postgres they
+    were never told to provision.
+
+    Vacuous pass on zero examples is already guarded by
+    ``test_readme_has_at_least_one_local_mode_example`` above; no
+    redundant guard here.
+    """
+    failures: list[str] = []
+    for line, name, server in _iter_local_server_examples():
+        env = server.get("env") or {}
+        if not isinstance(env, dict):
+            continue
+        if "KB_DATABASE_URL" in env:
+            failures.append(
+                f"  - line {line}: mcpServers[{name!r}] sets KB_DATABASE_URL — "
+                "local-mode blocks must rely on the SQLite default."
+            )
+    assert not failures, (
+        "README local-mode mcpServers block(s) set KB_DATABASE_URL — the "
+        "documented local install must rely on the SQLite default so users "
+        "don't need a running Postgres they were never told to provision:\n" + "\n".join(failures)
+    )
