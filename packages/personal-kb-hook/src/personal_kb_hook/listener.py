@@ -175,11 +175,27 @@ def extract_manifest(transcript_path: str) -> tuple[str, list[str]] | None:
 def read_listener_cache(path: Path) -> dict[str, Any]:
     """Read the listener cache file. Returns fresh state on missing/corrupt.
 
-    Fresh state: ``{"pending": None, "whispered_map_ids": []}``.
+    Fresh state: ``{"pending": [], "whispered_map_ids": []}``.
+
+    The on-disk schema (since P2) is a per-KB-provenance shape:
+
+    * ``pending`` — a JSON list of per-KB pointer objects
+      ``{"label": <str>, "id": <str>, "short_title": <str>, "long_title": <str>}``
+      with AT MOST one element per ``label`` after worker-side arbitration.
+      An empty list ``[]`` means no pending whisper.
+    * ``whispered_map_ids`` — a list of two-element ``[label, id]`` lists,
+      JSON-native (matches :func:`personal_kb_hook.suppression._write_scratch`).
+
+    Pre-P2 cache files used ``pending`` as a single dict (or ``None``) and
+    ``whispered_map_ids`` as a list of bare ``id`` strings. The cli's whisper
+    block and the worker's ``_merge_into_cache`` both back-parse those legacy
+    shapes tolerantly to label ``'personal'`` (mirroring
+    :func:`personal_kb_hook.suppression._read_scratch`'s legacy fallback).
+
     Any :class:`OSError`, :class:`json.JSONDecodeError`, or non-dict top-level
     value yields the fresh state without raising.
     """
-    _fresh: dict[str, Any] = {"pending": None, "whispered_map_ids": []}
+    _fresh: dict[str, Any] = {"pending": [], "whispered_map_ids": []}
     try:
         if not path.exists():
             return _fresh

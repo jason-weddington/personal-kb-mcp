@@ -156,10 +156,17 @@ def main(argv: list[str] | None = None) -> None:
         # Pending whisper check — UserPromptSubmit only, independent of the
         # directory pipeline's early returns (lines below).  Wrapped in its
         # own try/except so that any listener failure leaves directory intact.
+        #
+        # P2 schema: ``pending`` is a LIST of per-KB pointer objects
+        # ``{label, id, short_title, long_title}`` (≤ 1 per label after the
+        # worker's arbitration); ``whispered_map_ids`` is a list of
+        # two-element ``[label, id]`` lists. Pre-P2 cache files used
+        # ``pending`` as a single dict and ``whispered_map_ids`` as bare-id
+        # strings — both are back-parsed tolerantly to label ``'personal'``.
         whisper: str | None = None
-        whisper_id: str | None = None
         whisper_cache_path: Path | None = None
-        whisper_pre_ids: list[str] = []
+        whisper_pre_pairs: list[list[str]] = []
+        whisper_emitted_pairs: list[list[str]] = []
 
         if event_name == "UserPromptSubmit":
             try:
@@ -171,34 +178,125 @@ def main(argv: list[str] | None = None) -> None:
                 ):
                     _wcp = get_listener_cache_path(session_id_w)
                     cache_data = listener.read_listener_cache(_wcp)
-                    pending: Any = cache_data.get("pending")
+                    pending_raw: Any = cache_data.get("pending")
                     raw_whispered: Any = cache_data.get("whispered_map_ids")
-                    pre_ids: list[str] = []
+
+                    # Back-parse whispered_map_ids: bare str → ['personal', s];
+                    # [label, id] kept verbatim; anything else dropped.
+                    pre_pairs: list[list[str]] = []
                     if isinstance(raw_whispered, list):
-                        pre_ids = [i for i in raw_whispered if isinstance(i, str)]
-                    if isinstance(pending, dict):
-                        p_id: Any = pending.get("id")
-                        if isinstance(p_id, str) and p_id and p_id not in pre_ids:
-                            whisper = render_whisper(pending)
-                            whisper_id = p_id
-                            whisper_cache_path = _wcp
-                            whisper_pre_ids = pre_ids
+                        for item in raw_whispered:
+                            if isinstance(item, str) and item:
+                                pre_pairs.append(["personal", item])
+                            elif isinstance(item, list) and len(item) == 2:
+                                pl, pi = item[0], item[1]
+                                if isinstance(pl, str) and pl and isinstance(pi, str) and pi:
+                                    pre_pairs.append([pl, pi])
+
+                    # Back-parse pending: single dict → wrap with label='personal';
+                    # list-of-dicts kept (label defaulted to 'personal' if absent).
+                    pending_items: list[dict[str, str]] = []
+                    if isinstance(pending_raw, dict):
+                        d_id = pending_raw.get("id")
+                        if isinstance(d_id, str) and d_id:
+                            d_st = pending_raw.get("short_title")
+                            d_lt = pending_raw.get("long_title")
+                            pending_items.append(
+                                {
+                                    "label": "personal",
+                                    "id": d_id,
+                                    "short_title": d_st if isinstance(d_st, str) else "",
+                                    "long_title": d_lt if isinstance(d_lt, str) else "",
+                                }
+                            )
+                    elif isinstance(pending_raw, list):
+                        for raw_item in pending_raw:
+                            if not isinstance(raw_item, dict):
+                                continue
+                            d_id = raw_item.get("id")
+                            if not isinstance(d_id, str) or not d_id:
+                                continue
+                            d_label = raw_item.get("label")
+                            if not isinstance(d_label, str) or not d_label:
+                                d_label = "personal"
+                            d_st = raw_item.get("short_title")
+                            d_lt = raw_item.get("long_title")
+                            pending_items.append(
+                                {
+                                    "label": d_label,
+                                    "id": d_id,
+                                    "short_title": d_st if isinstance(d_st, str) else "",
+                                    "long_title": d_lt if isinstance(d_lt, str) else "",
+                                }
+                            )
+
+                    # Filter already-whispered (label, id) pairs.
+                    pre_set = {(p[0], p[1]) for p in pre_pairs}
+                    filtered = [p for p in pending_items if (p["label"], p["id"]) not in pre_set]
+
+                    # Defensive one-per-KB cap (preserve first per label).
+                    seen_labels: set[str] = set()
+                    capped: list[dict[str, str]] = []
+                    for p in filtered:
+                        if p["label"] in seen_labels:
+                            continue
+                        seen_labels.add(p["label"])
+                        capped.append(p)
+
+                    if capped:
+                        roster_for_whisper = load_roster()
+                        roster_labels_w = [e.label for e in roster_for_whisper]
+                        multi_kb_w = len(roster_for_whisper) > 1
+
+                        # Tie-break winner label (UserPromptSubmit-time mirror
+                        # of the worker's AC-6 rule). source_label here is the
+                        # currently-resolved project_ref, NOT a KB label, so
+                        # step (1) typically does not match in practice.
+                        src_label = resolve_project(cwd_str)
+                        if src_label and src_label in roster_labels_w:
+                            winner_label: str | None = src_label
+                        elif "personal" in roster_labels_w:
+                            winner_label = "personal"
+                        elif roster_labels_w:
+                            winner_label = roster_labels_w[0]
+                        else:
+                            winner_label = None
+
+                        def _order_key(p: dict[str, str]) -> tuple[int, str]:
+                            if winner_label is not None and p["label"] == winner_label:
+                                return (0, p["label"])
+                            return (1, p["label"])
+
+                        ordered = sorted(capped, key=_order_key)
+
+                        lines = [
+                            render_whisper(
+                                p,
+                                label=p["label"],
+                                multi_kb=multi_kb_w,
+                            )
+                            for p in ordered
+                        ]
+                        whisper = "\n".join(lines)
+                        whisper_cache_path = _wcp
+                        whisper_pre_pairs = pre_pairs
+                        whisper_emitted_pairs = [[p["label"], p["id"]] for p in ordered]
             except Exception:
                 # Listener failure must never prevent directory emission.
                 whisper = None
-                whisper_id = None
                 whisper_cache_path = None
-                whisper_pre_ids = []
+                whisper_pre_pairs = []
+                whisper_emitted_pairs = []
 
         # Helper: emit whisper-only and update cache
         def _flush_whisper() -> None:
-            if whisper and whisper_id and whisper_cache_path is not None:
+            if whisper and whisper_emitted_pairs and whisper_cache_path is not None:
                 _emit(args, event_name, whisper)
                 listener.write_listener_cache(
                     whisper_cache_path,
                     {
-                        "pending": None,
-                        "whispered_map_ids": [*whisper_pre_ids, whisper_id],
+                        "pending": [],
+                        "whispered_map_ids": [*whisper_pre_pairs, *whisper_emitted_pairs],
                     },
                 )
 
@@ -278,12 +376,12 @@ def main(argv: list[str] | None = None) -> None:
         )
 
         # Commit whisper cache update after successful directory+whisper emission
-        if whisper and whisper_id and whisper_cache_path is not None:
+        if whisper and whisper_emitted_pairs and whisper_cache_path is not None:
             listener.write_listener_cache(
                 whisper_cache_path,
                 {
-                    "pending": None,
-                    "whispered_map_ids": [*whisper_pre_ids, whisper_id],
+                    "pending": [],
+                    "whispered_map_ids": [*whisper_pre_pairs, *whisper_emitted_pairs],
                 },
             )
 

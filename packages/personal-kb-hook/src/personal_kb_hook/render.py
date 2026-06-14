@@ -32,6 +32,8 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from personal_kb_hook.index_reader import MapEntry
 
 # Em-dash separator after the project_ref. Matches preflight.py's separator
@@ -165,13 +167,34 @@ def compose_directory(
     return None
 
 
-def render_whisper(map_entry: dict[str, object]) -> str:
+def render_whisper(
+    map_entry: Mapping[str, object],
+    label: str | None = None,
+    multi_kb: bool = False,
+) -> str:
     """Render the whisper line for a pending listener map.
 
-    Format: ``Possibly relevant map — [<id>] <short_title>: <long_title>``
-    with the U+2014 em dash. When ``long_title`` is empty the ``': ...'``
-    suffix is omitted. The scaffold phrase contains no banned tokens; no
-    runtime filtering of server-supplied titles is performed.
+    The output is keyed on whether the roster contains more than one KB
+    (``multi_kb``), NOT on a distinct-label count (which
+    :func:`render_cross_directory` uses) — at the call site,
+    :func:`render_whisper` sees one candidate at a time, so it cannot
+    inspect distinct labels itself.
+
+    Four format branches (all use the U+2014 em dash with a single space
+    on each side):
+
+    * single-KB, empty long_title:
+      ``Possibly relevant map — [<id>] <short_title>``
+    * single-KB, populated long_title:
+      ``Possibly relevant map — [<id>] <short_title>: <long_title>``
+    * multi-KB, empty long_title:
+      ``Possibly relevant map — <label>/[<id>] <short_title>``
+    * multi-KB, populated long_title:
+      ``Possibly relevant map — <label>/[<id>] <short_title>: <long_title>``
+
+    When ``long_title`` is empty the ``': <long_title>'`` suffix is omitted.
+    The scaffold phrase contains no banned tokens; no runtime filtering of
+    server-supplied titles is performed.
     """
     entry_id = map_entry.get("id")
     short_title = map_entry.get("short_title")
@@ -182,9 +205,10 @@ def render_whisper(map_entry: dict[str, object]) -> str:
         short_title = ""
     if not isinstance(long_title, str) or not long_title:
         long_title = ""
+    prefix = f"{label}/" if (multi_kb and label) else ""
     if long_title:
-        return f"Possibly relevant map {_EM_DASH} [{entry_id}] {short_title}: {long_title}"
-    return f"Possibly relevant map {_EM_DASH} [{entry_id}] {short_title}"
+        return f"Possibly relevant map {_EM_DASH} {prefix}[{entry_id}] {short_title}: {long_title}"
+    return f"Possibly relevant map {_EM_DASH} {prefix}[{entry_id}] {short_title}"
 
 
 def render_claude_json(event_name: str, directory: str) -> str:

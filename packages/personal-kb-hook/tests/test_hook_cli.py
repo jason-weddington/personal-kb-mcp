@@ -535,6 +535,76 @@ def test_stop_gated_spawns_popen_no_wait(
     assert "listener-stop-gated-1.json" in cache_path
 
 
+def test_stop_gated_at_most_one_popen_for_multi_kb_roster(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """A Stop event whose load_roster() returns N>1 entries still spawns at most ONE Popen.
+
+    AC-1 invariant: cli.py's Stop block spawns EXACTLY ONE worker via
+    listener.spawn_worker — the worker (NOT the hook) loops the roster.
+    There is NO code path that spawns one Popen per KB.
+    """
+    _listener_env(monkeypatch)
+
+    popen_calls: list[tuple[Any, Any]] = []
+
+    def mock_popen(*args: object, **kwargs: object) -> _ProcHandle:
+        popen_calls.append((args, kwargs))
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", mock_popen)
+
+    # Wire a 3-KB roster via kbs.json + key_file indirection.
+    config_dir = hook_env["root"] / ".config" / "personal_kb"
+    config_dir.mkdir(parents=True)
+    for label in ("personal", "team", "ops"):
+        kf = hook_env["root"] / f"{label}.key"
+        kf.write_text(f"{label}-secret\n", encoding="utf-8")
+    (config_dir / "kbs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "label": "personal",
+                    "url": "https://personal.kb/",
+                    "key_file": str(hook_env["root"] / "personal.key"),
+                },
+                {
+                    "label": "team",
+                    "url": "https://team.kb/",
+                    "key_file": str(hook_env["root"] / "team.key"),
+                },
+                {
+                    "label": "ops",
+                    "url": "https://ops.kb/",
+                    "key_file": str(hook_env["root"] / "ops.key"),
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    transcript = hook_env["root"] / "transcript.jsonl"
+    _make_transcript(transcript)
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": "stop-multi-kb-one-popen",
+            "transcript_path": str(transcript),
+        },
+    )
+    assert rc == 0
+    assert out == ""
+    # AC-1: AT MOST ONE Popen regardless of roster cardinality.
+    assert len(popen_calls) <= 1
+    # In this fixture the Stop preconditions all pass so it's exactly one.
+    assert len(popen_calls) == 1
+
+
 def test_stop_request_tmp_body_contains_expected_fields(
     monkeypatch: pytest.MonkeyPatch,
     hook_env: dict[str, Path],
@@ -781,8 +851,14 @@ def test_stop_empty_session_id_is_noop(
 # ---------------------------------------------------------------------------
 
 
-def _write_listener_cache(path: Path, pending: Any, whispered_ids: list[str]) -> None:
-    """Write a listener cache file for test setup."""
+def _write_listener_cache(path: Path, pending: Any, whispered_ids: list[Any]) -> None:
+    """Write a listener cache file for test setup.
+
+    ``pending`` may be either the LEGACY pre-P2 shape (a single dict or
+    ``None``) or the P2 shape (a list of per-KB pointer dicts). The
+    cli.py whisper block back-parses both. ``whispered_ids`` may be a list
+    of bare-id strings (legacy) or ``[label, id]`` lists (P2).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"pending": pending, "whispered_map_ids": whispered_ids}),
@@ -794,8 +870,15 @@ def _pending_map(
     entry_id: str = "kb-00099",
     short_title: str = "Authflow",
     long_title: str = "Authentication flow details",
+    label: str = "personal",
 ) -> dict[str, str]:
-    return {"id": entry_id, "short_title": short_title, "long_title": long_title}
+    """Build one P2-shape per-KB pointer dict ({label, id, short_title, long_title})."""
+    return {
+        "label": label,
+        "id": entry_id,
+        "short_title": short_title,
+        "long_title": long_title,
+    }
 
 
 def test_whisper_emitted_when_resolve_project_none(
@@ -895,10 +978,11 @@ def test_whisper_injection_clears_pending_and_appends_id(
     monkeypatch: pytest.MonkeyPatch,
     hook_env: dict[str, Path],
 ) -> None:
-    """After a whisper is emitted, pending=null and whispered id is appended."""
+    """After a whisper is emitted, pending=[] and whispered (label,id) is appended."""
     _listener_env(monkeypatch)
     session_id = "whisper-clear"
     cache_path = get_listener_cache_path(session_id)
+    # Legacy seed: pending as a single dict, whispered_map_ids as bare-id strings.
     _write_listener_cache(cache_path, _pending_map("kb-00099"), ["kb-00001"])
 
     # Need a project + index so should_emit passes for a clean first emission,
@@ -914,11 +998,13 @@ def test_whisper_injection_clears_pending_and_appends_id(
     assert rc == 0
     assert "Possibly relevant map" in out
 
-    # Cache must be updated: pending cleared, whispered id appended
+    # Cache must be updated: pending cleared (P2 schema: empty list),
+    # whispered (label,id) appended, legacy bare-id back-parsed.
     updated = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert updated["pending"] is None
-    assert "kb-00099" in updated["whispered_map_ids"]
-    assert "kb-00001" in updated["whispered_map_ids"]  # pre-existing id preserved
+    assert updated["pending"] == []
+    assert ["personal", "kb-00099"] in updated["whispered_map_ids"]
+    # Pre-existing legacy bare-id back-parsed to ['personal', 'kb-00001'].
+    assert ["personal", "kb-00001"] in updated["whispered_map_ids"]
 
 
 def test_same_id_never_whispered_twice(
@@ -1376,3 +1462,281 @@ def test_one_kb_down_wall_deadline_elapsed_lt_3p5s(
     assert "[gtd-1] tasks" in out
     # Slow KB contributed nothing.
     assert "slow/" not in out
+
+
+# ===========================================================================
+# P2 whisper-injection tests: byte-identical single-KB + multi-KB prefix +
+# one-per-KB emission + legacy back-parse
+# ===========================================================================
+
+
+def _write_multi_kb_kbs_json(
+    hook_env: dict[str, Path],
+    labels: list[str],
+) -> None:
+    """Drop a kbs.json file with the given labels (URLs/keys unused in whisper path)."""
+    config_dir = hook_env["root"] / ".config" / "personal_kb"
+    config_dir.mkdir(parents=True)
+    entries: list[dict[str, str]] = []
+    for label in labels:
+        kf = hook_env["root"] / f"{label}.key"
+        kf.write_text(f"{label}-secret\n", encoding="utf-8")
+        entries.append(
+            {
+                "label": label,
+                "url": f"https://{label}.kb/",
+                "key_file": str(kf),
+            }
+        )
+    (config_dir / "kbs.json").write_text(json.dumps(entries), encoding="utf-8")
+
+
+def test_whisper_single_kb_byte_identical_no_label_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """AC-10 single-KB identity: roster of exactly one entry yields a label-free whisper.
+
+    With the legacy 'personal' fallback roster (no kbs.json) and a P2 list
+    of pending pointers containing a single entry, the emitted whisper
+    string equals the pre-P2 byte-identical form:
+    ``Possibly relevant map — [<id>] <short_title>`` (empty long_title path,
+    which is the production case since ListenerPointer has no long_title).
+    """
+    _listener_env(monkeypatch)
+    session_id = "whisper-single-kb-identity"
+    cache_path = get_listener_cache_path(session_id)
+    # P2 schema: pending is a LIST of per-KB pointer dicts.
+    _write_listener_cache(
+        cache_path,
+        [_pending_map("kb-00099", "Authflow", "", label="personal")],
+        [],
+    )
+
+    # No .kb_project → directory pipeline returns early → whisper-only output.
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    # Byte-identical pre-P2 whisper string — NO 'personal/' label prefix.
+    assert out == "Possibly relevant map — [kb-00099] Authflow"
+    assert "personal/" not in out
+
+
+def test_whisper_multi_kb_label_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """AC-8 multi-KB: with len(load_roster()) > 1, the whisper carries '<label>/' prefix."""
+    _listener_env(monkeypatch)
+    _write_multi_kb_kbs_json(hook_env, ["personal", "team"])
+
+    session_id = "whisper-multi-kb-prefix"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(
+        cache_path,
+        [
+            _pending_map("kb-team-1", "TeamAuth", "", label="team"),
+        ],
+        [],
+    )
+
+    # No .kb_project → directory pipeline returns early → whisper-only output.
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    # Multi-KB form: '<label>/' before the '[<id>]' group.
+    assert out == "Possibly relevant map — team/[kb-team-1] TeamAuth"
+
+
+def test_whisper_one_per_kb_emission_two_labels_same_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """AC-9 one-per-KB emission: two KBs may whisper in one turn on different titles.
+
+    Ordering is deterministic: tie-break winner ('personal' when source_label
+    is not a roster label) goes first; remaining labels sorted ascending.
+    """
+    _listener_env(monkeypatch)
+    _write_multi_kb_kbs_json(hook_env, ["personal", "team"])
+
+    session_id = "whisper-one-per-kb"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(
+        cache_path,
+        [
+            # Note: order in cache file is reversed from emit order to prove
+            # cli.py sorts by tie-break-winner-first, NOT by file order.
+            _pending_map("kb-team-1", "TeamMap", "", label="team"),
+            _pending_map("kb-personal-1", "PersonalMap", "", label="personal"),
+        ],
+        [],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    # Both whispers present, one per label, 'personal' first.
+    lines = out.split("\n")
+    assert len(lines) == 2, f"expected 2 whisper lines, got: {out!r}"
+    assert lines[0] == "Possibly relevant map — personal/[kb-personal-1] PersonalMap"
+    assert lines[1] == "Possibly relevant map — team/[kb-team-1] TeamMap"
+
+
+def test_whisper_legacy_back_parse_single_dict_pending(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """A pre-P2 cache (pending as single dict, bare-id whispered_map_ids) is read tolerantly.
+
+    The legacy single-dict pending is wrapped with label='personal', and
+    bare-id whispered_map_ids are back-parsed to ['personal', <id>].
+    """
+    _listener_env(monkeypatch)
+    session_id = "whisper-legacy-backparse"
+    cache_path = get_listener_cache_path(session_id)
+    # LEGACY pre-P2 shape: pending is a single dict (no label key), and
+    # whispered_map_ids is a list of bare-id strings.
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_cache = {
+        "pending": {
+            "id": "kb-legacy-1",
+            "short_title": "LegacyMap",
+            "long_title": "Legacy details",
+        },
+        "whispered_map_ids": ["kb-prev-1", "kb-prev-2"],
+    }
+    cache_path.write_text(json.dumps(legacy_cache), encoding="utf-8")
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    # Single-KB roster (legacy env fallback) → no label prefix; populated
+    # long_title path.
+    assert out == "Possibly relevant map — [kb-legacy-1] LegacyMap: Legacy details"
+
+    # Post-emission cache state: pending=[] (P2 schema), bare-id back-parse
+    # of pre-existing whispered_map_ids preserved, new emission appended.
+    updated = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert updated["pending"] == []
+    assert ["personal", "kb-prev-1"] in updated["whispered_map_ids"]
+    assert ["personal", "kb-prev-2"] in updated["whispered_map_ids"]
+    assert ["personal", "kb-legacy-1"] in updated["whispered_map_ids"]
+
+
+def test_whisper_legacy_back_parse_skips_already_whispered(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """A legacy bare-id whispered_map_ids matching the pending id suppresses re-whisper."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-legacy-skip"
+    cache_path = get_listener_cache_path(session_id)
+    legacy_cache = {
+        "pending": {
+            "id": "kb-already",
+            "short_title": "AlreadySeen",
+            "long_title": "",
+        },
+        # Bare-id back-parses to ['personal', 'kb-already'] — matches the
+        # legacy-back-parsed pending pointer, so re-whisper is suppressed.
+        "whispered_map_ids": ["kb-already"],
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(legacy_cache), encoding="utf-8")
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+    assert "Possibly relevant map" not in out
+
+
+def test_whisper_label_id_dedup_blocks_re_emission(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """A pending (label, id) already in whispered_map_ids is not whispered again."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-pair-dedup"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(
+        cache_path,
+        [_pending_map("kb-seen", "Seen", "", label="team")],
+        [["team", "kb-seen"]],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+    assert "Possibly relevant map" not in out
+
+
+def test_whisper_same_id_different_labels_dont_collide(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """Same bare id under DIFFERENT labels are treated as distinct (label,id) keys."""
+    _listener_env(monkeypatch)
+    _write_multi_kb_kbs_json(hook_env, ["personal", "team"])
+
+    session_id = "whisper-id-collide"
+    cache_path = get_listener_cache_path(session_id)
+    # Already whispered: ('personal', 'kb-77').
+    # Pending: ('team', 'kb-77') — should still whisper (different label).
+    _write_listener_cache(
+        cache_path,
+        [_pending_map("kb-77", "Shared", "", label="team")],
+        [["personal", "kb-77"]],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    assert out == "Possibly relevant map — team/[kb-77] Shared"

@@ -1,19 +1,40 @@
-"""Listener worker: POST assistant transcript manifest to the KB service.
+"""Listener worker: fan out the assistant manifest across the KB roster.
 
 Run as a detached subprocess spawned by the hook on a Stop event::
 
     python -m personal_kb_hook.listener_worker <request_tmp_path> <cache_path>
 
-Behaviour:
+Behaviour (P2 multi-KB fan-out, BUILT DARK):
+
 * Reads the request JSON from ``argv[1]`` (the tmp file) and deletes it.
-* Issues a single POST to ``{PERSONAL_KB_URL}/api/kb/listener`` with a
-  ``Bearer`` token and ``Content-Type: application/json`` (30-second timeout,
-  stdlib ``urllib`` only, no retries).
-* Validates the response per the pinned shape rules (mirroring
-  ``http_index._map_projects`` tolerance).
-* On a valid non-null ``map``: atomically merges the map into the cache at
-  ``argv[2]`` (``pending=<map>``, ``whispered_map_ids`` preserved).
-* On null ``map`` or any failure: writes nothing; cache is left unchanged.
+* Loads the multi-KB roster via :func:`personal_kb_hook.roster.load_roster`.
+  An empty roster (``[]``) is a complete no-op: ZERO POSTs, the tmp file
+  is still deleted in the ``finally`` block, the cache is left untouched,
+  exit 0.
+* For each :class:`~personal_kb_hook.roster.KbEntry` in the roster, in
+  order, issues ONE POST to ``{entry.url.rstrip('/')}/api/kb/listener``
+  with a ``Bearer {entry.key}`` token and ``Content-Type: application/json``
+  (``_TIMEOUT`` = 30 seconds, stdlib ``urllib`` only, no retries). The
+  entire per-KB iteration — request build, urlopen, body read/decode,
+  ``json.loads``, dict check, ``'pointer'``-key check, and
+  :func:`_validate_map` — is wrapped in ONE broad ``try / except
+  Exception ⇒ None`` block so ANY failure for that label yields ``None``
+  and the loop continues. (``URLError`` / ``HTTPError`` /
+  ``TimeoutError`` / ``JSONDecodeError`` / ``UnicodeDecodeError`` /
+  non-dict body / missing ``'pointer'`` / validation failure are
+  illustrative members of that catch, not an exhaustive enumeration.)
+* Collects ``(label, validated_pointer-or-None)`` pairs in roster order,
+  then runs CLIENT-SIDE SUPPRESS-ONLY arbitration: drop nulls, title-dedup
+  by ``str.strip().casefold()`` of ``short_title`` (winner per the
+  detached-worker tie-break: source_label-in-roster → ``'personal'`` →
+  first roster entry), and a defensive one-per-KB cap. Arbitration NEVER
+  elevates, re-scores, synthesizes, or reorders by relevance.
+* When at least one pointer survives arbitration, atomically merges the
+  winners into the cache at ``argv[2]`` as a per-KB-provenance ``pending``
+  list ``[{label, id, short_title, long_title}, ...]`` (≤ 1 per label),
+  with ``whispered_map_ids`` preserved in the ``[label, id]`` shape
+  (tolerantly back-parsing any pre-P2 bare-id strings).
+* On empty arbitration result or any failure: cache is left unchanged.
 * **Always** deletes the request tmp file.
 * **Always** exits 0 (top-level broad ``except``).
 
@@ -29,18 +50,24 @@ import logging
 import os
 import sys
 import tempfile
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from personal_kb_hook import roster
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT: float = 30.0
 
+# Hardcoded legacy label (NOT imported from roster._LEGACY_LABEL, per AC-11)
+# — matches the literal used by suppression._LEGACY_LABEL and the roster
+# loader's synthesized 'personal' fallback entry.
+_LEGACY_LABEL = "personal"
+
 
 def _validate_map(map_obj: object) -> dict[str, str] | None:
-    """Validate a ``map`` dict from the service response.
+    """Validate a ``pointer`` dict from the service response.
 
     Applies the same tolerance as :func:`~personal_kb_hook.http_index._map_projects`:
     * ``id`` — non-empty :class:`str` (required).
@@ -69,8 +96,161 @@ def _validate_map(map_obj: object) -> dict[str, str] | None:
     return {"id": entry_id, "short_title": short_title, "long_title": long_title}
 
 
-def _merge_into_cache(cache_path: Path, validated_map: dict[str, str]) -> None:
-    """Atomically set ``pending`` in the cache while preserving ``whispered_map_ids``."""
+def _post_one_kb(
+    entry: roster.KbEntry,
+    body_bytes: bytes,
+) -> dict[str, str] | None:
+    """POST the manifest to ONE KB and validate the response.
+
+    Returns the validated pointer dict on success, or ``None`` on:
+    null ``pointer``, missing ``pointer`` key, non-dict body, JSON decode
+    error, HTTPError / URLError / TimeoutError, validation failure, or
+    any unexpected exception. NEVER raises.
+    """
+    try:
+        endpoint = entry.url.rstrip("/") + "/api/kb/listener"
+        req = urllib.request.Request(  # noqa: S310
+            endpoint,
+            data=body_bytes,
+            headers={
+                "Authorization": f"Bearer {entry.key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310
+            body = resp.read().decode("utf-8")
+        data: Any = json.loads(body)
+        if not isinstance(data, dict):
+            return None
+        if "pointer" not in data:
+            return None
+        pointer: Any = data["pointer"]
+        if pointer is None:
+            return None
+        return _validate_map(pointer)
+    except Exception:
+        return None
+
+
+def _arbitrate(
+    candidates: list[tuple[str, dict[str, str] | None]],
+    roster_entries: list[roster.KbEntry],
+    source_label: str | None,
+) -> list[tuple[str, dict[str, str]]]:
+    """Suppress-only client-side arbitration.
+
+    Deterministic steps, in order (NEVER elevates or re-scores):
+
+    (a) Drop every null pointer.
+    (b) Title-dedup: group surviving candidates by
+        ``str.strip().casefold()`` of ``short_title`` and keep the
+        tie-break winner per group.
+    (c) One-per-KB cap: at most one pointer survives per ``label`` (a
+        defensive no-op today, since each KB returns exactly one pointer
+        per request).
+
+    Tie-break order (detached-worker fallback — does NOT call
+    ``resolve_project`` / ``http_index.load_index``):
+
+    1. The KB whose ``label`` equals the request's ``source_label`` IF that
+       label is present in the roster.
+    2. The KB whose ``label`` equals ``'personal'`` (the legacy literal)
+       IF present in the roster.
+    3. The first KB in roster order.
+    """
+    # (a) Drop nulls.
+    surviving = [(label, p) for label, p in candidates if p is not None]
+    if not surviving:
+        return []
+
+    roster_labels = [e.label for e in roster_entries]
+    if not roster_labels:
+        return []
+
+    # Resolve the winner label per AC-6.
+    if source_label and source_label in roster_labels:
+        winner_label = source_label
+    elif _LEGACY_LABEL in roster_labels:
+        winner_label = _LEGACY_LABEL
+    else:
+        winner_label = roster_labels[0]
+
+    # Build a stable label-rank map: winner first, then 'personal' if
+    # it's in-roster and not already the winner, then any remaining roster
+    # entries in roster order. Labels not appearing in the roster get a
+    # sentinel rank that pushes them to the end (defence-in-depth — the
+    # only labels in ``surviving`` already came from the roster).
+    label_rank: dict[str, int] = {}
+    next_rank = 0
+    label_rank[winner_label] = next_rank
+    next_rank += 1
+    if _LEGACY_LABEL in roster_labels and _LEGACY_LABEL not in label_rank:
+        label_rank[_LEGACY_LABEL] = next_rank
+        next_rank += 1
+    for e in roster_entries:
+        if e.label not in label_rank:
+            label_rank[e.label] = next_rank
+            next_rank += 1
+
+    # (b) Title-dedup with tie-break.
+    by_title: dict[str, list[tuple[str, dict[str, str]]]] = {}
+    for label, pointer in surviving:
+        title_key = pointer["short_title"].strip().casefold()
+        by_title.setdefault(title_key, []).append((label, pointer))
+
+    deduped: list[tuple[str, dict[str, str]]] = []
+    for group in by_title.values():
+        group.sort(key=lambda lp: label_rank.get(lp[0], 1_000_000))
+        deduped.append(group[0])
+
+    # (c) One-per-KB cap (defensive).
+    seen_labels: set[str] = set()
+    final: list[tuple[str, dict[str, str]]] = []
+    for label, pointer in deduped:
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
+        final.append((label, pointer))
+
+    return final
+
+
+def _coerce_whispered(raw_ids: Any) -> list[list[str]]:
+    """Coerce on-disk ``whispered_map_ids`` to ``[[label, id], ...]``.
+
+    Tolerant back-parse (mirrors
+    :func:`personal_kb_hook.suppression._read_scratch`):
+
+    * ``[label, id]`` — both strings, non-empty: kept verbatim.
+    * ``"<id>"`` (bare string) — legacy pre-P2 shape: kept as
+      ``[_LEGACY_LABEL, "<id>"]``.
+    * Anything else: silently dropped.
+    """
+    out: list[list[str]] = []
+    if not isinstance(raw_ids, list):
+        return out
+    for item in raw_ids:
+        if isinstance(item, str) and item:
+            out.append([_LEGACY_LABEL, item])
+        elif isinstance(item, list) and len(item) == 2:
+            label, ident = item[0], item[1]
+            if isinstance(label, str) and label and isinstance(ident, str) and ident:
+                out.append([label, ident])
+    return out
+
+
+def _merge_into_cache(
+    cache_path: Path,
+    winners: list[tuple[str, dict[str, str]]],
+) -> None:
+    """Atomically write the post-arbitration ``pending`` list to the cache.
+
+    Preserves ``whispered_map_ids`` in the ``[label, id]`` shape (with
+    tolerant legacy bare-id back-parse). ``pending`` becomes a list of
+    per-KB pointer objects ``{label, id, short_title, long_title}`` with
+    at most one element per label.
+    """
     existing: dict[str, Any] = {}
     try:
         if cache_path.exists():
@@ -81,14 +261,21 @@ def _merge_into_cache(cache_path: Path, validated_map: dict[str, str]) -> None:
     except (OSError, json.JSONDecodeError, ValueError):
         pass
 
-    raw_ids: Any = existing.get("whispered_map_ids", [])
-    whispered_ids: list[str] = []
-    if isinstance(raw_ids, list):
-        whispered_ids = [i for i in raw_ids if isinstance(i, str)]
+    whispered_pairs = _coerce_whispered(existing.get("whispered_map_ids", []))
+
+    pending_list: list[dict[str, str]] = [
+        {
+            "label": label,
+            "id": pointer["id"],
+            "short_title": pointer["short_title"],
+            "long_title": pointer["long_title"],
+        }
+        for label, pointer in winners
+    ]
 
     new_cache: dict[str, Any] = {
-        "pending": validated_map,
-        "whispered_map_ids": whispered_ids,
+        "pending": pending_list,
+        "whispered_map_ids": whispered_pairs,
     }
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,49 +312,31 @@ def main() -> None:
         if not isinstance(request_data, dict):
             return
 
-        url = os.environ.get("PERSONAL_KB_URL", "")
-        key = os.environ.get("PERSONAL_KB_API_KEY", "")
-        if not url or not key:
+        # Load roster ourselves — the Stop hook does NOT pass it in.
+        # An empty roster is a complete no-op (zero POSTs, cache untouched).
+        roster_entries = roster.load_roster()
+        if not roster_entries:
             return
 
-        endpoint = url.rstrip("/") + "/api/kb/listener"
         body_bytes = json.dumps(request_data).encode("utf-8")
-        req = urllib.request.Request(  # noqa: S310
-            endpoint,
-            data=body_bytes,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+
+        raw_source_label = request_data.get("source_label")
+        source_label = (
+            raw_source_label if isinstance(raw_source_label, str) and raw_source_label else None
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310
-                body = resp.read().decode("utf-8")
-        except Exception:
-            return
+        # Sequential fan-out across the roster, in order. Each iteration is
+        # individually guarded so a failure for one KB never aborts the loop.
+        candidates: list[tuple[str, dict[str, str] | None]] = []
+        for entry in roster_entries:
+            result = _post_one_kb(entry, body_bytes)
+            candidates.append((entry.label, result))
 
-        # Parse and validate response
-        try:
-            data: Any = json.loads(body)
-        except json.JSONDecodeError:
-            return
+        # Client-side, suppress-only arbitration.
+        winners = _arbitrate(candidates, roster_entries, source_label)
 
-        if not isinstance(data, dict):
-            return
-        if "pointer" not in data:
-            return
-
-        map_obj: Any = data["pointer"]
-        if map_obj is None:
-            return  # null map — no-op success
-
-        validated = _validate_map(map_obj)
-        if validated is None:
-            return
-
-        _merge_into_cache(Path(cache_path_str), validated)
+        if winners:
+            _merge_into_cache(Path(cache_path_str), winners)
 
     except Exception:
         logger.debug("listener_worker: unhandled error", exc_info=True)

@@ -474,28 +474,28 @@ def test_extract_manifest_no_assistant_records_returns_none(tmp_path: Path) -> N
 
 
 def test_read_listener_cache_missing_returns_fresh(tmp_path: Path) -> None:
-    """Missing cache file returns fresh state."""
+    """Missing cache file returns fresh state (P2 schema: pending=[])."""
     path = tmp_path / "listener-xyz.json"
     result = listener.read_listener_cache(path)
-    assert result["pending"] is None
+    assert result["pending"] == []
     assert result["whispered_map_ids"] == []
 
 
 def test_read_listener_cache_corrupt_returns_fresh(tmp_path: Path) -> None:
-    """Corrupt (non-JSON) cache file returns fresh state."""
+    """Corrupt (non-JSON) cache file returns fresh state (P2 schema: pending=[])."""
     path = tmp_path / "listener-xyz.json"
     path.write_text("{{bad json", encoding="utf-8")
     result = listener.read_listener_cache(path)
-    assert result["pending"] is None
+    assert result["pending"] == []
     assert result["whispered_map_ids"] == []
 
 
 def test_read_listener_cache_non_dict_returns_fresh(tmp_path: Path) -> None:
-    """Non-dict JSON in cache file returns fresh state."""
+    """Non-dict JSON in cache file returns fresh state (P2 schema: pending=[])."""
     path = tmp_path / "listener-xyz.json"
     path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
     result = listener.read_listener_cache(path)
-    assert result["pending"] is None
+    assert result["pending"] == []
     assert result["whispered_map_ids"] == []
 
 

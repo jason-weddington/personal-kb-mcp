@@ -514,31 +514,38 @@ def test_kb_entry_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wiring guard (post-P1): load_roster is wired into cli.py (the directory
-# pipeline) but MUST remain UNWIRED from the Stop / listener / whisper path
-# (listener, listener_worker). The fan-out into http_index.load_index is
-# satisfied via cli.py passing the roster as an explicit argument — the
-# http_index module itself only consumes the roster parameter and does
-# not import load_roster.
+# Wiring guard (post-P2): load_roster is wired into cli.py (the directory
+# pipeline) AND listener_worker (the detached Stop-event whisper fan-out —
+# AC-2 of P2 hands the roster lookup to the worker, NOT the hook).
+# http_index continues to take the roster as an explicit parameter from
+# cli.py and does not import load_roster; listener still does not call
+# load_roster itself (the cache helpers are roster-agnostic).
 # ---------------------------------------------------------------------------
 
 
-def test_load_roster_wired_into_cli_only() -> None:
-    """P1 wiring: ``load_roster`` is referenced by cli.py — and ONLY cli.py.
+def test_load_roster_wired_into_cli_and_worker_only() -> None:
+    """Post-P2 wiring: ``load_roster`` is wired in cli.py AND listener_worker.
 
-    The Stop / listener / whisper path is explicitly out of scope for P1
-    (per the acceptance criteria) — load_roster MUST NOT leak into
-    listener or listener_worker. http_index takes the roster as an
-    explicit parameter from cli.py and does not import load_roster.
+    The Stop event's hook path still does not pass the roster to the worker
+    (spawn_worker keeps its 2-positional-arg signature); the worker reads
+    the roster itself when it wakes up. http_index continues to receive
+    the roster as an explicit parameter from cli.py — it does NOT import
+    load_roster. listener (the cache helpers + transcript tail + env gate)
+    is roster-agnostic and still does not reference load_roster.
     """
     cli_src = inspect.getsource(cli)
     assert "load_roster" in cli_src, (
-        "P1 wiring guard: 'load_roster' must be wired into cli.py for the "
-        "SessionStart/UserPromptSubmit directory pipeline fan-out."
+        "Post-P2 wiring guard: 'load_roster' must be wired into cli.py for the "
+        "SessionStart/UserPromptSubmit directory pipeline + whisper rendering."
     )
-    for module in (http_index, listener, listener_worker):
+    worker_src = inspect.getsource(listener_worker)
+    assert "load_roster" in worker_src, (
+        "Post-P2 wiring guard: 'load_roster' must be wired into listener_worker "
+        "for the Stop-event whisper fan-out (AC-2)."
+    )
+    for module in (http_index, listener):
         src = inspect.getsource(module)
         assert "load_roster" not in src, (
-            f"P1 scope guard: 'load_roster' must NOT appear in "
-            f"{module.__name__} — only cli.py wires it in P1."
+            f"Post-P2 scope guard: 'load_roster' must NOT appear in "
+            f"{module.__name__} — only cli.py and listener_worker wire it in P2."
         )
