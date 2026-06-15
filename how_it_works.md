@@ -1,164 +1,57 @@
 # How It Works
 
-Personal KB is a Model Context Protocol (MCP) server that gives AI assistants a persistent, searchable memory. Built on FastMCP with an async stdio transport, it stores knowledge entries in SQLite (default) or PostgreSQL (opt-in via `KB_DATABASE_URL`) and retrieves them through a combination of full-text search, vector similarity, and a knowledge graph. The system has three core layers: a storage engine that keeps entries, versions, embeddings, and graph data; a retrieval layer that ranks results through hybrid search and confidence decay; and a graph layer that connects entries to each other and to named entities. Every component is designed to degrade gracefully — if Ollama is down or no LLM is configured, the server still stores entries and serves full-text search.
-
-## Storage Engine
-
-Everything lives in one SQLite database file, typically at `~/.local/share/personal_kb/knowledge.db`. The connection is initialized with WAL mode for better concurrent read performance and foreign keys enabled for referential integrity. The row factory is set to `aiosqlite.Row` so queries return dict-like objects. All database operations are async via aiosqlite.
-
-The `knowledge_entries` table is the center of the schema. Each entry has a text primary key following the `kb-XXXXX` format (zero-padded to five digits), along with fields for titles, content, entry type, project reference, tags, hints, confidence level, timestamps, and flags for active status and embedding presence. Multi-user columns (`contributor`, `team`, `updated_by`) track who created and last modified each entry. Additional columns support classification (`sensitivity` — internal/restricted/public), access-aware decay (`last_accessed` — reset on retrieval via `kb_get`), and entry expiry (`expires_at` — absolute datetime, set via TTL on store). All multi-user and lifecycle columns are nullable with no impact on single-user deployments. The ID sequence is managed by a separate `entry_id_seq` table that holds a single integer, atomically read-and-incremented on every insert. The formatting happens in `db/queries.py:next_entry_id`, which reads the current value, bumps it by one, and returns the zero-padded string.
-
-Versioning is built into every write operation. When an entry is created, the `KnowledgeStore` inserts both the entry row and an initial version record in `entry_versions` with version number 1 and a change reason of "Initial creation." On every update, the version number increments, a new version record captures the updated knowledge details, confidence level, and change reason, and the entry's `updated_at` timestamp resets. This means the full history of every entry is preserved and can be queried through the versions table. The version table has a unique constraint on `(entry_id, version_number)` to prevent duplicates.
-
-Tags are stored as space-separated text in the entries table rather than as JSON arrays. This was an intentional design choice: it allows the FTS5 content-sync triggers to index tags directly alongside the other text fields without any JSON parsing at index time. When tags come out of the database, `db/queries.py:_parse_tags` splits them on whitespace. When they go in, `db/queries.py:insert_entry` joins the list with spaces. The trade-off is that individual tags cannot contain spaces, but that is a reasonable constraint for short categorization labels.
-
-See: `db/schema.py`, `db/connection.py`, `db/queries.py`, `store/knowledge_store.py`, `models/entry.py`
-
-### Database Abstraction and PostgreSQL
-
-All source code operates against a `Database` protocol defined in `db/backend.py`, not against a concrete database library. The protocol specifies 13 methods: `execute`, `executemany`, `executescript`, `commit`, `close`, `fts_search`, `vector_store`, `vector_search`, `vector_delete`, `delete_llm_edges`, `vacuum`, `next_sequence_value`, and `apply_schema`. Two implementations exist: `SQLiteBackend` (wrapping aiosqlite + sqlite-vec + FTS5) and `PostgresBackend` (wrapping asyncpg + pgvector + tsvector/GIN).
-
-`create_connection()` in `db/connection.py` dispatches between the two: if `KB_DATABASE_URL` is set to a `postgresql://` URL, it creates a `PostgresBackend`; otherwise it creates a `SQLiteBackend` at the configured file path. Explicit `:memory:` always uses SQLite (for tests).
-
-`PostgresBackend` translates `?` placeholders to `$1, $2, ...` via a character-by-character parser that tracks quote state (preserving `?` inside SQL string literals) at execute time. Each `execute()` call acquires a connection from the asyncpg pool, runs the query, and releases the connection. `commit()` is a no-op since asyncpg auto-commits. FTS uses tsvector with ts_rank_cd instead of FTS5/BM25, and vector search uses pgvector's `<=>` cosine distance operator instead of sqlite-vec.
-
-### Aurora IAM Authentication
-
-For AWS deployments, the server supports RDS/Aurora IAM authentication via `KB_PG_IAM_AUTH=TRUE`. All IAM-specific logic lives in `db/iam_auth.py`, keeping AWS/boto3 knowledge out of `PostgresBackend`. The module has three components:
-
-**DSN parsing** (`parse_dsn`): Extracts host, port, and username from the PostgreSQL connection URL via `urllib.parse.urlparse()`. The host and username are required for token generation; port defaults to 5432.
-
-**Token factory** (`make_token_factory`): Returns a zero-arg closure that calls `boto3.client('rds').generate_db_auth_token()`. The boto3 RDS client is created once when the factory is built (captured in the closure); each call generates a fresh SigV4-signed token valid for ~15 minutes. The `import boto3` is lazy — it only runs when IAM auth is enabled, so plain Postgres users never import boto3.
-
-**SSL context** (`make_ssl_context`): Returns `ssl.create_default_context()` with certificate verification enabled (`verify_mode=CERT_REQUIRED`, `check_hostname=True`). IAM auth requires TLS. Users can override the CA bundle via the `SSL_CERT_FILE` environment variable.
-
-The connection flow in `_create_postgres()`: when `is_pg_iam_auth()` returns True, it parses the DSN, builds a token factory, creates an SSL context, and passes both as `password` and `ssl` kwargs to `PostgresBackend.create()`. asyncpg's `create_pool()` accepts `password` as a callable, invoking it for each new connection — so token refresh is automatic. AWS credentials come from the standard boto3 chain (environment variables, `~/.aws/credentials` profiles, instance roles).
-
-`PostgresBackend.create()` accepts optional `password` (callable) and `ssl` (SSLContext) kwargs, forwarding them to `asyncpg.create_pool()` only when not None. This keeps the backend generic — it has no awareness of IAM, boto3, or AWS.
-
-See: `db/iam_auth.py`, `db/connection.py`, `db/postgres_backend.py`
-
-## Full-Text Search
-
-The FTS5 virtual table `knowledge_fts` indexes four columns: `short_title`, `long_title`, `knowledge_details`, and `tags`. It uses external content mode (`content='knowledge_entries'`), meaning the FTS index does not store its own copy of the text — it reads from the main table via rowid. The tokenizer is `porter unicode61`, which applies Porter stemming for English morphology and Unicode 6.1 normalization for broad character support.
-
-Three triggers keep the FTS index in lockstep with the content table. The `knowledge_fts_ai` trigger fires after every INSERT and adds the new row's text to the index. The `knowledge_fts_au` trigger fires after every UPDATE and performs a delete-then-insert: it first removes the old text (using the special FTS5 `'delete'` command with the old row values), then inserts the new text. The `knowledge_fts_ad` trigger fires after DELETE and removes the old text. Because the triggers are defined with `AFTER` timing, they see the final state of each operation.
-
-Search queries go through `search/fts.py:fts_search`, which joins the FTS results back to `knowledge_entries` via rowid to access the full entry. The function uses BM25 scoring via `bm25(knowledge_fts)`, where FTS5 returns negative scores with more-negative values indicating stronger matches. Results are ordered by score (ascending, since more negative is better) and capped at a caller-specified limit.
-
-Before hitting FTS5, the raw query string is escaped by `_escape_fts_query`, which splits the input on whitespace and wraps each token in double quotes. This prevents FTS5 syntax errors from special characters like colons, hyphens, or parentheses that FTS5 would otherwise interpret as query operators. The escaped tokens are joined with spaces, which FTS5 treats as implicit AND.
-
-Filtering happens in the SQL WHERE clause after the FTS MATCH. Project reference and entry type filter with exact equality. Tag filtering uses the pattern `(' ' || e.tags || ' ') LIKE '% tag %'` — padding the stored tags with spaces on both sides and searching for the tag surrounded by spaces ensures exact word boundary matching rather than substring matching.
-
-See: `db/schema.py` (triggers), `search/fts.py`
-
-## Vector Embeddings
-
-When Ollama is available, every entry also gets a dense vector embedding for semantic similarity search. The embedding client in `search/embeddings.py` talks to Ollama's `/api/embed` endpoint. The default model is `qwen3-embedding:0.6b`, which produces 1024-dimensional vectors — both configurable via environment variables.
-
-The text fed to the embedding model is the concatenation of `short_title`, `long_title`, and `knowledge_details`, joined with spaces. This is defined as the `embedding_text` property on the `KnowledgeEntry` model, ensuring every component that needs the text for embedding uses the same concatenation.
-
-Vectors are stored in a `knowledge_vec` virtual table powered by the sqlite-vec extension. The table schema is `vec0(entry_id TEXT PRIMARY KEY, embedding FLOAT[1024])`. Loading the sqlite-vec extension requires special handling with aiosqlite: a zero-argument closure captures the underlying synchronous `db._conn` object, enables extension loading, calls `sqlite_vec.load(db._conn)`, then disables extension loading. This closure is executed via `await db._execute(closure)` to run on aiosqlite's background thread.
-
-Embedding vectors are serialized to binary using `struct.pack` with a format string like `"1024f"`, producing a compact 4-byte-per-float representation that sqlite-vec expects. KNN search uses the `WHERE embedding MATCH ?` syntax with the serialized query vector, and sqlite-vec returns results ordered by cosine distance (lower is better).
-
-The embedding client uses a success-only caching pattern for availability checks. `is_available()` pings Ollama's `/api/tags` endpoint. On success, it caches `_available = True` and skips the ping on future calls. On failure, it sets `_available = None` (not False), meaning the next call will retry the ping rather than permanently giving up. This design lets the system recover automatically if Ollama starts up after the server does.
-
-See: `search/embeddings.py`, `search/vector.py`, `db/schema.py`
-
-## Hybrid Search and Reciprocal Rank Fusion
-
-When both FTS and vector search produce results, they are combined using Reciprocal Rank Fusion (RRF) [1]. The implementation lives in `search/hybrid.py:hybrid_search`.
-
-The process starts by over-fetching: both FTS and vector search are asked for `limit * 3` results (three times the caller's requested limit). Over-fetching improves re-ranking quality because entries that appear in both lists — which are the strongest signals of relevance — are more likely to be captured even if they rank modestly in one list.
-
-Each entry's RRF score is computed as: `score(d) = sum of 1/(K + rank + 1)` across all lists in which it appears, where K is a constant set to 60 (the value from the original RRF paper [1]) and rank is the entry's zero-based position in each list. An entry that appears in both FTS and vector results gets the sum of its two reciprocal rank scores, naturally boosting entries confirmed by both retrieval methods. Entries from only one list still get a score, just lower.
-
-After RRF scoring, entries are sorted by combined score in descending order (higher is better, the inverse of the raw FTS and distance scores). The top entries up to the caller's limit are then looked up to get their full data, confidence decay is applied, and stale entries (effective confidence below 0.3) are filtered out unless the caller explicitly requests them via `include_stale`.
-
-Each result carries a `match_source` field: `"hybrid"` if both FTS and vector contributed results, or `"fts"` if vector search returned nothing (because Ollama was unavailable or no embeddings exist).
-
-See: `search/hybrid.py`
-
-## Sparse Graph Hints
-
-When `kb_search` returns fewer than 3 results, the system augments the response with graph-connected entries that the user might find relevant. This idea draws on Think-on-Graph's iterative graph reasoning [2] and GraphRAG's community-level summarization [3], adapted to a much smaller scale: instead of multi-hop reasoning chains or hierarchical community summaries, we do a simple 1-2 hop BFS and format the results as hints. The `collect_graph_hints` function in `tools/kb_search.py` walks the knowledge graph outward from each search result to find related entries that didn't match the query directly.
-
-For each result entry, the function calls `get_neighbors` with a limit of 10. Non-entry neighbors — tags, concepts, tools, and other intermediate nodes — get a second hop: the function calls `get_neighbors` again on the intermediate node to find entries connected through it. For example, if a search result has a `has_tag` edge to `tag:security`, and another entry also has a `has_tag` edge to `tag:security`, that second entry becomes a hint candidate. Direct entry-to-entry neighbors (from `supersedes`, `references`, etc.) are also collected but only need the single hop.
-
-A `seen_ids` set tracks all result entry IDs and any entries already collected as hints, preventing duplicates. Deactivated entries are filtered out — only entries with `is_active = True` are included. The function returns up to 3 formatted hint strings like `"See also: [kb-00042] Title (via tag:security)"`, where the `via` label identifies the intermediate node or edge type that connects the hint to the original result.
-
-The sparse threshold and max hints are constants (`_SPARSE_THRESHOLD = 3`, `_MAX_HINTS = 3`). When results are plentiful, hints are skipped entirely — the function is never called.
-
-See: `tools/kb_search.py`, `tools/formatters.py`
-
-## Confidence Decay
-
-Every entry's confidence degrades over time using exponential decay. The formula is: `effective = base_confidence * 2^(-age_days / half_life)`. This uses base-2 exponential decay, meaning after exactly one half-life, an entry retains half its original confidence.
-
-Half-lives vary by entry type, reflecting how quickly different kinds of knowledge go stale:
-
-- **factual_reference**: 90 days (3 months) — facts like version numbers and API details change frequently
-- **decision**: 365 days (1 year) — decisions persist but the context that justified them shifts
-- **pattern_convention**: 730 days (2 years) — coding standards and conventions are durable
-- **lesson_learned**: 1,825 days (5 years) — hard-won debugging insights and experiential knowledge stick
-- **mental_map**: exempt — `compute_effective_confidence` early-returns `base_confidence` for `EntryType.MENTAL_MAP` before any clock math runs. Freshness for a map is pointer-validity, computed at retrieval time, not a half-life. See the Mental Maps section below.
-
-`HALF_LIVES.get(entry_type, 365.0)` in `confidence/decay.py` guards the lookup with a 365-day default, so an unknown entry type can never `KeyError` the decay path.
-
-The decay clock anchors on whichever is more recent: `updated_at` or `last_accessed`. This access-aware approach is inspired by MemoryBank's dynamic memory management [4] and the recency-relevance-importance scoring in Generative Agents [5] — the insight being that retrieval frequency is a valid signal for knowledge value, not just recency of creation. Editing an entry resets its decay via `updated_at`, because if you've verified and updated a piece of knowledge it should be treated as fresh. Retrieving an entry via `kb_get` resets its decay via `last_accessed`, because actively-used knowledge shouldn't rot just because it hasn't been edited. The `db/queries.py:touch_accessed` function batch-updates `last_accessed` to the current time for all entries returned by a `kb_get` call. Crucially, search alone does not reset the decay clock — only explicit retrieval via `kb_get` does. This means an entry that keeps appearing in search results but is never opened will still decay, while one that a user regularly retrieves stays fresh.
-
-Two thresholds govern how decay affects results. At 50% effective confidence, a staleness warning is attached to the result, suggesting the user verify the information is still current. At 30%, the entry is filtered out of search results entirely (unless the caller passes `include_stale=True`). For a factual reference with the default 0.9 confidence, the warning appears around 90 days (one half-life, when 0.9 drops to ~0.45) and the hard cutoff around 160 days (when 0.9 drops to ~0.27).
-
-See: `confidence/decay.py`, `db/queries.py` (`touch_accessed`)
-
-## Entry TTL / Expiry
-
-Entries can have an expiration date via the `ttl` parameter on `kb_store` and `kb_store_batch`. The `parse_ttl()` function in `tools/ttl.py` accepts `Nh`, `Nd`, or `Nw` (hours, days, weeks) and returns a `timedelta`. `compute_expires_at()` adds this to the current UTC time to produce an absolute `expires_at` datetime stored on the entry.
-
-Expiry is a hard filter, independent of confidence decay. In `search/hybrid.py`, expired entries are filtered out after the `is_active` check and before confidence decay is applied. An entry can be expired but high-confidence, or stale but unexpired — the two mechanisms don't interact. `kb_search` accepts `include_expired=True` to override the filter. `kb_get` always returns expired entries (with a badge warning).
-
-The formatter in `tools/formatters.py` renders three badge variants: `[EXPIRED]` if past expiry, `[EXPIRES Nd]` if more than a day remains, `[EXPIRES Nh]` if less than a day. Badge order in output is: sensitivity → expiry → staleness.
-
-Updates preserve the existing `expires_at` unless a new `ttl` is explicitly provided, following the same pattern as sensitivity.
-
-See: `tools/ttl.py`, `tools/formatters.py`, `search/hybrid.py`
-
-## The Knowledge Graph
-
-The knowledge graph is stored in two tables: `graph_nodes` and `graph_edges`. Nodes have a text primary key (`node_id`), a type, JSON properties, and a creation timestamp. Edges have a source, target, edge type, JSON properties, and a unique constraint on `(source, target, edge_type)` to prevent duplicate edges.
-
-Node IDs follow a human-readable convention that encodes the type: `tag:python`, `project:personal-kb`, `person:jason`, `tool:aiosqlite`, `concept:async-io`, `technology:fastapi`, `note:path/to/file.md`. Entry nodes use their entry ID directly (e.g., `kb-00042`). This naming convention makes the graph browsable and query results interpretable without joining back to other tables.
-
-Graph construction happens in two tiers: deterministic edges derived directly from entry data, and LLM-enriched edges extracted by a language model.
-
-### Deterministic Edges
-
-The `GraphBuilder` in `graph/builder.py` runs on every store and update operation. It follows a delete-and-rebuild model: first it clears all outgoing edges from the entry's node, then re-derives them from the entry's current data. This approach is simpler and more robust than incremental diffing — it guarantees the graph always reflects the entry's current state.
-
-The builder creates edges in this order:
-
-1. **Entry node** — upserted with properties including `short_title` and `entry_type`
-2. **Tag edges** — for each tag, creates a `tag:X` node and a `has_tag` edge
-3. **Project edge** — if `project_ref` is set, creates a `project:X` node and an `in_project` edge
-4. **Supersedes edges** — from the `supersedes` key in hints, creates edges to older entries
-5. **Superseded-by edges** — if the entry has a `superseded_by` field, creates the reverse edge
-6. **Text references** — scans `knowledge_details` for `kb-XXXXX` patterns and creates `references` edges to those entries, deduplicating matches
-7. **Related entities** — from `hints.related_entities`, creates edges with caller-specified types (defaulting to `related_to`)
-8. **Person hints** — from `hints.person`, creates `person:X` nodes and `mentions_person` edges
-9. **Tool hints** — from `hints.tool`, creates `tool:X` nodes and `uses_tool` edges
-
-### LLM Enrichment
-
-The `GraphEnricher` in `graph/enricher.py` adds a second layer of edges by asking an LLM to extract entities and relationships from each entry's content. The LLM works with a closed set of four entity types: `person`, `tool`, `concept`, and `technology`. The system prompt instructs it to extract 2-6 entities per entry, returning a JSON array where each object specifies an entity name, entity type, and relationship type. Relationship types are open-ended — the LLM can use whatever describes the connection best (`uses`, `depends_on`, `implements`, `solves`, `replaces`, etc.).
-
-The enricher's response parsing is defensive: it strips markdown code fences, finds the JSON array via regex, validates each item's structure and entity type, and caps results at 8 relationships. All LLM-derived edges are marked with `{"source": "llm"}` in their properties, which enables selective clearing. When re-enriching an entry, the enricher deletes only edges where `json_extract(properties, '$.source') = 'llm'`, preserving all deterministic edges. The enricher also ensures the entry node exists (via `ON CONFLICT DO NOTHING`) before adding edges, avoiding foreign key violations if the deterministic builder hasn't run yet.
-
-Before creating a new entity node, the enricher checks for near-duplicates in the existing graph — an entity resolution step inspired by GraphRAG [3] and LightRAG [6], where entity deduplication is identified as critical for small graphs where fragmentation degrades connectivity. It loads the current graph vocabulary — all non-entry node IDs grouped by type — via `get_graph_vocabulary()`, then compares each LLM-extracted entity name against every existing name using `difflib.SequenceMatcher`. If a match scores at or above 0.85, the enricher reuses the existing node instead of creating a new one. This matching is cross-type: if the LLM extracts `concept:asyncio` but `technology:asyncio` already exists in the graph, the enricher will merge to the existing node. The vocabulary cache is loaded once per `enrich_entry` or `enrich_batch` call, and new entities are registered in the cache immediately so later edges in the same batch can resolve against them.
-
-Enrichment never breaks storage. The entire enrichment call is wrapped in a try/except in `kb_store.py:_enrich_graph`, so failures are logged and swallowed.
-
-See: `graph/builder.py`, `graph/enricher.py`, `db/schema.py`
+Personal KB is a graph-RAG knowledge base for AI assistants, split across three
+distributions: the reusable **`kb-core`** engine (the graph-RAG brain — hybrid
+search, the knowledge graph, agentic retrieval, pluggable storage and LLM
+backends), the **`personal-kb-web-service`** hosted backend (a FastAPI + React
+SPA that wraps the engine behind an authed HTTP API and serves the graph
+explorer, chat, listener gate, and maps index), and the **`personal-kb`** MCP
+server in this repo, which is now a **thin client** of that service — it
+forwards each MCP tool call to the appropriate `/api/kb/*` route. A second thin
+client — **`personal-kb-hook`** under `packages/personal-kb-hook/` — runs as a
+Claude Code `SessionStart` / `UserPromptSubmit` / `Stop` hook and surfaces
+mental-map orientation pointers into the model's context.
+
+This document covers what lives in **this repo** today: the MCP tool entry
+points under `src/personal_kb/tools/`, the project-preflight + mental-map
+orientation pull (`src/personal_kb/preflight.py`, `src/personal_kb/tools/kb_preflight.py`,
+`src/personal_kb/tools/map_lint.py`), the standalone hook package, and the
+anticipatory-listener whisper loop that the hook spawns. Engine internals —
+storage, FTS5, vector embeddings, hybrid search and Reciprocal Rank Fusion,
+the knowledge graph (deterministic edges + LLM enrichment), confidence decay,
+the store / ingest pipelines, the dual-LLM architecture, and graceful
+degradation — are documented in the kb-core internals doc:
+[`packages/kb-core/docs/how_it_works.md`](packages/kb-core/docs/how_it_works.md).
+
+**The shim arrangement.** As part of the kb-core extraction wave, every engine
+module that used to live under `src/personal_kb/<module>` is now a thin
+**re-export shim** that imports from `kb_core`. For example,
+`src/personal_kb/db/backend.py` is a 9-line shim doing
+`from kb_core.db.backend import Cursor, Database, Row`, and
+`src/personal_kb/tools/coverage.py` is a shim doing
+`from kb_core.coverage import ...`. The path mappings are:
+
+- `db/*`, `graph/*`, `confidence/*`, `ingest/*`, `llm/*`, `search/*`, `store/*`,
+  `models/*` — kb_core path mirrors the old path 1:1 (e.g.
+  `packages/kb-core/src/kb_core/graph/agent.py`,
+  `packages/kb-core/src/kb_core/db/queries.py`,
+  `packages/kb-core/src/kb_core/confidence/decay.py`).
+- Lifted top-level helpers, **with renames**: `tools/coverage.py` →
+  `packages/kb-core/src/kb_core/coverage.py`, and the formatters were lifted
+  AND renamed to `packages/kb-core/src/kb_core/formatting.py`. `tools/ttl.py`
+  and `preflight.py` were also lifted (`kb_core/ttl.py`, `kb_core/preflight.py`).
+- The MCP tool entry points stay in this repo: `src/personal_kb/tools/kb_ask.py`,
+  `kb_summarize.py`, `kb_preflight.py`, `kb_search.py`, `kb_get.py`,
+  `kb_store.py`, `kb_store_batch.py`, `kb_explore.py`, `kb_ingest.py`,
+  `kb_ingest_url.py`, `kb_maintain.py`, `kb_list.py`, `kb_bulk_update.py`,
+  `kb_feedback.py`, plus `map_lint.py` and the `_lifespan.py` wiring. These
+  have no `kb_core` counterpart — they exist precisely to be the MCP-facing
+  surface.
+- The standalone hook package `packages/personal-kb-hook/` is untouched by the
+  extraction (it has its own zero-dep distribution and is described below).
+
+The sections that follow document those server-side / hook-side concerns. For
+how the engine itself works underneath, follow the kb-core link above.
 
 ## Query Strategies (kb_ask)
 
@@ -166,17 +59,17 @@ The `kb_ask` tool supports five query strategies, each suited to different kinds
 
 **auto** is the default strategy. It runs hybrid search (FTS + vector) to find matching entries, then expands results by walking one hop through the graph from each search hit. For each hit, it calls `get_neighbors` with a limit of 10 and adds any neighboring entry nodes that aren't already in the result set. This provides context around search results — if you find a decision entry, you might also see the entries it supersedes or the tools it references.
 
-**decision_trace** searches for decision-type entries using FTS, then walks the `supersedes` chain in both directions for each hit. The chain walk in `graph/queries.py:supersedes_chain` follows `supersedes` edges backward (what this entry supersedes) and forward (what supersedes this entry), building a chronologically ordered list from oldest to newest. The formatted output labels each entry as "original decision", "supersedes kb-XXXXX", or "current" to show the decision's evolution.
+**decision_trace** searches for decision-type entries using FTS, then walks the `supersedes` chain in both directions for each hit. The chain walk in `kb_core/graph/queries.py:supersedes_chain` follows `supersedes` edges backward (what this entry supersedes) and forward (what supersedes this entry), building a chronologically ordered list from oldest to newest. The formatted output labels each entry as "original decision", "supersedes kb-XXXXX", or "current" to show the decision's evolution.
 
-**timeline** takes a scope (like `project:personal-kb` or `tag:sqlite`) and returns all matching entries sorted by `created_at`. It uses `graph/queries.py:entries_for_scope`, which interprets scope strings as project filters, tag lookups, person/tool graph traversals, or entry type filters depending on the prefix. This strategy is useful for understanding the history of a topic or project.
+**timeline** takes a scope (like `project:personal-kb` or `tag:sqlite`) and returns all matching entries sorted by `created_at`. It uses `kb_core/graph/queries.py:entries_for_scope`, which interprets scope strings as project filters, tag lookups, person/tool graph traversals, or entry type filters depending on the prefix. This strategy is useful for understanding the history of a topic or project.
 
-**related** performs a breadth-first search from a starting node with a maximum depth of 2. The BFS in `graph/queries.py:bfs_entries` uses a standard queue, tracking visited nodes to avoid cycles and collecting entry nodes (those matching `kb-XXXXX` format) encountered along the way. It returns each entry's depth and full path from the start node. This strategy answers questions like "what else relates to aiosqlite?"
+**related** performs a breadth-first search from a starting node with a maximum depth of 2. The BFS in `kb_core/graph/queries.py:bfs_entries` uses a standard queue, tracking visited nodes to avoid cycles and collecting entry nodes (those matching `kb-XXXXX` format) encountered along the way. It returns each entry's depth and full path from the start node. This strategy answers questions like "what else relates to aiosqlite?"
 
-**connection** finds the shortest path between two nodes using BFS with a maximum depth of 4. The `graph/queries.py:find_path` function returns a list of `(source, edge_type, target)` triples forming the path, or None if no path exists. This strategy answers questions like "how are these two concepts connected?"
+**connection** finds the shortest path between two nodes using BFS with a maximum depth of 4. The `kb_core/graph/queries.py:find_path` function returns a list of `(source, edge_type, target)` triples forming the path, or None if no path exists. This strategy answers questions like "how are these two concepts connected?"
 
 ### Agentic Query Planning
 
-When a query LLM is available, the `auto` strategy delegates to a ReAct agent loop in `graph/agent.py` that can plan, execute, evaluate, and retry — replacing the single-shot query planner that had to pick the right strategy blindly.
+When a query LLM is available, the `auto` strategy delegates to a ReAct agent loop in `kb_core/graph/agent.py` that can plan, execute, evaluate, and retry — replacing the single-shot query planner that had to pick the right strategy blindly.
 
 The agent is designed around a key insight: instead of classifying a question into one of five strategies upfront, dissolve the strategy taxonomy into tools and let the agent compose them. The agent has access to six internal tools (not exposed as MCP tools):
 
@@ -197,27 +90,27 @@ The agent is designed around a key insight: instead of classifying a question in
 
 **Error handling.** If the LLM returns None (provider failure), the loop breaks immediately and falls back to fast-path results. If the LLM returns unparseable JSON, an error message is injected into the conversation and the loop continues, consuming one tool call from the budget. This gives the LLM a chance to self-correct.
 
-**Compact output.** The agent only sees `format_entry_compact()` output — titles, types, scores, and metadata, but never `knowledge_details`. This keeps the context window lean across multiple turns. Full entry details are fetched only when formatting the final result for the caller.
+**Compact output.** The agent only sees `format_entry_compact()` output (from `kb_core.formatting`) — titles, types, scores, and metadata, but never `knowledge_details`. This keeps the context window lean across multiple turns. Full entry details are fetched only when formatting the final result for the caller.
 
-**Toggle.** Set `KB_AGENTIC_QUERY=FALSE` to bypass the agent and fall back to the single-shot `QueryPlanner` from `graph/planner.py`, which translates natural language into a structured `QueryPlan` (strategy, scope, target, search query) via a single LLM call. The planner receives graph statistics and vocabulary as context for entity resolution.
+**Toggle.** Set `KB_AGENTIC_QUERY=FALSE` to bypass the agent and fall back to the single-shot `QueryPlanner` from `kb_core/graph/planner.py`, which translates natural language into a structured `QueryPlan` (strategy, scope, target, search query) via a single LLM call. The planner receives graph statistics and vocabulary as context for entity resolution.
 
 **Eval results.** On the eval corpus (32 entries, 13 scorable golden queries), the agent achieves perfect MRR, recall@5, and NDCG@5 (all 1.000), up from 0.853/1.000/0.889 with hybrid search alone. The three queries where hybrid search ranked the right entry 2nd-4th (q05 REST auth, q06 CORS, q10 encoding bug) are all resolved in a single agent turn.
 
-See: `graph/agent.py`, `tools/kb_ask.py`, `graph/planner.py`
+See: `kb_core/graph/agent.py`, `src/personal_kb/tools/kb_ask.py`, `kb_core/graph/planner.py`
 
 ## Answer Synthesis (kb_summarize)
 
-The `kb_summarize` tool provides a higher-level interface than `kb_ask` by adding LLM synthesis on top of retrieval. The core logic lives in `summarize_question()`, an extracted function that takes the database, embedder, query LLM, optional synthesis LLM, question, optional scope, and limit — keeping it testable without FastMCP context. When a synthesis LLM is available (typically Sonnet via `model_override` — see Dual LLM Architecture), it is preferred for generating the final prose answer; otherwise the query LLM is used.
+The `kb_summarize` tool provides a higher-level interface than `kb_ask` by adding LLM synthesis on top of retrieval. The core logic lives in `summarize_question()`, an extracted function that takes the database, embedder, query LLM, optional synthesis LLM, question, optional scope, and limit — keeping it testable without FastMCP context. When a synthesis LLM is available (typically Sonnet via `model_override`), it is preferred for generating the final prose answer; otherwise the query LLM is used. The dual-LLM split itself is documented in the kb-core internals doc.
 
 ### Retrieval
 
-The first step calls `retrieve_entries()` from `tools/kb_ask.py`, which returns a tuple of `(entries_with_context, agent_turns_used)`. Each entry is paired with a context string describing how it was found (e.g., `"search match (score: 0.0312)"` or `"linked from kb-00042 via supersedes"`). The `agent_turns_used` count tracks how many LLM tool calls the agentic query loop made — 0 means the fast-path resolved the query without touching the LLM.
+The first step calls `retrieve_entries()` from `src/personal_kb/tools/kb_ask.py`, which returns a tuple of `(entries_with_context, agent_turns_used)`. Each entry is paired with a context string describing how it was found (e.g., `"search match (score: 0.0312)"` or `"linked from kb-00042 via supersedes"`). The `agent_turns_used` count tracks how many LLM tool calls the agentic query loop made — 0 means the fast-path resolved the query without touching the LLM.
 
 ### Coverage Assessment
 
 When the retrieval involved the agent (not fast-path), the system runs a coverage check before synthesis. The check fires only when all four conditions are met: `KB_AGENTIC_SYNTHESIS` is `TRUE` (the default), a query LLM is available, the LLM implements the `LLMProvider` protocol, and `agent_turns > 0`. Fast-path results and single-shot planner results skip coverage entirely — if retrieval was confident enough to skip the agent, coverage checking would add latency for no benefit.
 
-The `assess_coverage()` function in `tools/coverage.py` makes a single LLM call. The prompt includes the question and a compact summary of each retrieved entry — entry ID, short title, tags, and the first 200 characters of `knowledge_details` (not the full content, to keep the prompt lean). The LLM is biased toward "no gaps" — it only flags a gap when an obvious, specific concept is missing, not when the answer could theoretically be more complete. The response is a JSON object with three fields: `has_gaps` (boolean), `suggested_query` (a short search query to fill the gap, or null), and `reason` (brief explanation).
+The `assess_coverage()` function in `kb_core/coverage.py` makes a single LLM call. The prompt includes the question and a compact summary of each retrieved entry — entry ID, short title, tags, and the first 200 characters of `knowledge_details` (not the full content, to keep the prompt lean). The LLM is biased toward "no gaps" — it only flags a gap when an obvious, specific concept is missing, not when the answer could theoretically be more complete. The response is a JSON object with three fields: `has_gaps` (boolean), `suggested_query` (a short search query to fill the gap, or null), and `reason` (brief explanation).
 
 If coverage finds gaps and provides a suggested query, the system runs a second retrieval via `_auto_search_entries()` — hybrid search plus graph expansion using the LLM's suggested query. The extra entries are merged into the original set by `_merge_entries()`, which deduplicates by entry ID while preserving the original ordering.
 
@@ -231,133 +124,21 @@ The distinction between coverage and synthesis prompts is intentional: coverage 
 
 ### Fallback
 
-If the query LLM is unavailable, synthesis is skipped and the tool returns raw entries formatted with `format_entry_full()`, prefixed with "(LLM unavailable — showing raw results)". If synthesis is attempted but the LLM returns None, the same fallback fires with "(LLM synthesis failed — showing raw results)". This three-layer design — primary synthesis, failed-synthesis fallback, no-LLM fallback — ensures the tool always returns something useful.
+If the query LLM is unavailable, synthesis is skipped and the tool returns raw entries formatted with `format_entry_full()` (from `kb_core.formatting`), prefixed with "(LLM unavailable — showing raw results)". If synthesis is attempted but the LLM returns None, the same fallback fires with "(LLM synthesis failed — showing raw results)". This three-layer design — primary synthesis, failed-synthesis fallback, no-LLM fallback — ensures the tool always returns something useful.
 
-See: `tools/kb_summarize.py`, `tools/coverage.py`, `tools/kb_ask.py`
-
-## The Entry Pipeline (kb_store)
-
-When `kb_store` is called to create or update an entry, the full pipeline runs in sequence with each step isolated from failures in subsequent steps.
-
-**Step 1: Store the entry.** For a new entry, `KnowledgeStore.create_entry` allocates the next `kb-XXXXX` ID, inserts the entry row, and creates the initial version record. For an update, it bumps the version number, creates a new version record, and resets `updated_at` and `has_embedding` (since the content changed and needs re-embedding). Both paths commit to the database, so the entry is durably stored before anything else runs.
-
-**Step 2: Generate and store the embedding.** The embedding client sends the entry's `embedding_text` to Ollama, gets back a float vector, serializes it with `struct.pack`, and upserts it into the `knowledge_vec` table (delete then insert, since vec0 does not support `ON CONFLICT`). On success, the entry's `has_embedding` flag is set to true. If Ollama is unreachable or embedding fails, this step is skipped and the entry remains searchable via FTS only.
-
-**Step 3: Build deterministic graph edges.** The graph builder clears all outgoing edges from the entry node, then re-derives them from tags, project ref, hints, and text references. This step runs regardless of whether embedding succeeded.
-
-**Step 4: Enrich graph via LLM.** If an extraction LLM is configured, the enricher sends the entry to the LLM, parses out entities and relationships, and adds them as graph edges. This step runs regardless of whether the previous steps succeeded.
-
-Each step is wrapped in its own try/except block. A failure in embedding does not prevent graph building, and a failure in graph enrichment does not affect the stored entry or its embedding. The entry is always returned to the caller with its current state.
-
-See: `tools/kb_store.py`, `store/knowledge_store.py`
-
-## Token Efficiency
-
-MCP tool responses consume tokens in the calling LLM's context window, so the server uses a two-phase retrieval pattern to minimize waste. Search results from `kb_search` include only compact metadata — entry ID, type, titles, tags, project, and confidence — but omit the `knowledge_details` field, which is often the bulk of the content. When the caller needs full details for specific entries, it calls `kb_get` with one or more entry IDs (up to 20) to retrieve the complete content. This means a search over hundreds of entries sends back a manageable summary, and the caller only pays the token cost for entries it actually wants to read.
-
-The formatting layer lives in `tools/formatters.py` and provides shared functions used across all tools. `format_entry_compact` produces a 2-3 line summary (header with ID, type, short title, confidence percentage; long title if different from short; tag and project metadata). `format_entry_full` adds the `knowledge_details` body and optionally a context line (like "via tag:python" in `kb_ask` results). `format_result_list` assembles a list of formatted entries with a count header, optional notes, and optional graph hint lines. `format_graph_hint` produces the one-liner hint format used by sparse graph hints.
-
-`kb_get` also resets the confidence decay clock for retrieved entries. After formatting results, it calls `touch_accessed` to batch-update `last_accessed` on all successfully retrieved entries. This ties access-aware decay directly to the tool that indicates genuine user interest — reading the full content of an entry signals it is still useful.
-
-### Batch Storage (kb_store_batch)
-
-The `kb_store_batch` tool accepts up to 10 entries in a single call. Each entry goes through the standard pipeline — create, embed, build graph — individually. But graph enrichment is batched: instead of making one LLM call per entry, the enricher's `enrich_batch` method sends all entries in a single prompt and parses a JSON object keyed by entry ID from the response. This reduces LLM round-trips from N to 1. If the batch response fails to parse, the enricher falls back to per-entry enrichment so storage never fails due to a parsing issue.
-
-The core logic is extracted into `batch_store_entries()`, a standalone async function that takes a list of entry dicts and the server lifespan context. This extraction keeps the business logic testable without requiring a FastMCP context.
-
-See: `tools/formatters.py`, `tools/kb_get.py`, `tools/kb_store_batch.py`
-
-## File Ingestion (kb_ingest)
-
-The `kb_ingest` tool reads files from disk and converts them into knowledge entries through a multi-step pipeline orchestrated by `ingest/ingester.py:FileIngester`.
-
-**Step 1: Deny-list check.** The first thing checked, before anything else, is whether the filename matches a deny pattern. The deny list in `ingest/safety.py` covers private keys (`.pem`, `.key`, `id_rsa`), environment files (`.env`), credentials files (`credentials.json`, `token.json`), binary formats, images, audio, video, and database files. This runs before the extension allowlist because it is a security boundary — even if a file has an allowed extension, it should be blocked if its name matches a sensitive pattern.
-
-**Step 2: Extension allowlist.** The file's extension is checked against a set of supported text formats. The allowlist includes documentation formats (`.md`, `.txt`, `.rst`, `.org`), programming languages (`.py`, `.js`, `.ts`, `.go`, `.rs`, and many more), configuration formats (`.yaml`, `.toml`, `.json`, `.xml`), and shell scripts. Files with no extension are checked against a set of known names like `Dockerfile`, `Makefile`, `README`, and `LICENSE`.
-
-**Step 3: File size limit.** The file must be under 5MB by default (configurable via `KB_INGEST_MAX_FILE_SIZE`). This prevents memory issues and excessive LLM token usage.
-
-**Step 4: UTF-8 content read.** The file is read as UTF-8 with `errors="replace"` to handle non-UTF-8 bytes gracefully rather than crashing.
-
-**Step 5: SHA-256 hash dedup.** The content's SHA-256 hash is compared against the `ingested_files` table. If a previous ingestion of the same file produced the same hash and the record is active, the file is skipped as unchanged. This makes re-running ingestion on a directory cheap — only modified files are reprocessed.
-
-**Step 6: Safety pipeline.** The content passes through detect-secrets (using KeywordDetector, PrivateKeyDetector, and BasicAuthDetector — entropy detectors were dropped due to instability in detect-secrets 1.5) and scrubadub (which redacts PII like names, emails, and phone numbers). Both libraries are optional dependencies — if not installed, their checks are silently skipped. Files with detected secrets are flagged and not ingested. PII-redacted content continues through the pipeline with the redactions recorded.
-
-**Step 7: LLM summarization.** The file's content (truncated at 100,000 characters) is sent to the query LLM with a system prompt requesting a 2-3 sentence summary. The prompt is supplemented based on file type: code files (`.py`, `.js`, etc.) get guidance to focus on high-level purpose rather than implementation details, while prose files (`.md`, `.txt`, etc.) get guidance to focus on key insights and conclusions. The summary becomes part of the note node's properties in the graph.
-
-**Step 8: Content chunking.** The `chunk_content()` function in `ingest/chunker.py` splits large content into manageable pieces for extraction. If the content fits within the chunk size (default 16,000 characters, configurable via `KB_INGEST_CHUNK_SIZE`), it returns a single chunk. Otherwise, it splits at H1/H2 heading boundaries using the regex `^#{1,2}\s+`, greedily merges adjacent sections up to the chunk size limit, and falls back to paragraph breaks (`\n\n`) then newline breaks (`\n`) when a section still exceeds the limit. Each chunk is a `Chunk` dataclass carrying the text, a sequential index, the start character position in the original document, and the first H1/H2 heading found in the chunk (extracted and stored for context propagation to the extraction prompt). Adjacent chunks share an overlap region (default 600 characters, configurable via `KB_INGEST_CHUNK_OVERLAP`) snapped to a newline boundary to avoid splitting mid-sentence.
-
-**Step 9: KB-aware dedup per chunk.** When agentic ingestion is enabled (`KB_AGENTIC_INGEST=TRUE`, the default), the `DedupAgent` in `ingest/dedup_agent.py` checks each chunk against the existing KB before extraction. The agent constructs a search query from the chunk's heading and first ~500 characters, runs `hybrid_search` with a limit of 5, and checks the top result's score against a threshold (default 0.06, configurable via `KB_INGEST_DEDUP_THRESHOLD`). If no results match or the top score falls below the threshold, the chunk proceeds directly to extraction without an LLM call. If results exceed the threshold, the agent sends the chunk text (first 2,000 characters) and the matching KB entry summaries to the LLM, which returns one of three verdicts: `"skip"` (knowledge is >80% covered — skip extraction entirely), `"partial"` (some overlap but new knowledge exists — extract with awareness of existing entries), or `"extract"` (mostly new knowledge — extract normally). For "partial" verdicts, the LLM also returns `existing_titles` — a list of KB entry titles that overlap — which are injected into the extraction context alongside previously extracted titles from earlier chunks. Graceful degradation is built in: any failure in search, LLM, or JSON parsing defaults to `"extract"`, so the system never loses data due to a dedup error.
-
-**Step 10: LLM entry extraction.** Each chunk's text (truncated at 100,000 characters) is sent to the LLM with a system prompt asking for structured knowledge entries in JSON format. The LLM returns an array of objects, each with a short title, long title, knowledge details, entry type, and tags. The parser strips markdown fences, extracts the JSON array via regex, validates each object's fields and entry type, and caps at 10 entries per chunk. Two parameters prevent duplicate extraction across chunks: `previously_extracted` is a running list of short titles from entries already extracted from earlier chunks of the same file, and `chunk_heading` is the first H1/H2 heading from the current chunk. Both are included in the extraction prompt so the LLM skips concepts already covered. When the dedup agent returns a "partial" verdict, the `existing_titles` from the KB are appended to `previously_extracted`, creating a combined context that prevents re-extracting concepts covered by both earlier chunks and existing KB entries.
-
-**Step 11: Entry storage.** Each extracted entry goes through the full `kb_store` pipeline: create the entry, generate and store the embedding, build deterministic graph edges, and enrich via LLM. Each entry runs independently, so a failure on one does not block the others. The entry's `source_context` is set to `"Ingested from {relative_path}"` for traceability.
-
-**Step 12: Note node and edges.** A note node with ID `note:{relative_path}` is created in the graph, carrying the file path and summary in its properties. An `extracted_from` edge is added from each extracted entry to the note node, linking entries back to their source file.
-
-**Step 13: Record in ingested_files.** The file's path, hash, note node ID, entry IDs, summary, size, extension, project reference, redactions, and timestamps are recorded in the `ingested_files` table.
-
-**Re-ingestion** is handled automatically. If a file was previously ingested but its hash has changed, the old entries are deactivated (soft-deleted), old graph edges are removed, and the file goes through the full pipeline again. The `ingested_files` record is updated in place rather than recreated.
-
-### URL Ingestion (kb_ingest_url)
-
-The `kb_ingest_url` tool ingests web pages by URL. It fetches the HTML via httpx (30s timeout, redirects followed), then extracts the article text using [trafilatura](https://trafilatura.readthedocs.io/) — a core dependency that handles boilerplate removal, table extraction, and precision-mode content isolation (`favor_precision=True`). The extracted text is passed to `FileIngester.ingest_url()`, which delegates to the internal `_ingest_content()` pipeline. The tool also accepts an optional `content` parameter for pre-fetched content — when provided, it skips fetching and HTML extraction entirely and ingests the text directly. This supports authenticated sites, JavaScript-rendered pages, or content fetched by the agent through other tools.
-
-The content pipeline skips all filesystem-specific steps (deny-list, extension allowlist, file size check) since the content is already in memory. Safety runs through `run_content_safety()` in `ingest/safety.py`, which performs secret detection and PII redaction without the deny-list check. The rest of the pipeline is identical to file ingestion: SHA-256 hash for dedup (keyed on the URL in the `ingested_files` table's `relative_path` column), LLM summarization, chunking, dedup agent, extraction with running context, entry storage, and graph construction. The note node uses `note:{source_url}` as its ID, with `{"url": source_url, "summary": summary}` in properties (compared to `{"path": rel_path, "summary": summary}` for file-sourced notes).
-
-See: `ingest/html_extract.py`, `ingest/ingester.py`, `tools/kb_ingest_url.py`
-
-## Dual LLM Architecture
-
-The server uses three LLM slots: one for extraction (graph enrichment during storage), one for queries (planning in `kb_ask`), and one for synthesis (human-facing prose in `kb_summarize` and the explorer chat). The extraction and query slots can be independently configured via `KB_EXTRACTION_PROVIDER` and `KB_QUERY_PROVIDER` (values: `anthropic`, `bedrock`, or `ollama`; both default to `anthropic`).
-
-The synthesis slot is not independently configurable — it automatically upgrades the query provider's model to Claude Sonnet 4.6 for higher-quality prose output. `_create_synthesis_llm()` in `server.py` creates a client with `model_override` set to `claude-sonnet-4-6` (Anthropic API) or `us.anthropic.claude-sonnet-4-6` (Bedrock). For Ollama there is no Sonnet equivalent, so synthesis falls back to the query LLM. The `kb_summarize` tool and explorer chat both prefer `synthesis_llm` when available, falling back to `query_llm` if not.
-
-This separation exists because the three use cases have different performance characteristics. Extraction runs on every store operation and produces structured JSON — it benefits from a fast, inexpensive model (Haiku). Query planning is interactive but generates structured tool calls — Haiku is sufficient. Synthesis produces user-facing prose answers — it benefits from a more capable model (Sonnet). Running extraction and queries on Haiku while synthesis uses Sonnet gives a good cost/quality tradeoff.
-
-All three backends implement the `LLMProvider` protocol defined in `llm/provider.py`: `is_available()` checks if the backend is reachable, `generate()` sends a prompt with an optional system message and returns the response text or None, `generate_chat()` takes a structured message list for multi-turn conversations (used by the ReAct agent and explorer chat), and `close()` releases resources. The protocol is decorated with `@runtime_checkable` so it can be used with `isinstance()` checks at runtime.
-
-The **Anthropic client** (`llm/anthropic.py`) uses lazy SDK import — the `anthropic` package is only imported when `_get_client()` is first called. If the package is not installed, the client returns None from `_get_client()` and all `generate()` calls return None. This means the server can run without the anthropic package installed if only Ollama is used. The client also uses success-only caching: `_available` is set to True after a successful `generate()` call, but reset to None (not False) on failure, allowing retries. Availability checking is lightweight — it just verifies the SDK is importable and `ANTHROPIC_API_KEY` is set, deferring the actual API call to the first `generate()`.
-
-The **Bedrock client** (`llm/bedrock.py`) uses the `aws-sdk-bedrock-runtime` package, a natively async SDK generated from the Smithy service model. It supports three authentication modes in priority order: (1) AWS profile via `KB_AWS_PROFILE` (or the convention name `personal_kb_bedrock` if it exists), (2) bearer token auth via the `AWS_BEARER_TOKEN_BEDROCK` environment variable, and (3) traditional SigV4 signing via `AWS_ACCESS_KEY_ID`. Bearer auth required monkey-patching the SDK because the Bedrock service model declares `httpBearerAuth` support but the codegen doesn't wire it up. The `_configure_bearer_auth` function injects a custom `BearerAuthScheme` (built on the existing smithy_http `APIKeyAuthScheme` plumbing) into the SDK's Config object and patches the auth scheme resolver to prefer bearer auth when a token is present. The SigV4 fallback uses the `EnvironmentCredentialsResolver` from smithy_aws_core. If no credential source is found, the client disables itself. Like the other clients, it uses lazy SDK import and success-only caching. The SDK is an optional dependency (`[project.optional-dependencies] aws`).
-
-The **Ollama client** (`llm/ollama.py`) talks to Ollama's `/api/generate` endpoint over httpx. It uses the same success-only caching pattern as the embedding client: ping `/api/tags` to check availability, cache success, retry on failure. The model and timeout are configured separately from the embedding model — `KB_OLLAMA_MODEL` (default `qwen3:4b`) and `KB_OLLAMA_LLM_TIMEOUT` (default 120 seconds).
-
-The factory function `_create_llm()` in `server.py` selects the right client class based on the provider string. During server lifespan setup, two LLM clients are created (one per slot), and the extraction client is wrapped in a `GraphEnricher` instance while the query client is passed directly to the lifespan context for use by `kb_ask` and `kb_summarize`.
-
-See: `llm/provider.py`, `llm/anthropic.py`, `llm/bedrock.py`, `llm/ollama.py`, `server.py`
-
-## Graceful Degradation
-
-The system is designed to always store entries and serve full-text search at minimum, even when every optional dependency is unavailable.
-
-When **Ollama is unreachable**, the embedding client's `is_available()` returns False, `embed()` returns None, and `store_embedding()` is never called. The `has_embedding` flag stays False on the entry. In hybrid search, `vector_search()` returns an empty list, and RRF operates on FTS results alone. The `match_source` in results will be `"fts"` instead of `"hybrid"`. If Ollama comes back later, the success-only caching means the next embedding attempt will retry the ping and start working. The `kb_maintain` tool can backfill missing embeddings in bulk.
-
-When **the extraction LLM is unavailable** (no configured provider reachable for the extraction slot), the `graph_enricher` is set to None in the lifespan context. The `_enrich_graph` helper in `kb_store.py` checks for None and returns immediately. Entries still get deterministic graph edges from the builder — tags, project references, text references, and hint-based edges all work without an LLM. The graph just lacks the entity-level edges (concept, technology, tool, person relationships) that enrichment would add.
-
-When **the query LLM is unavailable**, `kb_ask`'s auto strategy skips the agent loop and runs hybrid search directly with the user's raw question. The check in `_strategy_auto_with_planner` tests `query_llm is not None` before entering the agentic path. Without a query LLM, `kb_summarize` falls back to showing raw search results prefixed with "(LLM unavailable — showing raw results)" — still useful, just not synthesized into prose.
-
-When **the anthropic package is not installed**, the `AnthropicLLMClient._get_client()` method catches `ImportError` and returns None. All subsequent `generate()` calls return None. The server starts normally and the provider slot acts as if the LLM is permanently unavailable, falling through to the same degradation paths described above.
-
-When **the aws-sdk-bedrock-runtime package is not installed**, the `BedrockLLMClient._get_client()` method catches `ImportError` and returns None, following the same pattern as the Anthropic client. When the package is installed but neither `AWS_BEARER_TOKEN_BEDROCK` nor `AWS_ACCESS_KEY_ID` is set, `is_available()` returns False and logs a warning.
-
-When **detect-secrets is not installed**, `detect_secrets_in_content()` catches `ImportError` and returns None (as opposed to an empty list, which would mean "scanned and found nothing"). The ingestion pipeline treats None as "scan not performed" and continues without flagging.
-
-When **scrubadub is not installed**, `redact_pii()` catches `ImportError` and returns the original content unchanged with an empty redactions list. Content passes through without PII redaction.
-
-The overall design principle is that each component checks its own dependencies at call time, returns a neutral result (None, empty list, or unchanged input) when those dependencies are missing, and the calling code handles neutral results by skipping the dependent step. No component throws an exception for a missing optional dependency, and no step's failure prevents subsequent steps from running.
+See: `src/personal_kb/tools/kb_summarize.py`, `kb_core/coverage.py`, `src/personal_kb/tools/kb_ask.py`
 
 ## Graph Explorer Visualization
 
-The graph explorer renders the entire knowledge graph as an interactive force-directed visualization in the browser, powered by [force-graph](https://github.com/vasturiano/force-graph) (a d3-force wrapper for Canvas2D). It runs as a FastAPI web server with LLM-powered query capabilities, SSE streaming, and multi-turn chat. A static `file://` fallback exists if the port is already in use.
+The graph explorer renders the entire knowledge graph as an interactive force-directed visualization in the browser, powered by [force-graph](https://github.com/vasturiano/force-graph) (a d3-force wrapper for Canvas2D). It now lives in the **personal-kb-web-service** repo — the React + MUI SPA under `frontend/` consumes JSON from FastAPI routes under `src/kb_service/`, the `personal-kb` MCP server merely opens the hosted URL. A static `file://` fallback is no longer needed; the explorer is always served by the hosted backend.
 
 ### Graph Data Extraction
 
-`explorer/graph_data.py:extract_graph_data()` runs three SQL queries to build the visualization payload: one for all rows in `graph_nodes` (id, type, label, properties), one for all rows in `graph_edges` (source, target, edge_type, properties), and one for entry metadata from `knowledge_entries` (id, short_title, entry_type, project_ref, tags, created_at, confidence). The function returns a dict with `nodes`, `edges`, and `stats` (total counts for entries, nodes, edges, and a breakdown of entries by type). Node types are preserved from the graph — `entry`, `tag`, `project`, `person`, `tool`, `concept`, `technology`, and `note`.
+`kb_service.graph_export.extract_graph_data()` (in the web service repo) runs SQL queries against the kb-core data DB to build the visualization payload: rows from `graph_nodes` (id, type, label, properties), rows from `graph_edges` (source, target, edge_type, properties), and entry metadata from `knowledge_entries` (id, short_title, entry_type, project_ref, tags, created_at, confidence). The function returns a dict with `nodes`, `edges`, and `stats` (total counts for entries, nodes, edges, and a breakdown of entries by type). Node types are preserved from the graph — `entry`, `tag`, `project`, `person`, `tool`, `concept`, `technology`, and `note`. Inactive entry nodes are excluded; non-entry nodes with no edges (orphans) are excluded; edges touching excluded nodes are excluded.
 
 ### Renderer and Template
 
-`explorer/renderer.py:render_explorer_html()` takes the graph data dict and produces a single self-contained HTML string. The graph data is injected as a JSON literal inside a `<script>` tag — no external API calls needed for the base visualization. The template uses force-graph loaded from CDN.
+The renderer is now a React component tree in `personal-kb-web-service/frontend/src/`. The graph data is fetched from the backend at page load and rendered into a `<canvas>` element bound to force-graph. The template uses force-graph loaded from CDN.
 
 Each node type has a fixed color: entries are gray (`#e0e0e0`), tags are cyan (`#00bcd4`), projects are orange (`#ff9800`), people are amber (`#ffc107`), tools are green (`#4caf50`), concepts are purple (`#9c27b0`), technologies are blue (`#2196f3`), and notes are blue-gray (`#78909c`). Nodes are drawn on canvas with `nodeCanvasObject` — entry nodes display their short title as a label, while entity nodes show their human-readable label. Node radius scales with connection count. Edge colors are derived from the source node's type color at reduced opacity.
 
@@ -365,55 +146,51 @@ The search bar (top-left) filters nodes by label with autocomplete. Selecting a 
 
 ### Web Server (Query-Driven Mode)
 
-The web infrastructure lives in `web/`.
+The web infrastructure lives in `personal-kb-web-service/src/kb_service/`.
 
-**App factory** (`web/app.py`): Two factory functions create the FastAPI application. `create_app_with_deps(db, embedder, query_llm)` is used when the explorer is launched from the `kb_explore` MCP tool — it receives the database, embedder, and LLM client directly from the MCP lifespan context, sharing connections instead of creating new ones. `create_app()` is used by the standalone `personal-kb-web` CLI entry point — it creates its own database connection, embedder, and LLM client in a lifespan handler, mirroring the MCP server's startup sequence. Both store dependencies on `app.state`.
+**App factory** (`kb_service/main.py`): The FastAPI application is created in a lifespan handler that opens a single kb-core `KnowledgeBase` from `KB_DATABASE_URL` (the data DB), plus an asyncpg pool for the service/auth DB at `KB_SERVICE_DATABASE_URL`. The two DBs are kept distinct: kb-core owns the data schema, the service owns the auth tables (`users`, `api_keys`, `invites`, `password_resets`). The `KnowledgeBase` is stored on `app.state.kb` and shared by every request.
 
-**Routes** (`web/routes.py`): Seven endpoints. `GET /` serves the explorer HTML. `GET /api/graph` returns raw graph data as JSON (used by the frontend to reload after ingestion). `GET /api/projects` returns distinct project_ref values for the ingest modal's combo box. `POST /api/query/stream` streams query events via SSE. `GET /api/entry/{entry_id}` returns full entry details for the info panel. `POST /api/chat/stream` handles multi-turn chat via SSE. `POST /api/ingest/stream` handles file upload and multi-URL ingestion with SSE progress events — it processes a batch of items (URLs and/or file content) sequentially, emitting `batch_progress`, `ingest_summarizing`, `ingest_chunk_start`, `item_done`, and `batch_done` events. Error isolation ensures one failing item doesn't stop the batch.
+**Routes** (`kb_service/routes/`): The service mounts route modules for auth (`auth_routes.py`), admin (`admin_routes.py`), KB reads/writes (`kb_read_routes.py`, `kb_write_routes.py`, `kb_routes.py`), maps index (`maps_routes.py`), ingest (`ingest_routes.py`), query (`query_routes.py`), chat (`chat_routes.py`), the anticipatory listener (`listener_routes.py`, described below), and settings (`settings_routes.py`). The standalone `personal-kb-web` CLI from the old design is gone — the hosted service replaces it.
 
-**SSE streaming**: The `/api/query/stream` endpoint receives a JSON body with a `question` field. It first classifies the query (explore vs. summarize), then runs the appropriate retrieval function as an `asyncio.create_task`. An `asyncio.Queue` bridges the async event callback and the SSE generator — the `event_callback` pushes events to the queue, and the generator drains the queue and yields formatted SSE lines. Each agent event is translated to a human-readable status message via `event_to_status()` and sent as a `status` SSE event. When the task completes, the generator yields the final results (entry list or synthesized answer) and a `stream_end` sentinel.
+**SSE streaming**: The query stream endpoint receives a JSON body with a `question` field. It first classifies the query (explore vs. summarize) via `kb_service/classifier.py`, then runs the appropriate retrieval function as an `asyncio.create_task`. An `asyncio.Queue` bridges the async event callback (in `kb_service/sse.py`) and the SSE generator — the `event_callback` pushes events to the queue, and the generator drains the queue and yields formatted SSE lines. Each agent event is translated to a human-readable status message and sent as a `status` SSE event. When the task completes, the generator yields the final results (entry list or synthesized answer) and a `stream_end` sentinel.
 
-**Query classification** (`web/classifier.py`): A single Haiku LLM call routes each query to either `explore` (browse and discover — "what connects to Python?", "show me debugging entries") or `summarize` (direct answer needed — "why did we choose FastAPI?", "explain the pipeline"). The classifier defaults to `explore` on any failure — LLM unavailable, parse error, or garbage response. The `summarize` keyword is extracted even from verbose LLM responses ("The classification is: summarize") via substring matching.
+**Query classification** (`kb_service/classifier.py`): A single Haiku LLM call routes each query to either `explore` (browse and discover — "what connects to Python?", "show me debugging entries") or `summarize` (direct answer needed — "why did we choose FastAPI?", "explain the pipeline"). The classifier defaults to `explore` on any failure — LLM unavailable, parse error, or garbage response. The `summarize` keyword is extracted even from verbose LLM responses ("The classification is: summarize") via substring matching.
 
-**Event callback pipeline**: The `event_callback` parameter threads through `retrieve_entries()` in `kb_ask.py` and `summarize_question()` in `kb_summarize.py`, down to `agentic_query()` in `graph/agent.py`. The agent emits 8 event types: `fast_path` (strong matches found, skipping agent), `agent_started` (entering ReAct loop), `thinking` (before each LLM call), `tool_call` (before dispatching a tool), `tool_result` (after a tool returns), `agent_done` (final answer), `parse_error` (LLM response couldn't be parsed), and on exhaustion (max tool calls reached). `summarize_question()` adds two more: `synthesis_started` (before calling the synthesis LLM) and `synthesis_done` (after). All existing callers pass `None` for the callback — zero behavior change to MCP tools.
+**Event callback pipeline**: The `event_callback` parameter threads through `retrieve_entries()` in `src/personal_kb/tools/kb_ask.py` and `summarize_question()` in `src/personal_kb/tools/kb_summarize.py`, down to `agentic_query()` in `kb_core/graph/agent.py`. The agent emits 8 event types: `fast_path` (strong matches found, skipping agent), `agent_started` (entering ReAct loop), `thinking` (before each LLM call), `tool_call` (before dispatching a tool), `tool_result` (after a tool returns), `agent_done` (final answer), `parse_error` (LLM response couldn't be parsed), and on exhaustion (max tool calls reached). `summarize_question()` adds two more: `synthesis_started` (before calling the synthesis LLM) and `synthesis_done` (after). Callers that don't need streaming pass `None` for the callback.
 
 ### Frontend Query Features
 
-The frontend detects whether it's served by the web server (`location.protocol !== 'file:'`). When served, the search bar placeholder changes to "Search nodes or ask a question..." and pressing Enter with free-form text (containing spaces or no autocomplete matches) triggers a query instead of a node search.
+The SPA detects whether the search bar input is a free-form question and triggers a query instead of a node search. Pressing Enter on free-form text (containing spaces or no autocomplete matches) opens the query stream.
 
 **Traversal animation**: As the agent explores the graph, nodes transition through visual states via a staggered animation queue (250ms delay between nodes). Visited nodes (touched by tool calls) glow orange (`#ffaa00`) with a 20px shadow blur. Final result nodes glow green (`#00ff88`) with a 30px shadow blur and +3px radius. Labels are always shown for visited and result nodes regardless of zoom level. Traversal particles emit along edges from visited nodes. The camera progressively widens via `zoomToFit` on the accumulated set of visited nodes (rather than jumping node-to-node). Deactivated entries are filtered out of the visualization entirely — `extract_graph_data()` collects inactive entry IDs and excludes their nodes and any edges touching them.
 
-**Info panel**: Clicking an entry node opens a panel (right side) showing metadata with bold white labels (Type, Tags, Project, Confidence, By). Confidence is displayed as a percentage (e.g., "95%"). An expandable "Full Entry..." accordion fetches the full `knowledge_details` on demand from `/api/entry/{id}` and renders it as markdown. The accordion caches fetched content to avoid re-fetching.
+**Info panel**: Clicking an entry node opens a panel (right side) showing metadata with bold white labels (Type, Tags, Project, Confidence, By). Confidence is displayed as a percentage (e.g., "95%"). An expandable "Full Entry..." accordion fetches the full `knowledge_details` on demand from the entry endpoint and renders it as markdown. The accordion caches fetched content to avoid re-fetching.
 
-**Chat panel**: For `summarize` queries, the response opens a multi-turn chat panel instead of a static response panel. The chat panel appears at the search bar's position — the search bar fades out (`opacity 0.25s`, `translateY(4px)`), then the chat panel slides in with a `scaleY(0.05 → 1)` animation over 0.3s (transform-origin: top left). The panel contains the original question (right-aligned user bubble) and synthesized answer (left-aligned assistant bubble), with a text input and Send button at the bottom. Pressing Enter or clicking Send posts to `/api/chat/stream`, shows a typing indicator with animated dots, and streams the response into a new assistant bubble. The close button is a prominent 28px grey circle with a bold white X. Closing the chat reverses the animation (scaleY collapse → search bar fades back in after 300ms).
+**Chat panel**: For `summarize` queries, the response opens a multi-turn chat panel instead of a static response panel. The chat panel appears at the search bar's position — the search bar fades out (`opacity 0.25s`, `translateY(4px)`), then the chat panel slides in with a `scaleY(0.05 → 1)` animation over 0.3s (transform-origin: top left). The panel contains the original question (right-aligned user bubble) and synthesized answer (left-aligned assistant bubble), with a text input and Send button at the bottom. Pressing Enter or clicking Send posts to the chat stream endpoint, shows a typing indicator with animated dots, and streams the response into a new assistant bubble. Closing the chat reverses the animation (scaleY collapse → search bar fades back in after 300ms).
 
 **SSE event handling**: The frontend reads the SSE stream with `fetch()` + `ReadableStream`, parsing `event:` and `data:` lines. JSON parse errors and event handler errors are caught in separate try/catch blocks to prevent one from swallowing the other. Status messages appear in a fixed status line below the search bar, updating in real time as the agent works ("Searching knowledge base...", "Exploring neighbors of tag:python...", "Synthesizing answer from 5 entries...").
 
 ### Auto-Start and kb_explore Tool Integration
 
-The explorer web server auto-starts during MCP server lifespan when `KB_AUTO_EXPLORE` is `TRUE` (the default). The lifespan calls `start_explorer_server()` with `kill_existing=False`, which first checks `_is_explorer_healthy(port)` — an httpx GET to `/api/graph` with a 2-second timeout. If a healthy explorer is already running (e.g. from another MCP instance), auto-start skips silently. If the port is free, it starts uvicorn as an `asyncio.create_task`. The port is configurable via `KB_EXPLORE_PORT` (default 8767), enabling dual-KB setups where personal and team explorers run on different ports.
-
-The `kb_explore` MCP tool calls `start_explorer_server()` with `kill_existing=True` — if another process holds the port, it kills it via `_kill_port_holder()` (lsof + SIGTERM, skipping own PID) and takes over. If the server is already running in the same process (`_web_server_task` is alive), it returns immediately. After ensuring the server is up, the tool opens the browser. If the server fails to start, it falls back to static `file://` mode — writing a temp HTML file and opening it with `webbrowser.open()`.
-
-The standalone `personal-kb-web` CLI (`web/cli.py`) runs the same web app via `uvicorn.run()` on port 8767, opening the browser after a 1-second delay. This is useful for browsing the KB outside of an MCP session.
+In the thin-client split, the MCP server no longer hosts the explorer locally — the hosted web service serves it permanently. The `kb_explore` MCP tool (`src/personal_kb/tools/kb_explore.py`) is now a tiny wrapper that returns the hosted explorer URL for the caller to open in a browser. The legacy `KB_AUTO_EXPLORE`, `KB_EXPLORE_PORT`, uvicorn-as-asyncio-task, port-stealing, and static `file://` fallback machinery is gone; the equivalent runs once in the web service's own lifespan, not per MCP session.
 
 ### Multi-Turn Chat
 
-When a `summarize` query completes, the frontend opens a chat panel seeded with the original question and synthesized answer. Follow-up messages are sent to `/api/chat/stream`, which maintains conversation state server-side.
+When a `summarize` query completes, the frontend opens a chat panel seeded with the original question and synthesized answer. Follow-up messages are sent to the chat stream endpoint, which maintains conversation state server-side.
 
-**ChatSession** (`web/chat.py`): Holds the conversation as a `list[Message]` (where `Message = dict[str, str]` with `role` and `content` keys). The `seed()` method initializes the conversation with the original Q+A pair and the entry IDs from the summarize result. On each `reply()`, the session: (1) appends the user message, (2) trims history if over budget, (3) runs `hybrid_search` with `limit=5` to find entries relevant to the follow-up, (4) builds a system prompt that includes `_CHAT_SYSTEM_PROMPT` plus the full `knowledge_details` of all known entries, (5) calls `llm.generate_chat(messages, system=system)`, and (6) appends the assistant response. New entry IDs discovered during retrieval are accumulated in `self.entry_ids` and reported back via the `chat_done` event so the frontend can highlight them on the graph.
+**ChatSession** (`personal-kb-web-service/src/kb_service/chat.py`): Holds the conversation as a `list[Message]` (where `Message = dict[str, str]` with `role` and `content` keys). The `seed()` method initializes the conversation with the original Q+A pair and the entry IDs from the summarize result. On each `reply()`, the session: (1) appends the user message, (2) trims history if over budget, (3) runs `hybrid_search` (via the shared `KnowledgeBase`) with `limit=5` to find entries relevant to the follow-up, (4) builds a system prompt that includes the chat system prompt plus the full `knowledge_details` of all known entries, (5) calls `llm.generate_chat(messages, system=system)`, and (6) appends the assistant response. New entry IDs discovered during retrieval are accumulated in `self.entry_ids` and reported back via the `chat_done` event so the frontend can highlight them on the graph.
 
-**Write tools**: When `WriteDeps` (a dataclass holding store, graph_builder, graph_enricher, extraction_llm, contributor, team) is provided, the chat session gains a mini-ReAct loop with three tools: `get_entry` (fetch full entry details), `update_entry` (modify an existing entry), and `ingest_url` (fetch and ingest a URL). The LLM emits tool calls as `{"tool": "...", "args": {...}}` JSON blocks, which `_parse_tool_call()` extracts from the response. `_dispatch_tool()` executes the tool, injects the result as a user message, and re-queries the LLM for a follow-up response. `get_entry` is always available (read-only); `update_entry` and `ingest_url` require write deps.
+**Write tools**: When write deps are available (the per-request `Attribution` carries the user's contributor/team), the chat session gains a mini-ReAct loop with three tools: `get_entry` (fetch full entry details), `update_entry` (modify an existing entry), and `ingest_url` (fetch and ingest a URL). The LLM emits tool calls as `{"tool": "...", "args": {...}}` JSON blocks, which `_parse_tool_call()` extracts from the response. `_dispatch_tool()` executes the tool, injects the result as a user message, and re-queries the LLM for a follow-up response. `get_entry` is always available (read-only); `update_entry` and `ingest_url` require write deps.
 
-**Token budget**: `_MAX_CONVERSATION_CHARS = 100_000` (~25K tokens). When the total character count exceeds this, `_trim_history()` preserves the first 2 messages (the seed Q+A that grounds the conversation) and the most recent messages, dropping middle turns until the budget is met. No summarization pass — just a sliding window.
+**Token budget**: `_MAX_CONVERSATION_CHARS = 100_000` (~25K tokens). When the total character count exceeds this, the trimmer preserves the first 2 messages (the seed Q+A that grounds the conversation) and the most recent messages, dropping middle turns until the budget is met. No summarization pass — just a sliding window.
 
-**Session store**: Sessions are stored in-memory in a module-level dict keyed by UUID. `get_or_create_session()` creates a new session if no valid `session_id` is provided. Sessions are ephemeral — they don't survive server restarts.
+**Session store**: Sessions are stored in-memory in a module-level dict keyed by `(user_id, session_id)`. Recently-used `ChatSession` objects are kept in memory; there is no eviction or TTL (home-lab MVP). The chat-history routes (`kb_service/chat_history.py`) persist message logs into the service DB so a user's chats survive restarts.
 
-**SSE protocol**: The `/api/chat/stream` endpoint accepts `{message, session_id?, seed_question?, seed_answer?, seed_entry_ids?}`. It emits: `chat_session` (with the session ID), `chat_thinking` (before LLM call), `chat_done` (with newly discovered entry IDs), `chat_response` (with the answer text and session ID), and `stream_end`. Errors yield an `error` event with exception details.
+**SSE protocol**: The chat stream endpoint accepts `{message, session_id?, seed_question?, seed_answer?, seed_entry_ids?}`. It emits: `chat_session` (with the session ID), `chat_thinking` (before LLM call), `chat_done` (with newly discovered entry IDs), `chat_response` (with the answer text and session ID), and `stream_end`. Errors yield an `error` event with exception details.
 
-**LLMProvider.generate_chat()**: Added to the `LLMProvider` protocol alongside the existing `generate()` method. Takes `messages: list[Message]` and optional `system` prompt, returns `str | None`. Each backend implements it natively: Anthropic passes messages directly to `messages.create()`, Bedrock maps to `BRMessage` objects for the Converse API, and Ollama uses `/api/chat` (not `/api/generate`). The ReAct agent loop in `graph/agent.py` also uses `generate_chat()` — the old `_build_prompt()` function that flattened messages into a single string was deleted.
+**LLMProvider.generate_chat()**: Part of the `LLMProvider` protocol (in `kb_core/llm/provider.py`) alongside the existing `generate()` method. Takes `messages: list[Message]` and optional `system` prompt, returns `str | None`. Each backend implements it natively: Anthropic passes messages directly to `messages.create()`, Bedrock maps to `BRMessage` objects for the Converse API, and Ollama uses `/api/chat` (not `/api/generate`). The ReAct agent loop in `kb_core/graph/agent.py` also uses `generate_chat()`.
 
-See: `explorer/graph_data.py`, `explorer/renderer.py`, `web/app.py`, `web/routes.py`, `web/chat.py`, `web/classifier.py`, `web/events.py`, `web/cli.py`, `tools/kb_explore.py`
+See: `personal-kb-web-service/src/kb_service/graph_export.py`, `personal-kb-web-service/src/kb_service/chat.py`, `personal-kb-web-service/src/kb_service/classifier.py`, `personal-kb-web-service/src/kb_service/sse.py`, `personal-kb-web-service/src/kb_service/routes/`, `src/personal_kb/tools/kb_explore.py`
 
 ## Project Preflight (kb_preflight)
 
@@ -421,7 +198,7 @@ The `kb_preflight` tool is a lightweight project context primer that agents call
 
 The output has five sections. The Maps section lists all of a project's mental maps (uncapped — they're a small curated set); the other four cap at 5 entries each:
 
-1. **Maps** — `mental_map` entries for this project, rendered as `- [kb-XXXXX] short_title — long_title`. The `Maps:` section leads the output: it is the orientation directory an agent reads first to decide which maps to pull. Implemented by `_maps_sql()` in `preflight.py`, which filters on `entry_type = 'mental_map'` and orders by `created_at DESC` with no limit (maps are a small curated set, unlike the recent/conventions sections which cap at 5). See the Mental Maps section below for how this in-process pull pairs with the on-disk push index.
+1. **Maps** — `mental_map` entries for this project, rendered as `- [kb-XXXXX] short_title — long_title`. The `Maps:` section leads the output: it is the orientation directory an agent reads first to decide which maps to pull. Implemented by `_maps_sql()` in `kb_core/preflight.py`, which filters on `entry_type = 'mental_map'` and orders by `created_at DESC` with no limit (maps are a small curated set, unlike the recent/conventions sections which cap at 5). See the Mental Maps section below for how this in-process pull pairs with the on-disk push index.
 2. **Expiring entries** — entries with `expires_at` in a window from 7 days ago (grace period for recently expired) to 30 days ahead. Sorted by expiry date ascending, so the most urgent appear first. Each line includes an expiry badge: `[EXPIRED 2d ago]`, `[EXPIRES 5d]`, or `[EXPIRES 12h]`.
 3. **Recent decisions & lessons** — entries with `entry_type` of `decision` or `lesson_learned`, sorted by `created_at` descending. An optional `since` parameter (same TTL format as `kb_store` — `7d`, `2w`, `24h`) narrows to a time window; omitting it shows all.
 4. **Active conventions** — `pattern_convention` entries, always shown regardless of `since`.
@@ -433,7 +210,7 @@ Output format is compact — entry ID, type, and short title only. Agents use `k
 
 **Design note.** An earlier approach tried CWD-based project detection — the MCP server subprocess inherits the client's working directory, so we attempted fuzzy matching against known `project_ref` values to inject context automatically at startup. This was removed because CWD is unreliable for subprocess spawning. The current design is explicit: agents call `kb_preflight(project_ref="my-project")` when they need context.
 
-See: `preflight.py`, `tools/kb_preflight.py`
+See: `kb_core/preflight.py`, `src/personal_kb/tools/kb_preflight.py`
 
 ## Mental Maps
 
@@ -441,22 +218,22 @@ The `mental_map` entry type is the directory tier of the KB: an orientation node
 
 ### The `mental_map` entry type and decay exemption
 
-`EntryType.MENTAL_MAP = "mental_map"` is the fifth member of the `EntryType` enum in `models/entry.py`, sharing all storage, versioning, FTS, embedding, and graph plumbing with the four value-bearing types. The one place it diverges is `confidence/decay.py:compute_effective_confidence`, which checks for `MENTAL_MAP` first and early-returns `base_confidence` without consulting any half-life table:
+`EntryType.MENTAL_MAP = "mental_map"` is the fifth member of the `EntryType` enum in `kb_core/models/entry.py`, sharing all storage, versioning, FTS, embedding, and graph plumbing with the four value-bearing types. The one place it diverges is `kb_core/confidence/decay.py:compute_effective_confidence`, which checks for `MENTAL_MAP` first and early-returns `base_confidence` without consulting any half-life table:
 
 ```python
 if entry_type == EntryType.MENTAL_MAP:
     return base_confidence
 ```
 
-The rationale is double-edged. First, a map holds no retrievable value of its own — there is nothing on it that goes stale on a clock. Second, the system's access-aware self-heal — `db/queries.py:touch_accessed` resets `last_accessed` on every `kb_get`, which is the decay anchor — would make a constantly-surfaced map look "fresh" while its pointers rotted, and a correct-but-cold map trip stale. Both directions are backwards for an orientation node, so the entire clock is bypassed. Freshness for a map is *pointer-validity*, computed on retrieval (see "On-GET pointer-rot" below), not a half-life decay.
+The rationale is double-edged. First, a map holds no retrievable value of its own — there is nothing on it that goes stale on a clock. Second, the system's access-aware self-heal — `kb_core/db/queries.py:touch_accessed` resets `last_accessed` on every `kb_get`, which is the decay anchor — would make a constantly-surfaced map look "fresh" while its pointers rotted, and a correct-but-cold map trip stale. Both directions are backwards for an orientation node, so the entire clock is bypassed. Freshness for a map is *pointer-validity*, computed on retrieval (see "On-GET pointer-rot" below), not a half-life decay.
 
 The lookup of the four remaining types is `HALF_LIVES.get(entry_type, 365.0)`. The `.get()` with a one-year default is the §7.2 same-commit guard rail: a future enum member can never `KeyError` the decay path.
 
-See: `models/entry.py`, `confidence/decay.py`.
+See: `kb_core/models/entry.py`, `kb_core/confidence/decay.py`.
 
 ### Required-outbound-pointer validation on store
 
-A map is defined by what it points *to*. A map with zero outbound pointers is, definitionally, an orphan note — not a map. `tools/kb_store.py:_mental_map_has_pointer()` enforces this **before** `create_entry` runs, so an orphan never produces a row or a version record:
+A map is defined by what it points *to*. A map with zero outbound pointers is, definitionally, an orphan note — not a map. `src/personal_kb/tools/kb_store.py:_mental_map_has_pointer()` enforces this **before** `create_entry` runs, so an orphan never produces a row or a version record:
 
 ```python
 if entry_type == EntryType.MENTAL_MAP and not _mental_map_has_pointer(
@@ -465,7 +242,7 @@ if entry_type == EntryType.MENTAL_MAP and not _mental_map_has_pointer(
     return ORPHAN_MAP_ERROR
 ```
 
-The check is a closed checklist that mirrors `graph/builder.py`'s edge-producing logic exactly (lines 52-86). An outbound pointer exists iff *any* of these is true:
+The check is a closed checklist that mirrors `kb_core/graph/builder.py`'s edge-producing logic exactly. An outbound pointer exists iff *any* of these is true:
 
 1. `knowledge_details` contains a `kb-XXXXX` reference (matched with the same `re.compile(r"kb-\d{5}")` the builder uses);
 2. the `supersedes` hint contains a string that `fullmatch`es `kb-XXXXX`;
@@ -480,11 +257,11 @@ The error message returned to the caller is a single constant, `ORPHAN_MAP_ERROR
 
 This is the only place in the `kb_store` pipeline where mental_map content is *rejected*. The fact-free lint below is advisory only and never blocks.
 
-See: `tools/kb_store.py` (`_mental_map_has_pointer`, `ORPHAN_MAP_ERROR`), `graph/builder.py` (edges 52-86).
+See: `src/personal_kb/tools/kb_store.py` (`_mental_map_has_pointer`, `ORPHAN_MAP_ERROR`), `kb_core/graph/builder.py`.
 
 ### Advisory fact-free lint
 
-The §7.3 invariant — *"no retrievable value in assertion position"* — is enforced as a **deterministic, regex-based, advisory-only** heuristic in `tools/map_lint.py`. The module's contract is deliberately narrow:
+The §7.3 invariant — *"no retrievable value in assertion position"* — is enforced as a **deterministic, regex-based, advisory-only** heuristic in `src/personal_kb/tools/map_lint.py`. The module's contract is deliberately narrow:
 
 - Pure function: `lint_map_body(text) -> list[str]`. No I/O, no LLM, no network. Never raises.
 - Every returned string starts with the literal prefix `Map lint (advisory): `. The module exposes no `Error:` path. The store always succeeds; the warnings are informational.
@@ -505,11 +282,11 @@ The heuristic categories, in order of how `lint_map_body` evaluates them:
 
 The discriminator the prespec frames it with: *would a reader act on this number/string directly* (forbidden — a retrievable value) *or follow it to a source* (fine — a pointer)?
 
-See: `tools/map_lint.py`, `tools/kb_store.py` (`_prepend_map_advisories`, gating), `tools/kb_store_batch.py`.
+See: `src/personal_kb/tools/map_lint.py`, `src/personal_kb/tools/kb_store.py` (`_prepend_map_advisories`, gating), `src/personal_kb/tools/kb_store_batch.py`.
 
 ### On-GET pointer-rot
 
-Because maps don't decay on a clock (§7.4), the freshness signal moves to retrieval. `tools/kb_get.py:_pointer_rot_note` runs only when the retrieved entry's type is `MENTAL_MAP`; for every other entry type the function returns `None` immediately, so non-map `kb_get` output is **byte-identical** to before.
+Because maps don't decay on a clock (§7.4), the freshness signal moves to retrieval. `src/personal_kb/tools/kb_get.py:_pointer_rot_note` runs only when the retrieved entry's type is `MENTAL_MAP`; for every other entry type the function returns `None` immediately, so non-map `kb_get` output is **byte-identical** to before.
 
 For a mental_map, the function resolves the entry's **outbound** graph edges via `get_neighbors(db, entry.id, direction="outgoing")` with no `edge_types` filter — it sees every outgoing edge, of which only those whose target matches `kb-\d{5}` are treated as pointers. (Tag/project/person/tool nodes are filtered out by the kb-id regex check before any extra DB lookup is made.) A target is *rotted* if either of these holds:
 
@@ -526,14 +303,14 @@ When **both** apply, the superseded form wins, because naming the actionable rep
 
 Two implementation details worth calling out:
 
-- The function deliberately bypasses `kb_get`'s top-level *"not is_active → not found"* short-circuit when resolving targets — a deactivated target is precisely the rot signal we want to surface, not hide. It calls `db/queries.get_entry` directly, which has no `is_active` filter.
+- The function deliberately bypasses `kb_get`'s top-level *"not is_active → not found"* short-circuit when resolving targets — a deactivated target is precisely the rot signal we want to surface, not hide. It calls `kb_core/db/queries.py:get_entry` directly, which has no `is_active` filter.
 - This is the **on-GET** check, not a new always-on badge subsystem (per §7.4). It deliberately reuses the supersedes edges the graph builder already maintains; no new edge type, no new index, no badge in `format_entry_compact`. There is also **no freshness inheritance** — a map's effective confidence does not depend on its leaves' confidence, which would manufacture a permanent-staleness trap.
 
-See: `tools/kb_get.py` (`_pointer_rot_note`, gating at line 124), `graph/queries.py:get_neighbors`, `db/queries.py:get_entry`.
+See: `src/personal_kb/tools/kb_get.py` (`_pointer_rot_note`), `kb_core/graph/queries.py:get_neighbors`, `kb_core/db/queries.py:get_entry`.
 
 ### The Maps index pull half
 
-`kb_preflight` is the in-process pull half of the §7.7 surfacing design. The relevant SQL lives in `preflight.py:_maps_sql`:
+`kb_preflight` is the in-process pull half of the §7.7 surfacing design. The relevant SQL lives in `kb_core/preflight.py:_maps_sql`:
 
 ```python
 "SELECT id, short_title, long_title "
@@ -546,72 +323,46 @@ See: `tools/kb_get.py` (`_pointer_rot_note`, gating at line 124), `graph/queries
 
 `build_project_context` runs this query alongside the other preflight queries, and renders results into a **`Maps:`** section that leads the output (before Expiring / Recent / Conventions / Related). Each line follows the format `  - [<id>] <short_title> — <long_title>` — id plus both titles, no type label (redundant inside a Maps section), with U+2014 EM DASH between the two titles. When the project has no maps, the section is omitted entirely; an empty Maps block never renders.
 
-The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC` (no limit) — is reused by the on-disk push index (`personal_kb.maps_index_writer.write_project_maps`), so the two halves of the surfacing design always agree on which maps are "the maps" for a project. The push half is described in the CLI Hook section below.
+The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC` (no limit) — is reused by the hosted web service's `GET /api/kb/maps-index` route (`personal-kb-web-service/src/kb_service/routes/maps_routes.py`), which computes the per-project maps index on demand from the live DB so the on-disk JSONL the hook reads is always fresh by construction. The push half — how the hook actually pulls and caches that index — is described in the CLI Hook section below.
 
-See: `preflight.py` (`_maps_sql`, the `Maps:` block in `build_project_context`), `tools/kb_preflight.py`.
+See: `kb_core/preflight.py` (`_maps_sql`, the `Maps:` block in `build_project_context`), `src/personal_kb/tools/kb_preflight.py`, `personal-kb-web-service/src/kb_service/routes/maps_routes.py`.
 
 ## CLI Hook (personal-kb-hook)
 
-The repo ships a console script — `personal-kb-hook` — that is wired into Claude Code's `SessionStart` and `UserPromptSubmit` hooks and is the "push" half of the mental_map surfacing design (the in-process `kb_preflight` Maps section, documented above, is the "pull" half). The hook is intentionally tiny and stdlib-only — argparse, json, pathlib, sys. It is published as a **separate package** so its install footprint is genuinely zero-third-party-dependency.
+The repo ships a console script — `personal-kb-hook` — that is wired into Claude Code's `SessionStart`, `UserPromptSubmit`, and `Stop` hooks. It is the "push" half of the mental_map surfacing design (the in-process `kb_preflight` Maps section, documented above, is the "pull" half) AND the launcher for the anticipatory-listener whisper loop (described in the next section). The hook is intentionally tiny and stdlib-only — argparse, json, urllib, pathlib, sys. It is published as a **separate package** so its install footprint is genuinely zero-third-party-dependency.
 
-### Package split (runtime vs writer)
+### Package layout
 
-The hook design has two halves that run in completely different processes, and they now live in two separate distributions:
+The runtime package lives at `packages/personal-kb-hook/src/personal_kb_hook/`. Its modules are:
 
-| Half | Process | Distribution | Path on disk |
-|---|---|---|---|
-| **Runtime** (cli, resolver, index_reader, render, suppression, paths) | CLI hook subprocess on every `SessionStart` / `UserPromptSubmit` | `personal-kb-hook` (zero deps) | `packages/personal-kb-hook/src/personal_kb_hook/` |
-| **Writer** (refreshes the on-disk JSONL maps index after every `mental_map` create/update/deactivate) | MCP server | `personal-kb` (the main server package) | `src/personal_kb/maps_index_writer.py` |
-
-The runtime package imports **only the Python standard library** and the main `personal_kb` distribution. A test in the runtime package's own suite (`packages/personal-kb-hook/tests/test_hook_cli.py::test_hook_package_is_stdlib_only_and_does_not_import_main_package`) walks every `.py` file in the package, parses the AST, and asserts every `import` / `from ... import` resolves to either a `sys.stdlib_module_names` root or the package's own `personal_kb_hook` namespace.
-
-The writer half stays in the main package because it imports `personal_kb.preflight._maps_sql` and runs against a `personal_kb.db.backend.Database` — server-only dependencies. Splitting it out would force the standalone hook to either re-implement the SQL (drift risk) or take a Postgres/SQLite dep (defeats the zero-dep goal).
-
-### Duplicated path helpers + drift guard
-
-The on-disk path contract is the one piece of shared knowledge between the two halves. Rather than introduce a cross-package import (which would either require publishing both packages together or pinning a self-referential git dep), the two helpers are **duplicated**:
-
-| Side | Module | Function | Returns |
-|---|---|---|---|
-| Main package | `personal_kb.config` | `get_maps_index_path()` | `<KB_DB_PATH dir>/maps_index.jsonl` |
-| Main package | `personal_kb.config` | `get_hook_scratch_path(session_id)` | `~/.cache/personal_kb/injected-<session_id>.json` |
-| Standalone hook | `personal_kb_hook.paths` | `get_maps_index_path()` | identical |
-| Standalone hook | `personal_kb_hook.paths` | `get_hook_scratch_path(session_id)` | identical |
-
-A **drift guard** test in the main repo (`tests/test_path_drift_guard.py`) imports both implementations and asserts they produce identical paths for representative inputs, including a custom `KB_DB_PATH` and tilde expansion. If you change one side, change the other and re-run that test. It runs as part of the main `uv run pytest -m "not eval"` gate.
-
-### The JSONL maps index
-
-`get_maps_index_path()` (on either side) returns `<KB_DB_PATH dir>/maps_index.jsonl` (default `~/.local/share/personal_kb/maps_index.jsonl`). One project per line, shape:
-
-```jsonl
-{"project_ref": "personal-kb", "maps": [{"id": "kb-00310", "short_title": "ingestion", "long_title": "Ingestion flow"}, ...]}
-```
-
-The map list is **not capped** (maps are a small curated set) — the writer runs the **exact same predicate as `preflight._maps_sql`** (`ORDER BY created_at DESC`, all maps), so the on-disk index has the same shape as the `Maps` section of `kb_preflight` for the same project.
-
-### Writer hook points
-
-`personal_kb.maps_index_writer.write_project_maps()` is called from three places inside the MCP server, each gated on `entry.entry_type == EntryType.MENTAL_MAP` and each wrapped in best-effort `try / except` (mirroring the existing `_build_graph` wrapper). A writer failure logs a `WARNING` and returns; it never fails the store path:
-
-| Caller | Trigger |
+| Module | Role |
 |---|---|
-| `tools/kb_store.kb_store` (CREATE path) | After the re-fetch following `create_entry` |
-| `tools/kb_store.kb_store` (UPDATE path) | After the re-fetch following `update_entry` |
-| `tools/kb_store.kb_store` (DEACTIVATE path) | After `store.deactivate_entry` and *before* the early return — the re-query naturally excludes the now-inactive row |
-| `tools/kb_store_batch.batch_store_entries` | Once per distinct `project_ref` that received a `mental_map`, after the create loop |
+| `cli.py` | Console-script entry point: parses stdin payload, branches on `hook_event_name` |
+| `resolver.py` | `.kb_project` walk-up resolver |
+| `roster.py` | Multi-KB roster loader (`kbs.json`) |
+| `http_index.py` | Maps-index fan-out across the roster (consumes `/api/kb/maps-index`) |
+| `index_reader.py` | `MapEntry` / `MapKey` types |
+| `render.py` | Factual non-imperative directory and whisper rendering |
+| `suppression.py` | Per-session "only on change" scratch |
+| `paths.py` | Cache and config path helpers |
+| `listener.py` | Listener env gate, transcript extraction, cache helpers, worker spawn |
+| `listener_worker.py` | Detached multi-KB fan-out worker for the listener gate |
 
-The write itself is whole-file-atomic: read existing lines, drop the target project's line (if any), append a fresh record (or omit the line entirely if the project has zero active maps), then `tempfile.NamedTemporaryFile` → `os.replace`.
+The runtime package imports **only the Python standard library**. A test in the runtime package's own suite (`packages/personal-kb-hook/tests/test_hook_cli.py::test_hook_package_is_stdlib_only_and_does_not_import_main_package`) walks every `.py` file in the package, parses the AST, and asserts every `import` / `from ... import` resolves to either a `sys.stdlib_module_names` root or the package's own `personal_kb_hook` namespace.
+
+### Maps index — service-computed, hook-consumed
+
+The hook used to read an on-disk JSONL maps index written by the MCP server. In the thin-client split the maps index is computed by the hosted web service — `GET /api/kb/maps-index` (in `personal-kb-web-service/src/kb_service/routes/maps_routes.py`) queries the live DB on each request, using the exact predicate of `kb_core/preflight.py:_maps_sql`, and returns the same shape: one entry per project with at least one active map, sorted ascending by `project_ref`. The hook's `http_index.load_index(roster)` fans the request across every KB in the roster concurrently (using stdlib `urllib`) and returns the merged `dict[str, list[tuple[label, MapEntry]]]` keyed by project. Per-session suppression remains the hook's job (`packages/personal-kb-hook/src/personal_kb_hook/suppression.py`).
 
 ### `.kb_project` walk-up resolver
 
 `personal_kb_hook.resolver.resolve_project(cwd)` walks from `Path(cwd)` through each parent up to the filesystem root, returning the first non-blank, non-comment line of the first `.kb_project` it finds. The file is **committed to the repo** — portable across machines and users, no per-user TOML, no git-origin lookups. The walk is tolerant: a falsy `cwd`, a missing/unreadable/empty/comment-only `.kb_project`, or any unexpected I/O error returns `None` and never raises.
 
-This is the v1 scope anchor for **both** the SessionStart and UserPromptSubmit hooks. `cwd` is reliably present in both hook payloads (unlike the MCP server subprocess, where CWD is unreliable — see the design note in the kb_preflight section). FTS/keyword matching on the prompt is **out of scope for v1**; it is deferred to a v1.1 within-project map refiner that picks *which* of a multi-map project's maps to surface, not *which project*.
+This is the v1 scope anchor for both the `SessionStart` and `UserPromptSubmit` hooks. `cwd` is reliably present in both hook payloads (unlike the MCP server subprocess, where CWD is unreliable — see the design note in the kb_preflight section). FTS/keyword matching on the prompt is **out of scope for v1**; it is deferred to a v1.1 within-project map refiner that picks *which* of a multi-map project's maps to surface, not *which project*.
 
 ### Suppression scratch + compact bypass
 
-Hooks are stateless between turns; without a scratch file, "only on change" is unimplementable. `personal_kb_hook.suppression.should_emit()` and `mark_emitted()` read/write `~/.cache/personal_kb/injected-<session_id>.json` holding `{"last_scope": ..., "surfaced_map_ids": [...]}`.
+Hooks are stateless between turns; without a scratch file, "only on change" is unimplementable. `personal_kb_hook.suppression.should_emit()` and `mark_emitted()` read/write `~/.cache/personal_kb/injected-<session_id>.json` holding `{"last_scope": ..., "surfaced_map_ids": [...]}` (with `surfaced_map_ids` carried as `[label, id]` pairs since the multi-KB extension).
 
 The hook emits only when maps exist for the resolved scope AND at least one of:
 
@@ -630,39 +381,73 @@ After a successful emit, `mark_emitted()` unions the new ids into `surfaced_map_
 Maps for <project_ref> — [<id>] <short_title>: <long_title>; [<id>] <short_title>: <long_title>
 ```
 
-The separator after `<project_ref>` is U+2014 EM DASH (matching `preflight.py`'s separator). Entries are joined with `"; "` (semicolon-space). An entry whose `long_title` is empty renders as `[<id>] <short_title>` with no trailing `": "`.
+The separator after `<project_ref>` is U+2014 EM DASH (matching `kb_core/preflight.py`'s separator). Entries are joined with `"; "` (semicolon-space). An entry whose `long_title` is empty renders as `[<id>] <short_title>` with no trailing `": "`.
 
 The output is **factual, never imperative**. `render.py` defines a `BANNED_TOKENS` frozenset (`load`, `use`, `read`, `fetch`, `pull`, `open`, `retrieve`, `get`, `review`, `consult`); a unit test lowercases the rendered string and asserts none of those substrings appear. Imperative phrasing trips prompt-injection defenses and gets surfaced to the user instead of read by the model — that's the failure mode we are designing around.
 
 For `--format=claude-json`, `render_claude_json()` wraps the same directory string in `{"hookSpecificOutput": {"hookEventName": <event>, "additionalContext": <directory>}}` — the envelope Claude Code understands.
 
-### Why the hook never touches the DB
+### Why the hook never talks to the DB directly
 
-The MCP server starts as an `stdio` subprocess. A `SessionStart` hook can fire before that subprocess has connected; a hook that called the MCP would race that startup. SQLite directly is also off the table — it would couple the hook to the database backend (the deployed server might be Postgres), and it would need read-only file locking semantics across instances. The JSONL index sidesteps both problems: the MCP server is the single writer, the hook is read-only, atomic rewrites mean the hook only ever sees fully-formed lines.
+The MCP server starts as an `stdio` subprocess. A `SessionStart` hook can fire before that subprocess has connected; a hook that called the MCP would race that startup. SQLite directly is also off the table — it would couple the hook to the database backend (the deployed service is Postgres), and it would need read-only file locking semantics across instances. The HTTP maps-index sidesteps both problems: the hosted service is the single owner of truth, the hook is read-only, and HTTP failure modes are well-defined (timeout → no surface, error JSON → no surface).
 
 ### Running tests for both halves
 
 Both halves carry their own test suite:
 
-* **Main repo** (`uv run pytest -m "not eval"`): writer unit tests + writer↔reader round-trip + drift-guard.
-* **Standalone hook** (`(cd packages/personal-kb-hook && uv run --project ../.. pytest)`): cli / resolver / render / suppression / index-reader, plus the "no `personal_kb` and no third-party imports" assertion.
+* **Main repo** (`uv run pytest -m "not eval"`): MCP tool entry-point tests, the drift-guard / round-trip tests that pair with the hook, and the listener / hook integration tests reachable from this repo.
+* **Standalone hook** (`(cd packages/personal-kb-hook && uv run --project ../.. pytest)`): cli / resolver / render / suppression / index-reader / roster / listener / listener_worker, plus the "no third-party imports" assertion.
 
-The root `pyproject.toml` declares `[tool.uv.workspace] members = ["packages/*"]` and lists `personal-kb-hook` as a workspace dev dep, so `uv sync` installs the standalone package editable into the main `.venv` (needed by the drift-guard and the cross-package round-trip test in `tests/test_maps_index_writer.py`).
+The root `pyproject.toml` declares `[tool.uv.workspace] members = ["packages/*"]` and lists `personal-kb-hook` as a workspace dev dep, so `uv sync` installs the standalone package editable into the main `.venv` (needed by the cross-package tests).
 
-See: `packages/personal-kb-hook/src/personal_kb_hook/{cli,resolver,index_reader,render,suppression,paths}.py`, `src/personal_kb/maps_index_writer.py`.
+See: `packages/personal-kb-hook/src/personal_kb_hook/{cli,resolver,index_reader,render,suppression,paths,roster,http_index,listener,listener_worker}.py`.
 
-## References
+## Anticipatory Listener
 
-[1] G. V. Cormack, C. L. A. Clarke, and S. Büttcher. "Reciprocal rank fusion outperforms Condorcet and individual rank learning methods." *SIGIR 2009*. https://dl.acm.org/doi/10.1145/1571941.1572114
+The anticipatory listener is the third push surface (alongside `kb_preflight` and the maps directory): when an AI agent finishes a turn whose work clearly *touches* a particular orientation map's domain, the listener whispers exactly one pointer to that map into the *next* prompt. It is opt-in, retrieve-and-cite, and unanimous-gated. **Multi-KB whisper went LIVE 2026-06-15 (`kb-01839`); design of record is `kb-01828` (v2); listener design is `kb-01725`.** The listener has two halves: a server route in `personal-kb-web-service` that returns a candidate pointer for one KB, and a hook-side worker in `personal-kb-hook` that fans the request across the multi-KB roster, arbitrates the results, and queues the whisper for the next user prompt.
 
-[2] J. Sun et al. "Think-on-Graph: Deep and Responsible Reasoning of Large Language Model on Knowledge Graph." *arXiv:2307.07697*, 2023. https://arxiv.org/abs/2307.07697
+### Server route — `POST /api/kb/listener`
 
-[3] D. Edge et al. "From Local to Global: A Graph RAG Approach to Query-Focused Summarization." Microsoft Research, 2024. https://arxiv.org/abs/2404.16130
+The route lives at `personal-kb-web-service/src/kb_service/routes/listener_routes.py`. Its contract:
 
-[4] W. Zhong et al. "MemoryBank: Enhancing Large Language Models with Long-Term Memory." *AAAI 2024*. https://arxiv.org/abs/2305.10250
+- **Request body** (`ListenerRequest` in `personal-kb-web-service/src/kb_service/models.py`): `{text: str, cwd_project: str | None, operating: list[str], source_label: str | null}`.
+- **Response body** (`ListenerResponse`): `{pointer: {id, short_title} | null}`.
 
-[5] J. S. Park et al. "Generative Agents: Interactive Simulacra of Human Behavior." *UIST 2023*. https://arxiv.org/abs/2304.03442
+The route's behaviour, step by step:
 
-[6] Z. Guo et al. "LightRAG: Simple and Fast Retrieval-Augmented Generation." *arXiv:2410.05779*, 2024. https://arxiv.org/abs/2410.05779
+1. **Kill switch.** The env var `KB_LISTENER_ENABLED` is read **per request, server-side**, with a default of `'FALSE'`. The route returns `{pointer: null}` immediately unless the value uppercases to exactly `'TRUE'`. The pilot ran with the gate off by default on the dev server; flipping it on is an explicit operator action.
+2. **Candidate retrieval.** `kb.search` is called over `EntryType.MENTAL_MAP` with `limit=5` using the request text as the query. The retrieval is just the kb-core hybrid search — no special listener-only index.
+3. **Rule A — same-project drop.** Every candidate whose `entry.project_ref` equals the request's `cwd_project` is dropped. When `cwd_project` is `null`, Rule A drops nothing. The intent: a map of your *current* project is not a useful surprise — preflight already showed it.
+4. **Rule B — operated_via drop.** Every candidate whose `entry.hints['operated_via']` (a string) is in the request's `operating` list is dropped. Maps with no `operated_via` hint are never dropped by Rule B. The intent: if an agent is already actively operating a tool, naming its map is noise.
+5. **Short-circuit.** If no candidates survive A+B, or `kb.synthesis_llm is None`, return `{pointer: null}`.
+6. **LLM gate — unanimous-3.** The route fires **3 concurrent** `kb.synthesis_llm.generate(prompt)` calls. The synthesis LLM is the *synthesis slot* (Sonnet in the pilot configuration) — the model is NOT hard-coded in the route; it's whatever the `KnowledgeBase` was configured with. Each vote is parsed (a `NONE` answer or any non-candidate id becomes `None`). The route returns a pointer ONLY when all 3 votes are identical AND non-None (unanimous-3, retrieve-and-cite: the winner's id must come from the surviving candidate set).
+7. **Prompt project label.** When the gate prompt mentions the project the agent is working in, the label resolves `source_label → cwd_project → 'unknown'` (in that order, first non-None wins).
 
-The research survey that informed the entity deduplication, access-aware decay, and sparse graph hints features is documented in the KB itself (entries kb-00111 and kb-00112), produced by a multi-agent paper review of ~12 GraphRAG papers from the HuggingFace graphrag-papers collection.
+The verdict is intentionally strict. The asymmetric cost is the whole point of the listener design (kb-01725): a false positive (surfacing an irrelevant map into the next prompt) is much worse than a false negative (staying silent), so the gate stays silent unless all three votes agree on the same candidate.
+
+### Hook-side multi-KB fan-out
+
+The hook lives in `packages/personal-kb-hook/`. Its listener-side modules are:
+
+- `personal_kb_hook.listener` — env gate (`is_listener_enabled`), transcript extraction (`extract_manifest`), cache helpers, and the detached-worker spawner (`spawn_worker`).
+- `personal_kb_hook.listener_worker` — the detached subprocess that does the actual multi-KB fan-out, arbitration, and cache merge.
+- `personal_kb_hook.roster` — the multi-KB roster loader (`load_roster()`).
+- `personal_kb_hook.cli` — wires the `Stop` event to spawn the worker and the `UserPromptSubmit` event to consume the worker's output.
+
+The end-to-end flow on a Claude Code `Stop` event:
+
+1. **Env gate.** `cli.py` calls `listener.is_listener_enabled()`, which requires **all three** of `PERSONAL_KB_URL`, `PERSONAL_KB_API_KEY`, and `PERSONAL_KB_LISTENER` (lowercased value in `{'1', 'true'}`) to be set; otherwise the listener does nothing.
+2. **Manifest extraction.** `listener.extract_manifest(transcript_path)` does a bounded tail-scan (the last 256 KiB) of the Claude Code JSONL transcript and pulls the **last assistant record's** text blocks, head-capped to 4000 chars, plus the **sorted, de-duplicated** list of `'mcp:<server>'` strings derived from every tool_use block name across the tail window via the regex `^mcp__(.+?)__`. If the resulting text is shorter than 200 chars, no manifest is emitted and the listener exits cleanly.
+3. **Worker spawn.** `cli.py` writes the request JSON (`{text, cwd_project, operating, source_label}` — `cwd_project` and `source_label` are both the project-ref resolved from the cwd walk-up, since the hook has no separate "session label" concept) to a `NamedTemporaryFile` and calls `listener.spawn_worker(req_tmp_path, cache_path)`. The spawn uses `subprocess.Popen` with `start_new_session=True`, stdout/stderr redirected to `DEVNULL`, and **no `wait()` or `communicate()`** — the hook returns immediately so the agent's `Stop` event is not blocked. The worker is a fully detached `python -m personal_kb_hook.listener_worker`.
+4. **Roster load.** Inside the worker, `roster.load_roster()` reads `<XDG_CONFIG_HOME or ~/.config>/personal_kb/kbs.json` (the underscore directory, pinned by kb-01828) and returns a list of typed `KbEntry(label, url, key)` records. An empty roster (`[]`) is an explicit no-op (zero POSTs, cache untouched, exit 0); a missing/unreadable file falls back to a synthesized single `KbEntry(label='personal', ...)` from the `PERSONAL_KB_URL` + `PERSONAL_KB_API_KEY` env vars when both are present.
+5. **Per-KB POST.** For each roster entry, `_post_one_kb` does ONE POST to `{entry.url.rstrip('/')}/api/kb/listener` with `Authorization: Bearer {entry.key}`, `Content-Type: application/json`, a 30-second timeout, **stdlib `urllib` only**, and a single broad `try / except Exception → None`. Any failure for one KB (timeout, HTTPError, URLError, JSONDecodeError, non-dict body, missing `pointer` key, validation failure) yields `None` for that label and the loop continues. The worker NEVER raises into the operating system.
+6. **Suppress-only arbitration.** `_arbitrate(candidates, roster_entries, source_label)` is **client-side, suppress-only**. The steps, in order: (a) drop every null pointer; (b) title-dedup by `short_title.strip().casefold()`, keeping one winner per title group; (c) a defensive one-pointer-per-KB cap. The tie-break order between same-title duplicates is: the KB whose `label` equals the request's `source_label` IF that label is in the roster, else the KB labelled `'personal'` if in-roster, else the first roster entry. Arbitration **NEVER** elevates, re-scores, or reorders by relevance — it only suppresses duplicates. Each surviving KB contributes at most ONE pointer.
+7. **Cache merge.** The post-arbitration `winners` list (`[(label, pointer), ...]`) is atomically merged into the listener cache at `~/.cache/personal_kb/injected-<session_id>.json` as a per-KB-provenance `pending` list `[{label, id, short_title, long_title}, ...]`. `whispered_map_ids` is preserved in the `[label, id]` shape, with tolerant back-parse of any pre-multi-KB bare-id strings.
+
+On the next `UserPromptSubmit` event, `cli.py` reads the same cache, filters `pending` against `whispered_map_ids` (so a pointer is only whispered ONCE), applies the same tie-break ordering, and renders each surviving pointer through `render.render_whisper(...)` in factual non-imperative form. **At most one pointer per KB is whispered**; the rendered lines are appended below the directory output as the next prompt's `additionalContext`. After successful emission, the whispered pairs are merged into `whispered_map_ids` so the next prompt's surface set never repeats.
+
+### Arbitration parity port (evals)
+
+The server-side eval harness lives in `personal-kb-web-service/evals/listener/`. To prove that a multi-KB fan-out's union of per-KB pointers, after the hook's client-side suppress-only arbitration, matches the listener's go-live precision bar, the harness needs to replay the hook's `_arbitrate` semantics on synthetic candidate sets — but `personal-kb-hook` is intentionally not a dependency of the service repo (it lives in the `personal_kb` workspace and is stdlib-only). The harness therefore carries a **parity port** of the arbitration function at `personal-kb-web-service/evals/listener/arbitration.py`, byte-for-byte semantically aligned with `packages/personal-kb-hook/src/personal_kb_hook/listener_worker.py:_arbitrate`. The parity port carries the same `_LEGACY_LABEL = "personal"` constant and the same drop-nulls → title-dedup-with-tie-break → one-per-KB-cap step order.
+
+See: `personal-kb-web-service/src/kb_service/routes/listener_routes.py`, `personal-kb-web-service/src/kb_service/models.py` (`ListenerRequest`, `ListenerResponse`, `ListenerPointer`), `packages/personal-kb-hook/src/personal_kb_hook/listener.py`, `packages/personal-kb-hook/src/personal_kb_hook/listener_worker.py`, `packages/personal-kb-hook/src/personal_kb_hook/cli.py`, `packages/personal-kb-hook/src/personal_kb_hook/roster.py`, `personal-kb-web-service/evals/listener/arbitration.py`.
