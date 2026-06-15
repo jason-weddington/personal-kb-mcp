@@ -19,8 +19,13 @@ agent sessions.
   relevance engine — rule A (drop the session project's own maps), rule B
   (drop maps for systems the agent is operating, via `operated_via` hints on
   map entries), unanimous-3 Sonnet retrieve-and-cite. The `personal-kb-hook`
-  whispers the resulting pointer into the next agent turn. Validated at 1.00
-  precision / 0 false injections on the eval harness (`evals/listener/`).
+  fans this call out across a **roster of KBs** (personal + team), unions the
+  per-KB winners via a client-side suppress-only arbitration step, and whispers
+  one pointer per KB into the next agent turn. Single-KB Gate-1 validated at
+  1.00 precision / 0 false injections; the multi-KB go-live gate
+  (`evals/listener/run_p3.py`) gates on **0 union false-injections** (precision
+  informational) and **passed live 2026-06-15** — multi-KB whisper is live
+  (kb-01839).
 
 ## Topology
 
