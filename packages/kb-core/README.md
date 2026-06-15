@@ -94,6 +94,12 @@ vector search; omit it for FTS-only.
   which is the reference MCP channel built on `kb-core`. Same engine,
   agent-facing tools.
 
+## How it works
+
+Engine internals — schema, RRF fusion, decay literals, graph
+primitives, the LLM provider roles — are documented in
+[docs/how_it_works.md](docs/how_it_works.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
