@@ -87,6 +87,29 @@ _SCHEMA_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id)",
     "CREATE INDEX IF NOT EXISTS idx_chats_user_updated"
     " ON chats(user_id, updated_at DESC)",
+    # whisper_telemetry: SERVICE/AUTH DB sink for whisper-efficacy telemetry.
+    # Composite PRIMARY KEY (session_id, surface, map_id) — no surrogate id;
+    # the composite doubles as the ON CONFLICT conflict target so a Stop-flush
+    # carrying an updated consumed flag wins via DO UPDATE. trigger_context is
+    # a TEXT json.dumps() string (matches the module-wide TEXT/INTEGER
+    # convention — there is no asyncpg jsonb codec registered).
+    """
+    CREATE TABLE IF NOT EXISTS whisper_telemetry (
+        session_id TEXT NOT NULL,
+        host TEXT NOT NULL,
+        surface TEXT NOT NULL CHECK (surface IN ('roster', 'listener')),
+        map_id TEXT NOT NULL,
+        source_kb TEXT NOT NULL,
+        cwd_project TEXT,
+        trigger_context TEXT NOT NULL DEFAULT '{}',
+        emitted_ts TEXT NOT NULL,
+        consumed INTEGER NOT NULL DEFAULT 0,
+        consumed_ts TEXT,
+        build_engine TEXT,
+        flushed_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, surface, map_id)
+    )
+    """,
 ]
 
 

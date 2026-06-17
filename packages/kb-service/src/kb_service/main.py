@@ -32,6 +32,7 @@ from kb_service.routes.listener_routes import router as listener_router
 from kb_service.routes.maps_routes import router as maps_router
 from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
+from kb_service.routes.telemetry_routes import router as telemetry_router
 
 if TYPE_CHECKING:
     from kb_core import KnowledgeBase
@@ -174,6 +175,7 @@ app.include_router(kb_write_router)
 app.include_router(ingest_router)
 app.include_router(chat_router)
 app.include_router(listener_router)
+app.include_router(telemetry_router)
 
 
 @app.get("/api/health")

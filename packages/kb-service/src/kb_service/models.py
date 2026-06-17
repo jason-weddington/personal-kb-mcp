@@ -550,6 +550,51 @@ class ListenerResponse(BaseModel):
     pointer: ListenerPointer | None
 
 
+class WhisperTelemetryRow(BaseModel):
+    """One whisper-efficacy telemetry row (roster shown or listener whisper).
+
+    Mirrors the ``whisper_telemetry`` table.  ``trigger_context`` stays a
+    ``dict`` on the wire; the endpoint serializes it to a TEXT json string at
+    the DB boundary.  ``consumed`` is a bool on the wire and bound as ``int``
+    at the DB boundary.  ``build_engine`` is read defensively from
+    ``HEADLESS_BUILD_ENGINE`` on the hook side — ``None`` is the
+    interactive/control-plane case.
+    """
+
+    session_id: str
+    host: str
+    surface: Literal["roster", "listener"]
+    map_id: str
+    source_kb: str
+    cwd_project: str | None = None
+    trigger_context: dict[str, Any] = Field(default_factory=dict)
+    emitted_ts: str
+    consumed: bool = False
+    consumed_ts: str | None = None
+    build_engine: str | None = None
+
+
+class WhisperTelemetryFlushRequest(BaseModel):
+    """Request body for ``POST /api/kb/telemetry/whispers``.
+
+    One Stop-flush carries one session's accrued roster + listener rows;
+    ``max_length=500`` mirrors the literal style used by :class:`GetRequest`.
+    """
+
+    rows: list[WhisperTelemetryRow] = Field(default_factory=list, max_length=500)
+
+
+class WhisperTelemetryFlushResponse(BaseModel):
+    """Response for ``POST /api/kb/telemetry/whispers``.
+
+    ``upserted`` reports rows accepted (== ``len(body.rows)``), NOT a
+    DB-affected rowcount — the composite-key ON CONFLICT path may update or
+    insert per row, but the route reports acceptance.
+    """
+
+    upserted: int
+
+
 class IngestFileResult(BaseModel):
     """Lossless mirror of kb-core's ``FileResult`` dataclass for P5 round-trip.
 
