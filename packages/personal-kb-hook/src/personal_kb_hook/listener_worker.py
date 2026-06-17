@@ -45,16 +45,18 @@ invariant is preserved.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
+import socket
 import sys
 import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from personal_kb_hook import roster
+from personal_kb_hook import roster, telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +339,48 @@ def main() -> None:
 
         if winners:
             _merge_into_cache(Path(cache_path_str), winners)
+
+            # Whisper-telemetry listener emit at pointer-CACHE time (NOT POST
+            # time — POST can return null). One jsonl row per winner read from
+            # the request_data dict that is already in scope. append_row is
+            # internally silent-on-failure; main()'s outer except backstops
+            # anything else.
+            w_session_id = request_data.get("session_id")
+            w_cwd_project = request_data.get("cwd_project")
+            w_operating = request_data.get("operating")
+            w_text = request_data.get("text")
+            if isinstance(w_session_id, str) and w_session_id:
+                _host = socket.gethostname()
+                _engine = telemetry.build_engine()
+                _ts = telemetry.now_ts()
+                _excerpt_hash = (
+                    hashlib.sha256(w_text.encode("utf-8")).hexdigest()
+                    if isinstance(w_text, str)
+                    else ""
+                )
+                _operating_list = list(w_operating) if isinstance(w_operating, list) else []
+                _cwd_project_val = w_cwd_project if isinstance(w_cwd_project, str) else None
+                for w_label, w_pointer in winners:
+                    telemetry.append_row(
+                        w_session_id,
+                        {
+                            "session_id": w_session_id,
+                            "host": _host,
+                            "surface": "listener",
+                            "map_id": w_pointer["id"],
+                            "source_kb": w_label,
+                            "cwd_project": _cwd_project_val,
+                            "trigger_context": {
+                                "operating": _operating_list,
+                                "cwd_project": _cwd_project_val,
+                                "excerpt_hash": _excerpt_hash,
+                            },
+                            "emitted_ts": _ts,
+                            "consumed": False,
+                            "consumed_ts": None,
+                            "build_engine": _engine,
+                        },
+                    )
 
     except Exception:
         logger.debug("listener_worker: unhandled error", exc_info=True)

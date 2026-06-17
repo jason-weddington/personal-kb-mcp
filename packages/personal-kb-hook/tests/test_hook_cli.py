@@ -115,7 +115,12 @@ def test_tolerant_stdin(
 
 
 def test_unhandled_event_silent(monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]) -> None:
-    """An event we do not handle → exit 0 silent."""
+    """An event we do not handle → exit 0 silent.
+
+    PostToolUse is now a handled event (whisper-telemetry consume path); use
+    a still-unhandled event name (``PreToolUse``) to keep this assertion
+    valid.
+    """
     _write_index(
         hook_env["maps_index"],
         "personal-kb",
@@ -126,7 +131,7 @@ def test_unhandled_event_silent(monkeypatch: pytest.MonkeyPatch, hook_env: dict[
     rc, out = _run(
         monkeypatch,
         {
-            "hook_event_name": "PostToolUse",
+            "hook_event_name": "PreToolUse",
             "cwd": str(hook_env["root"]),
             "session_id": "s1",
         },

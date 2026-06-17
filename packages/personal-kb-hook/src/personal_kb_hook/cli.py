@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import sys
 import tempfile
 from typing import TYPE_CHECKING, Any
@@ -28,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-from personal_kb_hook import http_index, listener
+from personal_kb_hook import http_index, listener, telemetry
 from personal_kb_hook.index_reader import MapKey
 from personal_kb_hook.paths import get_listener_cache_path
 from personal_kb_hook.render import compose_directory, render_claude_json, render_whisper
@@ -36,7 +37,8 @@ from personal_kb_hook.resolver import resolve_project
 from personal_kb_hook.roster import load_roster
 from personal_kb_hook.suppression import mark_emitted, should_emit
 
-_SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop"})
+_SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse"})
+_KB_GET_TOOL_NAMES = frozenset({"mcp__personal-kb__kb_get", "mcp__team-kb__team_kb_get"})
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -106,9 +108,52 @@ def main(argv: list[str] | None = None) -> None:
         cwd_str = cwd if isinstance(cwd, str) else None
 
         # ------------------------------------------------------------------ #
+        # PostToolUse event: whisper-telemetry consume; NEVER touches index   #
+        # nor falls through to the directory pipeline. Silent-on-failure     #
+        # (the outer try/except in main() and telemetry.mark_consumed's own  #
+        # internal guard cover any error), always produces zero stdout,      #
+        # fires on EVERY kb_get and team_kb_get — must be ultra-cheap (no   #
+        # http_index.load_index, no resolve_project).                        #
+        # ------------------------------------------------------------------ #
+        if event_name == "PostToolUse":
+            tool_name = payload.get("tool_name")
+            if not isinstance(tool_name, str) or tool_name not in _KB_GET_TOOL_NAMES:
+                return
+            session_id_pt = payload.get("session_id")
+            if not isinstance(session_id_pt, str) or not session_id_pt:
+                return
+            tool_input = payload.get("tool_input")
+            if not isinstance(tool_input, dict):
+                return
+            entry_id_raw: Any = tool_input.get("entry_id")
+            # entry_id is str | list[str] per kb_get.py:49-50 — normalize.
+            consume_ids: set[str]
+            if isinstance(entry_id_raw, str):
+                if not entry_id_raw:
+                    return
+                consume_ids = {entry_id_raw}
+            elif isinstance(entry_id_raw, list):
+                consume_ids = {item for item in entry_id_raw if isinstance(item, str) and item}
+                if not consume_ids:
+                    return
+            else:
+                return
+            telemetry.mark_consumed(session_id_pt, consume_ids, telemetry.now_ts())
+            return
+
+        # ------------------------------------------------------------------ #
         # Stop event: spawn listener worker; NEVER call http_index.load_index #
         # ------------------------------------------------------------------ #
         if event_name == "Stop":
+            # UNCONDITIONAL whisper-telemetry flush runs OUTSIDE / BEFORE the
+            # listener-enabled guard — roster rows accrue regardless of the
+            # gate, which is OFF in most sessions today. flush_session is
+            # internally silent-on-failure; the outer try/except in main()
+            # backstops anything that slips through.
+            session_id_stop_raw = payload.get("session_id")
+            if isinstance(session_id_stop_raw, str) and session_id_stop_raw:
+                telemetry.flush_session(session_id_stop_raw)
+
             if not listener.is_listener_enabled():
                 return
 
@@ -132,6 +177,7 @@ def main(argv: list[str] | None = None) -> None:
                 "cwd_project": project_ref_stop,
                 "operating": operated,
                 "source_label": project_ref_stop,
+                "session_id": session_id_stop,
             }
 
             # Write request to a NamedTemporaryFile (worker will delete it)
@@ -152,6 +198,14 @@ def main(argv: list[str] | None = None) -> None:
         # ------------------------------------------------------------------ #
         # SessionStart / UserPromptSubmit: directory pipeline + whisper       #
         # ------------------------------------------------------------------ #
+
+        # SessionStart whisper-telemetry orphan sweep (safety net for sessions
+        # where Stop did not fire). orphan_sweep is internally silent-on-failure
+        # and the outer try/except in main() backstops anything left.
+        if event_name == "SessionStart":
+            session_id_ss = payload.get("session_id")
+            if isinstance(session_id_ss, str) and session_id_ss:
+                telemetry.orphan_sweep(session_id_ss)
 
         # Pending whisper check — UserPromptSubmit only, independent of the
         # directory pipeline's early returns (lines below).  Wrapped in its
@@ -374,6 +428,33 @@ def main(argv: list[str] | None = None) -> None:
             scope=project_ref,
             map_ids=all_map_ids,
         )
+
+        # Whisper-telemetry roster emit: one jsonl row per shown MapKey
+        # (own + cross-project). append_row is internally silent-on-failure;
+        # the outer try/except in main() backstops anything else.
+        # build_engine reads HEADLESS_BUILD_ENGINE defensively; unset => null
+        # (interactive/control-plane).
+        if session_id_str:
+            _host = socket.gethostname()
+            _engine = telemetry.build_engine()
+            _ts = telemetry.now_ts()
+            for _mk in all_map_ids:
+                telemetry.append_row(
+                    session_id_str,
+                    {
+                        "session_id": session_id_str,
+                        "host": _host,
+                        "surface": "roster",
+                        "map_id": _mk.id,
+                        "source_kb": _mk.label,
+                        "cwd_project": project_ref,
+                        "trigger_context": {"cwd_project": project_ref},
+                        "emitted_ts": _ts,
+                        "consumed": False,
+                        "consumed_ts": None,
+                        "build_engine": _engine,
+                    },
+                )
 
         # Commit whisper cache update after successful directory+whisper emission
         if whisper and whisper_emitted_pairs and whisper_cache_path is not None:

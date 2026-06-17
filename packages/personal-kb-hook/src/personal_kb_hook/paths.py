@@ -31,3 +31,21 @@ def get_listener_cache_path(session_id: str) -> Path:
     ``~/.cache/personal_kb/`` as a sibling of the hook scratch file.
     """
     return Path(f"~/.cache/personal_kb/listener-{session_id}.json").expanduser()
+
+
+def get_whisper_log_path(session_id: str) -> Path:
+    """Return the per-session whisper-telemetry jsonl log path.
+
+    Whisper-efficacy telemetry (GTD ccc05354): the hook appends one jsonl row
+    per shown roster map and per listener whisper to this file as it happens,
+    then Stop batch-POSTs the whole file to ``/api/kb/telemetry/whispers``
+    and SessionStart sweeps orphaned prior-session logs from the same
+    directory.
+
+    The file lives FLAT under ``~/.cache/personal_kb/`` — a sibling of the
+    listener cache and hook scratch files, NOT in its own subdirectory. The
+    flat layout means SessionStart's orphan sweep can ``glob('whisper-log-*.jsonl')``
+    in one shot, and ``unlink`` after a successful POST is one ``os.replace``-free
+    operation.
+    """
+    return Path(f"~/.cache/personal_kb/whisper-log-{session_id}.jsonl").expanduser()
