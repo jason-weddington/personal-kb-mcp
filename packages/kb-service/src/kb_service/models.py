@@ -545,9 +545,18 @@ class ListenerPointer(BaseModel):
 
 
 class ListenerResponse(BaseModel):
-    """Response for ``POST /api/kb/listener``."""
+    """Response for ``POST /api/kb/listener``.
+
+    ``reason`` is an additive, backward-compatible debug field surfaced
+    from the gate stages the handler already computes (kill-switch /
+    no-retrieval / rule-A-emptied / rule-B-emptied / LLM-unavailable /
+    unanimous match / non-unanimous). It is always present in the
+    serialized body but defaulted so existing callers that build
+    ``ListenerResponse(pointer=...)`` keep working unchanged.
+    """
 
     pointer: ListenerPointer | None
+    reason: str = ""
 
 
 class WhisperTelemetryRow(BaseModel):

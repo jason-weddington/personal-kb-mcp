@@ -10,6 +10,7 @@ pilot only; flip on the dev server when piloting).
 """
 
 import asyncio
+import collections
 import os
 from typing import Annotated
 
@@ -110,7 +111,10 @@ async def listener(
     # ── Kill switch (default OFF) ─────────────────────────────────────────────
     # Mirrors config.py::is_agentic_ingest (config.py:159-161): read per-request.
     if os.environ.get("KB_LISTENER_ENABLED", "FALSE").upper() != "TRUE":
-        return ListenerResponse(pointer=None)
+        return ListenerResponse(
+            pointer=None,
+            reason="kill-switch: KB_LISTENER_ENABLED!=TRUE",
+        )
 
     kb = request.app.state.kb
 
@@ -118,6 +122,7 @@ async def listener(
     results, _ = await kb.search(
         SearchQuery(query=body.text, entry_type=EntryType.MENTAL_MAP, limit=5)
     )
+    n_retrieved = len(results)
 
     # ── Rule A: cross-project filter ──────────────────────────────────────────
     # Drop every candidate whose project_ref equals cwd_project.
@@ -125,6 +130,7 @@ async def listener(
     candidates = list(results)
     if body.cwd_project is not None:
         candidates = [r for r in candidates if r.entry.project_ref != body.cwd_project]
+    n_after_a = len(candidates)
 
     # ── Rule B: operating context filter ─────────────────────────────────────
     # Drop candidates whose operated_via hint (string) is in body.operating.
@@ -138,10 +144,29 @@ async def listener(
             and r.entry.hints["operated_via"] in operating_set
         )
     ]
+    n_after_b = len(candidates)  # noqa: F841 — per-stage counter pinned by AC; reads as 0 below
 
-    # ── Short-circuit: no candidates or no LLM ───────────────────────────────
-    if not candidates or kb.synthesis_llm is None:
-        return ListenerResponse(pointer=None)
+    # ── Short-circuit (split): no candidates ─────────────────────────────────
+    # Attribute the drop using the per-stage counters so the debug `reason`
+    # distinguishes no-retrieval / rule-A-emptied / rule-B-emptied.
+    if not candidates:
+        if n_retrieved == 0:
+            reason = "no-injection: no candidates from retrieval"
+        elif n_after_a == 0:
+            reason = (
+                f"no-injection: {n_retrieved} candidate(s), "
+                f"all dropped by rule-A (cwd-project)"
+            )
+        else:
+            reason = (
+                f"no-injection: {n_after_a} candidate(s), "
+                f"all dropped by rule-B (operating-manifest)"
+            )
+        return ListenerResponse(pointer=None, reason=reason)
+
+    # ── Short-circuit (split): candidates exist but no LLM ───────────────────
+    if kb.synthesis_llm is None:
+        return ListenerResponse(pointer=None, reason="no-injection: LLM unavailable")
 
     # ── LLM gate: 3 concurrent votes ─────────────────────────────────────────
     source = body.source_label or body.cwd_project or "unknown"
@@ -164,7 +189,21 @@ async def listener(
         winner_id = votes[0]
         winner_entry = next(e for e in entries if e.id == winner_id)
         return ListenerResponse(
-            pointer=ListenerPointer(id=winner_id, short_title=winner_entry.short_title)
+            pointer=ListenerPointer(id=winner_id, short_title=winner_entry.short_title),
+            reason=f"matched {winner_id} (unanimous 3/3)",
         )
 
-    return ListenerResponse(pointer=None)
+    # ── Non-unanimous fall-through ───────────────────────────────────────────
+    # Derive (best_id, best_count) from non-None votes; covers BOTH the 2/3
+    # split AND the 1-1-1 three-distinct-votes case (tie-break by Counter
+    # insertion order — acceptable for a debug-only string). When all three
+    # votes are None, no candidate received a vote at all.
+    non_none = [v for v in votes if v is not None]
+    if non_none:
+        best_id, best_count = collections.Counter(non_none).most_common(1)[0]
+        reason = (
+            f"no-injection: best candidate {best_id} not unanimous ({best_count}/3)"
+        )
+    else:
+        reason = "no-injection: no candidate received a vote (0/3)"
+    return ListenerResponse(pointer=None, reason=reason)

@@ -99,7 +99,14 @@ def test_listener_kill_switch(
     resp = client.post("/api/kb/listener", json={"text": "which machine runs traefik"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    body = resp.json()
+    assert body == {
+        "pointer": None,
+        "reason": "kill-switch: KB_LISTENER_ENABLED!=TRUE",
+    }
+    # The reason key is present and a str (pinned per AC).
+    assert "reason" in body
+    assert isinstance(body["reason"], str)
     assert len(fake_kb.search_calls) == 0
     assert len(fake_llm.generate_calls) == 0
 
@@ -127,7 +134,10 @@ def test_listener_rule_a_drops_cwd_project(
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    assert resp.json() == {
+        "pointer": None,
+        "reason": "no-injection: 1 candidate(s), all dropped by rule-A (cwd-project)",
+    }
     # Search ran once; rule A filtered the only candidate; LLM not reached
     assert len(fake_kb.search_calls) == 1
 
@@ -158,7 +168,10 @@ def test_listener_rule_a_keeps_other_project(
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": {"id": "kb-00001", "short_title": "Other Map"}}
+    assert resp.json() == {
+        "pointer": {"id": "kb-00001", "short_title": "Other Map"},
+        "reason": "matched kb-00001 (unanimous 3/3)",
+    }
 
 
 # ─── (e) rule B: operating context filter ───────────────────────────────────
@@ -187,7 +200,10 @@ def test_listener_rule_b_drops_operated_candidate(
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    rule_b_reason = (
+        "no-injection: 1 candidate(s), all dropped by rule-B (operating-manifest)"
+    )
+    assert resp.json() == {"pointer": None, "reason": rule_b_reason}
     assert len(fake_kb.search_calls) == 1
 
 
@@ -220,7 +236,8 @@ def test_listener_rule_b_keeps_unmatched_hint(
 
     assert resp.status_code == 200
     assert resp.json() == {
-        "pointer": {"id": "kb-00001", "short_title": "Personal KB Map"}
+        "pointer": {"id": "kb-00001", "short_title": "Personal KB Map"},
+        "reason": "matched kb-00001 (unanimous 3/3)",
     }
 
 
@@ -248,7 +265,10 @@ def test_listener_rule_b_no_hint_never_dropped(
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": {"id": "kb-00001", "short_title": "No Hint Map"}}
+    assert resp.json() == {
+        "pointer": {"id": "kb-00001", "short_title": "No Hint Map"},
+        "reason": "matched kb-00001 (unanimous 3/3)",
+    }
 
 
 # ─── (f) unanimous 3-vote pick ───────────────────────────────────────────────
@@ -303,7 +323,8 @@ def test_listener_unanimous_pick_with_assertions(
 
     assert resp.status_code == 200
     assert resp.json() == {
-        "pointer": {"id": "kb-00001", "short_title": "Home Network Map"}
+        "pointer": {"id": "kb-00001", "short_title": "Home Network Map"},
+        "reason": "matched kb-00001 (unanimous 3/3)",
     }
 
     # ── search shape ──────────────────────────────────────────────────────────
@@ -363,7 +384,10 @@ def test_listener_split_vote_returns_null(
     resp = client.post("/api/kb/listener", json={"text": "hello"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    assert resp.json() == {
+        "pointer": None,
+        "reason": "no-injection: best candidate kb-00001 not unanimous (2/3)",
+    }
     assert len(fake_llm.generate_calls) == 3
 
 
@@ -390,7 +414,10 @@ def test_listener_none_vote_returns_null(
     resp = client.post("/api/kb/listener", json={"text": "hello"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    assert resp.json() == {
+        "pointer": None,
+        "reason": "no-injection: best candidate kb-00001 not unanimous (2/3)",
+    }
 
 
 def test_listener_none_text_vote_returns_null(
@@ -413,7 +440,10 @@ def test_listener_none_text_vote_returns_null(
     resp = client.post("/api/kb/listener", json={"text": "hello"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    assert resp.json() == {
+        "pointer": None,
+        "reason": "no-injection: no candidate received a vote (0/3)",
+    }
 
 
 # ─── (i) non-candidate id vote -> null ──────────────────────────────────────
@@ -443,7 +473,10 @@ def test_listener_non_candidate_id_vote_returns_null(
     resp = client.post("/api/kb/listener", json={"text": "hello"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    assert resp.json() == {
+        "pointer": None,
+        "reason": "no-injection: no candidate received a vote (0/3)",
+    }
 
 
 # ─── (j) zero candidates after filters -> null ──────────────────────────────
@@ -475,7 +508,10 @@ def test_listener_zero_candidates_short_circuits(
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    assert resp.json() == {
+        "pointer": None,
+        "reason": "no-injection: 1 candidate(s), all dropped by rule-A (cwd-project)",
+    }
     assert len(fake_kb.search_calls) == 1
     assert len(fake_llm.generate_calls) == 0
 
@@ -498,7 +534,10 @@ def test_listener_no_synthesis_llm_returns_null(
     resp = client.post("/api/kb/listener", json={"text": "hello"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"pointer": None}
+    assert resp.json() == {
+        "pointer": None,
+        "reason": "no-injection: LLM unavailable",
+    }
     assert len(fake_kb.search_calls) == 1
 
 
