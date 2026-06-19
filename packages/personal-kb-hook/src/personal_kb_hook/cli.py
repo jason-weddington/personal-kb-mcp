@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-from personal_kb_hook import http_index, listener, telemetry
+from personal_kb_hook import http_index, listener, telemetry, whisper_debug
 from personal_kb_hook.index_reader import MapKey
 from personal_kb_hook.paths import get_listener_cache_path
 from personal_kb_hook.render import compose_directory, render_claude_json, render_whisper
@@ -288,6 +288,14 @@ def main(argv: list[str] | None = None) -> None:
                     pre_set = {(p[0], p[1]) for p in pre_pairs}
                     filtered = [p for p in pending_items if (p["label"], p["id"]) not in pre_set]
 
+                    # Whisper-debug PROMPT-path lines: one `suppress` per entry
+                    # the pre_set filter dropped (NOT the cap step — out of scope
+                    # per AC). Silent-on-failure inside whisper_debug; the outer
+                    # whisper try/except already backstops anything left.
+                    for _p in pending_items:
+                        if (_p["label"], _p["id"]) in pre_set:
+                            whisper_debug.append_prompt_suppress(session_id_w, _p["id"])
+
                     # Defensive one-per-KB cap (preserve first per label).
                     seen_labels: set[str] = set()
                     capped: list[dict[str, str]] = []
@@ -335,6 +343,16 @@ def main(argv: list[str] | None = None) -> None:
                         whisper_cache_path = _wcp
                         whisper_pre_pairs = pre_pairs
                         whisper_emitted_pairs = [[p["label"], p["id"]] for p in ordered]
+
+                        # Whisper-debug PROMPT-path inject lines: one per
+                        # entry in `ordered` (matches the emit set 1:1 — at
+                        # this point whisper_emitted_pairs is non-empty iff
+                        # `ordered` is non-empty, so a logged inject always
+                        # corresponds to a real emission). Silent-on-failure.
+                        for _p in ordered:
+                            whisper_debug.append_prompt_inject(
+                                session_id_w, _p["id"], _p["short_title"]
+                            )
             except Exception:
                 # Listener failure must never prevent directory emission.
                 whisper = None

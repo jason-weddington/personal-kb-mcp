@@ -56,7 +56,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from personal_kb_hook import roster, telemetry
+from personal_kb_hook import roster, telemetry, whisper_debug
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +101,19 @@ def _validate_map(map_obj: object) -> dict[str, str] | None:
 def _post_one_kb(
     entry: roster.KbEntry,
     body_bytes: bytes,
-) -> dict[str, str] | None:
-    """POST the manifest to ONE KB and validate the response.
+) -> tuple[dict[str, str] | None, str]:
+    """POST the manifest to ONE KB; return (validated pointer or None, reason).
 
-    Returns the validated pointer dict on success, or ``None`` on:
-    null ``pointer``, missing ``pointer`` key, non-dict body, JSON decode
-    error, HTTPError / URLError / TimeoutError, validation failure, or
-    any unexpected exception. NEVER raises.
+    The second tuple element is the server-provided debug ``reason``
+    string (defaulted to ``""`` if the server omitted it / sent a non-str)
+    on every path that successfully reached and parsed the server
+    response — INCLUDING the null-pointer path (the server still
+    explains WHY it returned null). On EVERY early-None / exception
+    path (non-dict body, missing ``pointer`` key, HTTP/URL/Timeout
+    errors, JSON decode errors, validation failures, or any unexpected
+    exception), the pinned literal ``"transport-error"`` is returned
+    so a failed POST is DISTINGUISHABLE in the debug log from a clean
+    server no-injection reason. NEVER raises.
     """
     try:
         endpoint = entry.url.rstrip("/") + "/api/kb/listener"
@@ -124,15 +130,17 @@ def _post_one_kb(
             body = resp.read().decode("utf-8")
         data: Any = json.loads(body)
         if not isinstance(data, dict):
-            return None
+            return (None, "transport-error")
         if "pointer" not in data:
-            return None
+            return (None, "transport-error")
+        raw_reason: Any = data.get("reason", "")
+        reason = raw_reason if isinstance(raw_reason, str) else ""
         pointer: Any = data["pointer"]
         if pointer is None:
-            return None
-        return _validate_map(pointer)
+            return (None, reason)
+        return (_validate_map(pointer), reason)
     except Exception:
-        return None
+        return (None, "transport-error")
 
 
 def _arbitrate(
@@ -329,13 +337,46 @@ def main() -> None:
 
         # Sequential fan-out across the roster, in order. Each iteration is
         # individually guarded so a failure for one KB never aborts the loop.
-        candidates: list[tuple[str, dict[str, str] | None]] = []
+        # Each entry now carries the per-KB `reason` string alongside the
+        # pointer-or-None; the reason flows into the whisper-debug RUN block
+        # written below. `_arbitrate`'s signature is unchanged — we only pass
+        # the pointer component to it.
+        candidates_with_reason: list[tuple[str, tuple[dict[str, str] | None, str]]] = []
         for entry in roster_entries:
             result = _post_one_kb(entry, body_bytes)
-            candidates.append((entry.label, result))
+            candidates_with_reason.append((entry.label, result))
+        candidates: list[tuple[str, dict[str, str] | None]] = [
+            (label, pointer) for label, (pointer, _reason) in candidates_with_reason
+        ]
 
         # Client-side, suppress-only arbitration.
         winners = _arbitrate(candidates, roster_entries, source_label)
+
+        # ── Whisper-debug RUN block (local plaintext log, separate from   ──
+        # ── whisper-telemetry) — written AFTER arbitration so the outcome ──
+        # ── reflects post-arbitration `winners`. Gated on a non-empty     ──
+        # ── session_id (reuse the same guard the telemetry emit uses);    ──
+        # ── silent-on-failure inside whisper_debug.                        ──
+        dbg_session_id = request_data.get("session_id")
+        if isinstance(dbg_session_id, str) and dbg_session_id:
+            per_kb_lines = [
+                f"  {label} -> {(pointer['id'] if pointer is not None else 'none')} ({reason})"
+                for label, (pointer, reason) in candidates_with_reason
+            ]
+            if winners:
+                outcome_lines = [
+                    f"  => WHISPER {pointer['id']} next turn" for _label, pointer in winners
+                ]
+            else:
+                outcome_lines = ["  => no whisper"]
+            whisper_debug.append_run_block(
+                dbg_session_id,
+                cwd_project=request_data.get("cwd_project"),
+                operating=request_data.get("operating"),
+                text=request_data.get("text"),
+                per_kb_lines=per_kb_lines,
+                outcome_lines=outcome_lines,
+            )
 
         if winners:
             _merge_into_cache(Path(cache_path_str), winners)

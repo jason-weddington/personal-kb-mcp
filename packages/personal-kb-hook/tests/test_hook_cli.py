@@ -1745,3 +1745,111 @@ def test_whisper_same_id_different_labels_dont_collide(
     )
     assert rc == 0
     assert out == "Possibly relevant map — team/[kb-77] Shared"
+
+
+# ---------------------------------------------------------------------------
+# Whisper-debug PROMPT-path lines (UserPromptSubmit)
+# ---------------------------------------------------------------------------
+
+
+def test_whisper_debug_prompt_inject_written_on_fresh_whisper(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """A fresh pending whisper writes ``PROMPT inject <id> "<short_title>"``."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-debug-inject"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(
+        cache_path,
+        [_pending_map("kb-00099", "Authflow", "Auth details")],
+        [],
+    )
+
+    rc, _out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+
+    debug_log = hook_env["root"] / ".cache" / "personal_kb" / f"whisper-debug-{session_id}.log"
+    assert debug_log.exists(), f"whisper-debug log missing at {debug_log}"
+    content = debug_log.read_text(encoding="utf-8")
+    assert 'PROMPT inject kb-00099 "Authflow"' in content
+    # No suppress line: nothing was already whispered.
+    assert "PROMPT suppress" not in content
+
+
+def test_whisper_debug_prompt_suppress_written_when_already_whispered(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """A candidate whose (label, id) is already in ``whispered_map_ids`` writes
+    ``PROMPT suppress <id> (already whispered this session)`` and NO inject line.
+    """
+    _listener_env(monkeypatch)
+    session_id = "whisper-debug-suppress"
+    cache_path = get_listener_cache_path(session_id)
+    # The pending whisper has the SAME (label, id) as an entry in whispered_map_ids
+    # -> the pre_set filter drops it -> a suppress debug line is written.
+    _write_listener_cache(
+        cache_path,
+        [_pending_map("kb-00099", "Authflow", "")],
+        [["personal", "kb-00099"]],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+    # Whisper itself is NOT emitted (the pre_set drop empties the candidate list).
+    assert "Possibly relevant map" not in out
+
+    debug_log = hook_env["root"] / ".cache" / "personal_kb" / f"whisper-debug-{session_id}.log"
+    assert debug_log.exists()
+    content = debug_log.read_text(encoding="utf-8")
+    assert "PROMPT suppress kb-00099 (already whispered this session)" in content
+    # No inject line: the candidate was dropped before the commit point.
+    assert "PROMPT inject" not in content
+
+
+def test_whisper_debug_prompt_inject_empty_short_title_renders_empty_quotes(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """An empty short_title renders verbatim inside double quotes: ``PROMPT inject kb-X ""``.
+
+    Pins the AC behaviour: do NOT fall back to the id when short_title is
+    empty — the empty-string rendering is itself a debugging signal.
+    """
+    _listener_env(monkeypatch)
+    session_id = "whisper-debug-empty-title"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(
+        cache_path,
+        [_pending_map("kb-empty-title", short_title="", long_title="")],
+        [],
+    )
+
+    rc, _out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+    )
+    assert rc == 0
+
+    debug_log = hook_env["root"] / ".cache" / "personal_kb" / f"whisper-debug-{session_id}.log"
+    content = debug_log.read_text(encoding="utf-8")
+    assert 'PROMPT inject kb-empty-title ""' in content

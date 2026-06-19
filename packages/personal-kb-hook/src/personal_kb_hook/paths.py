@@ -49,3 +49,20 @@ def get_whisper_log_path(session_id: str) -> Path:
     operation.
     """
     return Path(f"~/.cache/personal_kb/whisper-log-{session_id}.jsonl").expanduser()
+
+
+def get_whisper_debug_log_path(session_id: str) -> Path:
+    """Return the per-session whisper-debug plaintext log path.
+
+    Local real-time debug log (separate from whisper telemetry / the
+    Postgres analytics sink). The whisper-decision listener pipeline
+    appends one block per listener RUN and one line per PROMPT-path
+    inject/suppress as it happens, so the operator can ``tail -f`` this
+    file to see IF/WHEN a whisper fires, WHAT was whispered, and WHY.
+
+    Plaintext ``.log`` (NOT ``.jsonl``) — flat under
+    ``~/.cache/personal_kb/`` as a sibling of the listener cache, hook
+    scratch, and whisper-telemetry log files. Ephemeral; not flushed to
+    the server; no orphan-sweep; no rotation.
+    """
+    return Path(f"~/.cache/personal_kb/whisper-debug-{session_id}.log").expanduser()

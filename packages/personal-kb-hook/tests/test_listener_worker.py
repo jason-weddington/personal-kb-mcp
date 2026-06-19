@@ -1022,3 +1022,222 @@ def test_source_label_matching_roster_wins_tie_break(
     assert result["pending"] == [
         {"label": "team", "id": "kb-t", "short_title": "Same", "long_title": "t"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# Whisper-debug RUN block (local plaintext log)
+# ---------------------------------------------------------------------------
+
+
+def test_whisper_debug_run_block_written(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-KB roster -> RUN block: header, transcript, per-KB lines, outcome.
+
+    Covers the three per-KB cases in one go:
+    - the 'team' KB returns a non-null pointer WITH a server reason
+      -> ``team -> kb-team-1 (matched ...)``
+    - the 'personal' KB returns a null pointer WITH a server reason
+      -> ``personal -> none (no-injection: ...)``
+    - the 'alpha' KB's POST raises (transport-error)
+      -> ``alpha -> none (transport-error)``
+    Outcome line: ``=> WHISPER kb-team-1 next turn`` (post-arbitration).
+    """
+    _stub_roster(
+        monkeypatch,
+        [
+            ("personal", "https://personal.kb/", "p-secret"),
+            ("team", "https://team.kb/", "t-secret"),
+            ("alpha", "https://alpha.kb/", "a-secret"),
+        ],
+    )
+
+    def routed_urlopen(req: urllib.request.Request, timeout: float | None = None) -> _MockResponse:
+        if "personal.kb" in req.full_url:
+            return _ok_response(
+                {
+                    "pointer": None,
+                    "reason": "no-injection: LLM unavailable",
+                }
+            )
+        if "team.kb" in req.full_url:
+            return _ok_response(
+                {
+                    "pointer": {
+                        "id": "kb-team-1",
+                        "short_title": "TeamMap",
+                        "long_title": "Team",
+                    },
+                    "reason": "matched kb-team-1 (unanimous 3/3)",
+                }
+            )
+        # alpha.kb -> transport-error
+        raise TimeoutError("alpha down")
+
+    cache_path = worker_env["cache_dir"] / "listener-debug.json"
+    session_id = "sess-debug-1"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {
+            "text": "which machine runs traefik in the home lab",
+            "cwd_project": "home-lab",
+            "operating": ["mcp:agent-gtd", "mcp:personal-kb"],
+            "source_label": "home-lab",
+            "session_id": session_id,
+        },
+        cache_path,
+        routed_urlopen,
+    )
+
+    debug_log = worker_env["cache_dir"] / f"whisper-debug-{session_id}.log"
+    assert debug_log.exists(), "whisper-debug log must be written when session_id is set"
+    content = debug_log.read_text(encoding="utf-8")
+
+    # Header carries cwd_project + operating manifest.
+    assert "listener run" in content
+    assert "cwd_project=home-lab" in content
+    # Defensive: operating manifest rendered as [<comma-joined>].
+    assert "operating=[mcp:agent-gtd,mcp:personal-kb]" in content
+
+    # Transcript excerpt is the request text, whitespace-collapsed.
+    assert "transcript: which machine runs traefik in the home lab" in content
+
+    # Per-KB lines in roster order: personal -> none with server reason;
+    # team -> kb-team-1 with server reason; alpha -> none with transport-error.
+    assert "personal -> none (no-injection: LLM unavailable)" in content
+    assert "team -> kb-team-1 (matched kb-team-1 (unanimous 3/3))" in content
+    assert "alpha -> none (transport-error)" in content
+
+    # Outcome reflects post-arbitration winners: kb-team-1 survives.
+    assert "=> WHISPER kb-team-1 next turn" in content
+
+
+def test_whisper_debug_run_block_no_whisper_outcome(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All KBs null -> outcome is a single ``=> no whisper`` line."""
+    _stub_roster(
+        monkeypatch,
+        [("personal", "https://personal.kb/", "p-secret")],
+    )
+
+    def routed_urlopen(req: urllib.request.Request, timeout: float | None = None) -> _MockResponse:
+        return _ok_response(
+            {
+                "pointer": None,
+                "reason": "no-injection: no candidates from retrieval",
+            }
+        )
+
+    cache_path = worker_env["cache_dir"] / "listener-nowhisper.json"
+    session_id = "sess-nowhisper"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {
+            "text": "x" * 250,
+            "cwd_project": None,
+            "operating": [],
+            "source_label": None,
+            "session_id": session_id,
+        },
+        cache_path,
+        routed_urlopen,
+    )
+
+    debug_log = worker_env["cache_dir"] / f"whisper-debug-{session_id}.log"
+    content = debug_log.read_text(encoding="utf-8")
+    assert "personal -> none (no-injection: no candidates from retrieval)" in content
+    assert "=> no whisper" in content
+    # No WHISPER line on the no-winner path.
+    assert "=> WHISPER" not in content
+
+
+def test_whisper_debug_run_block_silent_when_unwritable(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write failure (debug-log dir replaced by a regular file) does NOT raise.
+
+    The worker still completes normally — cache is written, exit is clean.
+    """
+    _stub_roster(
+        monkeypatch,
+        [("personal", "https://personal.kb/", "p-secret")],
+    )
+
+    # Replace the cache_dir with a file so the debug-log path's parent
+    # mkdir + open both fail. The cache_path argument points at a separate
+    # file under the same dir — also broken, but the worker swallows that
+    # silently too (cache write inside _merge_into_cache uses tempfile +
+    # os.replace, which also OSErrors quietly).
+    cache_dir = worker_env["cache_dir"]
+    # Remove the dir, replace with a file at the same path.
+    import shutil
+
+    shutil.rmtree(cache_dir)
+    cache_dir.write_text("not a dir", encoding="utf-8")
+
+    cache_path = cache_dir / "listener-unwritable.json"
+
+    session_id = "sess-broken"
+    req_file = tmp_path / "req-unwritable.json"
+    req_file.write_text(
+        json.dumps(
+            {
+                "text": "x" * 250,
+                "cwd_project": None,
+                "operating": [],
+                "source_label": None,
+                "session_id": session_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **kw: _ok_response(
+            {
+                "pointer": {"id": "kb-1", "short_title": "X", "long_title": ""},
+                "reason": "matched kb-1 (unanimous 3/3)",
+            }
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["w", str(req_file), str(cache_path)])
+
+    # MUST NOT raise.
+    listener_worker.main()
+
+
+def test_whisper_debug_run_block_skipped_when_no_session_id(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No session_id in request -> no whisper-debug log file is created."""
+    _stub_roster(
+        monkeypatch,
+        [("personal", "https://personal.kb/", "p-secret")],
+    )
+
+    cache_path = worker_env["cache_dir"] / "listener-nosid.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        # session_id intentionally omitted
+        {"text": "x" * 250, "cwd_project": None, "operating": [], "source_label": None},
+        cache_path,
+        lambda *a, **kw: _ok_response({"pointer": None, "reason": "no-injection: LLM unavailable"}),
+    )
+
+    # No file should be present matching whisper-debug-*.log.
+    debug_logs = list(worker_env["cache_dir"].glob("whisper-debug-*.log"))
+    assert debug_logs == []
