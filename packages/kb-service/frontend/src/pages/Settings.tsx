@@ -140,18 +140,52 @@ function AccountCard() {
 
 // ─── API Access Card ──────────────────────────────────────────────────────────
 
-function buildMcpSnippet(apiKey: string): string {
+/**
+ * `uvx --from` spec for the thin MCP client.
+ *
+ * Matches `scripts/provision.sh` KB_CLIENT_FROM for hosted mode: the package
+ * is pulled from the home-lab git origin (the same repo all three Pis fetch).
+ * Personal-kb is NOT a published PyPI package, so the `--from` indirection is
+ * required for `uvx` to resolve the entry point.
+ *
+ * The `[postgres]` extra mirrors provision.sh's known-good form. The HTTP
+ * thin-client (HttpBackend) does not strictly need asyncpg — base deps already
+ * cover fastmcp + httpx — but matching provision.sh guarantees the spec
+ * resolves identically to what the Pis already run, removing one degree of
+ * "works there, broken when copy-pasted from here" risk.
+ */
+const MCP_CLIENT_FROM =
+  'personal-kb[postgres] @ git+ssh://git@git-host/home/git/repos/personal_kb@main'
+
+/**
+ * Build the MCP-config JSON shown after minting an API key.
+ *
+ * The snippet pulls the thin client from the home-lab git origin via
+ * `uvx --from` and points it at this instance's `/api` over HTTP.
+ *
+ * Tool-prefix mapping (see personal_kb server.py::_get_tool_prefix):
+ *   - team set/non-blank  →  KB_INSTANCE_ROLE='team'    →  team_kb_* tools
+ *   - team null/blank     →  KB_INSTANCE_ROLE omitted   →  kb_* tools (default)
+ *
+ * The `personal` role is reserved for the local single-user daemon and is not
+ * emitted from the Settings UI (every hosted instance is either default-kb_*
+ * or team-team_kb_*).
+ */
+function buildMcpSnippet(apiKey: string, team: string | null): string {
+  const env: Record<string, string> = {
+    PERSONAL_KB_URL: window.location.origin,
+    PERSONAL_KB_API_KEY: apiKey,
+  }
+  if (team && team.trim() !== '') {
+    env.KB_INSTANCE_ROLE = 'team'
+  }
   return JSON.stringify(
     {
       mcpServers: {
         'personal-kb': {
           command: 'uvx',
-          args: ['personal-kb-mcp'],
-          env: {
-            PERSONAL_KB_URL: window.location.origin,
-            PERSONAL_KB_API_KEY: apiKey,
-            MCP_TOOL_PREFIX: 'kb',
-          },
+          args: ['--from', MCP_CLIENT_FROM, 'personal-kb'],
+          env,
         },
       },
     },
@@ -160,11 +194,19 @@ function buildMcpSnippet(apiKey: string): string {
   )
 }
 
+// Exposed for unit tests.
+export const __testing = { buildMcpSnippet, MCP_CLIENT_FROM }
+
 function ApiAccessCard() {
   const [keys, setKeys] = useState<ApiKeyInfo[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   // Increment to trigger a data reload
   const [reloadTick, setReloadTick] = useState(0)
+
+  // The instance's `team` setting drives the MCP snippet's KB_INSTANCE_ROLE.
+  // Fetched once at mount; the snippet is only rendered after a key is
+  // minted, so a brief loading window is invisible to the user.
+  const [team, setTeam] = useState<string | null>(null)
 
   // Create-key dialog
   const [createOpen, setCreateOpen] = useState(false)
@@ -196,6 +238,21 @@ function ApiAccessCard() {
       }
     })()
   }, [reloadTick])
+
+  // Load the instance's team setting once so the MCP snippet can derive
+  // KB_INSTANCE_ROLE. A fetch failure is non-fatal — we silently fall back
+  // to the default (kb_* tools), and any deeper backend issue surfaces via
+  // the other cards.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const s = await api.settings.get()
+        setTeam(s.team ?? null)
+      } catch {
+        setTeam(null)
+      }
+    })()
+  }, [])
 
   const handleCreate = useCallback(async () => {
     setCreating(true)
@@ -236,7 +293,7 @@ function ApiAccessCard() {
     }
   }, [deleteTarget])
 
-  const mcpSnippet = createdKey ? buildMcpSnippet(createdKey.apiKey) : ''
+  const mcpSnippet = createdKey ? buildMcpSnippet(createdKey.apiKey, team) : ''
 
   return (
     <Card variant="outlined" sx={{ mb: 3 }}>
@@ -408,9 +465,10 @@ function ApiAccessCard() {
               </IconButton>
             </Box>
             <Typography variant="caption" color="text.secondary">
-              The thin MCP client ships in P5 and the package name (
-              <code>personal-kb-mcp</code>) may change — the URL and API key
-              are the durable parts.
+              Paste this into <code>~/.claude.json</code> under{' '}
+              <code>mcpServers</code>. The thin client is pulled via{' '}
+              <code>uvx --from</code> from the home-lab git origin (SSH access
+              to <code>git-host</code> required).
             </Typography>
           </DialogContent>
           <DialogActions>

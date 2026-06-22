@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { Settings } from '../pages/Settings'
+import { Settings, __testing } from '../pages/Settings'
 
 // Mock AuthContext
 vi.mock('../contexts/AuthContext', () => ({
@@ -135,11 +135,117 @@ describe('Settings page — API Access card (create-key flow)', () => {
     const snippetInput = inputs.find(
       (el) =>
         (el as HTMLInputElement).value.includes('personal-kb') &&
-        (el as HTMLInputElement).value.includes('PERSONAL_KB_API_KEY') &&
-        (el as HTMLInputElement).value.includes('MCP_TOOL_PREFIX'),
+        (el as HTMLInputElement).value.includes('PERSONAL_KB_API_KEY'),
     )
     expect(snippetInput).toBeDefined()
-    expect((snippetInput as HTMLInputElement).value).toContain(plainKey)
+    const snippetValue = (snippetInput as HTMLInputElement).value
+    expect(snippetValue).toContain(plainKey)
+    // Uses uvx --from (the package is not on PyPI) with the canonical entry
+    // point `personal-kb` — not the legacy/wrong `personal-kb-mcp`.
+    expect(snippetValue).toContain('"uvx"')
+    expect(snippetValue).toContain('"--from"')
+    expect(snippetValue).toContain('personal-kb')
+    expect(snippetValue).not.toContain('personal-kb-mcp')
+    // The dead `MCP_TOOL_PREFIX` env (read by nothing) must be gone.
+    expect(snippetValue).not.toContain('MCP_TOOL_PREFIX')
+    // team=null default → KB_INSTANCE_ROLE must be absent (kb_* tools).
+    expect(snippetValue).not.toContain('KB_INSTANCE_ROLE')
+  })
+
+  it('team set → KB_INSTANCE_ROLE=team is emitted in the snippet', async () => {
+    const user = userEvent.setup()
+    const plainKey = 'sk-team-key-9999'
+    vi.mocked(api.settings.get).mockResolvedValue({ team: 'Acme' })
+    vi.mocked(api.apiKeys.create).mockResolvedValue({
+      apiKey: plainKey,
+      name: 'Team Key',
+    })
+
+    renderSettings()
+
+    await waitFor(() =>
+      expect(vi.mocked(api.settings.get)).toHaveBeenCalled(),
+    )
+
+    const createBtn = screen.getByRole('button', { name: /create api key/i })
+    await user.click(createBtn)
+
+    const dialog = screen.getByRole('dialog')
+    await user.type(within(dialog).getByLabelText(/key name/i), 'Team Key')
+    await user.click(within(dialog).getByRole('button', { name: /^create$/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText(/api key created/i)).toBeInTheDocument(),
+    )
+
+    const createdDialog = screen.getByRole('dialog')
+    const inputs = within(createdDialog).getAllByRole('textbox')
+    const snippetInput = inputs.find(
+      (el) =>
+        (el as HTMLInputElement).value.includes('personal-kb') &&
+        (el as HTMLInputElement).value.includes('PERSONAL_KB_API_KEY'),
+    )
+    expect(snippetInput).toBeDefined()
+    const snippetValue = (snippetInput as HTMLInputElement).value
+    expect(snippetValue).toContain('"KB_INSTANCE_ROLE": "team"')
+  })
+})
+
+describe('buildMcpSnippet — pure unit', () => {
+  const { buildMcpSnippet, MCP_CLIENT_FROM } = __testing
+
+  it('uses uvx --from with the canonical entry point and git origin spec', () => {
+    const snippet = JSON.parse(buildMcpSnippet('sk-123', null)) as {
+      mcpServers: {
+        'personal-kb': {
+          command: string
+          args: string[]
+          env: Record<string, string>
+        }
+      }
+    }
+    const block = snippet.mcpServers['personal-kb']
+    expect(block.command).toBe('uvx')
+    expect(block.args).toEqual(['--from', MCP_CLIENT_FROM, 'personal-kb'])
+    // The git origin matches provision.sh's KB_CLIENT_FROM base URL.
+    expect(MCP_CLIENT_FROM).toContain(
+      'git+ssh://git@git-host/home/git/repos/personal_kb@main',
+    )
+  })
+
+  it('team=null → env has URL + API key, no KB_INSTANCE_ROLE, no MCP_TOOL_PREFIX', () => {
+    const snippet = JSON.parse(buildMcpSnippet('sk-abc', null)) as {
+      mcpServers: { 'personal-kb': { env: Record<string, string> } }
+    }
+    const env = snippet.mcpServers['personal-kb'].env
+    expect(env.PERSONAL_KB_API_KEY).toBe('sk-abc')
+    expect(env.PERSONAL_KB_URL).toBeDefined()
+    expect(env.KB_INSTANCE_ROLE).toBeUndefined()
+    // Dead env (read by no consumer) — must NOT be emitted.
+    expect(env.MCP_TOOL_PREFIX).toBeUndefined()
+  })
+
+  it('team="" (blank) → KB_INSTANCE_ROLE is omitted (default kb_* tools)', () => {
+    const snippet = JSON.parse(buildMcpSnippet('sk-xyz', '')) as {
+      mcpServers: { 'personal-kb': { env: Record<string, string> } }
+    }
+    const env = snippet.mcpServers['personal-kb'].env
+    expect(env.KB_INSTANCE_ROLE).toBeUndefined()
+  })
+
+  it('team set → KB_INSTANCE_ROLE=team (team_kb_* tools)', () => {
+    const snippet = JSON.parse(buildMcpSnippet('sk-def', 'Platform')) as {
+      mcpServers: { 'personal-kb': { env: Record<string, string> } }
+    }
+    const env = snippet.mcpServers['personal-kb'].env
+    expect(env.KB_INSTANCE_ROLE).toBe('team')
+  })
+
+  it('team whitespace-only → KB_INSTANCE_ROLE is omitted', () => {
+    const snippet = JSON.parse(buildMcpSnippet('sk-ws', '   ')) as {
+      mcpServers: { 'personal-kb': { env: Record<string, string> } }
+    }
+    expect(snippet.mcpServers['personal-kb'].env.KB_INSTANCE_ROLE).toBeUndefined()
   })
 })
 
