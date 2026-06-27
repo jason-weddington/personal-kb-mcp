@@ -12,7 +12,13 @@ import pytest
 
 from personal_kb.models.search import SearchQuery
 from personal_kb.search.hybrid import hybrid_search
-from tests.eval.metrics import evaluate_query_set, ndcg_at_k, recall_at_k, reciprocal_rank
+from tests.eval.metrics import (
+    correct_rejection_rate,
+    evaluate_query_set,
+    ndcg_at_k,
+    recall_at_k,
+    reciprocal_rank,
+)
 
 _BASELINE_PATH = Path(__file__).parent / "baseline.json"
 
@@ -22,11 +28,21 @@ class TestBaseline:
     async def test_generate_baseline(self, eval_kb):
         db, embedder, title_to_id, queries = eval_kb
 
-        # Only score queries that have expected entries
+        # Score queries that have expected entries (non-empty)
         scorable = [q for q in queries if q.get("expected")]
+
+        # Abstention queries: category=='abstention', expected==[], include_stale=False
+        abstention_qs = [
+            q
+            for q in queries
+            if q.get("category") == "abstention"
+            and q.get("expected") == []
+            and not q.get("include_stale", False)
+        ]
 
         per_query: dict[str, dict] = {}
         results_map: dict[str, list[str]] = {}
+        abstention_results_map: dict[str, list[str]] = {}
 
         for q in scorable:
             search_query = SearchQuery(
@@ -52,6 +68,18 @@ class TestBaseline:
                 "result_count": len(result_ids),
             }
 
+        # Run abstention queries separately
+        for q in abstention_qs:
+            search_query = SearchQuery(
+                query=q["query"],
+                limit=q["top_k"],
+                project_ref=q.get("project_ref"),
+                tags=q.get("tags"),
+                include_stale=q.get("include_stale", False),
+            )
+            results, _filtered = await hybrid_search(db, embedder, search_query)
+            abstention_results_map[q["id"]] = [r.entry.id for r in results]
+
         aggregate = evaluate_query_set(
             [
                 {"id": q["id"], "expected": [title_to_id[t] for t in q["expected"]]}
@@ -62,8 +90,13 @@ class TestBaseline:
         )
         aggregate = {key: round(val, 4) for key, val in aggregate.items()}
 
+        # Abstention aggregate — kept separate from mean_mrr/recall/ndcg (different denominator)
+        crr = correct_rejection_rate(queries, abstention_results_map)
+        abstention_aggregate = {"correct_rejection_rate": round(crr, 4)}
+
         baseline = {
             "aggregate": aggregate,
+            "abstention": abstention_aggregate,
             "per_query": per_query,
         }
 

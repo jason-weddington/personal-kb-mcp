@@ -4,7 +4,13 @@ import math
 
 import pytest
 
-from tests.eval.metrics import evaluate_query_set, ndcg_at_k, recall_at_k, reciprocal_rank
+from tests.eval.metrics import (
+    correct_rejection_rate,
+    evaluate_query_set,
+    ndcg_at_k,
+    recall_at_k,
+    reciprocal_rank,
+)
 
 
 class TestReciprocalRank:
@@ -96,3 +102,64 @@ class TestEvaluateQuerySet:
         assert agg["mean_mrr"] == 0.0
         assert agg["mean_recall_at_k"] == 0.0
         assert agg["mean_ndcg_at_k"] == 0.0
+
+
+class TestCorrectRejectionRate:
+    """Unit tests for the abstention metric."""
+
+    def _abs_query(self, qid: str, include_stale: bool = False) -> dict:
+        """Helper: build a query dict that counts as an abstention query."""
+        return {
+            "id": qid,
+            "category": "abstention",
+            "expected": [],
+            "include_stale": include_stale,
+        }
+
+    def test_all_empty_results_rate_one(self):
+        """All abstention queries return empty → rate 1.0."""
+        queries = [self._abs_query("q1"), self._abs_query("q2")]
+        results_map: dict[str, list] = {"q1": [], "q2": []}
+        assert correct_rejection_rate(queries, results_map) == 1.0
+
+    def test_any_non_empty_result_counts_zero(self):
+        """A query with non-empty results scores 0 for that query."""
+        queries = [self._abs_query("q1")]
+        results_map = {"q1": ["some-entry"]}
+        assert correct_rejection_rate(queries, results_map) == 0.0
+
+    def test_mixed_results_fractional(self):
+        """One correctly rejected, one not → 0.5."""
+        queries = [self._abs_query("q1"), self._abs_query("q2")]
+        results_map = {"q1": [], "q2": ["leaked-entry"]}
+        assert correct_rejection_rate(queries, results_map) == pytest.approx(0.5)
+
+    def test_no_abstention_queries_returns_one(self):
+        """Denominator 0 → graceful 1.0."""
+        queries = [{"id": "q1", "category": "temporal", "expected": ["a"], "include_stale": False}]
+        results_map = {"q1": []}
+        assert correct_rejection_rate(queries, results_map) == 1.0
+
+    def test_include_stale_true_excluded_from_denominator(self):
+        """Queries with include_stale=True are recall controls, not abstention cases."""
+        queries = [
+            self._abs_query("q-abs", include_stale=False),  # counted
+            self._abs_query("q-ctrl", include_stale=True),  # excluded from denominator
+        ]
+        results_map = {"q-abs": [], "q-ctrl": ["some-entry"]}
+        # Only q-abs is in denominator; it passes → 1.0
+        assert correct_rejection_rate(queries, results_map) == 1.0
+
+    def test_missing_from_results_map_treated_as_empty(self):
+        """A query absent from results_map defaults to empty results."""
+        queries = [self._abs_query("q1")]
+        assert correct_rejection_rate(queries, {}) == 1.0
+
+    def test_score_threshold_with_tuple_results(self):
+        """score_threshold: top score below threshold counts as rejected."""
+        queries = [self._abs_query("q1")]
+        results_map = {"q1": [("some-entry", 0.02)]}
+        # Top score 0.02 < threshold 0.03 → correctly rejected
+        assert correct_rejection_rate(queries, results_map, score_threshold=0.03) == 1.0
+        # Top score 0.02 >= threshold 0.01 → not rejected
+        assert correct_rejection_rate(queries, results_map, score_threshold=0.01) == 0.0

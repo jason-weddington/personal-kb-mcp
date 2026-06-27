@@ -1,8 +1,11 @@
 {
   "aggregate": {
-    "mean_mrr": 0.8526,
+    "mean_mrr": 0.9137,
     "mean_recall_at_k": 1.0,
-    "mean_ndcg_at_k": 0.8894
+    "mean_ndcg_at_k": 0.9302
+  },
+  "abstention": {
+    "correct_rejection_rate": 1.0
   },
   "per_query": {
     "q01-sqlite-async": {
@@ -95,6 +98,111 @@
       "ndcg_at_k": 1.0,
       "top_k": 5,
       "result_count": 4
+    },
+    "q3x-cache-architecture": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 3
+    },
+    "q3x-cache-evolution": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.8529,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q41-recent-build-engine": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 2
+    },
+    "q43-current-deploy-runbook": {
+      "mrr": 0.5,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.6309,
+      "top_k": 5,
+      "result_count": 2
+    },
+    "q5x-python-runtime": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 1
+    },
+    "q5x-python-runtime-stale": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 4
+    },
+    "q5x-embedding-model": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 4
+    },
+    "q5x-embedding-model-stale-still-absent": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5
+    },
+    "q5x-service-port-current": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 4
+    },
+    "q5x-service-port-history": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 10,
+      "result_count": 5
+    },
+    "q5x-secrets-current": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 3
+    },
+    "q6x-stale-flag-recovers": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 2
+    },
+    "q7x-current-units": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 3
+    },
+    "q7x-dispatch-pref": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 2
+    },
+    "q7x-comm-style": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 2
     }
   }
 }

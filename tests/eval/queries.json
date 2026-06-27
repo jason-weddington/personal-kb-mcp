@@ -3,157 +3,197 @@
     "id": "q01-sqlite-async",
     "query": "async sqlite database access",
     "top_k": 5,
-    "expected": ["aiosqlite-async-pattern", "cross-thread-aiosqlite"],
+    "expected": [
+      "aiosqlite-async-pattern",
+      "cross-thread-aiosqlite"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Core async/SQLite entries should surface from both FTS and vector"
+    "comment": "Core async/SQLite entries should surface from both FTS and vector",
+    "category": "database"
   },
   {
     "id": "q02-fts5-search",
     "query": "full text search FTS5 triggers",
     "top_k": 5,
-    "expected": ["fts5-content-sync"],
+    "expected": [
+      "fts5-content-sync"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Exact keyword match — FTS5 should find this easily"
+    "comment": "Exact keyword match \u2014 FTS5 should find this easily",
+    "category": "database"
   },
   {
     "id": "q03-wal-mode",
     "query": "WAL journal mode concurrent writes sqlite",
     "top_k": 5,
-    "expected": ["wal-mode-concurrency"],
+    "expected": [
+      "wal-mode-concurrency"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Keyword match for WAL mode entry"
+    "comment": "Keyword match for WAL mode entry",
+    "category": "database"
   },
   {
     "id": "q04-fastapi-vs-flask",
     "query": "choosing between FastAPI and Flask for web framework",
     "top_k": 5,
-    "expected": ["fastapi-vs-flask-decision"],
+    "expected": [
+      "fastapi-vs-flask-decision"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Decision entry should rank high for framework comparison query"
+    "comment": "Decision entry should rank high for framework comparison query",
+    "category": "api"
   },
   {
     "id": "q05-rest-auth",
     "query": "REST API authentication JWT tokens",
     "top_k": 5,
-    "expected": ["jwt-auth-middleware"],
+    "expected": [
+      "jwt-auth-middleware"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Auth middleware entry should surface for JWT queries"
+    "comment": "Auth middleware entry should surface for JWT queries",
+    "category": "api"
   },
   {
     "id": "q06-cors-setup",
     "query": "CORS configuration allow origins middleware",
     "top_k": 5,
-    "expected": ["cors-config-pattern"],
+    "expected": [
+      "cors-config-pattern"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "CORS entry direct keyword match"
+    "comment": "CORS entry direct keyword match",
+    "category": "api"
   },
   {
     "id": "q07-docker-setup",
     "query": "Docker multi-stage build Python image",
     "top_k": 5,
-    "expected": ["docker-multi-stage"],
+    "expected": [
+      "docker-multi-stage"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "DevOps cluster entry via keyword match"
+    "comment": "DevOps cluster entry via keyword match",
+    "category": "devops"
   },
   {
     "id": "q08-ci-pipeline",
     "query": "GitHub Actions CI Python testing pipeline",
     "top_k": 5,
-    "expected": ["github-actions-ci"],
+    "expected": [
+      "github-actions-ci"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "CI pipeline entry via keyword match"
+    "comment": "CI pipeline entry via keyword match",
+    "category": "devops"
   },
   {
     "id": "q09-race-condition",
     "query": "asyncio race condition database locking",
     "top_k": 5,
-    "expected": ["race-condition-asyncio"],
+    "expected": [
+      "race-condition-asyncio"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Debugging cluster — race condition lesson learned"
+    "comment": "Debugging cluster \u2014 race condition lesson learned",
+    "category": "debugging"
   },
   {
     "id": "q10-encoding-bug",
     "query": "UTF-8 JSON encoding unicode errors",
     "top_k": 5,
-    "expected": ["encoding-utf8-gotcha"],
+    "expected": [
+      "encoding-utf8-gotcha"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Encoding bug lesson via keywords"
+    "comment": "Encoding bug lesson via keywords",
+    "category": "debugging"
   },
   {
     "id": "q11-project-filter",
     "query": "aiosqlite async sqlite connection thread",
     "top_k": 5,
-    "expected": ["aiosqlite-async-pattern"],
+    "expected": [
+      "aiosqlite-async-pattern"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": "personal-kb",
     "tags": null,
     "include_stale": false,
-    "comment": "Project-filtered query — personal-kb entries with strong FTS match"
+    "comment": "Project-filtered query \u2014 personal-kb entries with strong FTS match",
+    "category": "database"
   },
   {
     "id": "q12-project-web",
     "query": "REST API conventions plural nouns pagination",
     "top_k": 5,
-    "expected": ["rest-api-conventions"],
+    "expected": [
+      "rest-api-conventions"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": "web-service",
     "tags": null,
     "include_stale": false,
-    "comment": "Project-filtered to web-service with strong keyword overlap"
+    "comment": "Project-filtered to web-service with strong keyword overlap",
+    "category": "api"
   },
   {
     "id": "q13-sparse-security",
     "query": "secrets management AWS rotation",
     "top_k": 5,
-    "expected": ["secrets-management"],
+    "expected": [
+      "secrets-management"
+    ],
     "excluded": [],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Sparse result — tests graph hint triggering on narrow query"
+    "comment": "Sparse result \u2014 tests graph hint triggering on narrow query",
+    "category": "devops"
   },
   {
     "id": "q14-sparse-terraform",
@@ -165,18 +205,367 @@
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "Sparse result — terraform entry is stale pattern_convention, tests hint behavior"
+    "comment": "Sparse result \u2014 terraform entry is stale pattern_convention, tests hint behavior",
+    "category": "devops"
   },
   {
     "id": "q15-stale-decay",
     "query": "json_extract SQLite JSON properties",
     "top_k": 5,
     "expected": [],
-    "excluded": ["sqlite-json-extract"],
+    "excluded": [
+      "sqlite-json-extract"
+    ],
     "exact_order": false,
     "project_ref": null,
     "tags": null,
     "include_stale": false,
-    "comment": "sqlite-json-extract is 250 days old factual_reference — should be filtered by decay"
+    "comment": "sqlite-json-extract is 250 days old factual_reference \u2014 should be filtered by decay",
+    "category": "debugging"
+  },
+  {
+    "id": "q3x-cache-architecture",
+    "query": "how the current Redis cache layer and cache invalidation fit together in the architecture",
+    "top_k": 5,
+    "expected": [
+      "mh-cache-layer",
+      "mh-cache-invalidation",
+      "mh-cache-v3-redis"
+    ],
+    "excluded": [
+      "mh-cache-v1-inprocess"
+    ],
+    "exact_order": false,
+    "project_ref": "web-service",
+    "tags": null,
+    "include_stale": false,
+    "category": "multi-hop",
+    "comment": "SIBLING-SYNTHESIS multi-hop: answer requires combining cache-layer + invalidation + current redis entry"
+  },
+  {
+    "id": "q3x-cache-evolution",
+    "query": "how our caching approach evolved across three generations and why each was replaced",
+    "top_k": 5,
+    "expected": [
+      "mh-cache-v3-redis",
+      "mh-cache-v2-memcached",
+      "mh-cache-v1-inprocess"
+    ],
+    "excluded": [],
+    "exact_order": false,
+    "project_ref": "web-service",
+    "tags": null,
+    "include_stale": false,
+    "category": "multi-hop",
+    "comment": "GRAPH-TRAVERSAL multi-hop: answer requires the full supersedes chain v3->v2->v1"
+  },
+  {
+    "id": "q41-recent-build-engine",
+    "query": "most recent build engine used for dispatch",
+    "top_k": 5,
+    "expected": [
+      "tmp-build-engine-current"
+    ],
+    "excluded": [
+      "tmp-build-engine-prior",
+      "tmp-build-engine-legacy"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "temporal",
+    "comment": "Recency test: only freshest build-engine entry survives decay filtering"
+  },
+  {
+    "id": "q43-current-deploy-runbook",
+    "query": "current production deploy runbook procedure steps",
+    "top_k": 5,
+    "expected": [
+      "tmp-deploy-runbook-now"
+    ],
+    "excluded": [
+      "tmp-deploy-runbook-old"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "temporal",
+    "comment": "Decay test on pattern_convention: old runbook filtered, current runbook surfaces"
+  },
+  {
+    "id": "q5x-python-runtime",
+    "query": "minimum supported Python runtime version for the service",
+    "top_k": 5,
+    "expected": [
+      "ku-supported-python-version"
+    ],
+    "excluded": [
+      "ku-supported-python-version-old"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "knowledge-update",
+    "comment": "Core knowledge-update: current Python version surfaces, old decayed version excluded"
+  },
+  {
+    "id": "q5x-python-runtime-stale",
+    "query": "history of the Python runtime baseline including the old 3.10 requirement",
+    "top_k": 5,
+    "expected": [
+      "ku-supported-python-version",
+      "ku-supported-python-version-old"
+    ],
+    "excluded": [],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": true,
+    "category": "knowledge-update",
+    "comment": "Control: include_stale=true surfaces both current and old Python version"
+  },
+  {
+    "id": "q5x-embedding-model",
+    "query": "default embedding model used for vector search",
+    "top_k": 5,
+    "expected": [
+      "ku-default-embedding-model"
+    ],
+    "excluded": [
+      "ku-default-embedding-model-old"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "knowledge-update",
+    "comment": "Deactivation-based knowledge-update: old model is deactivated, current surfaces"
+  },
+  {
+    "id": "q5x-embedding-model-stale-still-absent",
+    "query": "which embedding model does the knowledge base default to for similarity",
+    "top_k": 5,
+    "expected": [
+      "ku-default-embedding-model"
+    ],
+    "excluded": [
+      "ku-default-embedding-model-old"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": true,
+    "category": "knowledge-update",
+    "comment": "Deactivation is harder than decay: old model stays absent even with include_stale=true"
+  },
+  {
+    "id": "q5x-service-port-current",
+    "query": "default network listen port the explorer service binds to",
+    "top_k": 5,
+    "expected": [
+      "ku-service-default-port-v3"
+    ],
+    "excluded": [
+      "ku-service-default-port-v2",
+      "ku-service-default-port-v1"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "knowledge-update",
+    "comment": "Multi-version chain: v3 surfaces, v2 decay-filtered, v1 deactivated"
+  },
+  {
+    "id": "q5x-service-port-history",
+    "query": "full history of listen port changes for the explorer including retired ports",
+    "top_k": 10,
+    "expected": [
+      "ku-service-default-port-v3",
+      "ku-service-default-port-v2"
+    ],
+    "excluded": [
+      "ku-service-default-port-v1"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": true,
+    "category": "knowledge-update",
+    "comment": "History recall: v3+v2 surface with stale included, v1 stays absent (deactivated)"
+  },
+  {
+    "id": "q5x-secrets-current",
+    "query": "current approach for managing application secrets in production",
+    "top_k": 5,
+    "expected": [
+      "secrets-management"
+    ],
+    "excluded": [
+      "secrets-dotenv-old"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "knowledge-update",
+    "comment": "Exercises existing secrets chain: active entry surfaces, deactivated old entry excluded"
+  },
+  {
+    "id": "q6x-graphql-federation-gone",
+    "query": "Apollo supergraph federation gateway subgraph composition",
+    "top_k": 5,
+    "expected": [],
+    "excluded": [
+      "abs-graphql-federation-retired"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "abstention",
+    "comment": "Hard abstention: only matching entry is deactivated"
+  },
+  {
+    "id": "q6x-rabbitmq-broker-gone",
+    "query": "self-hosted RabbitMQ broker mirrored queue cluster partition",
+    "top_k": 5,
+    "expected": [],
+    "excluded": [
+      "abs-message-queue-deprecated"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "abstention",
+    "comment": "Hard abstention: only matching entry is deactivated"
+  },
+  {
+    "id": "q6x-websocket-scaling-stale",
+    "query": "horizontally scaling websocket fan-out with a pub sub backplane",
+    "top_k": 5,
+    "expected": [],
+    "excluded": [
+      "abs-websocket-scaling-decayed"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "abstention",
+    "comment": "Decay abstention: active entry decayed below threshold"
+  },
+  {
+    "id": "q6x-stale-flag-recovers",
+    "query": "horizontally scaling websocket fan-out with a pub sub backplane stale included",
+    "top_k": 5,
+    "expected": [
+      "abs-websocket-scaling-decayed"
+    ],
+    "excluded": [],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": true,
+    "category": "abstention",
+    "comment": "Recall control: same topic with include_stale=true recovers the decayed entry"
+  },
+  {
+    "id": "q6x-grpc-streaming-stale",
+    "query": "gRPC bidirectional streaming keepalive flow control window telemetry",
+    "top_k": 5,
+    "expected": [],
+    "excluded": [
+      "abs-grpc-streaming-decayed"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "abstention",
+    "comment": "Decay abstention: second independent decayed decoy"
+  },
+  {
+    "id": "q6x-absent-kafka-topic",
+    "query": "Kafka consumer group partition rebalancing exactly-once semantics",
+    "top_k": 5,
+    "expected": [],
+    "excluded": [],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "abstention",
+    "comment": "Genuinely absent topic: no corpus entry covers Kafka at all"
+  },
+  {
+    "id": "q6x-near-miss-versioning-graphql",
+    "query": "GraphQL schema evolution removing deprecated fields over time",
+    "top_k": 5,
+    "expected": [],
+    "excluded": [
+      "api-versioning-strategy",
+      "api-versioning-old",
+      "abs-graphql-federation-retired"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "abstention",
+    "comment": "Soft near-miss abstention: topic absent, query shares some tokens with api-versioning entries"
+  },
+  {
+    "id": "q7x-current-units",
+    "query": "what measurement units does the user prefer now",
+    "top_k": 5,
+    "expected": [
+      "pref-units-metric"
+    ],
+    "excluded": [
+      "pref-units-imperial"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "preference",
+    "comment": "Preference reversal: current metric preference surfaces, superseded imperial excluded"
+  },
+  {
+    "id": "q7x-dispatch-pref",
+    "query": "does the user prefer dispatching agents or working inline",
+    "top_k": 5,
+    "expected": [
+      "pref-dispatch-over-inline"
+    ],
+    "excluded": [
+      "pref-comm-terse-no-emoji"
+    ],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "preference",
+    "comment": "Standing workflow preference recall, discriminated from sibling preference"
+  },
+  {
+    "id": "q7x-comm-style",
+    "query": "user communication tone preference terse no emoji",
+    "top_k": 5,
+    "expected": [
+      "pref-comm-terse-no-emoji"
+    ],
+    "excluded": [],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "preference",
+    "comment": "Keyword-strong preference recall for communication style entry"
   }
 ]

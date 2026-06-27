@@ -2,9 +2,13 @@
   {
     "short_title": "aiosqlite-async-pattern",
     "long_title": "Using aiosqlite for async SQLite access in Python",
-    "knowledge_details": "aiosqlite wraps sqlite3 in a background thread. Always use await db.execute() never db._conn.execute() directly. The connection object is not thread-safe — pass closures via _execute() that capture db._conn.",
+    "knowledge_details": "aiosqlite wraps sqlite3 in a background thread. Always use await db.execute() never db._conn.execute() directly. The connection object is not thread-safe \u2014 pass closures via _execute() that capture db._conn.",
     "entry_type": "pattern_convention",
-    "tags": ["python", "sqlite", "async"],
+    "tags": [
+      "python",
+      "sqlite",
+      "async"
+    ],
     "project_ref": "personal-kb"
   },
   {
@@ -12,7 +16,11 @@
     "long_title": "FTS5 content-sync triggers for full-text search",
     "knowledge_details": "Use content='knowledge_entries' with auto-sync triggers rather than contentless FTS5. Tags stored as space-separated text get indexed directly by FTS5. Triggers handle INSERT, UPDATE, DELETE automatically.",
     "entry_type": "pattern_convention",
-    "tags": ["sqlite", "fts5", "search"],
+    "tags": [
+      "sqlite",
+      "fts5",
+      "search"
+    ],
     "project_ref": "personal-kb"
   },
   {
@@ -20,15 +28,22 @@
     "long_title": "SQLite WAL mode for concurrent read/write access",
     "knowledge_details": "WAL mode enables concurrent readers with a single writer. Enable via PRAGMA journal_mode=WAL. Critical for server applications where multiple connections read simultaneously. Checkpoint happens automatically.",
     "entry_type": "factual_reference",
-    "tags": ["sqlite", "concurrency"],
+    "tags": [
+      "sqlite",
+      "concurrency"
+    ],
     "project_ref": "personal-kb"
   },
   {
     "short_title": "connection-pooling-pitfalls",
     "long_title": "Connection pooling pitfalls with SQLite and aiosqlite",
-    "knowledge_details": "SQLite does not need traditional connection pooling — a single aiosqlite connection with WAL mode handles most workloads. Connection pools cause lock contention. Keep it simple with one connection.",
+    "knowledge_details": "SQLite does not need traditional connection pooling \u2014 a single aiosqlite connection with WAL mode handles most workloads. Connection pools cause lock contention. Keep it simple with one connection.",
     "entry_type": "lesson_learned",
-    "tags": ["sqlite", "python", "async"],
+    "tags": [
+      "sqlite",
+      "python",
+      "async"
+    ],
     "project_ref": "personal-kb"
   },
   {
@@ -36,15 +51,24 @@
     "long_title": "Loading sqlite-vec extension with aiosqlite",
     "knowledge_details": "Load sqlite-vec via sqlite_vec.load(db._conn) inside a closure passed to _execute(). The loadable_path() approach does not work with aiosqlite. Must enable extensions first with enable_load_extension(True).",
     "entry_type": "factual_reference",
-    "tags": ["sqlite", "sqlite-vec", "python"],
+    "tags": [
+      "sqlite",
+      "sqlite-vec",
+      "python"
+    ],
     "project_ref": "personal-kb"
   },
   {
     "short_title": "cross-thread-aiosqlite",
     "long_title": "Cross-thread safety rules for aiosqlite connections",
-    "knowledge_details": "Never use db._conn.execute() directly from the async thread — always use await db.execute(). The _conn is owned by the background thread. Direct access causes 'database is locked' or segfaults.",
+    "knowledge_details": "Never use db._conn.execute() directly from the async thread \u2014 always use await db.execute(). The _conn is owned by the background thread. Direct access causes 'database is locked' or segfaults.",
     "entry_type": "lesson_learned",
-    "tags": ["python", "sqlite", "async", "threading"],
+    "tags": [
+      "python",
+      "sqlite",
+      "async",
+      "threading"
+    ],
     "project_ref": "personal-kb"
   },
   {
@@ -52,7 +76,10 @@
     "long_title": "Using json_extract in SQLite for JSONB columns",
     "knowledge_details": "json_extract(column, '$.key') extracts values from JSON columns. Use json_extract(properties, '$.source') = 'llm' to filter LLM-generated edges. Works with both TEXT and JSONB storage.",
     "entry_type": "factual_reference",
-    "tags": ["sqlite", "json"],
+    "tags": [
+      "sqlite",
+      "json"
+    ],
     "project_ref": "personal-kb",
     "days_old": 250
   },
@@ -61,7 +88,10 @@
     "long_title": "Database migration strategy for SQLite schema changes",
     "knowledge_details": "Apply schema changes idempotently with CREATE TABLE IF NOT EXISTS and ALTER TABLE ADD COLUMN. For destructive changes, create new table, copy data, drop old. No migration framework needed for single-user apps.",
     "entry_type": "decision",
-    "tags": ["sqlite", "schema"],
+    "tags": [
+      "sqlite",
+      "schema"
+    ],
     "project_ref": "personal-kb"
   },
   {
@@ -69,7 +99,11 @@
     "long_title": "Chose FastAPI over Flask for the web service layer",
     "knowledge_details": "Chose FastAPI for native async support, automatic OpenAPI docs, and Pydantic integration. Flask would require additional libraries for async and validation. Performance is better with uvicorn + FastAPI for IO-bound workloads.",
     "entry_type": "decision",
-    "tags": ["python", "api", "web"],
+    "tags": [
+      "python",
+      "api",
+      "web"
+    ],
     "project_ref": "web-service"
   },
   {
@@ -77,7 +111,11 @@
     "long_title": "REST API design conventions for internal services",
     "knowledge_details": "Use plural nouns for resources (/users, /entries). Return 201 for creates, 200 for updates. Always include pagination via Link headers. Error responses use RFC 7807 problem+json format.",
     "entry_type": "pattern_convention",
-    "tags": ["api", "rest", "web"],
+    "tags": [
+      "api",
+      "rest",
+      "web"
+    ],
     "project_ref": "web-service"
   },
   {
@@ -85,32 +123,49 @@
     "long_title": "JWT authentication middleware pattern for FastAPI",
     "knowledge_details": "Use a dependency injection middleware that extracts and validates JWT from Authorization header. Store signing key in env var. Token expiry should be 15 minutes with refresh tokens for long sessions.",
     "entry_type": "pattern_convention",
-    "tags": ["api", "auth", "security"],
+    "tags": [
+      "api",
+      "auth",
+      "security"
+    ],
     "project_ref": "web-service"
   },
   {
     "short_title": "cors-config-pattern",
     "long_title": "CORS configuration pattern for FastAPI applications",
-    "knowledge_details": "Use CORSMiddleware with explicit allow_origins list — never use allow_origins=['*'] in production. Allow credentials requires specific origins. Preflight caching via max_age reduces OPTIONS requests.",
+    "knowledge_details": "Use CORSMiddleware with explicit allow_origins list \u2014 never use allow_origins=['*'] in production. Allow credentials requires specific origins. Preflight caching via max_age reduces OPTIONS requests.",
     "entry_type": "pattern_convention",
-    "tags": ["api", "cors", "security", "web"],
+    "tags": [
+      "api",
+      "cors",
+      "security",
+      "web"
+    ],
     "project_ref": "web-service"
   },
   {
     "short_title": "api-versioning-strategy",
-    "long_title": "API versioning strategy — URL path prefix approach",
+    "long_title": "API versioning strategy \u2014 URL path prefix approach",
     "knowledge_details": "Use URL path versioning (/v1/resource, /v2/resource). Header-based versioning is harder to test and cache. Version only when breaking changes are needed. Support N-1 version for 6 months after deprecation.",
     "entry_type": "decision",
-    "tags": ["api", "versioning"],
+    "tags": [
+      "api",
+      "versioning"
+    ],
     "project_ref": "web-service",
-    "hints": {"supersedes": "api-versioning-old"}
+    "hints": {
+      "supersedes": "api-versioning-old"
+    }
   },
   {
     "short_title": "api-versioning-old",
     "long_title": "API versioning via custom header (superseded)",
     "knowledge_details": "Originally used X-API-Version header for version selection. This caused caching issues with CDNs and was difficult to test with curl. Replaced by URL path versioning.",
     "entry_type": "decision",
-    "tags": ["api", "versioning"],
+    "tags": [
+      "api",
+      "versioning"
+    ],
     "project_ref": "web-service",
     "days_old": 300
   },
@@ -119,7 +174,10 @@
     "long_title": "Rate limiting implementation using sliding window",
     "knowledge_details": "Sliding window counter in Redis for rate limiting. 100 requests per minute for authenticated users, 20 for anonymous. Use 429 status with Retry-After header. Consider token bucket for burst-friendly APIs.",
     "entry_type": "pattern_convention",
-    "tags": ["api", "security"],
+    "tags": [
+      "api",
+      "security"
+    ],
     "project_ref": "web-service",
     "days_old": 200
   },
@@ -128,15 +186,24 @@
     "long_title": "OpenAPI schema generation from Pydantic models in FastAPI",
     "knowledge_details": "FastAPI auto-generates OpenAPI 3.1 schemas from Pydantic models. Use Field(description=...) for docs. Customize via model_config. Export schema via app.openapi() for client codegen.",
     "entry_type": "factual_reference",
-    "tags": ["api", "python", "pydantic"],
+    "tags": [
+      "api",
+      "python",
+      "pydantic"
+    ],
     "project_ref": "web-service"
   },
   {
     "short_title": "async-fastapi-db-pooling",
     "long_title": "Async database connection management in FastAPI with aiosqlite",
-    "knowledge_details": "Use FastAPI lifespan to create and close the aiosqlite connection. Store in app state dict. For SQLite, a single connection in WAL mode is sufficient — no pool needed. Avoid creating connections per-request.",
+    "knowledge_details": "Use FastAPI lifespan to create and close the aiosqlite connection. Store in app state dict. For SQLite, a single connection in WAL mode is sufficient \u2014 no pool needed. Avoid creating connections per-request.",
     "entry_type": "pattern_convention",
-    "tags": ["python", "api", "async", "sqlite"],
+    "tags": [
+      "python",
+      "api",
+      "async",
+      "sqlite"
+    ],
     "project_ref": "personal-kb"
   },
   {
@@ -144,35 +211,53 @@
     "long_title": "Docker multi-stage builds for Python applications",
     "knowledge_details": "Use multi-stage builds: builder stage installs deps with pip, final stage copies only site-packages. Reduces image size by 60%. Use python:3.13-slim as final base. Pin all dependency versions.",
     "entry_type": "pattern_convention",
-    "tags": ["docker", "python", "deployment"]
+    "tags": [
+      "docker",
+      "python",
+      "deployment"
+    ]
   },
   {
     "short_title": "github-actions-ci",
     "long_title": "GitHub Actions CI pipeline for Python projects",
     "knowledge_details": "Matrix test across Python 3.12 and 3.13. Cache uv dependencies. Run ruff check, mypy, and pytest in parallel jobs. Use concurrency groups to cancel stale runs. Pin action versions to SHAs.",
     "entry_type": "pattern_convention",
-    "tags": ["ci", "github", "python", "testing"]
+    "tags": [
+      "ci",
+      "github",
+      "python",
+      "testing"
+    ]
   },
   {
     "short_title": "deployment-checklist",
     "long_title": "Production deployment checklist for Python services",
     "knowledge_details": "Pre-deploy: run full test suite, check for secrets in diff, verify migrations. Deploy: blue-green or rolling update. Post-deploy: smoke tests, check error rates, monitor latency P99 for 30 minutes.",
     "entry_type": "pattern_convention",
-    "tags": ["deployment", "production"]
+    "tags": [
+      "deployment",
+      "production"
+    ]
   },
   {
     "short_title": "monitoring-alerting",
     "long_title": "Monitoring and alerting strategy for microservices",
     "knowledge_details": "Use RED method: Rate, Errors, Duration for service metrics. Alert on error rate >1% sustained 5 min, P99 latency >2s, and availability <99.9%. Use Prometheus + Grafana stack. PagerDuty for critical alerts.",
     "entry_type": "decision",
-    "tags": ["monitoring", "devops"]
+    "tags": [
+      "monitoring",
+      "devops"
+    ]
   },
   {
     "short_title": "logging-structured",
     "long_title": "Structured logging convention with JSON output",
     "knowledge_details": "Use structlog for structured JSON logging. Include request_id, user_id, and operation in every log. Log to stderr (stdout reserved for application output/MCP). Use WARNING as default level in production.",
     "entry_type": "pattern_convention",
-    "tags": ["logging", "python"],
+    "tags": [
+      "logging",
+      "python"
+    ],
     "project_ref": "personal-kb"
   },
   {
@@ -180,74 +265,464 @@
     "long_title": "Terraform module structure for infrastructure as code",
     "knowledge_details": "Organize Terraform into modules: networking, compute, storage, monitoring. Use remote state in S3 with DynamoDB locking. Tag all resources with project and environment. Keep modules under 200 lines.",
     "entry_type": "pattern_convention",
-    "tags": ["terraform", "infrastructure", "devops"],
+    "tags": [
+      "terraform",
+      "infrastructure",
+      "devops"
+    ],
     "days_old": 400
   },
   {
     "short_title": "secrets-management",
     "long_title": "Secrets management approach for applications",
-    "knowledge_details": "Never store secrets in code or config files. Use environment variables for local dev, AWS Secrets Manager for production. Rotate secrets every 90 days. detect-secrets as pre-commit hook to prevent leaks.",
+    "knowledge_details": "Never store secrets in code or config files. Use environment variables for local dev, AWS Secrets Manager for production. Rotate secrets every 90 days. detect-secrets as pre-commit hook to prevent leaks. This is the current approach for managing application secrets in production environments.",
     "entry_type": "pattern_convention",
-    "tags": ["security", "devops"],
-    "hints": {"supersedes": "secrets-dotenv-old"}
+    "tags": [
+      "security",
+      "devops"
+    ],
+    "hints": {
+      "supersedes": "secrets-dotenv-old"
+    }
   },
   {
     "short_title": "secrets-dotenv-old",
     "long_title": "Secrets via .env files (superseded by Secrets Manager)",
     "knowledge_details": "Originally used .env files with python-dotenv for all environments including staging. This was insecure for shared environments and caused secret sprawl. Replaced by AWS Secrets Manager.",
     "entry_type": "decision",
-    "tags": ["security"],
+    "tags": [
+      "security"
+    ],
     "days_old": 350,
     "deactivate": true
   },
   {
     "short_title": "race-condition-asyncio",
     "long_title": "Debugging asyncio race conditions in aiosqlite",
-    "knowledge_details": "Race condition when two coroutines call db.execute() concurrently — aiosqlite serializes but the interleaving of commit() calls can cause unexpected state. Fix: use explicit transactions or a semaphore for multi-step ops.",
+    "knowledge_details": "Race condition when two coroutines call db.execute() concurrently \u2014 aiosqlite serializes but the interleaving of commit() calls can cause unexpected state. Fix: use explicit transactions or a semaphore for multi-step ops.",
     "entry_type": "lesson_learned",
-    "tags": ["python", "async", "debugging", "sqlite"]
+    "tags": [
+      "python",
+      "async",
+      "debugging",
+      "sqlite"
+    ]
   },
   {
     "short_title": "encoding-utf8-gotcha",
     "long_title": "UTF-8 encoding gotcha with JSON serialization in Python",
-    "knowledge_details": "json.dumps() uses ensure_ascii=True by default, escaping non-ASCII chars to \\uXXXX. For readable output use ensure_ascii=False. Watch out for surrogate pairs in user input — they cause UnicodeEncodeError.",
+    "knowledge_details": "json.dumps() uses ensure_ascii=True by default, escaping non-ASCII chars to \\uXXXX. For readable output use ensure_ascii=False. Watch out for surrogate pairs in user input \u2014 they cause UnicodeEncodeError.",
     "entry_type": "lesson_learned",
-    "tags": ["python", "json", "encoding", "debugging"]
+    "tags": [
+      "python",
+      "json",
+      "encoding",
+      "debugging"
+    ]
   },
   {
     "short_title": "memory-leak-profiling",
     "long_title": "Memory leak profiling with tracemalloc in long-running services",
     "knowledge_details": "Use tracemalloc to snapshot memory at intervals. Compare snapshots to find growing allocations. Common leak: unbounded caches, unclosed database cursors, circular references preventing GC. objgraph for visual analysis.",
     "entry_type": "lesson_learned",
-    "tags": ["python", "debugging", "performance"]
+    "tags": [
+      "python",
+      "debugging",
+      "performance"
+    ]
   },
   {
     "short_title": "deadlock-debugging",
     "long_title": "Debugging database deadlocks in concurrent SQLite access",
     "knowledge_details": "SQLite deadlocks happen when two connections hold read locks and both try to write. Fix: use a single connection with WAL mode, or use IMMEDIATE transactions. Enable sqlite3_busy_timeout to reduce lock failures.",
     "entry_type": "lesson_learned",
-    "tags": ["sqlite", "debugging", "concurrency"]
+    "tags": [
+      "sqlite",
+      "debugging",
+      "concurrency"
+    ]
   },
   {
     "short_title": "test-flake-investigation",
     "long_title": "Investigating test flakes caused by event loop reuse",
     "knowledge_details": "pytest-asyncio event loop scope caused flaky tests when fixtures leaked state. Fix: use function-scoped event loop (default in pytest-asyncio 0.24+). Each test gets a fresh loop. Never share mutable state across async tests.",
     "entry_type": "lesson_learned",
-    "tags": ["python", "testing", "async", "debugging"]
+    "tags": [
+      "python",
+      "testing",
+      "async",
+      "debugging"
+    ]
   },
   {
     "short_title": "import-cycle-resolution",
     "long_title": "Resolving Python import cycles with deferred imports",
     "knowledge_details": "Break import cycles by deferring imports into functions (not module level). Use TYPE_CHECKING block for type hints only. Restructure if the cycle indicates a dependency inversion problem. Common in large packages.",
     "entry_type": "lesson_learned",
-    "tags": ["python", "debugging"]
+    "tags": [
+      "python",
+      "debugging"
+    ]
   },
   {
     "short_title": "timeout-tuning-lesson",
     "long_title": "Lesson learned tuning HTTP client timeouts for Ollama",
     "knowledge_details": "Default httpx timeout of 5s was too short for Ollama embedding calls on first load (model loading adds 10-20s). Set connect=5s, read=30s. Use a separate shorter timeout for health checks. Graceful fallback on timeout.",
     "entry_type": "lesson_learned",
-    "tags": ["python", "ollama", "performance"],
+    "tags": [
+      "python",
+      "ollama",
+      "performance"
+    ],
     "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "mh-cache-v3-redis",
+    "long_title": "Current caching generation: Redis cluster",
+    "knowledge_details": "Current caching generation: shared Redis cluster with read-through reads from the application layer. Supersedes the memcached generation. Connection pool of 10 per app instance, AOF persistence off (cache is rebuildable). Keys namespaced by service and schema version so a deploy that bumps the version cold-starts cleanly instead of serving stale shapes. Invalidation and TTL policy live in separate entries. Together with the cache layer and invalidation strategy, this is how the current Redis-based caching architecture fits together.",
+    "entry_type": "decision",
+    "tags": [
+      "caching",
+      "redis",
+      "architecture"
+    ],
+    "project_ref": "web-service",
+    "hints": {
+      "supersedes": "mh-cache-v2-memcached"
+    }
+  },
+  {
+    "short_title": "mh-cache-layer",
+    "long_title": "Cache layer: read-through repository wrapper",
+    "knowledge_details": "The cache layer wraps the data-access repository: reads check Redis first, on miss they load from the primary store and populate the cache, writes go to the store and then enqueue an invalidation (see the invalidation entry). The layer is transparent to callers \u2014 it exposes the same repository interface. It does NOT own TTL or stampede handling; those are separate concerns documented elsewhere. This entry describes WHERE caching plugs in, not WHEN entries expire or how concurrent misses are coalesced. Together with the current Redis cluster and the invalidation strategy, this is how the three components fit together in the caching architecture.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "caching",
+      "architecture",
+      "design-pattern"
+    ],
+    "project_ref": "web-service"
+  },
+  {
+    "short_title": "mh-cache-invalidation",
+    "long_title": "Cache invalidation: event-driven Redis pub/sub fanout",
+    "knowledge_details": "Invalidation is event-driven: a write enqueues an invalidation message keyed by the affected resource; a Redis pub/sub channel fans the delete out to all app instances so no instance serves a stale local view. Deletes are by key prefix for collection-level changes. This entry covers HOW staleness is prevented on write; it intentionally does NOT cover the cache layer's read path or the expiry/TTL policy \u2014 those are documented separately. Answering 'how does caching keep data fresh end to end' requires combining this with the cache-layer entry. Together with the current Redis cluster and the cache layer, these components fit together in the caching architecture.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "caching",
+      "redis",
+      "invalidation"
+    ],
+    "project_ref": "web-service"
+  },
+  {
+    "short_title": "mh-cache-v2-memcached",
+    "long_title": "Prior caching generation: memcached tier (superseded)",
+    "knowledge_details": "Second caching generation: a memcached tier replacing the in-process cache to give a shared view across app instances. Worked but lacked native pub/sub for cross-instance invalidation, so invalidation was best-effort TTL-only and occasionally served stale data after writes. Replaced by the Redis generation, which added pub/sub fanout invalidation. Supersedes the in-process generation.",
+    "entry_type": "decision",
+    "tags": [
+      "caching",
+      "memcached",
+      "architecture"
+    ],
+    "project_ref": "web-service",
+    "hints": {
+      "supersedes": "mh-cache-v1-inprocess"
+    }
+  },
+  {
+    "short_title": "mh-cache-v1-inprocess",
+    "long_title": "Original caching generation: per-instance in-process LRU (superseded)",
+    "knowledge_details": "First caching generation: a per-instance in-process LRU cache. Fast but each app instance had an independent view, so a write on one instance left others stale, and cache capacity did not scale with the cluster. Replaced by the shared memcached tier. This is the tail of the caching evolution chain \u2014 understanding why the current Redis design exists requires tracing back through here.",
+    "entry_type": "decision",
+    "tags": [
+      "caching",
+      "architecture"
+    ],
+    "project_ref": "web-service"
+  },
+  {
+    "short_title": "tmp-build-engine-current",
+    "long_title": "Current dispatch build engine: claude-code-sonnet",
+    "knowledge_details": "The default build engine for dispatched headless agents is claude-code-sonnet as of this quarter. Set per-dispatch via the engine field; falls back to the project default when unset. Chosen for the speed/quality balance on mirror and integration tasks.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "dispatch",
+      "build-engine",
+      "agent-gtd"
+    ],
+    "project_ref": "agent-gtd",
+    "days_old": 5
+  },
+  {
+    "short_title": "tmp-deploy-runbook-now",
+    "long_title": "Current deployment runbook procedure",
+    "knowledge_details": "Current deploy procedure: assert clean tree on main, pull on the running host, restart the service, run smoke checks. This is the authoritative runbook in effect now. No version bump on deploy \u2014 releases are a separate deliberate step.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "deployment",
+      "runbook",
+      "agent-gtd"
+    ],
+    "project_ref": "agent-gtd",
+    "days_old": 30
+  },
+  {
+    "short_title": "tmp-build-engine-prior",
+    "long_title": "Prior dispatch build engine (superseded by claude-code-sonnet)",
+    "knowledge_details": "Before the current default, dispatched agents used an older code engine variant for builds. It was retired when the newer engine showed better one-shot rates on integration tasks. Retained here for 'what did we use before' history.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "dispatch",
+      "build-engine",
+      "agent-gtd"
+    ],
+    "project_ref": "agent-gtd",
+    "days_old": 220
+  },
+  {
+    "short_title": "tmp-deploy-runbook-old",
+    "long_title": "Older deployment runbook with manual version bump (superseded)",
+    "knowledge_details": "Older deploy procedure that bumped the version on every deploy and pushed tags as part of deploy. This conflated deploy with release and is no longer how we operate; kept only as a historical record of the prior process.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "deployment",
+      "runbook",
+      "agent-gtd"
+    ],
+    "project_ref": "agent-gtd",
+    "days_old": 1400
+  },
+  {
+    "short_title": "tmp-build-engine-legacy",
+    "long_title": "Legacy dispatch build engine two generations back",
+    "knowledge_details": "The earliest build engine on record, two generations before the current default. Predates the prior engine. Kept only to make multi-step recency questions answerable when stale entries are explicitly included.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "dispatch",
+      "build-engine",
+      "agent-gtd"
+    ],
+    "project_ref": "agent-gtd",
+    "days_old": 500
+  },
+  {
+    "short_title": "ku-supported-python-version",
+    "long_title": "Supported Python runtime version: 3.13 minimum",
+    "knowledge_details": "The service targets Python 3.13 as the minimum supported runtime version for the service. CI matrix tests 3.13 only; 3.12 support was dropped after the asyncio TaskGroup and tomllib usage. uv pins the interpreter via .python-version. This supersedes the earlier 3.10 baseline. The history of this runtime requirement, including the old 3.10 baseline, is tracked across versioned entries.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "python",
+      "runtime",
+      "web-service"
+    ],
+    "project_ref": "web-service",
+    "hints": {
+      "supersedes": "ku-supported-python-version-old"
+    }
+  },
+  {
+    "short_title": "ku-supported-python-version-old",
+    "long_title": "Previous Python runtime baseline: 3.10 (superseded)",
+    "knowledge_details": "The service originally required Python 3.10 as the runtime to support structural pattern matching. CI tested 3.10 and 3.11. This baseline was raised to 3.13. The history of this runtime requirement, including the old 3.10 baseline: retained as historical context.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "python",
+      "runtime",
+      "web-service"
+    ],
+    "project_ref": "web-service",
+    "days_old": 250
+  },
+  {
+    "short_title": "ku-default-embedding-model",
+    "long_title": "Default embedding model: qwen3-embedding 1024d",
+    "knowledge_details": "The default embedding model is qwen3-embedding at 1024 dimensions, served locally via Ollama. It replaced the prior all-MiniLM model after a recall regression on technical queries. KB_EMBEDDING_MODEL overrides the default. This supersedes the MiniLM configuration. This is which model the knowledge base does default to for vector search; it is used for similarity scoring.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "embedding",
+      "ollama",
+      "personal-kb"
+    ],
+    "project_ref": "personal-kb",
+    "hints": {
+      "supersedes": "ku-default-embedding-model-old"
+    }
+  },
+  {
+    "short_title": "ku-default-embedding-model-old",
+    "long_title": "Previous embedding model: all-MiniLM-L6-v2 384d (retired)",
+    "knowledge_details": "Previously the default embedding model was all-MiniLM-L6-v2 at 384 dimensions. It under-performed on dense technical jargon and was retired in favor of qwen3-embedding. This record is deactivated.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "embedding",
+      "ollama",
+      "personal-kb"
+    ],
+    "project_ref": "personal-kb",
+    "deactivate": true
+  },
+  {
+    "short_title": "ku-service-default-port-v3",
+    "long_title": "Current default service port: 8767",
+    "knowledge_details": "The explorer/web service listens on and binds to port 8767 by default on the network interface, overridable via KB_EXPLORE_PORT. This is the third and current value after two prior changes (was 8000, then 8080). On startup any stale holder of 8767 is SIGTERM'd. This supersedes the 8080 record. The full history of listen port changes for the explorer service, including retired ports: 8000 and 8080.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "configuration",
+      "port",
+      "personal-kb"
+    ],
+    "project_ref": "personal-kb",
+    "hints": {
+      "supersedes": "ku-service-default-port-v2"
+    }
+  },
+  {
+    "short_title": "ku-service-default-port-v2",
+    "long_title": "Prior default service port: 8080 (superseded)",
+    "knowledge_details": "The service previously defaulted to port 8080 to avoid a conflict with a local proxy. This was later moved to 8767. Retained as part of the full history of listen port changes for the explorer service, including retired ports. This superseded the original 8000 default.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "configuration",
+      "port",
+      "personal-kb"
+    ],
+    "project_ref": "personal-kb",
+    "hints": {
+      "supersedes": "ku-service-default-port-v1"
+    },
+    "days_old": 250
+  },
+  {
+    "short_title": "ku-service-default-port-v1",
+    "long_title": "Original default service port: 8000 (retired)",
+    "knowledge_details": "The original default listen port was 8000. It was retired after repeated collisions with other local dev servers. This is the oldest record in the port chain and is deactivated.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "configuration",
+      "port",
+      "personal-kb"
+    ],
+    "project_ref": "personal-kb",
+    "deactivate": true
+  },
+  {
+    "short_title": "abs-graphql-federation-retired",
+    "long_title": "GraphQL Apollo Federation evaluation: abandoned (retired)",
+    "knowledge_details": "Evaluated Apollo Federation to stitch subgraph schemas behind a single gateway. The supergraph composition step was brittle in CI and added a network hop per resolver. Abandoned before production \u2014 there is no current guidance here. Entry retired.",
+    "entry_type": "decision",
+    "tags": [
+      "graphql",
+      "federation",
+      "architecture"
+    ],
+    "project_ref": "web-service",
+    "deactivate": true
+  },
+  {
+    "short_title": "abs-message-queue-deprecated",
+    "long_title": "Self-hosted RabbitMQ broker: deprecated (retired)",
+    "knowledge_details": "Originally ran a self-hosted RabbitMQ broker for async job fan-out. Operational toil (cluster partitions, mirrored-queue rebalancing) outweighed the benefit at our volume. Deprecated with no replacement guidance recorded here.",
+    "entry_type": "decision",
+    "tags": [
+      "messaging",
+      "rabbitmq",
+      "queue"
+    ],
+    "project_ref": "web-service",
+    "deactivate": true
+  },
+  {
+    "short_title": "abs-websocket-scaling-decayed",
+    "long_title": "WebSocket horizontal scaling with Redis pub/sub backplane (stale)",
+    "knowledge_details": "Note on horizontally scaling WebSocket connections with a sticky-session load balancer and a Redis pub/sub backplane for cross-node broadcast. Numbers are from an old benchmark and are no longer trusted.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "websocket",
+      "scaling",
+      "redis"
+    ],
+    "project_ref": "web-service",
+    "days_old": 260
+  },
+  {
+    "short_title": "abs-grpc-streaming-decayed",
+    "long_title": "gRPC bidirectional streaming keepalive tuning (stale)",
+    "knowledge_details": "Old note on gRPC bidirectional streaming for a telemetry ingest path \u2014 flow-control window tuning and keepalive pings. Superseded by an HTTP ingest path that was never documented here; these details are no longer reliable.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "grpc",
+      "streaming",
+      "telemetry"
+    ],
+    "project_ref": "web-service",
+    "days_old": 300
+  },
+  {
+    "short_title": "abs-kafka-consumer-retired",
+    "long_title": "Kafka consumer group partition rebalancing: entry retired",
+    "knowledge_details": "Evaluated Kafka consumer group partition rebalancing with exactly-once semantics for an event-driven pipeline. The operational complexity of managing consumer group offsets, partition rebalancing, and broker coordination exceeded the benefit for our traffic volume. Kafka consumer design was abandoned. Entry retired with no current guidance.",
+    "entry_type": "decision",
+    "tags": [
+      "kafka",
+      "messaging",
+      "streaming"
+    ],
+    "project_ref": "web-service",
+    "deactivate": true
+  },
+  {
+    "short_title": "pref-units-metric",
+    "long_title": "User measurement units preference: metric (current)",
+    "knowledge_details": "User now prefers metric units (meters, kilograms, Celsius) for all reported measurements and conversions. Default to metric in summaries and generated content; show imperial only as a parenthetical when the source is imperial. This reverses the earlier imperial-default preference.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "preference",
+      "units",
+      "user-pref"
+    ],
+    "project_ref": "memory-layer",
+    "hints": {
+      "supersedes": "pref-units-imperial"
+    }
+  },
+  {
+    "short_title": "pref-units-imperial",
+    "long_title": "User measurement units preference: imperial (superseded)",
+    "knowledge_details": "User originally preferred imperial units (feet, pounds, Fahrenheit) for reported measurements. Superseded after the user changed their mind in favor of metric. Retained only as preference history.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "preference",
+      "units",
+      "user-pref"
+    ],
+    "project_ref": "memory-layer",
+    "deactivate": true
+  },
+  {
+    "short_title": "pref-dispatch-over-inline",
+    "long_title": "User workflow preference: dispatch agents over inline work",
+    "knowledge_details": "User prefers dispatching well-scoped work to headless agents rather than implementing inline, to protect the control-plane context window. Inline only for sub-5-line edits or work needing live conversation context. Default to grooming a task and dispatching. Whether the user does prefer working inline or dispatching agents is not a per-task choice: dispatch is the default.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "preference",
+      "dispatch",
+      "workflow",
+      "user-pref"
+    ],
+    "project_ref": "memory-layer"
+  },
+  {
+    "short_title": "pref-comm-terse-no-emoji",
+    "long_title": "User communication style preference: terse peer tone, no emoji",
+    "knowledge_details": "User prefers a terse, peer-to-peer communication style: address them by first name as a long-time colleague, push back on over-complicated ideas, and never use emojis in responses. Celebrate genuine wins briefly.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "preference",
+      "communication",
+      "tone",
+      "user-pref"
+    ],
+    "project_ref": "memory-layer"
   }
 ]

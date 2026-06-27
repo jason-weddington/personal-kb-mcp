@@ -57,6 +57,62 @@ def ndcg_at_k(relevant_ids: list[str], result_ids: list[str], k: int) -> float:
     return dcg / idcg
 
 
+def correct_rejection_rate(
+    queries: list[dict],
+    results_map: dict[str, list],
+    *,
+    score_threshold: float | None = None,
+) -> float:
+    """Fraction of abstention queries that correctly returned nothing.
+
+    An abstention query is one with category=='abstention', expected==[], and
+    include_stale is False (the include_stale=True sibling q6x-stale-flag-recovers
+    is a recall control with a non-empty expected set, not an abstention case).
+
+    A query is correctly rejected iff its result list is empty (strict), OR if
+    score_threshold is given and the top result score < threshold.
+
+    Returns 1.0 if the denominator is 0 (no abstention queries).
+
+    Args:
+        queries: List of query dicts with 'id', 'category', 'expected',
+                 and 'include_stale' keys.
+        results_map: Mapping of query_id → list of entry_ids (strings) or
+                     (entry_id, score) tuples. Score is used only when
+                     score_threshold is provided.
+        score_threshold: If given, treat results whose top score < threshold
+                         as correctly rejected even if the list is non-empty.
+
+    Returns:
+        Fraction of abstention queries correctly rejected (0.0-1.0).
+    """
+    abstention_queries = [
+        q
+        for q in queries
+        if q.get("category") == "abstention"
+        and q.get("expected") == []
+        and not q.get("include_stale", False)
+    ]
+
+    if not abstention_queries:
+        return 1.0
+
+    correctly_rejected = 0
+    for q in abstention_queries:
+        qid = q["id"]
+        results = results_map.get(qid, [])
+        if not results:
+            correctly_rejected += 1
+        elif score_threshold is not None:
+            # Support both (entry_id, score) tuples and plain entry_id strings
+            first = results[0]
+            top_score = first[1] if isinstance(first, (tuple, list)) else 0.0
+            if top_score < score_threshold:
+                correctly_rejected += 1
+
+    return correctly_rejected / len(abstention_queries)
+
+
 def evaluate_query_set(
     queries: list[dict],
     results_map: dict[str, list[str]],

@@ -4,7 +4,12 @@
     {
       "name": "database",
       "axis": 0,
-      "queries": ["q01-sqlite-async", "q02-fts5-search", "q03-wal-mode", "q11-project-filter"],
+      "queries": [
+        "q01-sqlite-async",
+        "q02-fts5-search",
+        "q03-wal-mode",
+        "q11-project-filter"
+      ],
       "entries": [
         "aiosqlite-async-pattern",
         "fts5-content-sync",
@@ -19,7 +24,12 @@
     {
       "name": "api",
       "axis": 8,
-      "queries": ["q04-fastapi-vs-flask", "q05-rest-auth", "q06-cors-setup", "q12-project-web"],
+      "queries": [
+        "q04-fastapi-vs-flask",
+        "q05-rest-auth",
+        "q06-cors-setup",
+        "q12-project-web"
+      ],
       "entries": [
         "fastapi-vs-flask-decision",
         "rest-api-conventions",
@@ -28,13 +38,19 @@
         "api-versioning-strategy",
         "rate-limiting-approach",
         "openapi-schema-gen",
-        "async-fastapi-db-pooling"
+        "async-fastapi-db-pooling",
+        "api-versioning-old"
       ]
     },
     {
       "name": "devops",
       "axis": 16,
-      "queries": ["q07-docker-setup", "q08-ci-pipeline", "q13-sparse-security", "q14-sparse-terraform"],
+      "queries": [
+        "q07-docker-setup",
+        "q08-ci-pipeline",
+        "q13-sparse-security",
+        "q14-sparse-terraform"
+      ],
       "entries": [
         "docker-multi-stage",
         "github-actions-ci",
@@ -42,13 +58,18 @@
         "monitoring-alerting",
         "logging-structured",
         "infra-terraform-modules",
-        "secrets-management"
+        "secrets-management",
+        "secrets-dotenv-old"
       ]
     },
     {
       "name": "debugging",
       "axis": 24,
-      "queries": ["q09-race-condition", "q10-encoding-bug", "q15-stale-decay"],
+      "queries": [
+        "q09-race-condition",
+        "q10-encoding-bug",
+        "q15-stale-decay"
+      ],
       "entries": [
         "race-condition-asyncio",
         "encoding-utf8-gotcha",
@@ -57,6 +78,87 @@
         "test-flake-investigation",
         "import-cycle-resolution",
         "timeout-tuning-lesson"
+      ]
+    },
+    {
+      "name": "multi-hop",
+      "axis": 1,
+      "queries": [
+        "q3x-cache-architecture",
+        "q3x-cache-evolution"
+      ],
+      "entries": [
+        "mh-cache-v3-redis",
+        "mh-cache-layer",
+        "mh-cache-invalidation",
+        "mh-cache-v2-memcached",
+        "mh-cache-v1-inprocess"
+      ]
+    },
+    {
+      "name": "temporal",
+      "axis": 32,
+      "queries": [
+        "q41-recent-build-engine",
+        "q43-current-deploy-runbook"
+      ],
+      "entries": [
+        "tmp-build-engine-current",
+        "tmp-deploy-runbook-now",
+        "tmp-build-engine-prior",
+        "tmp-deploy-runbook-old",
+        "tmp-build-engine-legacy"
+      ]
+    },
+    {
+      "name": "knowledge-update",
+      "axis": 40,
+      "queries": [
+        "q5x-python-runtime"
+      ],
+      "entries": [
+        "ku-supported-python-version",
+        "ku-supported-python-version-old",
+        "ku-default-embedding-model",
+        "ku-default-embedding-model-old",
+        "ku-service-default-port-v3",
+        "ku-service-default-port-v2",
+        "ku-service-default-port-v1"
+      ]
+    },
+    {
+      "name": "abstention",
+      "axis": 48,
+      "queries": [
+        "q6x-graphql-federation-gone",
+        "q6x-rabbitmq-broker-gone",
+        "q6x-websocket-scaling-stale",
+        "q6x-grpc-streaming-stale",
+        "q6x-absent-kafka-topic",
+        "q6x-near-miss-versioning-graphql",
+        "q6x-stale-flag-recovers"
+      ],
+      "entries": [
+        "abs-graphql-federation-retired",
+        "abs-message-queue-deprecated",
+        "abs-websocket-scaling-decayed",
+        "abs-grpc-streaming-decayed",
+        "abs-kafka-consumer-retired"
+      ]
+    },
+    {
+      "name": "preference",
+      "axis": 56,
+      "queries": [
+        "q7x-current-units",
+        "q7x-dispatch-pref",
+        "q7x-comm-style"
+      ],
+      "entries": [
+        "pref-units-metric",
+        "pref-units-imperial",
+        "pref-dispatch-over-inline",
+        "pref-comm-terse-no-emoji"
       ]
     }
   ]
