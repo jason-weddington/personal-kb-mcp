@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     import aiosqlite
 
     from kb_core.db.backend import Cursor, Row
+    from kb_core.models.entry import KnowledgeEntry
 
 # Tracks whether we're inside a transaction() context.
 _in_txn: ContextVar[bool] = ContextVar("_in_txn", default=False)
@@ -294,6 +295,65 @@ class SQLiteBackend:
             " WHERE source = ? AND json_extract(properties, '$.source') = 'llm'",
             (entry_id,),
         )
+
+    # -- Backend protocol helpers --
+    #
+    # The following methods let the SQLiteBackend stand in for the higher-level
+    # ``personal_kb.backend.protocol.Backend`` in code paths that just need
+    # graph neighbour lookup and entry fetch (e.g. the graph-hints helper in
+    # ``personal_kb.tools.kb_search.collect_graph_hints`` and the eval
+    # ``tests/eval/test_graph_hints.py`` suite). They are thin wrappers around
+    # the existing kb-core graph traversal and entry queries — no new graph
+    # logic lives here.
+
+    async def neighbors(
+        self,
+        node_id: str,
+        edge_types: list[str] | None = None,
+        direction: str = "both",
+        limit: int = 10,
+    ) -> list[tuple[str, str, str]]:
+        """Return graph neighbours of *node_id*.
+
+        Delegates to :func:`kb_core.graph.queries.get_neighbors`. Each
+        element is ``(neighbor_id, edge_type, direction)`` where
+        ``direction`` is ``'outgoing'`` or ``'incoming'``. Mirrors the
+        signature on ``personal_kb.backend.protocol.Backend.neighbors``
+        so the local SQLite path matches the HTTP backend.
+        """
+        from kb_core.graph.queries import get_neighbors
+
+        return await get_neighbors(
+            self,
+            node_id,
+            edge_types=edge_types,
+            direction=direction,
+            limit=limit,
+        )
+
+    async def get_entries(
+        self,
+        ids: list[str],
+    ) -> list[tuple[str, KnowledgeEntry | None, list[tuple[str, str | None]]]]:
+        """Fetch entries by ID.
+
+        Returns ``(id, entry_or_None, pointer_rot_pairs)`` triples — the
+        same shape ``personal_kb.backend.protocol.Backend.get_entries``
+        returns. Inactive or missing entries map to ``None``.
+        ``pointer_rot_pairs`` is always ``[]`` here: the graph-hints
+        consumer ignores the field, and computing pointer rot belongs to
+        the higher-level service path. No ``touch_accessed`` side effect
+        is performed — this helper is read-only.
+        """
+        from kb_core.db.queries import get_entry
+
+        results: list[tuple[str, KnowledgeEntry | None, list[tuple[str, str | None]]]] = []
+        for entry_id in ids:
+            entry = await get_entry(self, entry_id)
+            if entry is not None and not entry.is_active:
+                entry = None
+            results.append((entry_id, entry, []))
+        return results
 
     # -- Maintenance --
 
