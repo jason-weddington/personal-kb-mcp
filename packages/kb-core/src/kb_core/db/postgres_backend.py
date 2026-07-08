@@ -385,7 +385,8 @@ class PostgresBackend:
         """Remove all LLM-derived edges for a given source entry."""
         async with self._conn() as conn:
             await conn.execute(
-                "DELETE FROM graph_edges WHERE source = $1 AND properties->>'source' = 'llm'",
+                "DELETE FROM graph_edges WHERE source = $1"
+                " AND properties::jsonb->>'source' = 'llm'",
                 entry_id,
             )
 
