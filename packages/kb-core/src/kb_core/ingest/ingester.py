@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from kb_core.config import IngestConfig
 from kb_core.db.backend import Database
 from kb_core.graph.builder import GraphBuilder
-from kb_core.graph.enricher import GraphEnricher
+from kb_core.graph.enricher import ENRICHMENT_FAILURE_MARKER, GraphEnricher
 from kb_core.ingest.chunker import chunk_content
 from kb_core.ingest.extractor import ExtractedEntry, extract_entries, summarize_file
 from kb_core.ingest.safety import detect_secrets_in_content
@@ -654,7 +654,12 @@ class FileIngester:
             try:
                 await self._graph_enricher.enrich_batch(stored_entries)
             except Exception:
-                logger.warning("Batch enrichment failed for %s", source, exc_info=True)
+                logger.error(
+                    "%s: batch enrichment failed for %s",
+                    ENRICHMENT_FAILURE_MARKER,
+                    source,
+                    exc_info=True,
+                )
             finally:
                 self._graph_enricher.clear_vocab_cache()
 

@@ -27,6 +27,7 @@ main repo's ``tests/conftest.py``.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -778,5 +779,97 @@ async def test_ingest_text_dry_run_creates_no_entries(tmp_path: Any) -> None:
         row = await cursor.fetchone()
         assert row is not None
         assert row[0] == 0, f"Expected 0 active entries, got {row[0]}"
+    finally:
+        await kb.close()
+
+
+# ---------------------------------------------------------------------------
+# Enrichment observability regression gate (kb-02915 / kb-01684)
+# ---------------------------------------------------------------------------
+
+
+class _RaisingEnricher:
+    """Enricher stub whose enrich calls always raise.
+
+    Mirrors the real :class:`GraphEnricher` surface the store paths touch:
+    ``enrich_entry`` / ``enrich_batch`` raise a synthetic error, and
+    ``clear_vocab_cache`` is a no-op (the store_batch/ingest ``finally``
+    blocks call it — a stub lacking it would raise ``AttributeError`` from
+    the ``finally`` and mask the swallowed-exception behavior under test).
+    """
+
+    async def enrich_entry(self, entry: Any) -> int:
+        raise RuntimeError("synthetic enrich_entry failure")
+
+    async def enrich_batch(self, entries: Any) -> int:
+        raise RuntimeError("synthetic enrich_batch failure")
+
+    def clear_vocab_cache(self) -> None:
+        return None
+
+
+async def test_enrichment_failure_is_observable_at_error_level(
+    tmp_path: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Silent enrichment failures must surface at ERROR with a greppable marker.
+
+    Regression gate for kb-02915: a hard Postgres runtime error hid inside the
+    enrichment except-swallows for a month because they logged at WARNING with
+    no distinctive marker. Best-effort degradation (kb-01684) is preserved —
+    the store paths must NOT raise — but the failure must now be observable.
+
+    The default fixtures build a ``None`` enricher (no extraction LLM), so this
+    test constructs its own KB and injects a raising stub directly.
+    """
+    from kb_core.graph.enricher import ENRICHMENT_FAILURE_MARKER
+
+    kb = await create_sqlite(tmp_path / "x.db")
+    try:
+        # The real enricher is None here (no extraction LLM was configured);
+        # overwrite it with a stub that always raises.
+        kb._graph_enricher = _RaisingEnricher()  # type: ignore[assignment]
+
+        # (a) store(..., enrich=True) — best-effort, must not raise, must log ERROR.
+        with caplog.at_level(logging.ERROR):
+            entry = await kb.store(
+                short_title="observability",
+                long_title="Enrichment failure observability",
+                knowledge_details="Enrichment must fail loudly but not fatally.",
+                entry_type=EntryType.LESSON_LEARNED,
+                enrich=True,
+            )
+        assert entry.id.startswith("kb-")
+        store_errors = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.ERROR and ENRICHMENT_FAILURE_MARKER in r.getMessage()
+        ]
+        assert store_errors, "store() enrichment failure was not logged at ERROR with the marker"
+
+        caplog.clear()
+
+        # (b) store_batch(..., enrich=True) — same contract on the batch path.
+        with caplog.at_level(logging.ERROR):
+            created = await kb.store_batch(
+                [
+                    {
+                        "short_title": "batch-observability",
+                        "long_title": "Batch enrichment failure observability",
+                        "knowledge_details": "Batch enrichment must fail loudly but not fatally.",
+                    }
+                ],
+                enrich=True,
+            )
+        assert len(created) == 1
+        assert created[0].id.startswith("kb-")
+        batch_errors = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.ERROR and ENRICHMENT_FAILURE_MARKER in r.getMessage()
+        ]
+        assert batch_errors, (
+            "store_batch() enrichment failure was not logged at ERROR with the marker"
+        )
     finally:
         await kb.close()

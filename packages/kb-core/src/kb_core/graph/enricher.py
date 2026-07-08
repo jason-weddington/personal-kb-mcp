@@ -12,6 +12,12 @@ from kb_core.models.entry import KnowledgeEntry
 
 logger = logging.getLogger(__name__)
 
+# Greppable marker for silent enrichment failures. Every elevated (ERROR-level)
+# enrichment except-swallow includes this substring so all such failures can be
+# found with a single token. See kb-02915 (a Postgres runtime error hid in these
+# swallows for a month) and kb-01684 (best-effort degradation is a design property).
+ENRICHMENT_FAILURE_MARKER = "enrichment-failure"
+
 _VALID_ENTITY_TYPES = {"person", "tool", "concept", "technology"}
 
 _MAX_RELATIONSHIPS = 8
@@ -182,7 +188,12 @@ class GraphEnricher:
                 try:
                     total += await self.enrich_entry(entry)
                 except Exception:
-                    logger.warning("Fallback enrich failed for %s", entry.id, exc_info=True)
+                    logger.error(
+                        "%s: fallback enrich failed for %s",
+                        ENRICHMENT_FAILURE_MARKER,
+                        entry.id,
+                        exc_info=True,
+                    )
             return total
 
         await self._load_vocab_cache()
@@ -241,7 +252,12 @@ class GraphEnricher:
                 else:
                     failed += 1
             except Exception:
-                logger.warning("Failed to enrich %s", entry.id, exc_info=True)
+                logger.error(
+                    "%s: failed to enrich %s",
+                    ENRICHMENT_FAILURE_MARKER,
+                    entry.id,
+                    exc_info=True,
+                )
                 failed += 1
         return succeeded, failed
 

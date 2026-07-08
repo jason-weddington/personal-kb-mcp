@@ -55,6 +55,7 @@ from kb_core.config import (
 )
 from kb_core.db.queries import get_entry
 from kb_core.graph.builder import GraphBuilder
+from kb_core.graph.enricher import ENRICHMENT_FAILURE_MARKER
 from kb_core.graph.queries import (
     bfs_entries,
     entries_for_scope,
@@ -672,7 +673,11 @@ class KnowledgeBase:
             try:
                 await self._graph_enricher.enrich_batch(created)
             except Exception:
-                logger.warning("store_batch: batch enrichment failed", exc_info=True)
+                logger.error(
+                    "%s: store_batch batch enrichment failed",
+                    ENRICHMENT_FAILURE_MARKER,
+                    exc_info=True,
+                )
             finally:
                 self._graph_enricher.clear_vocab_cache()
 
@@ -1149,7 +1154,12 @@ class KnowledgeBase:
         try:
             await self._graph_enricher.enrich_entry(entry)
         except Exception:
-            logger.warning("Failed to enrich entry %s", entry.id, exc_info=True)
+            logger.error(
+                "%s: failed to enrich entry %s",
+                ENRICHMENT_FAILURE_MARKER,
+                entry.id,
+                exc_info=True,
+            )
 
 
 # ---------------------------------------------------------------------------
