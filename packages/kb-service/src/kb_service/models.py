@@ -180,11 +180,20 @@ class SearchResponse(BaseModel):
 
 
 class MapRef(BaseModel):
-    """A single mental-map entry reference."""
+    """A single mental-map entry reference.
+
+    ``pointers`` is the list of ``kb-XXXXX`` ids the map's body mentions —
+    the DETAIL entries the map points to. Empty by default so pre-pointer
+    clients (and any pre-pointer server output that lacks the field) round-
+    trip cleanly. Consumed by the personal-kb-hook's whisper telemetry to
+    chain-credit map rows when the model fetches one of a map's pointed-to
+    detail entries rather than the map itself (see GTD 88441f9c).
+    """
 
     id: str
     short_title: str
     long_title: str
+    pointers: list[str] = []
 
 
 class ProjectMaps(BaseModel):

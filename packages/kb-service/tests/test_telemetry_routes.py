@@ -339,6 +339,48 @@ def test_idempotent_reflush_collapses_via_on_conflict(
     assert final["build_engine"] == "claude-code"
 
 
+# ─── rows carrying the new hook-side ``pointers`` field don't 500 ───────────
+
+
+def test_flush_tolerates_extra_pointers_field_on_row(
+    telemetry_client: TestClient,
+    telemetry_pool: _RecordingTelemetryPool,
+) -> None:
+    """A row with an unknown ``pointers`` field must NOT 500 the flush.
+
+    Rollout order: an upgraded personal-kb-hook now appends a top-level
+    ``pointers`` list to every roster jsonl row so :func:`mark_consumed`
+    can chain-credit map → detail fetches (GTD 88441f9c). The service
+    ``WhisperTelemetryRow`` model has no ``pointers`` field, but its
+    default pydantic-v2 config (``extra='ignore'``) silently drops
+    unknown keys — so a pre-pointer-model service accepting a pointer-
+    carrying flush is a no-op-safe schema evolution. This test locks
+    that in and doubles as the AC's explicit verification.
+    """
+    app.dependency_overrides[get_current_user] = fake_user
+
+    row = _row(map_id="kb-00042", surface="roster", consumed=False)
+    # Hook-side row-shape addition: a top-level ``pointers`` list.
+    row["pointers"] = ["kb-00043", "kb-00044"]
+    # Also exercise the ``consumed_via`` piggyback path — it lives inside
+    # ``trigger_context`` (a ``dict[str, Any]`` on the wire), so it flows
+    # through to the DB inside the json.dumps'd TEXT with zero schema change.
+    row["trigger_context"] = {"cwd_project": "alpha", "consumed_via": "pointer"}
+
+    resp = telemetry_client.post("/api/kb/telemetry/whispers", json={"rows": [row]})
+    assert resp.status_code == 200
+    assert resp.json() == {"upserted": 1}
+
+    # The row was upserted; the trigger_context TEXT round-trips including
+    # the piggybacked ``consumed_via`` key.
+    assert len(telemetry_pool.calls) == 1
+    _sql, args = telemetry_pool.calls[0]
+    trigger_context_text = args[6]
+    assert isinstance(trigger_context_text, str)
+    parsed = json.loads(trigger_context_text)
+    assert parsed == {"cwd_project": "alpha", "consumed_via": "pointer"}
+
+
 # ─── endpoint is mounted ─────────────────────────────────────────────────────
 
 

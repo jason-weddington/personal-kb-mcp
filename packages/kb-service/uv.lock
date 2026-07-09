@@ -756,7 +756,7 @@ wheels = [
 [[package]]
 name = "kb-core"
 version = "0.0.1"
-source = { git = "ssh://git@git-host/~/repos/personal_kb?subdirectory=packages%2Fkb-core&rev=main#c91209bb5e3efb989bae60fd2d91879c43c700fc" }
+source = { git = "ssh://git@git-host/~/repos/personal_kb?subdirectory=packages%2Fkb-core&rev=main#a2a6ece8e969925c7984ee6e1e091ead0d702421" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "httpx" },

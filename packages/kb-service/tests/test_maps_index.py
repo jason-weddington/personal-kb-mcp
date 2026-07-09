@@ -33,12 +33,63 @@ def test_maps_index_sorted(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert [p["project_ref"] for p in body["projects"]] == ["proj-a", "proj-b"]
+    # ``pointers`` defaults to [] when kb-core did not surface any.
     assert body["projects"][0]["maps"] == [
-        {"id": "kb-1", "short_title": "A map", "long_title": "A long"}
+        {"id": "kb-1", "short_title": "A map", "long_title": "A long", "pointers": []}
     ]
     assert body["projects"][1]["maps"] == [
-        {"id": "kb-2", "short_title": "B map", "long_title": "B long"}
+        {"id": "kb-2", "short_title": "B map", "long_title": "B long", "pointers": []}
     ]
+
+
+def test_maps_index_passes_through_pointers(client: TestClient) -> None:
+    """``pointers`` from kb-core flow through the maps-index response.
+
+    A mental_map whose body mentions kb-XXXXX ids carries those ids as
+    ``pointers``; the response echoes them verbatim so the personal-kb-hook
+    can chain-credit map rows when a kb_get fetches one of the map's
+    pointed-to detail entries (GTD 88441f9c).
+    """
+    app.dependency_overrides[get_current_user] = fake_user
+    app.state.kb.maps_projects = {
+        "proj-p": [
+            {
+                "id": "kb-1",
+                "short_title": "A map",
+                "long_title": "A long",
+                "pointers": ["kb-01722", "kb-01723"],
+            },
+        ],
+    }
+    resp = client.get("/api/kb/maps-index")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["projects"][0]["maps"] == [
+        {
+            "id": "kb-1",
+            "short_title": "A map",
+            "long_title": "A long",
+            "pointers": ["kb-01722", "kb-01723"],
+        }
+    ]
+
+
+def test_maps_index_tolerates_kb_core_without_pointers(client: TestClient) -> None:
+    """Pre-pointers kb-core (no ``pointers`` key) still parses into a MapRef.
+
+    Rollout order: a service running the pointer route ahead of a matching
+    kb-core deploy must still return a valid response — the missing key
+    defaults to an empty list, not a 500.
+    """
+    app.dependency_overrides[get_current_user] = fake_user
+    # Deliberately omit the ``pointers`` key to simulate a pre-pointers kb-core.
+    app.state.kb.maps_projects = {
+        "proj-p": [{"id": "kb-1", "short_title": "A map", "long_title": "A long"}],
+    }
+    resp = client.get("/api/kb/maps-index")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["projects"][0]["maps"][0]["pointers"] == []
 
 
 def test_maps_index_empty_project_omitted(client: TestClient) -> None:
@@ -77,7 +128,7 @@ def test_maps_index_round_trip_contract() -> None:
     ).model_dump()
     assert result == {
         "project_ref": "x",
-        "maps": [{"id": "kb-1", "short_title": "s", "long_title": "l"}],
+        "maps": [{"id": "kb-1", "short_title": "s", "long_title": "l", "pointers": []}],
     }
 
 
@@ -87,7 +138,14 @@ def test_maps_index_response_model_parsed() -> None:
         projects=[
             ProjectMaps(
                 project_ref="demo",
-                maps=[MapRef(id="kb-99", short_title="Demo", long_title="Demo map")],
+                maps=[
+                    MapRef(
+                        id="kb-99",
+                        short_title="Demo",
+                        long_title="Demo map",
+                        pointers=["kb-10", "kb-11"],
+                    )
+                ],
             )
         ]
     )
@@ -97,7 +155,12 @@ def test_maps_index_response_model_parsed() -> None:
             {
                 "project_ref": "demo",
                 "maps": [
-                    {"id": "kb-99", "short_title": "Demo", "long_title": "Demo map"}
+                    {
+                        "id": "kb-99",
+                        "short_title": "Demo",
+                        "long_title": "Demo map",
+                        "pointers": ["kb-10", "kb-11"],
+                    }
                 ],
             }
         ]

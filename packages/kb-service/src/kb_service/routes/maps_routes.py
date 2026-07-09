@@ -60,6 +60,11 @@ async def maps_index(
                         id=m["id"],
                         short_title=m["short_title"],
                         long_title=m["long_title"],
+                        # ``pointers`` is a live-DB extraction from the map's
+                        # body (see kb_core.KnowledgeBase.maps_for_project);
+                        # tolerate a missing key so pre-pointer kb-core
+                        # returns still parse into a MapRef with pointers=[].
+                        pointers=list(m.get("pointers", []) or []),
                     )
                     for m in maps
                 ],
