@@ -20,15 +20,30 @@ be imported at runtime from any other module here without forming a cycle.
 
 from __future__ import annotations
 
-from typing import NamedTuple, TypedDict
+from typing import NamedTuple, NotRequired, TypedDict
 
 
 class MapEntry(TypedDict):
-    """One mental_map row in the maps index."""
+    """One mental_map row in the maps index.
+
+    ``pointers`` is the list of ``kb-XXXXX`` ids the map's body mentions —
+    the DETAIL entries the map points to. Populated by
+    :mod:`personal_kb_hook.http_index`'s ``_map_projects`` from the service
+    payload; a missing / malformed ``pointers`` field in the service
+    response falls through to an empty list so an OLD server payload
+    (pre-pointers) parses cleanly (rollout order: service deploys may lag
+    hook upgrades and vice versa).
+
+    Whisper-telemetry consume matches the fetched kb-id against row
+    ``map_id`` OR any id in ``pointers`` — a session that pulls the
+    detail-chain (map → detail entries) still credits the map row as
+    consumed. See GTD 88441f9c.
+    """
 
     id: str
     short_title: str
     long_title: str
+    pointers: NotRequired[list[str]]
 
 
 class MapKey(NamedTuple):

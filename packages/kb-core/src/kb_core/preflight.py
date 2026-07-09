@@ -74,9 +74,15 @@ def _maps_sql(team: str | None) -> tuple[str, bool]:
 
     Mental maps are orientation nodes; surfacing their titles lets an agent
     discover which maps exist for a project and pull only the ones it needs.
+
+    The ``knowledge_details`` column is selected so :meth:`maps_for_project`
+    can extract the map's outgoing ``pointers`` (the kb-ids the map's body
+    mentions) — mental_map bodies point to their DETAIL entries by kb-id, so
+    those pointers are the chain-credit target list for whisper telemetry
+    (see GTD 88441f9c).
     """
     sql = (
-        "SELECT id, short_title, long_title "
+        "SELECT id, short_title, long_title, knowledge_details "
         "FROM knowledge_entries "
         "WHERE is_active = 1 AND project_ref = ? "
         "AND entry_type = 'mental_map' "

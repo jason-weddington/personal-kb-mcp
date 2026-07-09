@@ -508,14 +508,67 @@ async def test_maps_for_project_returns_active_mental_maps(
     assert len(maps) == 2
     map_ids = {m["id"] for m in maps}
     assert map1.id in map_ids
-    # Schema: just id + titles.
-    assert set(maps[0].keys()) == {"id", "short_title", "long_title"}
+    # Schema: id + titles + pointers (empty when the body mentions no kb-ids).
+    assert set(maps[0].keys()) == {"id", "short_title", "long_title", "pointers"}
+    assert maps[0]["pointers"] == []
 
     # Deactivating one removes it from the maps list.
     await kb.deactivate(map1.id)
     maps_after = await kb.maps_for_project("alpha")
     assert len(maps_after) == 1
     assert map1.id not in {m["id"] for m in maps_after}
+
+
+async def test_maps_for_project_extracts_pointers_from_body(
+    kb_with_embedder: Any,
+) -> None:
+    """Pointers are kb-ids extracted from ``knowledge_details``, excluding self.
+
+    Mental-map bodies point to their DETAIL entries by kb-id. Surfacing this
+    list lets the personal-kb-hook chain-credit a map row as consumed when
+    the model fetches one of its pointed-to detail entries rather than the
+    map itself (GTD 88441f9c). Regex mirrors
+    ``kb_core.graph.builder._KB_ID_RE`` — the same set of ids the graph
+    builder records as ``references`` edges.
+    """
+    kb, _ = kb_with_embedder
+
+    map_a = await kb.store(
+        short_title="map A",
+        long_title="Map A long title",
+        knowledge_details=(
+            "See kb-01722 for detail one; kb-01723 for detail two; kb-01722 again to prove dedup."
+        ),
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="pointerproj",
+        enrich=False,
+    )
+    # A map whose body mentions its OWN id — that self-reference is excluded.
+    self_map_body = "This map is {self_id}; also kb-01380."
+    map_b = await kb.store(
+        short_title="map B",
+        long_title="Map B long title",
+        knowledge_details=self_map_body,  # patched with own id after store
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="pointerproj",
+        enrich=False,
+    )
+    # Rewrite map_b's body to include its own id and re-store via update
+    # (this is easier than trying to guess the id at store time).
+    await kb.update(
+        map_b.id,
+        knowledge_details=f"This map is {map_b.id}; also kb-01380.",
+        enrich=False,
+    )
+
+    maps = await kb.maps_for_project("pointerproj")
+    by_id = {m["id"]: m for m in maps}
+
+    # map_a: pointers are [kb-01722, kb-01723] (in body order, deduped).
+    assert by_id[map_a.id]["pointers"] == ["kb-01722", "kb-01723"]
+
+    # map_b: own id excluded; only kb-01380 remains.
+    assert by_id[map_b.id]["pointers"] == ["kb-01380"]
 
 
 # ---------------------------------------------------------------------------

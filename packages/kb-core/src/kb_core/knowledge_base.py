@@ -1061,20 +1061,35 @@ class KnowledgeBase:
 
     async def maps_for_project(
         self, project_ref: str, *, team: str | None = None
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         """Return active ``mental_map`` entries for a project as dicts.
 
-        Returns plain data ``{"id", "short_title", "long_title"}`` computed
-        live, in-memory, from the database — callers (e.g. the hosted
-        service's maps route) render this directly without any on-disk index.
+        Returns plain data ``{"id", "short_title", "long_title", "pointers"}``
+        computed live, in-memory, from the database — callers (e.g. the
+        hosted service's maps route) render this directly without any
+        on-disk index.
+
+        ``pointers`` is the ordered, deduplicated list of ``kb-XXXXX`` ids
+        mentioned in the map's ``knowledge_details`` (its body), excluding
+        the map's own id. Mental maps are orientation nodes whose kb-id
+        mentions ARE pointers by construction — they name the DETAIL
+        entries that fan out from the map — so extracting every kb-id in
+        the body is the right chain-credit target list for whisper
+        telemetry (see GTD 88441f9c). The regex mirrors
+        :data:`kb_core.graph.builder._KB_ID_RE` (``kb-\\d{5}``) so a map's
+        text references graph-edge target set is the same set surfaced
+        here.
 
         Uses the exact same predicate as :func:`build_project_context`'s
         maps section: active + ``entry_type='mental_map'`` + matching
         ``project_ref`` (and optional team), ordered by ``created_at``
         descending, no limit.
-        """
+        """  # noqa: D301  (literal ``kb-\d{5}`` in the prose, not an escape)
         team_resolved = team if team is not None else self._config.attribution.team
-        # Import the SQL builder used by preflight to guarantee parity.
+        # Import the SQL builder used by preflight to guarantee parity, plus
+        # the deterministic-graph-edge kb-id extractor so ``pointers`` tracks
+        # the graph "references" edge target set by construction.
+        from kb_core.graph.builder import _KB_ID_RE
         from kb_core.preflight import _maps_sql
 
         sql, has_team = _maps_sql(team_resolved)
@@ -1083,13 +1098,24 @@ class KnowledgeBase:
             params.append(team_resolved)
         cursor = await self._db.execute(sql, params)
         rows = await cursor.fetchall()
-        out: list[dict[str, str]] = []
+        out: list[dict[str, Any]] = []
         for row in rows:
+            entry_id = str(row[0])
+            body = str(row[3] or "")
+            pointers: list[str] = []
+            seen: set[str] = set()
+            for match in _KB_ID_RE.finditer(body):
+                ref_id = match.group(0)
+                if ref_id == entry_id or ref_id in seen:
+                    continue
+                seen.add(ref_id)
+                pointers.append(ref_id)
             out.append(
                 {
-                    "id": str(row[0]),
+                    "id": entry_id,
                     "short_title": str(row[1] or ""),
                     "long_title": str(row[2] or ""),
+                    "pointers": pointers,
                 }
             )
         return out

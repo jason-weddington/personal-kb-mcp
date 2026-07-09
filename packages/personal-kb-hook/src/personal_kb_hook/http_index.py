@@ -74,6 +74,12 @@ def _map_projects(projects: list[object]) -> dict[str, list[MapEntry]]:
     last-wins semantics, matching ``read_index``'s documented merge
     policy.
 
+    ``pointers`` is tolerantly parsed: an absent field, a non-list
+    value, or non-str / empty-str elements all fold to a clean ``[]`` /
+    are dropped — an OLD server payload without ``pointers`` is
+    guaranteed to still parse (rollout order: service deploys may lag
+    hook upgrades and vice versa).
+
     Args:
         projects: Raw list from the parsed JSON response body.
 
@@ -105,7 +111,24 @@ def _map_projects(projects: list[object]) -> dict[str, list[MapEntry]]:
                 long_title = ""
             if not isinstance(long_title, str):
                 continue
-            cleaned.append(MapEntry(id=entry_id, short_title=short_title, long_title=long_title))
+            # `pointers` is tolerantly parsed: an absent field, a non-list,
+            # or non-str elements are all coerced to a clean [] / dropped —
+            # so a pre-pointers server payload still parses (rollout order:
+            # service deploys may lag hook upgrades and vice versa).
+            raw_pointers = raw_map.get("pointers")
+            pointers: list[str] = []
+            if isinstance(raw_pointers, list):
+                for item in raw_pointers:
+                    if isinstance(item, str) and item:
+                        pointers.append(item)
+            cleaned.append(
+                MapEntry(
+                    id=entry_id,
+                    short_title=short_title,
+                    long_title=long_title,
+                    pointers=pointers,
+                )
+            )
         result[project_ref] = cleaned
     return result
 

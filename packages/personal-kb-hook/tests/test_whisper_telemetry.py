@@ -157,7 +157,12 @@ def _stub_http_index(
 def test_roster_emit_one_row_per_mapkey_including_cross_project(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
-    """Roster emit writes one jsonl row per MapKey (own + cross-project)."""
+    """Roster emit writes one jsonl row per MapKey (own + cross-project).
+
+    Each row carries the map's ``pointers`` list — the kb-ids the map's
+    body points at — so mark_consumed can chain-credit map → detail
+    fetches (GTD 88441f9c).
+    """
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     monkeypatch.chdir(hook_env["root"])
 
@@ -167,11 +172,35 @@ def test_roster_emit_one_row_per_mapkey_including_cross_project(
         monkeypatch,
         {
             "personal-kb": [
-                ("personal", {"id": "kb-1", "short_title": "auth", "long_title": "A"}),
-                ("personal", {"id": "kb-2", "short_title": "ingest", "long_title": "I"}),
+                (
+                    "personal",
+                    {
+                        "id": "kb-1",
+                        "short_title": "auth",
+                        "long_title": "A",
+                        "pointers": ["kb-101", "kb-102"],
+                    },
+                ),
+                (
+                    "personal",
+                    {
+                        "id": "kb-2",
+                        "short_title": "ingest",
+                        "long_title": "I",
+                        "pointers": [],
+                    },
+                ),
             ],
             "other-proj": [
-                ("team", {"id": "kb-9", "short_title": "ops", "long_title": "O"}),
+                (
+                    "team",
+                    {
+                        "id": "kb-9",
+                        "short_title": "ops",
+                        "long_title": "O",
+                        "pointers": ["kb-999"],
+                    },
+                ),
             ],
         },
     )
@@ -201,10 +230,14 @@ def test_roster_emit_one_row_per_mapkey_including_cross_project(
     assert by_id["kb-1"]["host"] == socket.gethostname()
     # build_engine unset => null.
     assert by_id["kb-1"]["build_engine"] is None
+    # Pointers flow through from the index entry into the appended row.
+    assert by_id["kb-1"]["pointers"] == ["kb-101", "kb-102"]
+    assert by_id["kb-2"]["pointers"] == []
 
-    # Cross-project row preserves its source_kb label.
+    # Cross-project row preserves its source_kb label AND its pointers.
     assert by_id["kb-9"]["source_kb"] == "team"
     assert by_id["kb-9"]["surface"] == "roster"
+    assert by_id["kb-9"]["pointers"] == ["kb-999"]
 
 
 def test_roster_emit_build_engine_read_defensively(
@@ -405,6 +438,166 @@ def test_post_tool_use_marks_consumed_for_list_entry_id(
     assert by_id["kb-1"]["consumed"] is True
     assert by_id["kb-2"]["consumed"] is False
     assert by_id["kb-3"]["consumed"] is True
+
+
+def test_post_tool_use_marks_consumed_via_pointer(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A kb_get whose id is in a row's ``pointers`` chain-credits that row.
+
+    The map row's ``map_id`` does NOT match the fetched entry_id, but the
+    entry_id IS in the row's ``pointers`` list — so mark_consumed still
+    marks the map row as consumed and records ``consumed_via='pointer'``
+    inside ``trigger_context`` so the server can distinguish direct-vs-
+    chain credit without a whisper_telemetry schema migration (GTD
+    88441f9c).
+    """
+    session_id = "sess-consume-pointer"
+    # Row 1: map kb-M with pointers [kb-D1, kb-D2].
+    telemetry.append_row(
+        session_id,
+        {
+            "session_id": session_id,
+            "host": "h",
+            "surface": "roster",
+            "map_id": "kb-M",
+            "source_kb": "personal",
+            "cwd_project": "p",
+            "trigger_context": {"cwd_project": "p"},
+            "emitted_ts": "2026-06-17T00:00:00+00:00",
+            "consumed": False,
+            "consumed_ts": None,
+            "build_engine": None,
+            "pointers": ["kb-D1", "kb-D2"],
+        },
+    )
+    # Row 2: unrelated map kb-N (no pointers).
+    telemetry.append_row(
+        session_id,
+        {
+            "session_id": session_id,
+            "host": "h",
+            "surface": "roster",
+            "map_id": "kb-N",
+            "source_kb": "personal",
+            "cwd_project": "p",
+            "trigger_context": {"cwd_project": "p"},
+            "emitted_ts": "2026-06-17T00:00:00+00:00",
+            "consumed": False,
+            "consumed_ts": None,
+            "build_engine": None,
+            "pointers": [],
+        },
+    )
+
+    # Fetch a DETAIL entry — kb-D1 — which is one of row 1's pointers.
+    rc, out = _run_cli(
+        monkeypatch,
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": session_id,
+            "tool_name": "mcp__personal-kb__kb_get",
+            "tool_input": {"entry_id": "kb-D1"},
+        },
+    )
+    assert rc == 0
+    assert out == ""
+
+    rows = _read_log(session_id)
+    by_id = {r["map_id"]: r for r in rows}
+    # Row 1 (kb-M) was credited via its pointer.
+    assert by_id["kb-M"]["consumed"] is True
+    assert by_id["kb-M"]["consumed_ts"] is not None
+    assert by_id["kb-M"]["trigger_context"].get("consumed_via") == "pointer"
+    # Row 2 (kb-N) untouched.
+    assert by_id["kb-N"]["consumed"] is False
+    assert "consumed_via" not in by_id["kb-N"].get("trigger_context", {})
+
+
+def test_post_tool_use_direct_map_hit_records_consumed_via_map(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A direct map kb_get records ``consumed_via='map'`` in trigger_context.
+
+    Direct map fetches are the pre-pointer ``mark_consumed`` behavior and
+    must keep working; the new signal is that server-side observers can
+    now distinguish "direct" from "chain" credit by inspecting
+    ``trigger_context.consumed_via`` (GTD 88441f9c).
+    """
+    session_id = "sess-consume-map"
+    telemetry.append_row(
+        session_id,
+        {
+            "session_id": session_id,
+            "host": "h",
+            "surface": "roster",
+            "map_id": "kb-M",
+            "source_kb": "personal",
+            "cwd_project": "p",
+            "trigger_context": {"cwd_project": "p"},
+            "emitted_ts": "2026-06-17T00:00:00+00:00",
+            "consumed": False,
+            "consumed_ts": None,
+            "build_engine": None,
+            "pointers": ["kb-D1", "kb-D2"],
+        },
+    )
+    rc, _ = _run_cli(
+        monkeypatch,
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": session_id,
+            "tool_name": "mcp__personal-kb__kb_get",
+            "tool_input": {"entry_id": "kb-M"},
+        },
+    )
+    assert rc == 0
+    rows = _read_log(session_id)
+    assert rows[0]["consumed"] is True
+    assert rows[0]["trigger_context"].get("consumed_via") == "map"
+
+
+def test_mark_consumed_stays_in_memory_no_network_calls(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """mark_consumed must never call http_index.load_index or urlopen.
+
+    Fires on EVERY kb_get / team_kb_get — must be ultra-cheap (no
+    http_index/load_index/network calls). Verified by asserting urlopen
+    is NEVER invoked during the PostToolUse consume path.
+    """
+    session_id = "sess-noop-network"
+    telemetry.append_row(
+        session_id,
+        {
+            "session_id": session_id,
+            "host": "h",
+            "surface": "roster",
+            "map_id": "kb-M",
+            "source_kb": "personal",
+            "cwd_project": "p",
+            "trigger_context": {},
+            "emitted_ts": "2026-06-17T00:00:00+00:00",
+            "consumed": False,
+            "consumed_ts": None,
+            "build_engine": None,
+            "pointers": ["kb-D1"],
+        },
+    )
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+    rc, _ = _run_cli(
+        monkeypatch,
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": session_id,
+            "tool_name": "mcp__personal-kb__kb_get",
+            "tool_input": {"entry_id": "kb-D1"},
+        },
+    )
+    assert rc == 0
+    # No HTTP calls during PostToolUse consume.
+    assert recorder.calls == []
 
 
 def test_post_tool_use_non_kb_get_is_noop(

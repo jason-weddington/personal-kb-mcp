@@ -397,11 +397,18 @@ def main(argv: list[str] | None = None) -> None:
         # Collect cross-project map KEYS (all projects except the resolved
         # one), carrying the source label so suppression sets cannot
         # collide across KBs that share an id namespace.
-        cross_map_ids: list[MapKey] = [
-            MapKey(label=label, id=entry["id"])
+        # Preserve (label, MapEntry) tuples so the roster telemetry emit
+        # can carry each map's ``pointers`` list into the appended jsonl
+        # row (used by mark_consumed to chain-credit map → detail fetches;
+        # GTD 88441f9c).
+        cross_pairs: list[tuple[str, Any]] = [
+            (label, entry)
             for proj, pairs in index.items()
             if proj != project_ref
             for (label, entry) in pairs
+        ]
+        cross_map_ids: list[MapKey] = [
+            MapKey(label=label, id=entry["id"]) for (label, entry) in cross_pairs
         ]
 
         # Emit only when at least one line has content (own maps OR cross roster).
@@ -409,6 +416,7 @@ def main(argv: list[str] | None = None) -> None:
             MapKey(label=label, id=entry["id"]) for (label, entry) in own_pairs
         ]
         all_map_ids = map_ids + cross_map_ids
+        all_pairs: list[tuple[str, Any]] = list(own_pairs) + cross_pairs
 
         # Early return (b): empty index
         if not all_map_ids:
@@ -452,25 +460,41 @@ def main(argv: list[str] | None = None) -> None:
         # the outer try/except in main() backstops anything else.
         # build_engine reads HEADLESS_BUILD_ENGINE defensively; unset => null
         # (interactive/control-plane).
+        #
+        # Each row carries the map's ``pointers`` list — the kb-ids the map's
+        # body mentions — so telemetry.mark_consumed can chain-credit this
+        # map row when a kb_get fetches one of its detail entries rather
+        # than the map itself (GTD 88441f9c). Pointers are stripped by the
+        # server's pydantic model on flush (extra="ignore" by default), so
+        # the wire format stays backward compatible with the pre-pointers
+        # WhisperTelemetryRow — the direct-vs-chain signal reaches the
+        # server inside ``trigger_context.consumed_via`` instead.
         if session_id_str:
             _host = socket.gethostname()
             _engine = telemetry.build_engine()
             _ts = telemetry.now_ts()
-            for _mk in all_map_ids:
+            for _label, _entry in all_pairs:
+                _raw_ptrs = _entry.get("pointers", [])
+                _row_pointers: list[str] = (
+                    [p for p in _raw_ptrs if isinstance(p, str) and p]
+                    if isinstance(_raw_ptrs, list)
+                    else []
+                )
                 telemetry.append_row(
                     session_id_str,
                     {
                         "session_id": session_id_str,
                         "host": _host,
                         "surface": "roster",
-                        "map_id": _mk.id,
-                        "source_kb": _mk.label,
+                        "map_id": _entry["id"],
+                        "source_kb": _label,
                         "cwd_project": project_ref,
                         "trigger_context": {"cwd_project": project_ref},
                         "emitted_ts": _ts,
                         "consumed": False,
                         "consumed_ts": None,
                         "build_engine": _engine,
+                        "pointers": _row_pointers,
                     },
                 )
 

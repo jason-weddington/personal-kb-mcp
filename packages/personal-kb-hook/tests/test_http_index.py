@@ -469,11 +469,18 @@ def test_returned_entries_are_map_entry_typed(
     http_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Returned entries contain exactly the id/short_title/long_title keys."""
+    """Returned entries contain the id/short_title/long_title/pointers keys."""
     projects = [
         {
             "project_ref": "typed-proj",
-            "maps": [{"id": "kb-1", "short_title": "s", "long_title": "l"}],
+            "maps": [
+                {
+                    "id": "kb-1",
+                    "short_title": "s",
+                    "long_title": "l",
+                    "pointers": ["kb-2"],
+                }
+            ],
         }
     ]
 
@@ -488,6 +495,74 @@ def test_returned_entries_are_map_entry_typed(
     assert entry["id"] == "kb-1"
     assert entry["short_title"] == "s"
     assert entry["long_title"] == "l"
+    assert entry["pointers"] == ["kb-2"]
+
+
+# ---------------------------------------------------------------------------
+# Pointer parsing tolerance: OLD server payload (no pointers), non-list,
+# non-str elements. Rollout order: service deploys may lag hook upgrades
+# and vice versa — an OLD server response MUST still parse cleanly.
+# ---------------------------------------------------------------------------
+
+
+def test_pointers_missing_field_defaults_to_empty_list(
+    http_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OLD server payload (no ``pointers`` field) parses with pointers=[]."""
+    projects = [
+        {
+            "project_ref": "old-proj",
+            # No ``pointers`` field — mimics a pre-pointers service deploy.
+            "maps": [{"id": "kb-1", "short_title": "s", "long_title": "l"}],
+        }
+    ]
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **kw: _ok_response(projects),
+    )
+    result = http_index.load_index([_personal()])
+    _label, entry = result["old-proj"][0]
+    # Absent field → parsed as empty list, not KeyError, and no map dropped.
+    assert entry.get("pointers", []) == []
+
+
+def test_pointers_non_list_and_non_str_elements_tolerated(
+    http_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-list ``pointers`` folds to []; non-str/empty-str elements are dropped."""
+    projects = [
+        {
+            "project_ref": "tol-proj",
+            "maps": [
+                # pointers is a string, not a list — coerced to [].
+                {
+                    "id": "kb-1",
+                    "short_title": "s",
+                    "long_title": "l",
+                    "pointers": "kb-2,kb-3",
+                },
+                # pointers list contains a mix; non-strs / empty-strs dropped.
+                {
+                    "id": "kb-4",
+                    "short_title": "s",
+                    "long_title": "l",
+                    "pointers": ["kb-5", 42, "", None, "kb-6"],
+                },
+            ],
+        }
+    ]
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **kw: _ok_response(projects),
+    )
+    result = http_index.load_index([_personal()])
+    by_id = {entry["id"]: entry for (_label, entry) in result["tol-proj"]}
+    assert by_id["kb-1"]["pointers"] == []
+    assert by_id["kb-4"]["pointers"] == ["kb-5", "kb-6"]
 
 
 # ===========================================================================

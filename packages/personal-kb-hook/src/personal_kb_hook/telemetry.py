@@ -126,15 +126,29 @@ def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def mark_consumed(session_id: str, map_ids: set[str], consumed_ts: str) -> None:
-    """Mark rows whose ``map_id`` is in ``map_ids`` as consumed.
+    """Mark rows whose ``map_id`` or a pointer is in ``map_ids`` as consumed.
 
-    Atomic rewrite of the session's whisper-log: rows whose ``map_id`` is in
-    ``map_ids`` AND whose ``consumed`` is falsy have ``consumed`` set to
-    ``True`` and ``consumed_ts`` set to ``consumed_ts``. Everything else is
-    written through unchanged. Silent-on-failure.
+    Atomic rewrite of the session's whisper-log: for each row where
+    ``consumed`` is falsy AND either
 
-    Fires on EVERY kb_get / team_kb_get — must be ultra-cheap. Does NOT call
-    ``http_index.load_index`` or ``resolve_project``.
+    * the row's ``map_id`` is in ``map_ids`` (direct map fetch), OR
+    * any id in the row's ``pointers`` list is in ``map_ids`` (chain
+      fetch — the model pulled a detail entry the map points to; GTD
+      88441f9c),
+
+    ``consumed`` is set to ``True`` and ``consumed_ts`` to ``consumed_ts``.
+    ``trigger_context.consumed_via`` records ``"map"`` for a direct match
+    or ``"pointer"`` for a chain-credit — a direct match wins if both hold,
+    since the map itself is the more specific signal. ``trigger_context``
+    is a plain ``dict[str, Any]`` on the wire (see
+    :class:`kb_service.models.WhisperTelemetryRow`), so this piggybacks
+    the direct-vs-chain signal to the server with ZERO whisper_telemetry
+    schema change. Everything else is written through unchanged.
+    Silent-on-failure.
+
+    Ultra-cheap by design: pure in-memory matching over the already-read
+    jsonl rows. Does NOT call ``http_index.load_index`` or
+    ``resolve_project`` — fires on EVERY kb_get / team_kb_get.
     """
     try:
         path = get_whisper_log_path(session_id)
@@ -145,11 +159,28 @@ def mark_consumed(session_id: str, map_ids: set[str], consumed_ts: str) -> None:
             return
         changed = False
         for row in rows:
+            if row.get("consumed"):
+                continue
             row_map_id = row.get("map_id")
-            if isinstance(row_map_id, str) and row_map_id in map_ids and not row.get("consumed"):
-                row["consumed"] = True
-                row["consumed_ts"] = consumed_ts
-                changed = True
+            direct_hit = isinstance(row_map_id, str) and row_map_id in map_ids
+            pointer_hit = False
+            if not direct_hit:
+                raw_pointers = row.get("pointers")
+                if isinstance(raw_pointers, list):
+                    for ptr in raw_pointers:
+                        if isinstance(ptr, str) and ptr in map_ids:
+                            pointer_hit = True
+                            break
+            if not direct_hit and not pointer_hit:
+                continue
+            row["consumed"] = True
+            row["consumed_ts"] = consumed_ts
+            ctx = row.get("trigger_context")
+            if not isinstance(ctx, dict):
+                ctx = {}
+                row["trigger_context"] = ctx
+            ctx["consumed_via"] = "map" if direct_hit else "pointer"
+            changed = True
         if changed:
             _atomic_write_jsonl(path, rows)
     except (OSError, TypeError, ValueError) as exc:
