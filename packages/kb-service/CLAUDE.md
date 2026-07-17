@@ -116,6 +116,5 @@ Both talk directly to `KB_SERVICE_DATABASE_URL`.
 
 ## kb-core source
 
-For now, `kb-core` is sourced via a LOCAL PATH in `pyproject.toml`
-(`[tool.uv.sources] kb-core = { path = "../personal_kb/packages/kb-core" }`).
-A git+ssh source for headless dispatch is deferred to a later phase.
+`kb-core` is sourced via a **git+ssh** source in `pyproject.toml`
+(`[tool.uv.sources] kb-core = { git = "ssh://git@git-host/~/repos/personal_kb", subdirectory = "packages/kb-core", rev = "main" }`), pinned to a specific commit in `uv.lock`. To pull a new kb-core, run `uv lock --upgrade-package kb-core` (re-resolves `rev = "main"` to the current tip; a plain `uv lock` reuses the cached rev and will NOT move the pin), commit the lock bump (`chore: bump kb-core to …`), then `./deploy.sh` to each host. Deploy targets the three Pis via `KB_DEPLOY_HOST` (default `kb-host-1`=personal; `kb-host-2`=team; `kb-host-3`=user2).
