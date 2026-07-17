@@ -45,11 +45,16 @@ async def test_generate_success(mock_anthropic_class, mock_response):
 
 @pytest.mark.asyncio
 async def test_generate_with_system_prompt(mock_anthropic_class):
-    """System prompt is passed through to the API."""
+    """System prompt is sent as a content-block array with a cache breakpoint."""
     llm = _client()
     await llm.generate("test prompt", system="You are helpful")
     call_kwargs = mock_anthropic_class.messages.create.call_args
-    assert call_kwargs.kwargs.get("system") == "You are helpful"
+    system_blocks = call_kwargs.kwargs.get("system")
+    assert isinstance(system_blocks, list), "system should be a content-block list"
+    assert len(system_blocks) == 1
+    assert system_blocks[0]["type"] == "text"
+    assert system_blocks[0]["text"] == "You are helpful"
+    assert system_blocks[0]["cache_control"] == {"type": "ephemeral"}
 
 
 @pytest.mark.asyncio

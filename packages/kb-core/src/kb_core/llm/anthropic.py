@@ -61,7 +61,11 @@ class AnthropicLLMClient:
                 "messages": [{"role": "user", "content": prompt}],
             }
             if system is not None:
-                kwargs["system"] = system
+                # Use content-block array form so the cache breakpoint is placed
+                # on the system block itself (top-level cache_control is not valid).
+                kwargs["system"] = [
+                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+                ]
 
             response = await client.messages.create(
                 **kwargs,
@@ -83,27 +87,53 @@ class AnthropicLLMClient:
     ) -> str | None:
         """Generate text from a conversation history.
 
-        Prompt caching is enabled via the top-level ``cache_control`` kwarg
-        (SDK ≥ 0.40). This places the cache breakpoint on the last cacheable
-        block of the request — the correct multi-turn pattern — so each turn
-        reuses the prefix built by the previous turn (5-min TTL, refreshed on
-        read). Requests below the model's minimum cacheable token count
-        silently no-op (``cache_creation_input_tokens=0``), which is harmless.
+        Prompt caching is placed on content blocks — not as a top-level kwarg
+        (which is not a valid Anthropic Messages API field and is silently
+        ignored).  Two breakpoints are set per request:
+
+        1. **System block** (when ``system`` is provided): the system prompt is
+           sent as a content-block array with ``cache_control`` attached, so
+           the stable system prefix is cached across turns.
+        2. **Rolling message breakpoint**: the last content block of the last
+           message carries ``cache_control`` so each turn reuses the prefix
+           built by the previous turn (5-min TTL, refreshed on read).  If the
+           last message's ``content`` is a bare string it is first converted to
+           a single text content block before attaching the breakpoint.
+
+        Requests below the model's minimum cacheable token count silently
+        no-op (``cache_creation_input_tokens=0``), which is harmless.
         """
         try:
             client = self._get_client()
             if client is None:
                 return None
 
-            api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+            # Build message list; attach rolling cache breakpoint to the last
+            # content block of the last message.
+            api_messages: list[dict[str, Any]] = []
+            for i, m in enumerate(messages):
+                if i < len(messages) - 1:
+                    api_messages.append({"role": m["role"], "content": m["content"]})
+                else:
+                    # Normalise the final message content to a list of blocks.
+                    content = m["content"]
+                    if isinstance(content, str):
+                        blocks: list[dict[str, Any]] = [{"type": "text", "text": content}]
+                    else:
+                        blocks = [dict(b) for b in content]
+                    # Attach rolling breakpoint to the last block.
+                    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+                    api_messages.append({"role": m["role"], "content": blocks})
+
             kwargs: dict[str, Any] = {
                 "model": self._config.model,
                 "max_tokens": 4096,
                 "messages": api_messages,
-                "cache_control": {"type": "ephemeral"},
             }
             if system is not None:
-                kwargs["system"] = system
+                kwargs["system"] = [
+                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+                ]
 
             response = await client.messages.create(
                 **kwargs,
