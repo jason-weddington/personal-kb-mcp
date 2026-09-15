@@ -188,7 +188,7 @@ tests (see KB kb-01738).
   round-trip `create_sqlite → store → search`. Proves the published kb-core
   artifact stands on its own.
 - **Part B — personal-kb deploy-path smoke** (release-time only — needs the
-  release commit pushed first): `uvx --from "personal-kb[postgres] @ git+ssh://...@<sha>" personal-kb`
+  release commit pushed first): `uvx --from "personal-kb @ git+ssh://...@<sha>" personal-kb`
   against a throwaway SQLite DB, asserting the FastMCP `Starting MCP server`
   banner with NO `ModuleNotFoundError`. See the script header for the exact
   invocation.
@@ -243,8 +243,6 @@ Format: `type(optional-scope): description`
 | `KB_PG_REGION` | `us-east-1` | AWS region for RDS IAM token signing |
 | `KB_SKIP_SAFETY` | (unset) | Set `TRUE` to bypass secret scanning on store |
 | `KB_INSTANCE_ROLE` | (unset) | `personal` or `team` — prepends role-specific instructions and prefixes tool names (`personal` → `personal_kb_*`, `team` → `team_kb_*`) |
-| `KB_AUTO_EXPLORE` | `TRUE` | Auto-start explorer web server on MCP server startup |
-| `KB_EXPLORE_PORT` | `8767` | Port for the explorer web server |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
 
 ## Agent Feedback Loop

@@ -30,8 +30,7 @@ mapping in the MCP server's startup wiring (later wave) is mechanical:
 
 Server-only env vars deliberately have no home here because they govern
 the MCP server / web explorer / CLI hook, not the engine:
-``KB_MANAGER``, ``KB_INSTANCE_ROLE``, ``KB_AUTO_EXPLORE``,
-``KB_EXPLORE_PORT``, ``KB_LOG_LEVEL``. They stay in
+``KB_MANAGER``, ``KB_INSTANCE_ROLE``, ``KB_LOG_LEVEL``. They stay in
 ``personal_kb.config``.
 
 Defaults match the current ``personal_kb.config`` defaults so callers

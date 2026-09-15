@@ -275,8 +275,8 @@ only — for positive signals, the search telemetry (automatic) handles that.
 
 **Parameters**: None.
 
-**Returns**: URL to the explorer (`http://localhost:8765` by default, configurable via
-`KB_EXPLORE_PORT`). The server auto-starts if not already running (`KB_AUTO_EXPLORE=TRUE`).
+**Returns**: URL to the hosted explorer, served permanently by the web service (no local
+auto-start — the thin MCP client just returns the URL for the caller to open in a browser).
 
 The explorer provides: force-directed graph visualization, natural-language chat with citations,
 write-back tools (update entries, ingest URLs, upload files), and project filtering.

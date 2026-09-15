@@ -160,13 +160,6 @@ export them in your shell. No config files required.
 | `KB_MANAGER` | (unset) | Set `TRUE` to enable maintenance tools (`kb_maintain`, `kb_bulk_update`) |
 | `KB_INSTANCE_ROLE` | (unset) | `personal` or `team`. Prepends role-specific instructions and prefixes tool names. |
 
-### Explorer web UI
-
-| Variable | Default | Description |
-|---|---|---|
-| `KB_AUTO_EXPLORE` | `TRUE` | Auto-start the graph explorer web server on MCP startup |
-| `KB_EXPLORE_PORT` | `8765` | Port for the explorer web UI |
-
 ### Safety
 
 | Variable | Default | Description |
