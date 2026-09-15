@@ -148,14 +148,12 @@ function AccountCard() {
  * Personal-kb is NOT a published PyPI package, so the `--from` indirection is
  * required for `uvx` to resolve the entry point.
  *
- * The `[postgres]` extra mirrors provision.sh's known-good form. The HTTP
- * thin-client (HttpBackend) does not strictly need asyncpg — base deps already
- * cover fastmcp + httpx — but matching provision.sh guarantees the spec
- * resolves identically to what the Pis already run, removing one degree of
- * "works there, broken when copy-pasted from here" risk.
+ * The HTTP thin-client (HttpBackend) never opens a database connection in
+ * remote mode, so no extras are needed — base deps already cover
+ * fastmcp + httpx.
  */
 const MCP_CLIENT_FROM =
-  'personal-kb[postgres] @ git+ssh://git@git-host/home/git/repos/personal_kb@main'
+  'personal-kb @ git+ssh://git@git-host/home/git/repos/personal_kb@main'
 
 /**
  * Build the MCP-config JSON shown after minting an API key.
