@@ -217,6 +217,35 @@ async def test_rebuild_embeddings_force(db, store, fake_embedder):
 
 
 @pytest.mark.asyncio
+async def test_rebuild_embeddings_clears_retry_queue_row(db, store, fake_embedder):
+    """A manual rebuild resolves the entry's embedding_retry_queue row (GTD 735a7e1d)."""
+    from kb_core import embedding_retry
+
+    e1 = await store.create_entry(
+        short_title="Queued for retry",
+        long_title="Entry with a stale queue row",
+        knowledge_details="Previously failed to embed",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await embedding_retry.enqueue(db, e1.id, error="embed returned None", now=datetime.now(UTC))
+
+    cursor = await db.execute(
+        "SELECT COUNT(*) AS n FROM embedding_retry_queue WHERE entry_id = ?", (e1.id,)
+    )
+    row = await cursor.fetchone()
+    assert row["n"] == 1
+
+    result = await _action_rebuild_embeddings(db, store, fake_embedder, force=False)
+    assert "1 succeeded" in result
+
+    cursor = await db.execute(
+        "SELECT COUNT(*) AS n FROM embedding_retry_queue WHERE entry_id = ?", (e1.id,)
+    )
+    row = await cursor.fetchone()
+    assert row["n"] == 0
+
+
+@pytest.mark.asyncio
 async def test_rebuild_embeddings_no_ollama(db, store, fake_embedder):
     """Should gracefully skip when Ollama is unavailable."""
     fake_embedder._available = False

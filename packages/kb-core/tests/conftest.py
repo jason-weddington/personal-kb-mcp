@@ -126,7 +126,7 @@ async def pg_kb(pg_temp_db: str) -> AsyncIterator[PostgresBackend]:
     await backend.execute(
         "TRUNCATE graph_edges, graph_nodes, knowledge_entries, knowledge_vec,"
         " entry_versions, ingested_files, search_events, agent_feedback,"
-        " audit_events RESTART IDENTITY CASCADE"
+        " audit_events, embedding_retry_queue RESTART IDENTITY CASCADE"
     )
     try:
         yield backend

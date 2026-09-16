@@ -41,12 +41,14 @@ Async context manager — call sites are expected to use
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kb_core.config import (
     AgenticConfig,
     Attribution,
+    EmbeddingRetryConfig,
     IngestConfig,
     KbConfig,
     PostgresConfig,
@@ -54,6 +56,7 @@ from kb_core.config import (
     SqliteConfig,
 )
 from kb_core.db.queries import get_entry
+from kb_core.embedding_retry import EMBEDDING_RETRY_MARKER, EmbeddingRetryWorker, enqueue
 from kb_core.graph.builder import GraphBuilder
 from kb_core.graph.enricher import ENRICHMENT_FAILURE_MARKER
 from kb_core.graph.queries import (
@@ -73,7 +76,7 @@ from kb_core.store.knowledge_store import KnowledgeStore
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-    from datetime import datetime, timedelta
+    from datetime import timedelta
     from types import TracebackType
 
     from kb_core.config import (
@@ -82,6 +85,7 @@ if TYPE_CHECKING:
         ProviderRoleConfig,
     )
     from kb_core.db.backend import Database
+    from kb_core.embedding_retry import EmbeddingQueueStats
     from kb_core.graph.enricher import GraphEnricher
     from kb_core.ingest.ingester import FileIngester, FileResult, IngestResult
     from kb_core.llm.provider import LLMProvider
@@ -336,6 +340,8 @@ class KnowledgeBase:
         self._owned_synthesis_llm = _owned_synthesis_llm
         # Database is ALWAYS owned by the facade (we always open it in create()).
         self._owned_db = True
+        # Set by start_embedding_worker(); None until the worker is started.
+        self._embedding_worker: EmbeddingRetryWorker | None = None
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -442,6 +448,10 @@ class KnowledgeBase:
         Externally supplied embedders/LLMs are NOT closed — caller owns them.
         Failures during teardown are logged at WARNING and never raised.
         """
+        # Stop the embedding worker FIRST — it's the only thing holding a
+        # live task against the DB, and everything else below tears the DB
+        # (and any owned embedder) down.
+        await self.stop_embedding_worker()
         # Close in reverse construction order. Each close is best-effort.
         if self._owned_synthesis_llm and self._synthesis_llm is not None:
             try:
@@ -650,6 +660,14 @@ class KnowledgeBase:
 
         # Batch embed (single backend call across the whole list).
         if created and self._embedder is not None:
+            # Outcome-based, not branch-based: track every id that actually
+            # reaches mark_embedding(True); everything else gets enqueued for
+            # retry. This catches the silent third failure shape — an embedder
+            # that exposes embed_batch but not store_embeddings embeds
+            # successfully and then discards every vector with no exception,
+            # no mark_embedding call, and no log line.
+            marked_ids: set[str] = set()
+            handled_via_embed_one: set[str] = set()
             try:
                 texts = [e.embedding_text for e in created]
                 embed_batch = getattr(self._embedder, "embed_batch", None)
@@ -661,12 +679,22 @@ class KnowledgeBase:
                         await store_embeddings(pairs)
                         for e in created:
                             await self._store.mark_embedding(e.id, True)
+                            marked_ids.add(e.id)
                 else:
-                    # Embedder lacks batch API — embed one at a time.
+                    # Embedder lacks batch API — embed one at a time. _embed_one
+                    # already enqueues on its own failure, so mark these ids as
+                    # handled regardless of outcome to avoid a redundant enqueue
+                    # below (which would overwrite its more specific last_error).
                     for entry in created:
-                        await self._embed_one(entry)
+                        handled_via_embed_one.add(entry.id)
+                        if await self._embed_one(entry):
+                            marked_ids.add(entry.id)
             except Exception:
                 logger.warning("store_batch: batch embedding failed", exc_info=True)
+            finally:
+                for e in created:
+                    if e.id not in marked_ids and e.id not in handled_via_embed_one:
+                        await self._enqueue_retry(e.id, error="store_batch: entry not embedded")
 
         # Batch enrich.
         if enrich and self._graph_enricher is not None and created:
@@ -1145,16 +1173,67 @@ class KnowledgeBase:
         out: list[list[float]] | None = await embed_batch(texts)
         return out
 
+    # -- Embedding retry queue / background worker --------------------------
+
+    async def start_embedding_worker(self) -> None:
+        """Start the background embedding retry worker.
+
+        A no-op returning immediately when ``config.embedding_retry.enabled``
+        is ``False`` or no embedder is configured (FTS-only). Otherwise
+        constructs an :class:`~kb_core.embedding_retry.EmbeddingRetryWorker`
+        bound to this facade's private ``db``/``store`` and starts it.
+
+        SQLite hazard: ``SQLiteDatabase`` wraps ONE aiosqlite connection and
+        its ``commit()`` is gated on an ``_in_txn`` ``ContextVar`` (see
+        ``sqlite_backend.py`` lines 133-137) that an ``asyncio.Task`` does
+        not inherit from a concurrent request's ``db.transaction()`` — a
+        worker commit could commit a half-written request transaction. The
+        worker is intended for the Postgres deployment; kb-core's own tests
+        drive ``drain_once`` directly on SQLite with no concurrent requests,
+        which is safe.
+        """
+        if not self._config.embedding_retry.enabled or self._embedder is None:
+            return
+        self._embedding_worker = EmbeddingRetryWorker(
+            self._db,
+            self._store,
+            self._config.embedding_retry,
+            self._config.embedding,
+            embedder=None,
+        )
+        await self._embedding_worker.start()
+
+    async def stop_embedding_worker(self) -> None:
+        """Stop the background embedding retry worker. Safe when never started."""
+        if self._embedding_worker is not None:
+            await self._embedding_worker.stop()
+            self._embedding_worker = None
+
+    async def embedding_queue_stats(self) -> EmbeddingQueueStats:
+        """Operator-facing snapshot of the embedding retry queue."""
+        from kb_core.embedding_retry import queue_stats
+
+        return await queue_stats(self._db, now=datetime.now(UTC))
+
+    @property
+    def embedding_worker_running(self) -> bool:
+        """``True`` while the background embedding retry worker task is alive."""
+        return self._embedding_worker is not None and self._embedding_worker.running
+
     # -- Internal helpers ---------------------------------------------------
 
-    async def _embed_one(self, entry: KnowledgeEntry) -> None:
-        """Embed a single entry. Failures are logged and never raise."""
+    async def _embed_one(self, entry: KnowledgeEntry) -> bool:
+        """Embed a single entry. Failures are logged, enqueued for retry, and never raise.
+
+        Returns ``True`` iff the vector was stored and ``mark_embedding`` reached.
+        """
         if self._embedder is None:
-            return
+            return False
         try:
             embedding = await self._embedder.embed(entry.embedding_text)
             if embedding is None:
-                return
+                await self._enqueue_retry(entry.id, error="embed returned None")
+                return False
             # The embedder may not expose store_embedding; use the DB path.
             store_embedding = getattr(self._embedder, "store_embedding", None)
             if callable(store_embedding):
@@ -1163,8 +1242,20 @@ class KnowledgeBase:
                 await self._db.vector_store(entry.id, embedding)
                 await self._db.commit()
             await self._store.mark_embedding(entry.id, True)
-        except Exception:
+        except Exception as exc:
             logger.warning("Failed to embed entry %s", entry.id, exc_info=True)
+            await self._enqueue_retry(entry.id, error=repr(exc)[:500])
+            return False
+        return True
+
+    async def _enqueue_retry(self, entry_id: str, *, error: str) -> None:
+        """Best-effort admission into the embedding retry queue. Never raises."""
+        try:
+            await enqueue(self._db, entry_id, error=error, now=datetime.now(UTC))
+        except Exception:
+            logger.warning(
+                "%s: failed to enqueue entry %s", EMBEDDING_RETRY_MARKER, entry_id, exc_info=True
+            )
 
     async def _build_graph(self, entry: KnowledgeEntry) -> None:
         """Build deterministic graph edges for an entry. Best-effort."""
@@ -1202,6 +1293,7 @@ async def create_sqlite(
     ingest: IngestConfig | None = None,
     agentic: AgenticConfig | None = None,
     attribution: Attribution | None = None,
+    embedding_retry: EmbeddingRetryConfig | None = None,
     embedder: Embedder | None | _UseConfig = _USE_CONFIG,
     extraction_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
     query_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
@@ -1227,6 +1319,7 @@ async def create_sqlite(
         ingest=ingest if ingest is not None else IngestConfig(),
         agentic=agentic if agentic is not None else AgenticConfig(),
         attribution=attribution if attribution is not None else Attribution(),
+        embedding_retry=embedding_retry if embedding_retry is not None else EmbeddingRetryConfig(),
     )
     return await KnowledgeBase.create(
         config,
@@ -1250,6 +1343,7 @@ async def create_postgres(
     ingest: IngestConfig | None = None,
     agentic: AgenticConfig | None = None,
     attribution: Attribution | None = None,
+    embedding_retry: EmbeddingRetryConfig | None = None,
     embedder: Embedder | None | _UseConfig = _USE_CONFIG,
     extraction_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
     query_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
@@ -1275,6 +1369,7 @@ async def create_postgres(
         ingest=ingest if ingest is not None else IngestConfig(),
         agentic=agentic if agentic is not None else AgenticConfig(),
         attribution=attribution if attribution is not None else Attribution(),
+        embedding_retry=embedding_retry if embedding_retry is not None else EmbeddingRetryConfig(),
     )
     return await KnowledgeBase.create(
         config,

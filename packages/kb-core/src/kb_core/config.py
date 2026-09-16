@@ -318,6 +318,35 @@ class Attribution:
     """Team name attached to newly stored entries."""
 
 
+# --- Embedding retry queue -----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EmbeddingRetryConfig:
+    """Tuning for the self-healing embedding retry queue + background worker."""
+
+    enabled: bool = True
+    """If ``True``, ``KnowledgeBase.start_embedding_worker`` starts the background worker."""
+
+    poll_interval_seconds: float = 60.0
+    """How often the worker drains the queue when the embedder is available."""
+
+    down_backoff_seconds: float = 300.0
+    """How long the worker sleeps between cycles when the embedder is unreachable."""
+
+    backfill_interval_seconds: float = 3600.0
+    """How often the worker re-scans for vectorless entries (also revives exhausted rows)."""
+
+    batch_size: int = 16
+    """Maximum number of due rows claimed per drain cycle."""
+
+    lease_seconds: float = 600.0
+    """How long a claimed row is protected from being claimed by another process."""
+
+    request_timeout: float = 180.0
+    """Timeout for the worker's own embedder HTTP calls (a cold model load is ~73s)."""
+
+
 # --- Top-level config ---------------------------------------------------------
 
 
@@ -355,3 +384,6 @@ class KbConfig:
 
     attribution: Attribution = field(default_factory=Attribution)
     """Default contributor/team metadata for stored entries."""
+
+    embedding_retry: EmbeddingRetryConfig = field(default_factory=EmbeddingRetryConfig)
+    """Self-healing embedding retry queue + background worker tuning."""

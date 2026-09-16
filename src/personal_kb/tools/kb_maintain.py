@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
+from kb_core import embedding_retry
 from pydantic import Field
 
 from personal_kb.db.backend import Database
@@ -297,6 +298,7 @@ async def _action_rebuild_embeddings(
 
     succeeded = 0
     failed = 0
+    succeeded_ids: list[str] = []
 
     for eid in entry_ids:
         entry = await get_entry(db, eid)
@@ -309,11 +311,17 @@ async def _action_rebuild_embeddings(
                 await embedder.store_embedding(eid, embedding)
                 await store.mark_embedding(eid, True)
                 succeeded += 1
+                succeeded_ids.append(eid)
             else:
                 failed += 1
         except Exception:
             logger.warning("Failed to embed %s", eid, exc_info=True)
             failed += 1
+
+    # A manual rebuild fixes exactly what the background retry queue would
+    # have retried — clear those rows so the worker doesn't redundantly
+    # re-embed entries this rebuild already fixed.
+    await embedding_retry.resolve(db, succeeded_ids)
 
     mode = "all entries" if force else "entries without embeddings"
     return (

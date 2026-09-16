@@ -200,3 +200,97 @@ async def test_vacuum_returns_pinned_status_string(pg_kb: PostgresBackend) -> No
     """vacuum() runs ``ANALYZE`` and returns the pinned status string."""
     result = await pg_kb.vacuum()
     assert result == "Vacuum complete (ANALYZE)."
+
+
+# ---------------------------------------------------------------------------
+# embedding_retry_queue — the ONLY place the new ?->$N translation and the
+# ON CONFLICT ... DO UPDATE ... WHERE clause get exercised against real PG
+# (GTD 735a7e1d).
+# ---------------------------------------------------------------------------
+
+
+async def test_embedding_retry_queue_table_exists_after_apply_schema(
+    pg_kb: PostgresBackend,
+) -> None:
+    """apply_schema() creates embedding_retry_queue on Postgres too."""
+    cursor = await pg_kb.execute(
+        "SELECT table_name FROM information_schema.tables"
+        " WHERE table_name = 'embedding_retry_queue'"
+    )
+    assert await cursor.fetchone() is not None
+
+
+async def test_embedding_retry_enqueue_claim_cas_and_failure_round_trip_on_asyncpg(
+    pg_kb: PostgresBackend,
+) -> None:
+    """enqueue's upsert, the claim CAS, and the failure UPDATE all round-trip on asyncpg.
+
+    Exercises exactly what :mod:`kb_core.embedding_retry` issues in
+    production: an ``INSERT ... ON CONFLICT(entry_id) DO UPDATE ... CASE
+    WHEN`` upsert, a compare-and-swap ``UPDATE ... WHERE next_attempt_at =
+    ?`` whose ``rowcount`` must be nonzero then zero, and a plain failure
+    ``UPDATE``. All statements use ``?`` placeholders exactly as
+    ``embedding_retry.py`` writes them — this is the real proof the
+    ``_translate_placeholders`` ``?``->``$N`` rewrite and the ``ON CONFLICT
+    ... DO UPDATE ... WHERE`` clause both work against asyncpg.
+    """
+    entry_id = "kb-77001"
+    now = "2026-01-01T00:00:00+00:00"
+    next_attempt_at = "2026-01-01T00:01:00+00:00"
+
+    # enqueue()'s upsert shape.
+    await pg_kb.execute(
+        "INSERT INTO embedding_retry_queue "
+        "(entry_id, attempts, last_error, next_attempt_at, status, created_at, updated_at) "
+        "VALUES (?, 0, ?, ?, 'pending', ?, ?) "
+        "ON CONFLICT(entry_id) DO UPDATE SET "
+        "last_error = excluded.last_error, "
+        "updated_at = excluded.updated_at, "
+        "status = CASE WHEN embedding_retry_queue.status = 'exhausted' "
+        "THEN 'pending' ELSE embedding_retry_queue.status END, "
+        "attempts = CASE WHEN embedding_retry_queue.status = 'exhausted' "
+        "THEN 0 ELSE embedding_retry_queue.attempts END, "
+        "next_attempt_at = CASE WHEN embedding_retry_queue.status = 'exhausted' "
+        "THEN excluded.next_attempt_at ELSE embedding_retry_queue.next_attempt_at END",
+        (entry_id, "embed returned None", next_attempt_at, now, now),
+    )
+
+    cursor = await pg_kb.execute(
+        "SELECT attempts, status, next_attempt_at FROM embedding_retry_queue WHERE entry_id = ?",
+        (entry_id,),
+    )
+    row = await cursor.fetchone()
+    assert row["attempts"] == 0
+    assert row["status"] == "pending"
+    assert row["next_attempt_at"] == next_attempt_at
+
+    # Claim CAS: first claim succeeds (nonzero rowcount).
+    lease_until = "2026-01-01T00:11:00+00:00"
+    first_claim = await pg_kb.execute(
+        "UPDATE embedding_retry_queue SET next_attempt_at = ?, updated_at = ? "
+        "WHERE entry_id = ? AND next_attempt_at = ? AND status = 'pending'",
+        (lease_until, now, entry_id, next_attempt_at),
+    )
+    assert first_claim.rowcount == 1
+
+    # Second claim against the now-stale next_attempt_at value claims nothing.
+    second_claim = await pg_kb.execute(
+        "UPDATE embedding_retry_queue SET next_attempt_at = ?, updated_at = ? "
+        "WHERE entry_id = ? AND next_attempt_at = ? AND status = 'pending'",
+        (lease_until, now, entry_id, next_attempt_at),
+    )
+    assert second_claim.rowcount == 0
+
+    # Failure UPDATE (the drain_once _apply_failure shape).
+    await pg_kb.execute(
+        "UPDATE embedding_retry_queue SET attempts = ?, last_error = ?, "
+        "next_attempt_at = ?, updated_at = ? WHERE entry_id = ?",
+        (1, "embed_batch returned None", "2026-01-01T00:02:00+00:00", now, entry_id),
+    )
+    cursor = await pg_kb.execute(
+        "SELECT attempts, last_error FROM embedding_retry_queue WHERE entry_id = ?",
+        (entry_id,),
+    )
+    row = await cursor.fetchone()
+    assert row["attempts"] == 1
+    assert row["last_error"] == "embed_batch returned None"

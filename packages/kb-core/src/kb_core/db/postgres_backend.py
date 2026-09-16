@@ -618,6 +618,23 @@ class PostgresBackend:
         ]:
             await conn.execute(idx_sql)
 
+        # Embedding retry queue
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS embedding_retry_queue (
+                entry_id TEXT PRIMARY KEY,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                next_attempt_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_embed_queue_due "
+            "ON embedding_retry_queue(status, next_attempt_at)"
+        )
+
         # Deployment config
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS deployment_config (

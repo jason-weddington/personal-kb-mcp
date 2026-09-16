@@ -126,6 +126,9 @@ async def apply_schema(db: Database) -> None:
     # Audit events table
     await apply_audit_events_schema(db)
 
+    # Embedding retry queue table
+    await apply_embedding_retry_queue_schema(db)
+
     # Deployment config table
     await apply_deployment_config_schema(db)
 
@@ -246,6 +249,26 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
 async def apply_audit_events_schema(db: Database) -> None:
     """Create audit_events table."""
     await db.executescript(AUDIT_EVENTS_SCHEMA_SQL)
+    await db.commit()
+
+
+EMBEDDING_RETRY_QUEUE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS embedding_retry_queue (
+    entry_id TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    next_attempt_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_embed_queue_due ON embedding_retry_queue(status, next_attempt_at);
+"""
+
+
+async def apply_embedding_retry_queue_schema(db: Database) -> None:
+    """Create embedding_retry_queue table."""
+    await db.executescript(EMBEDDING_RETRY_QUEUE_SCHEMA_SQL)
     await db.commit()
 
 
