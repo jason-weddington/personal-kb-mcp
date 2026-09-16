@@ -173,6 +173,9 @@ async def test_open_kb_postgres_branch_when_url_set(
     assert len(postgres_calls) == 1
     assert postgres_calls[0][0] == ("postgresql://x/y",)
     assert sqlite_calls == []
+    # The Postgres branch is the only aiosqlite-connection-sharing-free
+    # deployment, so it's the only one the embedding retry worker may run on.
+    assert postgres_calls[0][1]["embedding_retry"].enabled is True
 
 
 async def test_open_kb_sqlite_branch_with_default_path(
@@ -208,6 +211,9 @@ async def test_open_kb_sqlite_branch_with_default_path(
     assert "pool_min" not in kwargs
     assert "pool_max" not in kwargs
     assert postgres_calls == []
+    # The SQLite branch shares one aiosqlite connection with every request
+    # handler, so the worker is always off here regardless of env.
+    assert kwargs["embedding_retry"].enabled is False
 
 
 async def test_open_kb_sqlite_branch_when_url_empty(

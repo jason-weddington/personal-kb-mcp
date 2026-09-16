@@ -31,6 +31,7 @@ harness + datasets in `evals/listener/`. Dev deploy: systemd user unit
 `kb-service` on `kb-host-1`; `./deploy.sh` pulls main there, rebuilds the
 frontend, restarts the unit. Runbooks: as-built/cutover **kb-01765**, listener
 design **kb-01725**, per-machine hook setup **kb-01784**. Plan in kb-01742.
+A self-healing embedding retry queue + background worker re-embeds entries that previously failed to vectorize, gated by `KB_EMBED_WORKER_ENABLED` (default TRUE) and inspectable via `GET /api/kb/embedding-queue`.
 
 ## Commands
 

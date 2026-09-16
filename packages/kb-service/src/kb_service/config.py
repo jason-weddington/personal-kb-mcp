@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         AnthropicProviderConfig,
         BedrockProviderConfig,
         EmbeddingConfig,
+        EmbeddingRetryConfig,
         IngestConfig,
         OllamaProviderConfig,
         ProviderConfig,
@@ -186,6 +187,26 @@ def is_agentic_synthesis() -> bool:
     return os.environ.get("KB_AGENTIC_SYNTHESIS", "TRUE").upper() == "TRUE"
 
 
+def is_embed_worker_enabled() -> bool:
+    """Return True if the embedding retry worker is enabled (default: TRUE)."""
+    return os.environ.get("KB_EMBED_WORKER_ENABLED", "TRUE").upper() == "TRUE"
+
+
+def get_embed_worker_batch_size() -> int:
+    """Return the embedding retry worker's per-drain batch size."""
+    return _parse_int("KB_EMBED_WORKER_BATCH_SIZE", "16")
+
+
+def get_embed_worker_poll_seconds() -> float:
+    """Return the embedding retry worker's poll interval in seconds."""
+    return _parse_float("KB_EMBED_WORKER_POLL_SECONDS", "60.0")
+
+
+def get_embed_worker_timeout() -> float:
+    """Return the embedding retry worker's own embedder request timeout in seconds."""
+    return _parse_float("KB_EMBED_WORKER_TIMEOUT", "180.0")
+
+
 # --- kb_core config builders -----------------------------------------------
 
 
@@ -212,6 +233,18 @@ def build_embedding_config() -> "EmbeddingConfig":
         timeout=get_ollama_timeout(),
         model=get_embedding_model(),
         dim=get_embedding_dim(),
+    )
+
+
+def build_embedding_retry_config() -> "EmbeddingRetryConfig":
+    """Build a kb_core ``EmbeddingRetryConfig`` from this module's env getters."""
+    from kb_core.config import EmbeddingRetryConfig
+
+    return EmbeddingRetryConfig(
+        enabled=is_embed_worker_enabled(),
+        batch_size=get_embed_worker_batch_size(),
+        poll_interval_seconds=get_embed_worker_poll_seconds(),
+        request_timeout=get_embed_worker_timeout(),
     )
 
 

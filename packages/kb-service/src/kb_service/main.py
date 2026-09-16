@@ -11,12 +11,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from kb_core import Attribution, create_postgres, create_sqlite
+from kb_core import Attribution, EmbeddingRetryConfig, create_postgres, create_sqlite
 
 from kb_service.auth import _auth_mode
 from kb_service.config import (
     build_agentic_config,
     build_embedding_config,
+    build_embedding_retry_config,
     build_ingest_config,
     build_provider_config,
 )
@@ -24,6 +25,7 @@ from kb_service.database import close_db, init_db
 from kb_service.routes.admin_routes import router as admin_router
 from kb_service.routes.auth_routes import router as auth_router
 from kb_service.routes.chat_routes import router as chat_router
+from kb_service.routes.embedding_queue_routes import router as embedding_queue_router
 from kb_service.routes.ingest_routes import router as ingest_router
 from kb_service.routes.kb_read_routes import router as kb_read_router
 from kb_service.routes.kb_routes import router as kb_router
@@ -111,6 +113,7 @@ async def _open_kb() -> "KnowledgeBase":
             ingest=build_ingest_config(),
             agentic=build_agentic_config(),
             attribution=Attribution(),
+            embedding_retry=build_embedding_retry_config(),
         )
 
     sqlite_path = os.environ.get("KB_DB_PATH", _DEFAULT_KB_DB_PATH)
@@ -122,6 +125,11 @@ async def _open_kb() -> "KnowledgeBase":
         ingest=build_ingest_config(),
         agentic=build_agentic_config(),
         attribution=Attribution(),
+        # The SQLite branch shares ONE aiosqlite connection with every request
+        # handler — a worker commit could commit a half-written request
+        # transaction (see KnowledgeBase.start_embedding_worker's docstring).
+        # The worker is Postgres-only; always off here regardless of env.
+        embedding_retry=EmbeddingRetryConfig(enabled=False),
     )
 
 
@@ -142,9 +150,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await init_db()
 
     app.state.kb = await _open_kb()
+    await app.state.kb.start_embedding_worker()
 
     yield
 
+    await app.state.kb.stop_embedding_worker()
     await app.state.kb.close()
     if not no_auth:
         await close_db()
@@ -176,6 +186,7 @@ app.include_router(ingest_router)
 app.include_router(chat_router)
 app.include_router(listener_router)
 app.include_router(telemetry_router)
+app.include_router(embedding_queue_router)
 
 
 @app.get("/api/health")

@@ -630,3 +630,21 @@ class IngestFileResult(BaseModel):
     chunks_processed: int = 0
     chunks_skipped: int = 0
     chunks_flagged: int = 0
+
+
+class EmbeddingQueueStatusResponse(BaseModel):
+    """Response for ``GET /api/kb/embedding-queue`` (admin-only).
+
+    Field-for-field mirror of ``kb_core.embedding_retry.EmbeddingQueueStats``
+    plus ``worker_enabled``/``worker_running``, which the route composes from
+    ``kb_service.config.is_embed_worker_enabled()`` and
+    ``KnowledgeBase.embedding_worker_running``.
+    """
+
+    pending: int
+    exhausted: int
+    oldest_pending_age_seconds: float | None
+    next_due_at: str | None
+    vectorless_unqueued: int
+    worker_enabled: bool
+    worker_running: bool

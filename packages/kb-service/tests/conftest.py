@@ -368,6 +368,26 @@ class FakeKnowledgeBase:
     async def close(self) -> None:
         """No-op close."""
 
+    # ── embedding retry queue / background worker ───────────────────────────
+
+    async def start_embedding_worker(self) -> None:
+        """No-op — lifespan-driven TestClient suites don't run a real worker."""
+
+    async def stop_embedding_worker(self) -> None:
+        """No-op — see start_embedding_worker."""
+
+    async def embedding_queue_stats(self) -> dict[str, Any]:
+        """Return a canned five-key stats dict (mirrors EmbeddingQueueStats)."""
+        return {
+            "pending": 3,
+            "exhausted": 1,
+            "oldest_pending_age_seconds": 42.5,
+            "next_due_at": "2026-09-16T12:00:00+00:00",
+            "vectorless_unqueued": 0,
+        }
+
+    embedding_worker_running: bool = True
+
     # ── write surface (P2) ───────────────────────────────────────────────────
 
     async def store(self, **kwargs: Any) -> KnowledgeEntry:
