@@ -75,6 +75,15 @@ def get_ollama_timeout() -> float:
     return _parse_float("KB_OLLAMA_TIMEOUT", "10.0")
 
 
+def get_embedding_keep_alive() -> str:
+    """Return the per-request Ollama keep_alive duration from KB_OLLAMA_KEEP_ALIVE.
+
+    Passed through verbatim to the embed request body so only the
+    embedding model is pinned in VRAM (never a host-global default).
+    """
+    return os.environ.get("KB_OLLAMA_KEEP_ALIVE", "30m")
+
+
 def get_embedding_dim() -> int:
     """Return the embedding vector dimensions from KB_EMBEDDING_DIM."""
     return _parse_int("KB_EMBEDDING_DIM", "1024")
@@ -225,7 +234,20 @@ def build_ingest_config() -> "IngestConfig":
 
 
 def build_embedding_config() -> "EmbeddingConfig":
-    """Build a kb_core ``EmbeddingConfig`` from this module's env getters."""
+    """Build a kb_core ``EmbeddingConfig`` from this module's env getters.
+
+    NOTE: ``keep_alive`` is deliberately NOT passed here yet.
+    ``get_embedding_keep_alive()`` above reads ``KB_OLLAMA_KEEP_ALIVE`` and is
+    ready to wire in, but the ``EmbeddingConfig`` dataclass this service
+    currently gets via the ``uv.lock``-pinned kb-core git rev predates the
+    ``keep_alive`` field (GTD e6c01c04) — passing it raises ``TypeError:
+    unexpected keyword argument 'keep_alive'`` and breaks the service
+    lifespan. Add ``keep_alive=get_embedding_keep_alive(),`` to the call
+    below in the same change that bumps kb-core
+    (``uv lock --upgrade-package kb-core``), matching the established
+    pattern (e.g. f4cdca7's EmbeddingRetryConfig wiring, which bundled its
+    own lock bump).
+    """
     from kb_core.config import EmbeddingConfig
 
     return EmbeddingConfig(
