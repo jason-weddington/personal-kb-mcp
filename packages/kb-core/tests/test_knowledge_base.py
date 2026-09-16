@@ -218,6 +218,36 @@ async def test_create_sqlite_with_embedding_config_builds_embedder(tmp_path: Any
         await kb.close()
 
 
+async def test_start_embedding_worker_refuses_on_sqlite_backend(tmp_path: Any, caplog: Any) -> None:
+    """``start_embedding_worker`` refuses on SQLite regardless of config.
+
+    ``EmbeddingRetryConfig.enabled`` defaults to ``True``, so every SQLite
+    caller of :func:`create_sqlite` gets an enabled config unless it
+    explicitly opts out. Previously the aiosqlite cross-task-commit hazard
+    (documented on ``start_embedding_worker``) was avoided only because
+    every call site remembered to pass ``embedding_retry=
+    EmbeddingRetryConfig(enabled=False)``. This test pins the defense-in-depth
+    fix: the facade itself refuses to start the worker on a SQLite backend —
+    even with the enabled-by-default config and a real embedder configured —
+    logging once at INFO and returning without starting.
+    """
+    caplog.set_level(logging.INFO, logger="kb_core.knowledge_base")
+    db_path = tmp_path / "sqlite_guard.db"
+    kb = await create_sqlite(db_path, embedding=EmbeddingConfig())
+    try:
+        assert kb._config.embedding_retry.enabled is True  # type: ignore[attr-defined]
+        caplog.clear()
+        await kb.start_embedding_worker()
+        assert kb.embedding_worker_running is False
+        assert any(
+            r.levelname == "INFO" and "SQLite backend" in r.getMessage() for r in caplog.records
+        )
+        # Also a safe no-op to stop a worker that never started.
+        await kb.stop_embedding_worker()
+    finally:
+        await kb.close()
+
+
 async def test_context_manager_closes_db(tmp_path: Any) -> None:
     """``async with`` releases the DB connection on exit."""
     db_path = tmp_path / "ctx.db"

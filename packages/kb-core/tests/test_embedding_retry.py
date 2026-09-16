@@ -96,6 +96,34 @@ class UnavailableEmbedder:
         return []
 
 
+class IsAvailableRaisesEmbedder:
+    """``is_available()`` RAISES rather than returning ``False``.
+
+    Reproduces the down-circuit-that-never-opens defect: an embedder whose
+    availability probe raises (connection refused, DNS failure, auth error,
+    ...) instead of cleanly returning ``False``. Before the fix this skipped
+    ``_track_availability`` entirely, leaving ``_embedder_available`` at
+    ``None`` forever and causing the worker loop to sleep at the fast
+    ``poll_interval_seconds`` instead of the slower ``down_backoff_seconds``
+    — 5x the intended request rate against a hard-down embedder.
+    """
+
+    async def is_available(self) -> bool:
+        raise RuntimeError("connection refused")
+
+    async def embed(self, text: str) -> list[float] | None:
+        raise AssertionError("embed should never be reached")
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]] | None:
+        raise AssertionError("embed_batch should never be reached")
+
+    async def store_embedding(self, entry_id: str, embedding: list[float]) -> None:
+        raise AssertionError("store_embedding should never be reached")
+
+    async def search_similar(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
+        return []
+
+
 class RealShapeDownEmbedder:
     """``is_available()`` True (the 2026-09-16 shape) but ``embed_batch`` fails.
 
@@ -687,6 +715,20 @@ async def test_successful_batch_drain_clears_queue_and_marks_embedded(tmp_path) 
 async def test_per_entry_write_failure_leaves_row_intact_and_isolates_others(
     tmp_path, caplog
 ) -> None:
+    """A post-embed write failure (e.g. ``mark_embedding`` raising) must apply
+    the SAME failure accounting as an embed failure: ``attempts`` increments,
+    ``next_attempt_at`` reschedules per ``BACKOFF_SCHEDULE_SECONDS``, and the
+    row reaches ``'exhausted'`` after ``MAX_ATTEMPTS`` write failures.
+
+    Before the fix, ``_apply_success``'s exception branch only incremented
+    the in-memory ``counters['failed']`` and never touched the row's
+    ``attempts``/``next_attempt_at`` — a persistently-failing write retried
+    FOREVER at the lease interval and could never exhaust. This test drives
+    a persistently-broken write all the way to exhaustion to prove that no
+    longer happens, while preserving the original isolation assertion: a
+    write failure on one entry must not affect a healthy sibling claimed in
+    the same batch.
+    """
     caplog.set_level(logging.ERROR, logger="kb_core.embedding_retry")
     kb = await create_sqlite(tmp_path / "kb.db", embedder=NoneEmbedder())
     try:
@@ -709,9 +751,14 @@ async def test_per_entry_write_failure_leaves_row_intact_and_isolates_others(
         assert result["embedded"] == 1
         assert result["failed"] == 1
 
-        cursor = await kb.db.execute("SELECT entry_id FROM embedding_retry_queue")
-        remaining = {r["entry_id"] for r in await cursor.fetchall()}
-        assert remaining == {broken.id}
+        # Isolation: only the broken entry remains queued; `ok` was embedded
+        # and its row deleted, unaffected by broken's write failure.
+        cursor = await kb.db.execute("SELECT entry_id, attempts, status FROM embedding_retry_queue")
+        rows = {r["entry_id"]: (r["attempts"], r["status"]) for r in await cursor.fetchall()}
+        assert set(rows) == {broken.id}
+        # Corrected accounting: the write failure counts as attempt 1, same
+        # as an embed failure would — NOT left at attempts=0 forever.
+        assert rows[broken.id] == (1, "pending")
 
         errors = [
             r
@@ -719,6 +766,40 @@ async def test_per_entry_write_failure_leaves_row_intact_and_isolates_others(
             if r.levelname == "ERROR" and "post-embed write failed" in r.getMessage()
         ]
         assert len(errors) == 1
+
+        # Drive the persistently-broken row through the rest of the backoff
+        # schedule — a write failure that never recovers must reach
+        # 'exhausted' at MAX_ATTEMPTS, exactly like an embed failure, never
+        # retrying forever at the lease interval (the unbounded-retry bug).
+        clock = now
+        for expected_attempts in range(2, MAX_ATTEMPTS + 1):
+            cursor = await kb.db.execute(
+                "SELECT next_attempt_at FROM embedding_retry_queue WHERE entry_id = ?",
+                (broken.id,),
+            )
+            row = await cursor.fetchone()
+            clock = datetime.fromisoformat(row["next_attempt_at"]) + timedelta(seconds=1)
+
+            result = await worker.drain_once(now=clock)
+            assert result["claimed"] == 1
+
+            cursor = await kb.db.execute(
+                "SELECT attempts, status FROM embedding_retry_queue WHERE entry_id = ?",
+                (broken.id,),
+            )
+            row = await cursor.fetchone()
+            assert row["attempts"] == expected_attempts
+            if expected_attempts < MAX_ATTEMPTS:
+                assert row["status"] == "pending"
+                assert result["failed"] == 1
+            else:
+                assert row["status"] == "exhausted"
+                assert result["exhausted"] == 1
+
+        # An exhausted row is never reclaimed — a further drain claims zero,
+        # proving the row stopped retrying instead of looping forever.
+        result = await worker.drain_once(now=clock + timedelta(days=1))
+        assert result["claimed"] == 0
     finally:
         await kb.close()
 
@@ -908,6 +989,91 @@ async def test_embedder_down_then_recovered_transition_logging(tmp_path, caplog)
             if r.levelname == "INFO" and "embedder recovered" in r.getMessage()
         ]
         assert len(recovered) == 1
+    finally:
+        await kb.close()
+
+
+async def test_is_available_raise_treated_as_down_drives_track_availability(
+    tmp_path, caplog
+) -> None:
+    """``is_available()`` raising must still reach ``_track_availability(False)``.
+
+    Before the fix, an exception from ``is_available()`` propagated straight
+    out of ``drain_once`` — ``_track_availability`` was never called,
+    ``_embedder_available`` stayed ``None`` forever, and the down-transition
+    WARNING never logged. This pins the corrected behavior directly on the
+    unit-testable seam (``drain_once``): the raise is caught, availability is
+    recorded as ``False`` (so ``_run_forever`` takes the ``down_backoff_seconds``
+    sleep instead of the fast ``poll_interval_seconds`` one — see
+    ``test_run_loop_takes_down_backoff_sleep_when_is_available_raises`` for the
+    end-to-end sleep-value proof), and the usual "embedder unreachable"
+    transition log fires exactly like a clean ``False`` return would.
+    """
+    caplog.set_level(logging.WARNING, logger="kb_core.embedding_retry")
+    kb = await create_sqlite(tmp_path / "kb.db", embedder=NoneEmbedder())
+    try:
+        worker = EmbeddingRetryWorker(
+            kb.db,
+            kb.knowledge_store,
+            EmbeddingRetryConfig(batch_size=10, lease_seconds=600),
+            embedder=IsAvailableRaisesEmbedder(),
+        )
+        assert worker._embedder_available is None
+
+        caplog.clear()
+        result = await worker.drain_once(now=datetime.now(UTC))
+
+        assert result == {"claimed": 0, "embedded": 0, "failed": 0, "exhausted": 0, "skipped": 0}
+        assert worker._embedder_available is False
+        down_warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and "embedder unreachable" in r.getMessage()
+        ]
+        assert len(down_warnings) == 1
+    finally:
+        await kb.close()
+
+
+async def test_run_loop_takes_down_backoff_sleep_when_is_available_raises(
+    tmp_path, monkeypatch
+) -> None:
+    """End-to-end: ``is_available()`` raising makes the real worker LOOP sleep
+    at ``down_backoff_seconds``, not the fast ``poll_interval_seconds`` — the
+    5x-too-fast-polling defect. ``asyncio.sleep`` is patched to record the
+    requested duration and then block (via a never-resolving Future) so the
+    test controls the loop's lifetime deterministically via ``worker.stop()``.
+    """
+    kb = await create_sqlite(tmp_path / "kb.db", embedder=NoneEmbedder())
+    try:
+        worker = EmbeddingRetryWorker(
+            kb.db,
+            kb.knowledge_store,
+            EmbeddingRetryConfig(
+                poll_interval_seconds=1.0,
+                down_backoff_seconds=999.0,
+                backfill_interval_seconds=3600.0,
+            ),
+            embedder=IsAvailableRaisesEmbedder(),
+        )
+
+        sleeps: list[float] = []
+        sleep_recorded = asyncio.Event()
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            sleep_recorded.set()
+            await asyncio.Future()  # block until the task is cancelled by stop()
+
+        monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+        await worker.start()
+        try:
+            await asyncio.wait_for(sleep_recorded.wait(), timeout=5)
+        finally:
+            await worker.stop()
+
+        assert sleeps == [999.0]
     finally:
         await kb.close()
 

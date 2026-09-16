@@ -33,9 +33,20 @@ this file needs to guard.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
+
+from kb_core.embedding_retry import (
+    _claim_due,
+    _vectorless_unqueued_count,
+    backfill,
+    enqueue,
+    queue_stats,
+    resolve,
+)
+from kb_core.store.knowledge_store import KnowledgeStore
 
 if TYPE_CHECKING:
     # Only used in ``pg_kb: PostgresBackend`` annotations below (stringified
@@ -203,10 +214,35 @@ async def test_vacuum_returns_pinned_status_string(pg_kb: PostgresBackend) -> No
 
 
 # ---------------------------------------------------------------------------
-# embedding_retry_queue — the ONLY place the new ?->$N translation and the
-# ON CONFLICT ... DO UPDATE ... WHERE clause get exercised against real PG
-# (GTD 735a7e1d).
+# embedding_retry_queue — the ONLY place the ?->$N translation and the various
+# ON CONFLICT / dynamic-IN / NOT-EXISTS shapes kb_core.embedding_retry issues
+# get exercised against real PG (GTD 735a7e1d; follow-up hardening f9fef4f9).
+#
+# Every test below calls the REAL kb_core.embedding_retry functions
+# (enqueue/backfill/resolve/_claim_due/queue_stats/_vectorless_unqueued_count)
+# against the asyncpg-backed ``pg_kb`` fixture — never a hand-copied SQL
+# string — so a future edit to that module's SQL is exercised here
+# automatically instead of silently drifting from a frozen snapshot.
 # ---------------------------------------------------------------------------
+
+
+async def _insert_vectorless_entry(pg_kb: PostgresBackend, entry_id: str) -> None:
+    """Insert a minimal active, vectorless ``knowledge_entries`` row.
+
+    Vectorless + active is exactly the source-of-truth predicate
+    :meth:`KnowledgeStore.get_entries_without_embeddings` (and therefore
+    :func:`kb_core.embedding_retry.backfill`) selects on: ``has_embedding = 0
+    AND is_active = 1`` (both column defaults, so neither needs to be
+    supplied explicitly).
+    """
+    ts = "2026-01-01T00:00:00Z"
+    await pg_kb.execute(
+        "INSERT INTO knowledge_entries"
+        " (id, short_title, long_title, knowledge_details, entry_type,"
+        "  created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (entry_id, entry_id, entry_id, "Body text.", "note", ts, ts),
+    )
 
 
 async def test_embedding_retry_queue_table_exists_after_apply_schema(
@@ -220,40 +256,52 @@ async def test_embedding_retry_queue_table_exists_after_apply_schema(
     assert await cursor.fetchone() is not None
 
 
-async def test_embedding_retry_enqueue_claim_cas_and_failure_round_trip_on_asyncpg(
+async def test_embedding_retry_queue_next_attempt_at_is_c_collation(
     pg_kb: PostgresBackend,
 ) -> None:
-    """enqueue's upsert, the claim CAS, and the failure UPDATE all round-trip on asyncpg.
+    """``next_attempt_at`` is pinned ``COLLATE "C"`` (byte-wise ordering).
 
-    Exercises exactly what :mod:`kb_core.embedding_retry` issues in
-    production: an ``INSERT ... ON CONFLICT(entry_id) DO UPDATE ... CASE
-    WHEN`` upsert, a compare-and-swap ``UPDATE ... WHERE next_attempt_at =
-    ?`` whose ``rowcount`` must be nonzero then zero, and a plain failure
-    ``UPDATE``. All statements use ``?`` placeholders exactly as
-    ``embedding_retry.py`` writes them — this is the real proof the
-    ``_translate_placeholders`` ``?``->``$N`` rewrite and the ``ON CONFLICT
-    ... DO UPDATE ... WHERE`` clause both work against asyncpg.
+    ``_claim_due``'s ``ORDER BY next_attempt_at`` / ``next_attempt_at <= ?``
+    and ``queue_stats``'s ``MIN(next_attempt_at)`` all depend on this column
+    comparing as pure byte-wise (C-locale) text, not the database's default
+    collation — which under a glibc locale can apply punctuation-insensitive
+    comparison rules that misorder the exact ISO-8601 shapes ``_iso()``
+    emits (with vs. without a microseconds component; see the DDL comment
+    in ``postgres_backend.py`` for the full rationale).
+    """
+    cursor = await pg_kb.execute(
+        "SELECT collation_name FROM information_schema.columns"
+        " WHERE table_name = 'embedding_retry_queue' AND column_name = 'next_attempt_at'"
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row["collation_name"] == "C"
+
+
+async def test_embedding_retry_enqueue_and_claim_due_round_trip_on_asyncpg(
+    pg_kb: PostgresBackend,
+) -> None:
+    """enqueue() and _claim_due() round-trip via the REAL functions on asyncpg.
+
+    Exercises enqueue()'s ``INSERT ... ON CONFLICT(entry_id) DO UPDATE ...
+    CASE WHEN`` upsert (the fresh-insert path) and ``_claim_due``'s
+    compare-and-swap claim ``UPDATE ... WHERE next_attempt_at = ? AND status
+    = 'pending'``. A claimed row is pushed past its due window by the lease,
+    so calling ``_claim_due`` again immediately claims nothing — proving the
+    CAS protects a claimed row from being claimed twice, via the actual
+    ``?``->``$N``-translated statement (not a hand-copied one).
+
+    NOTE: enqueue()'s ``DO UPDATE`` has no ``WHERE`` clause on the conflict
+    action itself (the exhausted-vs-pending branching happens inside ``CASE
+    WHEN`` in the ``SET`` list, unconditionally applied). The WHERE-qualified
+    conflict action lives in :func:`kb_core.embedding_retry.backfill` — see
+    ``test_backfill_revives_only_exhausted_rows_via_do_update_where_on_asyncpg``
+    below for that coverage.
     """
     entry_id = "kb-77001"
-    now = "2026-01-01T00:00:00+00:00"
-    next_attempt_at = "2026-01-01T00:01:00+00:00"
+    now = datetime(2026, 1, 1, tzinfo=UTC)
 
-    # enqueue()'s upsert shape.
-    await pg_kb.execute(
-        "INSERT INTO embedding_retry_queue "
-        "(entry_id, attempts, last_error, next_attempt_at, status, created_at, updated_at) "
-        "VALUES (?, 0, ?, ?, 'pending', ?, ?) "
-        "ON CONFLICT(entry_id) DO UPDATE SET "
-        "last_error = excluded.last_error, "
-        "updated_at = excluded.updated_at, "
-        "status = CASE WHEN embedding_retry_queue.status = 'exhausted' "
-        "THEN 'pending' ELSE embedding_retry_queue.status END, "
-        "attempts = CASE WHEN embedding_retry_queue.status = 'exhausted' "
-        "THEN 0 ELSE embedding_retry_queue.attempts END, "
-        "next_attempt_at = CASE WHEN embedding_retry_queue.status = 'exhausted' "
-        "THEN excluded.next_attempt_at ELSE embedding_retry_queue.next_attempt_at END",
-        (entry_id, "embed returned None", next_attempt_at, now, now),
-    )
+    await enqueue(pg_kb, entry_id, error="embed returned None", now=now)
 
     cursor = await pg_kb.execute(
         "SELECT attempts, status, next_attempt_at FROM embedding_retry_queue WHERE entry_id = ?",
@@ -262,35 +310,120 @@ async def test_embedding_retry_enqueue_claim_cas_and_failure_round_trip_on_async
     row = await cursor.fetchone()
     assert row["attempts"] == 0
     assert row["status"] == "pending"
-    assert row["next_attempt_at"] == next_attempt_at
+    # now + BACKOFF_SCHEDULE_SECONDS[0] (60s) — enqueue()'s fresh-row offset.
+    assert row["next_attempt_at"] == "2026-01-01T00:01:00+00:00"
 
-    # Claim CAS: first claim succeeds (nonzero rowcount).
-    lease_until = "2026-01-01T00:11:00+00:00"
-    first_claim = await pg_kb.execute(
-        "UPDATE embedding_retry_queue SET next_attempt_at = ?, updated_at = ? "
-        "WHERE entry_id = ? AND next_attempt_at = ? AND status = 'pending'",
-        (lease_until, now, entry_id, next_attempt_at),
-    )
-    assert first_claim.rowcount == 1
+    claim_now = now + timedelta(seconds=61)
+    first_claim = await _claim_due(pg_kb, now=claim_now, batch_size=10, lease_seconds=600)
+    assert [c["entry_id"] for c in first_claim] == [entry_id]
+    assert first_claim[0]["attempts"] == 0
 
-    # Second claim against the now-stale next_attempt_at value claims nothing.
-    second_claim = await pg_kb.execute(
-        "UPDATE embedding_retry_queue SET next_attempt_at = ?, updated_at = ? "
-        "WHERE entry_id = ? AND next_attempt_at = ? AND status = 'pending'",
-        (lease_until, now, entry_id, next_attempt_at),
-    )
-    assert second_claim.rowcount == 0
+    second_claim = await _claim_due(pg_kb, now=claim_now, batch_size=10, lease_seconds=600)
+    assert second_claim == []
 
-    # Failure UPDATE (the drain_once _apply_failure shape).
+
+async def test_backfill_revives_only_exhausted_rows_via_do_update_where_on_asyncpg(
+    pg_kb: PostgresBackend,
+) -> None:
+    """backfill()'s ``ON CONFLICT(entry_id) DO UPDATE SET ... WHERE status =
+    'exhausted'`` clause round-trips on asyncpg — never exercised against
+    real Postgres before this test (the original suite only exercised
+    enqueue()'s unconditional CASE-WHEN upsert, not this WHERE-qualified
+    conflict action). Proves two things at once, both required for the
+    clause to be doing its job:
+
+    * An ``'exhausted'`` row among the vectorless/active entries IS revived
+      (status -> 'pending', attempts -> 0, next_attempt_at -> now).
+    * A ``'pending'`` row among the same set is left COMPLETELY untouched —
+      the WHERE clause is the only thing stopping backfill from clobbering
+      a row that's already mid-backoff.
+    """
+    exhausted_id = "kb-88001"
+    pending_id = "kb-88002"
+    await _insert_vectorless_entry(pg_kb, exhausted_id)
+    await _insert_vectorless_entry(pg_kb, pending_id)
+
+    early = datetime(2025, 1, 1, tzinfo=UTC)
+    await enqueue(pg_kb, exhausted_id, error="x", now=early)
     await pg_kb.execute(
-        "UPDATE embedding_retry_queue SET attempts = ?, last_error = ?, "
-        "next_attempt_at = ?, updated_at = ? WHERE entry_id = ?",
-        (1, "embed_batch returned None", "2026-01-01T00:02:00+00:00", now, entry_id),
+        "UPDATE embedding_retry_queue SET status = 'exhausted', attempts = 6 WHERE entry_id = ?",
+        (exhausted_id,),
     )
+    await enqueue(pg_kb, pending_id, error="x", now=early)
     cursor = await pg_kb.execute(
-        "SELECT attempts, last_error FROM embedding_retry_queue WHERE entry_id = ?",
-        (entry_id,),
+        "SELECT attempts, status, next_attempt_at FROM embedding_retry_queue WHERE entry_id = ?",
+        (pending_id,),
     )
     row = await cursor.fetchone()
-    assert row["attempts"] == 1
-    assert row["last_error"] == "embed_batch returned None"
+    pending_before = (row["attempts"], row["status"], row["next_attempt_at"])
+
+    store = KnowledgeStore(pg_kb)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    n = await backfill(pg_kb, store, now=now)
+    assert n == 2
+
+    cursor = await pg_kb.execute(
+        "SELECT attempts, status, next_attempt_at FROM embedding_retry_queue WHERE entry_id = ?",
+        (exhausted_id,),
+    )
+    revived = await cursor.fetchone()
+    assert revived["status"] == "pending"
+    assert revived["attempts"] == 0
+    assert revived["next_attempt_at"] == "2026-01-01T00:00:00+00:00"
+
+    cursor = await pg_kb.execute(
+        "SELECT attempts, status, next_attempt_at FROM embedding_retry_queue WHERE entry_id = ?",
+        (pending_id,),
+    )
+    row = await cursor.fetchone()
+    assert (row["attempts"], row["status"], row["next_attempt_at"]) == pending_before
+
+
+async def test_resolve_dynamic_in_clause_on_asyncpg(pg_kb: PostgresBackend) -> None:
+    """resolve()'s dynamically-built ``DELETE ... WHERE entry_id IN (?,...)``
+    round-trips on asyncpg for a multi-id batch — never exercised against
+    real Postgres before this test. Also proves the empty-list no-op path
+    never issues a statement (would be invalid SQL: ``IN ()``).
+    """
+    ids = ["kb-99001", "kb-99002", "kb-99003"]
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    for entry_id in ids:
+        await enqueue(pg_kb, entry_id, error="x", now=now)
+
+    await resolve(pg_kb, [])  # no-op — must not raise on an empty IN clause
+
+    await resolve(pg_kb, [ids[0], ids[1]])
+
+    cursor = await pg_kb.execute("SELECT entry_id FROM embedding_retry_queue")
+    remaining = {r["entry_id"] for r in await cursor.fetchall()}
+    assert remaining == {ids[2]}
+
+
+async def test_vectorless_unqueued_count_not_exists_subquery_on_asyncpg(
+    pg_kb: PostgresBackend,
+) -> None:
+    """_vectorless_unqueued_count()'s ``NOT EXISTS`` correlated subquery
+    round-trips on asyncpg — never exercised against real Postgres before
+    this test. Exercised both directly and through :func:`queue_stats`
+    (the operator-facing surface that calls it), against a mix of a
+    vectorless-and-queued entry (must NOT count) and a vectorless-and-
+    unqueued entry (must count) plus a vectored entry (excluded by
+    ``has_embedding``, never reaches the subquery either way).
+    """
+    queued_id = "kb-77101"
+    unqueued_id = "kb-77102"
+    vectored_id = "kb-77103"
+    await _insert_vectorless_entry(pg_kb, queued_id)
+    await _insert_vectorless_entry(pg_kb, unqueued_id)
+    await _insert_vectorless_entry(pg_kb, vectored_id)
+    await pg_kb.execute(
+        "UPDATE knowledge_entries SET has_embedding = 1 WHERE id = ?", (vectored_id,)
+    )
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    await enqueue(pg_kb, queued_id, error="x", now=now)
+
+    assert await _vectorless_unqueued_count(pg_kb) == 1
+
+    stats = await queue_stats(pg_kb, now=now)
+    assert stats["vectorless_unqueued"] == 1

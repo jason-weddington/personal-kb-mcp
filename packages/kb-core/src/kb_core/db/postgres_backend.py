@@ -618,13 +618,28 @@ class PostgresBackend:
         ]:
             await conn.execute(idx_sql)
 
-        # Embedding retry queue
+        # Embedding retry queue.
+        #
+        # next_attempt_at COLLATE "C": ordering/comparison of this column
+        # (``ORDER BY next_attempt_at`` and ``next_attempt_at <= ?`` in
+        # ``embedding_retry._claim_due``) must be pure byte-wise comparison
+        # to correctly order the UTC ISO-8601 strings ``_iso()`` emits.
+        # SQLite already gets this for free (BINARY collation, always).
+        # Postgres uses the database's default collation, which under a
+        # glibc locale applies punctuation-insensitive comparison rules —
+        # e.g. it can order "2026-01-01T00:00:00+00:00" (no microseconds)
+        # and "2026-01-01T00:00:00.500000+00:00" (with microseconds)
+        # incorrectly relative to a plain lexicographic/BINARY read. Pinning
+        # ``COLLATE "C"`` (the POSIX byte-order collation, always available
+        # without a database-level locale change) makes the property
+        # guaranteed by the schema rather than an assumption about the
+        # server's default collation.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS embedding_retry_queue (
                 entry_id TEXT PRIMARY KEY,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT,
-                next_attempt_at TEXT NOT NULL,
+                next_attempt_at TEXT COLLATE "C" NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -659,6 +674,7 @@ class PostgresBackend:
 
         # Run migrations for existing databases
         await self._migrate_multi_user_columns(conn)
+        await self._migrate_embedding_retry_collation(conn)
 
     @staticmethod
     async def _migrate_multi_user_columns(conn: asyncpg.Connection) -> None:
@@ -693,3 +709,26 @@ class PostgresBackend:
             "CREATE INDEX IF NOT EXISTS idx_entries_contributor ON knowledge_entries(contributor)"
         )
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_team ON knowledge_entries(team)")
+
+    @staticmethod
+    async def _migrate_embedding_retry_collation(conn: asyncpg.Connection) -> None:
+        """Pin ``embedding_retry_queue.next_attempt_at`` to ``COLLATE "C"``.
+
+        ``CREATE TABLE IF NOT EXISTS`` above only applies the ``COLLATE "C"``
+        pin to a brand-new table; a table created before this fix keeps
+        whatever the database's default collation was, which under a glibc
+        locale can order the UTC ISO-8601 strings ``embedding_retry._iso()``
+        emits incorrectly (punctuation-insensitive comparison instead of
+        pure byte-wise). Idempotent: the ``ALTER COLUMN ... TYPE`` rewrite
+        only runs when the column isn't already explicitly ``COLLATE "C"``.
+        """
+        row = await conn.fetchrow(
+            "SELECT collation_name FROM information_schema.columns"
+            " WHERE table_schema = current_schema()"
+            " AND table_name = 'embedding_retry_queue' AND column_name = 'next_attempt_at'"
+        )
+        if row is not None and row["collation_name"] != "C":
+            await conn.execute(
+                "ALTER TABLE embedding_retry_queue "
+                'ALTER COLUMN next_attempt_at TYPE TEXT COLLATE "C"'
+            )

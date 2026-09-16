@@ -56,6 +56,7 @@ from kb_core.config import (
     SqliteConfig,
 )
 from kb_core.db.queries import get_entry
+from kb_core.db.sqlite_backend import SQLiteBackend
 from kb_core.embedding_retry import EMBEDDING_RETRY_MARKER, EmbeddingRetryWorker, enqueue
 from kb_core.graph.builder import GraphBuilder
 from kb_core.graph.enricher import ENRICHMENT_FAILURE_MARKER
@@ -1179,11 +1180,12 @@ class KnowledgeBase:
         """Start the background embedding retry worker.
 
         A no-op returning immediately when ``config.embedding_retry.enabled``
-        is ``False`` or no embedder is configured (FTS-only). Otherwise
-        constructs an :class:`~kb_core.embedding_retry.EmbeddingRetryWorker`
-        bound to this facade's private ``db``/``store`` and starts it.
+        is ``False``, no embedder is configured (FTS-only), or the backend
+        is SQLite. Otherwise constructs an
+        :class:`~kb_core.embedding_retry.EmbeddingRetryWorker` bound to this
+        facade's private ``db``/``store`` and starts it.
 
-        SQLite hazard: ``SQLiteDatabase`` wraps ONE aiosqlite connection and
+        SQLite hazard: ``SQLiteBackend`` wraps ONE aiosqlite connection and
         its ``commit()`` is gated on an ``_in_txn`` ``ContextVar`` (see
         ``sqlite_backend.py`` lines 133-137) that an ``asyncio.Task`` does
         not inherit from a concurrent request's ``db.transaction()`` — a
@@ -1191,7 +1193,21 @@ class KnowledgeBase:
         worker is intended for the Postgres deployment; kb-core's own tests
         drive ``drain_once`` directly on SQLite with no concurrent requests,
         which is safe.
+
+        This guard is a defense-in-depth backstop for that hazard: rather
+        than relying on every SQLite call site remembering to pass
+        ``embedding_retry=EmbeddingRetryConfig(enabled=False)`` (the config
+        default is ``enabled=True``), the facade itself refuses to start the
+        worker on a SQLite backend regardless of ``config.embedding_retry.
+        enabled``.
         """
+        if isinstance(self._db, SQLiteBackend):
+            logger.info(
+                "%s: SQLite backend — background worker not started "
+                "(worker is Postgres-only; see start_embedding_worker docstring)",
+                EMBEDDING_RETRY_MARKER,
+            )
+            return
         if not self._config.embedding_retry.enabled or self._embedder is None:
             return
         self._embedding_worker = EmbeddingRetryWorker(

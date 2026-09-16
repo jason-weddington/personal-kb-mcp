@@ -484,7 +484,17 @@ class EmbeddingRetryWorker:
             return dict(zero)
         embedder = cast("_RetryCapableEmbedder", self._embedder)
 
-        available = await embedder.is_available()
+        try:
+            available = await embedder.is_available()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "%s: is_available() raised; treating embedder as down",
+                EMBEDDING_RETRY_MARKER,
+                exc_info=True,
+            )
+            available = False
         await self._track_availability(available)
         if not available:
             await self._check_vectorless_tripwire()
@@ -544,7 +554,14 @@ class EmbeddingRetryWorker:
                     counters[outcome] += 1
             else:
                 for entry, vector in zip(entries, vectors, strict=True):
-                    await self._apply_success(embedder, entry, vector, counters, now=now)
+                    outcome = await self._apply_success(
+                        embedder,
+                        entry,
+                        vector,
+                        attempts=row_by_id[entry.id]["attempts"],
+                        now=now,
+                    )
+                    counters[outcome] += 1
 
         if counters["claimed"] > 0:
             logger.info(
@@ -567,10 +584,17 @@ class EmbeddingRetryWorker:
         embedder: _RetryCapableEmbedder,
         entry: KnowledgeEntry,
         vector: list[float],
-        counters: dict[str, int],
         *,
+        attempts: int,
         now: datetime,
-    ) -> None:
+    ) -> str:
+        """Persist a successful embed.
+
+        On a post-embed write failure, apply the SAME failure accounting as
+        an embed failure (increment attempts, reschedule, exhaust at
+        MAX_ATTEMPTS) — a write failure must not retry forever at the lease
+        interval. Returns "embedded", "failed", or "exhausted".
+        """
         step = "store_embedding"
         try:
             await embedder.store_embedding(entry.id, vector)
@@ -583,8 +607,8 @@ class EmbeddingRetryWorker:
                 "DELETE FROM embedding_retry_queue WHERE entry_id = ?", (entry.id,)
             )
             await self._db.commit()
-            counters["embedded"] += 1
-        except Exception:
+            return "embedded"
+        except Exception as exc:
             logger.error(
                 "%s: post-embed write failed for entry %s at step=%s",
                 EMBEDDING_RETRY_MARKER,
@@ -592,7 +616,13 @@ class EmbeddingRetryWorker:
                 step,
                 exc_info=True,
             )
-            counters["failed"] += 1
+            return await self._apply_failure(
+                entry.id,
+                attempts=attempts,
+                last_error=f"{step}: {exc!r}",
+                shape=f"post_embed_write_failure:{step}",
+                now=now,
+            )
 
     async def _record_success_audit(self, entry_id: str, *, now: datetime) -> None:
         cursor = await self._db.execute(
