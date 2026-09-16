@@ -46,9 +46,13 @@ def test_embedding_queue_admin_200_echoes_every_stat(client: TestClient) -> None
     resp = client.get("/api/kb/embedding-queue")
     assert resp.status_code == 200
 
-    kb: FakeKnowledgeBase = app.state.kb
     # Mirrors the canned dict FakeKnowledgeBase.embedding_queue_stats() returns
-    # (tests/conftest.py) — field-for-field parity, not a subset check.
+    # (tests/conftest.py) — field-for-field parity against LITERALS, not a
+    # subset check and not a comparison against the same stub attribute that
+    # produced the response (that would pass for any value — see
+    # test_embedding_queue_worker_running_false_is_not_coerced_to_true below,
+    # which pins the fake to False specifically so this assertion style can
+    # actually fail).
     assert resp.json() == {
         "pending": 3,
         "exhausted": 1,
@@ -56,8 +60,24 @@ def test_embedding_queue_admin_200_echoes_every_stat(client: TestClient) -> None
         "next_due_at": "2026-09-16T12:00:00+00:00",
         "vectorless_unqueued": 0,
         "worker_enabled": True,
-        "worker_running": kb.embedding_worker_running,
+        "worker_running": True,
     }
+
+
+def test_embedding_queue_worker_running_false_is_not_coerced_to_true(
+    client: TestClient,
+) -> None:
+    """worker_running reflects the live worker state — proven with a value
+    that differs from the default, so a route bug that always echoes ``True``
+    (or a test that compares the response to the same stub attribute that
+    produced it) cannot pass silently.
+    """
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.embedding_worker_running = False
+    app.dependency_overrides[get_current_user] = fake_admin_user
+    resp = client.get("/api/kb/embedding-queue")
+    assert resp.status_code == 200
+    assert resp.json()["worker_running"] is False
 
 
 def test_embedding_queue_worker_enabled_false_when_env_set(

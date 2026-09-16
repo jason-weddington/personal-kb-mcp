@@ -289,6 +289,11 @@ class FakeKnowledgeBase:
         self.ingest_file_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         self._ingest_raises: RuntimeError | None = None
 
+        # lifespan shutdown tracking (P: embedding queue / try-finally hardening)
+        self.close_calls = 0
+        self.start_embedding_worker_calls = 0
+        self.stop_embedding_worker_calls = 0
+
     async def search(
         self, query: Any, *, contributor: str | None = None
     ) -> tuple[list[SearchResult], int]:
@@ -366,15 +371,18 @@ class FakeKnowledgeBase:
         return self.summarize_return
 
     async def close(self) -> None:
-        """No-op close."""
+        """No-op close; records the call so lifespan-shutdown tests can assert on it."""
+        self.close_calls += 1
 
     # ── embedding retry queue / background worker ───────────────────────────
 
     async def start_embedding_worker(self) -> None:
         """No-op — lifespan-driven TestClient suites don't run a real worker."""
+        self.start_embedding_worker_calls += 1
 
     async def stop_embedding_worker(self) -> None:
         """No-op — see start_embedding_worker."""
+        self.stop_embedding_worker_calls += 1
 
     async def embedding_queue_stats(self) -> dict[str, Any]:
         """Return a canned five-key stats dict (mirrors EmbeddingQueueStats)."""

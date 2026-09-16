@@ -141,6 +141,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     kb-core ``KnowledgeBase`` singleton (KB_DATABASE_URL or default SQLite),
     storing the latter on ``app.state.kb``. The Ollama embedder is opened
     ONCE here (it is not per-request safe).
+
+    Shutdown (``stop_embedding_worker`` / ``kb.close`` / ``close_db``)
+    always runs once ``app.state.kb`` has been assigned — wrapped in
+    ``try/finally`` so an exception raised through the yielded phase (e.g. a
+    request handler bug that propagates past ASGI error handling) still
+    releases the worker task and both DB connections instead of leaking
+    them. A failure constructing ``app.state.kb`` itself (before the
+    ``try``) still fails app startup outright, same as before.
     """
     # In no-auth (local) mode the service/auth pool is disabled, so skip
     # init_db()/close_db() — they would otherwise raise RuntimeError when
@@ -150,14 +158,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await init_db()
 
     app.state.kb = await _open_kb()
-    await app.state.kb.start_embedding_worker()
-
-    yield
-
-    await app.state.kb.stop_embedding_worker()
-    await app.state.kb.close()
-    if not no_auth:
-        await close_db()
+    try:
+        await app.state.kb.start_embedding_worker()
+        yield
+    finally:
+        await app.state.kb.stop_embedding_worker()
+        await app.state.kb.close()
+        if not no_auth:
+            await close_db()
 
 
 app = FastAPI(title="Personal KB Web Service", version="0.1.0", lifespan=lifespan)

@@ -265,3 +265,73 @@ async def test_open_kb_sqlite_uses_kb_db_path_when_set(
 
     assert len(sqlite_calls) == 1
     assert sqlite_calls[0][0] == ("/var/data/custom_kb.db",)
+
+
+# --- lifespan shutdown always runs -------------------------------------------
+
+
+async def test_lifespan_shutdown_runs_when_exception_raised_through_yield(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exception raised while the app is running (through the yielded
+    phase of ``lifespan``) must still release the embedding worker and both
+    DB connections — the lifespan body is wrapped in ``try/finally``
+    specifically so a mid-run failure can't skip shutdown and leak the
+    worker task / DB connections.
+    """
+    fake_kb = FakeKnowledgeBase(results=[], filtered_count=0)
+
+    async def _fake_init_db() -> None:
+        return None
+
+    async def _fake_close_db() -> None:
+        return None
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        return fake_kb
+
+    # Force the Postgres branch of _open_kb, same rationale as the `client`
+    # fixture: KB_DATABASE_URL set avoids ever reaching the un-patched
+    # create_sqlite (which would open the user's real on-disk DB).
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://test/test")
+    monkeypatch.setattr(main_module, "init_db", _fake_init_db)
+    monkeypatch.setattr(main_module, "close_db", _fake_close_db)
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with main_module.lifespan(app):
+            raise RuntimeError("boom")
+
+    assert fake_kb.start_embedding_worker_calls == 1
+    assert fake_kb.stop_embedding_worker_calls == 1
+    assert fake_kb.close_calls == 1
+
+
+async def test_lifespan_shutdown_runs_on_clean_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sanity companion to the exception case: the happy path still calls
+    shutdown exactly once when nothing raises through the yielded phase.
+    """
+    fake_kb = FakeKnowledgeBase(results=[], filtered_count=0)
+
+    async def _fake_init_db() -> None:
+        return None
+
+    async def _fake_close_db() -> None:
+        return None
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        return fake_kb
+
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://test/test")
+    monkeypatch.setattr(main_module, "init_db", _fake_init_db)
+    monkeypatch.setattr(main_module, "close_db", _fake_close_db)
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+
+    async with main_module.lifespan(app):
+        pass
+
+    assert fake_kb.start_embedding_worker_calls == 1
+    assert fake_kb.stop_embedding_worker_calls == 1
+    assert fake_kb.close_calls == 1

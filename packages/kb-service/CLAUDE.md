@@ -31,7 +31,7 @@ harness + datasets in `evals/listener/`. Dev deploy: systemd user unit
 `kb-service` on `kb-host-1`; `./deploy.sh` pulls main there, rebuilds the
 frontend, restarts the unit. Runbooks: as-built/cutover **kb-01765**, listener
 design **kb-01725**, per-machine hook setup **kb-01784**. Plan in kb-01742.
-A self-healing embedding retry queue + background worker re-embeds entries that previously failed to vectorize, gated by `KB_EMBED_WORKER_ENABLED` (default TRUE) and inspectable via `GET /api/kb/embedding-queue`.
+A self-healing embedding retry queue + background worker re-embeds entries that previously failed to vectorize, gated by `KB_EMBED_WORKER_ENABLED` (default TRUE) and inspectable via `GET /api/kb/embedding-queue`. Three more knobs tune the worker (`kb_service/config.py`: `KB_EMBED_WORKER_BATCH_SIZE` default 16, `KB_EMBED_WORKER_POLL_SECONDS` default 60.0, `KB_EMBED_WORKER_TIMEOUT` default 180.0) — these are **defaults-only**, deliberately NOT plumbed through `scripts/provision.sh` (only `KB_EMBED_WORKER_ENABLED` is). If a host needs a non-default value, set it directly in that host's `/etc/kb-service/env` and `sudo systemctl restart kb-service`.
 
 ## Commands
 
