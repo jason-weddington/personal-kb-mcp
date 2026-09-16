@@ -215,6 +215,7 @@ Format: `type(optional-scope): description`
 | `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Embedding model |
 | `KB_EMBEDDING_DIM` | `1024` | Embedding vector dimensions |
 | `KB_OLLAMA_TIMEOUT` | `10.0` | Ollama timeout (seconds) |
+| `KB_OLLAMA_KEEP_ALIVE` | `30m` | Per-request Ollama `keep_alive` sent with every embed call, so only the embedding model stays warm in VRAM |
 | `KB_OLLAMA_MODEL` | `qwen3:4b` | LLM model for Ollama generation |
 | `KB_OLLAMA_LLM_TIMEOUT` | `120.0` | Ollama LLM timeout (seconds) |
 | `ANTHROPIC_API_KEY` | (unset) | Anthropic API key (enrichment, planning, synthesis) |

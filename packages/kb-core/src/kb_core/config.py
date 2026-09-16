@@ -58,6 +58,7 @@ _DEFAULT_EMBEDDING_DIM = 1024
 _DEFAULT_OLLAMA_URL = "http://localhost:11434"
 _DEFAULT_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 _DEFAULT_EMBEDDING_TIMEOUT = 10.0
+_DEFAULT_EMBEDDING_KEEP_ALIVE = "30m"
 _DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
 _DEFAULT_ANTHROPIC_TIMEOUT = 30.0
 _DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -150,6 +151,16 @@ class EmbeddingConfig:
 
     dim: int = _DEFAULT_EMBEDDING_DIM
     """Vector dimensionality. Must match :class:`SqliteConfig` / :class:`PostgresConfig`."""
+
+    keep_alive: str = _DEFAULT_EMBEDDING_KEEP_ALIVE
+    """Ollama ``keep_alive`` duration string sent with every embed request.
+
+    Pins ONLY the embedding model in VRAM for this long after each request
+    (per-request, not a host-global default) — long enough that a normal
+    working session never pays a cold model load (~73s), short enough that
+    an idle host releases the model's VRAM within half an hour. Passed
+    through to Ollama verbatim; ``"0"`` means unload immediately.
+    """
 
 
 # --- LLM providers ------------------------------------------------------------

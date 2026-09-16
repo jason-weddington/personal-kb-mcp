@@ -69,7 +69,11 @@ class EmbeddingClient:
             client = self._get_client()
             resp = await client.post(
                 f"{self._config.ollama_url}/api/embed",
-                json={"model": self._config.model, "input": text},
+                json={
+                    "model": self._config.model,
+                    "input": text,
+                    "keep_alive": self._config.keep_alive,
+                },
                 timeout=self._config.timeout,
             )
             resp.raise_for_status()
@@ -95,7 +99,11 @@ class EmbeddingClient:
             client = self._get_client()
             resp = await client.post(
                 f"{self._config.ollama_url}/api/embed",
-                json={"model": self._config.model, "input": texts},
+                json={
+                    "model": self._config.model,
+                    "input": texts,
+                    "keep_alive": self._config.keep_alive,
+                },
                 timeout=self._config.timeout,
             )
             resp.raise_for_status()

@@ -84,6 +84,15 @@ def get_ollama_timeout() -> float:
     return _parse_float("KB_OLLAMA_TIMEOUT", "10.0")
 
 
+def get_embedding_keep_alive() -> str:
+    """Return the per-request Ollama keep_alive duration from KB_OLLAMA_KEEP_ALIVE.
+
+    Passed through verbatim to the embed request body so only the
+    embedding model is pinned in VRAM (never a host-global default).
+    """
+    return os.environ.get("KB_OLLAMA_KEEP_ALIVE", "30m")
+
+
 def is_manager_mode() -> bool:
     """Return True if KB_MANAGER is set to TRUE."""
     return os.environ.get("KB_MANAGER", "").upper() == "TRUE"
@@ -207,8 +216,8 @@ def build_embedding_config() -> "EmbeddingConfig":
     The kb_core ``EmbeddingClient`` is env-free; it reads its tunables
     from a typed dataclass instead of ``os.environ``. This helper is the
     single channel-side adapter that snapshots ``KB_OLLAMA_URL``,
-    ``KB_EMBEDDING_MODEL``, ``KB_OLLAMA_TIMEOUT``, and ``KB_EMBEDDING_DIM``
-    into an :class:`~kb_core.config.EmbeddingConfig`. Every
+    ``KB_EMBEDDING_MODEL``, ``KB_OLLAMA_TIMEOUT``, ``KB_EMBEDDING_DIM``, and
+    ``KB_OLLAMA_KEEP_ALIVE`` into an :class:`~kb_core.config.EmbeddingConfig`. Every
     ``EmbeddingClient(...)`` construction site uses it so behavior stays
     identical across the move and the env surface stays centralized here.
     """
@@ -219,6 +228,7 @@ def build_embedding_config() -> "EmbeddingConfig":
         timeout=get_ollama_timeout(),
         model=get_embedding_model(),
         dim=get_embedding_dim(),
+        keep_alive=get_embedding_keep_alive(),
     )
 
 

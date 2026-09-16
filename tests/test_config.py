@@ -5,6 +5,7 @@ import pytest
 from personal_kb.config import (
     get_contributor,
     get_embedding_dim,
+    get_embedding_keep_alive,
     get_extraction_provider,
     get_ollama_timeout,
     get_pg_pool_max,
@@ -108,6 +109,15 @@ def test_get_pg_region_default():
 def test_get_pg_region_set(monkeypatch):
     monkeypatch.setenv("KB_PG_REGION", "eu-west-1")
     assert get_pg_region() == "eu-west-1"
+
+
+def test_get_embedding_keep_alive_default():
+    assert get_embedding_keep_alive() == "30m"
+
+
+def test_get_embedding_keep_alive_set(monkeypatch):
+    monkeypatch.setenv("KB_OLLAMA_KEEP_ALIVE", "10m")
+    assert get_embedding_keep_alive() == "10m"
 
 
 # -- Numeric validation --
