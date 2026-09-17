@@ -3,10 +3,17 @@
 Currently the only shared plumbing here is the real-Postgres integration
 suite (see ``test_postgres_backend.py``).  Everything is env-var-gated:
 
-* ``KB_TEST_DATABASE_URL`` unset  → the ``pg_url`` fixture calls
-  :func:`pytest.skip`, the ``@pytest.mark.postgres`` suite skips, and the
-  existing SQLite suites (``test_knowledge_base.py``,
-  ``test_hybrid_signals.py``, …) stay green.  Hermetic default preserved.
+* ``KB_TEST_DATABASE_URL`` unset AND ``KB_REQUIRE_POSTGRES_TESTS`` falsy →
+  the ``pg_url`` fixture calls :func:`pytest.skip`, the
+  ``@pytest.mark.postgres`` suite skips, and the existing SQLite suites
+  (``test_knowledge_base.py``, ``test_hybrid_signals.py``, …) stay green.
+  Hermetic default preserved.
+* ``KB_TEST_DATABASE_URL`` unset AND ``KB_REQUIRE_POSTGRES_TESTS`` truthy →
+  the ``pg_url`` fixture calls :func:`pytest.fail` instead of skipping.  A
+  skip is the right default on a laptop with no Postgres; it is the wrong
+  default anywhere the DSN is supposed to be present — a silent skip there
+  means a cross-backend feature can ship having exercised zero Postgres
+  tests (see kb-03277).
 * ``KB_TEST_DATABASE_URL`` set  → we mirror the house convention proven in
   ``agent_gtd/tests/test_pg_schema_bootstrap.py``: parse the DSN, swap the
   dbname to ``postgres`` to get a maintenance DSN, ``CREATE DATABASE
@@ -28,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse, urlunparse
 
 import pytest
@@ -38,18 +45,91 @@ from kb_core.db.postgres_backend import PostgresBackend
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
 
+    from _pytest.terminal import TerminalReporter
+
+_SKIP_MESSAGE = "KB_TEST_DATABASE_URL not set — Postgres integration tests skipped"
+
+_PgGateAction = Literal["proceed", "skip", "fail"]
+
+
+def _is_truthy_kb_flag(raw: str | None) -> bool:
+    """Mirror the house ``KB_*`` boolean convention.
+
+    Every other ``KB_*`` boolean in this codebase (see
+    ``personal_kb/config.py`` / ``kb_service/config.py``) is read as
+    ``os.environ.get(..., "").upper() == "TRUE"`` — case-insensitive
+    ``TRUE``. Per this item's acceptance criteria we additionally accept
+    ``"1"`` for ``KB_REQUIRE_POSTGRES_TESTS``.
+    """
+    value = (raw or "").strip().upper()
+    return value in {"TRUE", "1"}
+
+
+def _pg_gate_decision(
+    require_raw: str | None, dsn_raw: str | None
+) -> tuple[_PgGateAction, str | None]:
+    """Pure decision logic backing the ``pg_url`` fixture.
+
+    Extracted so it can be unit-tested directly without needing a real
+    Postgres (or even a real pytest session) — see
+    ``test_pg_gate_decision.py``.
+
+    Returns ``(action, message)``:
+
+    * ``("proceed", None)`` — a DSN was provided; the caller should use it.
+    * ``("skip", message)`` — no DSN and the suite was not required; skip.
+    * ``("fail", message)`` — no DSN but the suite WAS required; fail.
+    """
+    dsn = (dsn_raw or "").strip()
+    if dsn:
+        return ("proceed", None)
+    if _is_truthy_kb_flag(require_raw):
+        return (
+            "fail",
+            "KB_REQUIRE_POSTGRES_TESTS is set but KB_TEST_DATABASE_URL is "
+            "missing or empty — the postgres suite was required but no DSN "
+            "was provided.",
+        )
+    return ("skip", _SKIP_MESSAGE)
+
+
+def _redact_dsn_password(dsn: str) -> str:
+    """Return ``dsn`` with any password component replaced by ``***``."""
+    parsed = urlparse(dsn)
+    if not parsed.password:
+        return dsn
+    userinfo = parsed.username or ""
+    userinfo += ":***"
+    host_port = parsed.hostname or ""
+    if parsed.port is not None:
+        host_port += f":{parsed.port}"
+    netloc = f"{userinfo}@{host_port}" if userinfo else host_port
+    return urlunparse(parsed._replace(netloc=netloc))
+
 
 @pytest.fixture(scope="session")
 def pg_url() -> str:
-    """Return ``KB_TEST_DATABASE_URL`` or skip the whole postgres suite.
+    """Return ``KB_TEST_DATABASE_URL`` or skip/fail the whole postgres suite.
 
     Reading via :func:`os.environ.get` (not ``os.environ[...]``) means an
-    unset OR empty value both skip cleanly — never error, never fail.
+    unset OR empty value never raises a ``KeyError``.
+
+    * No DSN + ``KB_REQUIRE_POSTGRES_TESTS`` falsy or unset → :func:`pytest.skip`
+      (byte-identical to the pre-``KB_REQUIRE_POSTGRES_TESTS`` behavior).
+    * No DSN + ``KB_REQUIRE_POSTGRES_TESTS`` truthy → :func:`pytest.fail` — a
+      required Postgres suite that silently skipped is exactly the failure
+      mode this fixture exists to prevent (kb-03277).
     """
-    url = os.environ.get("KB_TEST_DATABASE_URL", "").strip()
-    if not url:
-        pytest.skip("KB_TEST_DATABASE_URL not set — Postgres integration tests skipped")
-    return url
+    dsn_raw = os.environ.get("KB_TEST_DATABASE_URL", "")
+    require_raw = os.environ.get("KB_REQUIRE_POSTGRES_TESTS", "")
+    action, message = _pg_gate_decision(require_raw, dsn_raw)
+    if action == "fail":
+        assert message is not None
+        pytest.fail(message)
+    if action == "skip":
+        assert message is not None
+        pytest.skip(message)
+    return dsn_raw.strip()
 
 
 @pytest.fixture(scope="session")
@@ -75,6 +155,7 @@ def pg_temp_db(pg_url: str) -> Iterator[str]:
     parsed = urlparse(pg_url)
     maintenance_dsn = urlunparse(parsed._replace(path="/postgres"))
     temp_dsn = urlunparse(parsed._replace(path=f"/{temp_db_name}"))
+    required = _is_truthy_kb_flag(os.environ.get("KB_REQUIRE_POSTGRES_TESTS", ""))
 
     async def _create() -> None:
         conn = await asyncpg.connect(maintenance_dsn)
@@ -90,7 +171,22 @@ def pg_temp_db(pg_url: str) -> Iterator[str]:
         finally:
             await conn.close()
 
-    asyncio.run(_create())
+    try:
+        asyncio.run(_create())
+    except Exception as exc:
+        # A DSN that is present but unusable (server down, auth rejected,
+        # ...) must not surface as an opaque collection error when the
+        # suite was explicitly required — name the underlying asyncpg/OS
+        # error and the (password-redacted) DSN so the failure is
+        # actionable. When the suite was NOT required, preserve prior
+        # behavior and let the original exception propagate.
+        if required:
+            pytest.fail(
+                "KB_REQUIRE_POSTGRES_TESTS is set but the postgres maintenance "
+                f"connection could not be established: {exc!r} "
+                f"(DSN: {_redact_dsn_password(maintenance_dsn)})"
+            )
+        raise
     try:
         yield temp_dsn
     finally:
@@ -132,3 +228,30 @@ async def pg_kb(pg_temp_db: str) -> AsyncIterator[PostgresBackend]:
         yield backend
     finally:
         await backend.close()
+
+
+def pytest_terminal_summary(
+    terminalreporter: TerminalReporter,
+    exitstatus: int,
+    config: pytest.Config,
+) -> None:
+    """Print how many ``@pytest.mark.postgres`` tests ran vs. skipped.
+
+    This is the whole point of this item: a silent zero (the postgres
+    suite quietly skipping in an environment where it was supposed to run)
+    is exactly the failure kb-03277 hit. The line below always prints —
+    even when both counts are zero — so that outcome cannot go unnoticed
+    in the terminal output.
+    """
+    ran = sum(
+        1
+        for report in terminalreporter.stats.get("passed", [])
+        + terminalreporter.stats.get("failed", [])
+        if report.when == "call" and "postgres" in report.keywords
+    )
+    skipped = sum(
+        1
+        for report in terminalreporter.stats.get("skipped", [])
+        if report.when == "setup" and "postgres" in report.keywords
+    )
+    terminalreporter.write_line(f"postgres marker: {ran} ran, {skipped} skipped")

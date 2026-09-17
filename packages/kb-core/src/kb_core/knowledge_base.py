@@ -211,7 +211,7 @@ async def _open_sqlite(cfg: SqliteConfig) -> Database:
 
     # Best-effort sqlite-vec load — search degrades to FTS-only if missing.
     try:
-        import sqlite_vec  # type: ignore[import-untyped]
+        import sqlite_vec
 
         raw: Any = conn._conn
 

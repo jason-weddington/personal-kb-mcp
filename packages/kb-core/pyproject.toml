@@ -175,7 +175,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--strict-markers -v"
 markers = [
-    "postgres: integration tests requiring a real Postgres via KB_TEST_DATABASE_URL",
+    "postgres: integration tests requiring a real Postgres via KB_TEST_DATABASE_URL (skips when unset, unless KB_REQUIRE_POSTGRES_TESTS is truthy, in which case it fails)",
 ]
 
 [tool.coverage.run]
