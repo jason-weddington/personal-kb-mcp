@@ -226,7 +226,10 @@ def test_roster_emit_one_row_per_mapkey_including_cross_project(
     assert by_id["kb-1"]["cwd_project"] == "personal-kb"
     assert by_id["kb-1"]["consumed"] is False
     assert by_id["kb-1"]["consumed_ts"] is None
-    assert by_id["kb-1"]["trigger_context"] == {"cwd_project": "personal-kb"}
+    assert by_id["kb-1"]["trigger_context"] == {
+        "cwd_project": "personal-kb",
+        "emit_reason": "first-emission",
+    }
     assert by_id["kb-1"]["host"] == socket.gethostname()
     # build_engine unset => null.
     assert by_id["kb-1"]["build_engine"] is None
@@ -267,6 +270,93 @@ def test_roster_emit_build_engine_read_defensively(
     assert rc == 0
     rows = _read_log("sess-bengine")
     assert rows[0]["build_engine"] == "claude-code"
+
+
+def test_suppressed_second_run_appends_no_row_and_first_reason_is_first_emission(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A suppressed (non-emitting) re-run of the SAME scope+maps appends nothing.
+
+    The first SessionStart emits (reason=first-emission) and writes one row.
+    An immediate second SessionStart with the identical project/index is
+    suppressed by should_emit()'s subset check and must not append another
+    jsonl row at all -- the re-emission counter lives entirely server-side
+    (emit_count), so a suppressed hook run must never even POST a row.
+    """
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    monkeypatch.chdir(hook_env["root"])
+    _stub_http_index(
+        monkeypatch,
+        {"personal-kb": [("personal", {"id": "kb-1", "short_title": "auth", "long_title": "A"})]},
+    )
+    payload = {
+        "hook_event_name": "SessionStart",
+        "cwd": str(hook_env["root"]),
+        "session_id": "sess-suppressed",
+    }
+    rc1, _ = _run_cli(monkeypatch, dict(payload), ["--format=text"])
+    assert rc1 == 0
+    rows = _read_log("sess-suppressed")
+    assert len(rows) == 1
+    assert rows[0]["trigger_context"]["emit_reason"] == "first-emission"
+
+    # Second run: same scope, same maps -> should_emit() returns None.
+    rc2, _ = _run_cli(monkeypatch, dict(payload), ["--format=text"])
+    assert rc2 == 0
+    rows_after = _read_log("sess-suppressed")
+    assert rows_after == rows
+
+
+def test_new_maps_emit_reason_recorded_on_re_emission(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A genuine second emission (new map key) records reason=new-maps."""
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    monkeypatch.chdir(hook_env["root"])
+
+    _stub_http_index(
+        monkeypatch,
+        {"personal-kb": [("personal", {"id": "kb-1", "short_title": "auth", "long_title": "A"})]},
+    )
+    rc1, _ = _run_cli(
+        monkeypatch,
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(hook_env["root"]),
+            "session_id": "sess-newmaps",
+        },
+        ["--format=text"],
+    )
+    assert rc1 == 0
+
+    # Second call surfaces an additional map key -> not a subset -> re-emit.
+    _stub_http_index(
+        monkeypatch,
+        {
+            "personal-kb": [
+                ("personal", {"id": "kb-1", "short_title": "auth", "long_title": "A"}),
+                ("personal", {"id": "kb-2", "short_title": "ingest", "long_title": "I"}),
+            ]
+        },
+    )
+    rc2, _ = _run_cli(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": "sess-newmaps",
+        },
+        ["--format=text"],
+    )
+    assert rc2 == 0
+
+    rows = _read_log("sess-newmaps")
+    # First emission: 1 row (kb-1, first-emission). Second: 2 rows (kb-1 + kb-2, new-maps).
+    assert len(rows) == 3
+    second_batch = rows[1:]
+    assert {r["map_id"] for r in second_batch} == {"kb-1", "kb-2"}
+    for row in second_batch:
+        assert row["trigger_context"]["emit_reason"] == "new-maps"
 
 
 # ─── (2) listener emit at pointer-CACHE time ────────────────────────────────

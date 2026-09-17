@@ -235,6 +235,10 @@ def flush_session(session_id: str) -> None:
     ``/api/kb/telemetry/whispers`` with PERSONAL_KB_API_KEY bearer auth. On
     a 2xx, LEAVES the file in place (the table's composite PK makes re-flush
     idempotent; not deleting keeps the SessionStart orphan-sweep correct).
+    Re-flush therefore re-delivers every row on EVERY Stop — the server
+    distinguishes a re-delivery from a genuine re-emission by ``emitted_ts``
+    (a new emission appends a NEW row with a later one) and only counts the
+    latter, so do not "optimize" this by rewriting a row's ``emitted_ts``.
     Skips silently if either env var is unset, the file is missing, or it
     is empty. Runs OUTSIDE the listener-enabled guard — roster rows accrue
     regardless of the gate.

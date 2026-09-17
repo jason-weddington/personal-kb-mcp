@@ -14,6 +14,7 @@ from pathlib import Path
 
 from personal_kb_hook.index_reader import MapKey
 from personal_kb_hook.suppression import (
+    EmitReason,
     ScratchState,
     _read_scratch,
     _write_scratch,
@@ -27,45 +28,54 @@ def _mk(label: str, ident: str) -> MapKey:
 
 
 def test_first_surface_emits(tmp_path: Path) -> None:
-    """No prior scratch + non-empty map_ids → emit."""
+    """No prior scratch + non-empty map_ids → emit, reason=first-emission."""
     scratch = tmp_path / "scratch.json"
-    assert should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2")],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2")],
+            source=None,
+            scratch_path=scratch,
+        )
+        == EmitReason.FIRST_EMISSION
     )
 
 
 def test_no_maps_is_silent(tmp_path: Path) -> None:
-    """Empty map_ids → silent regardless of state."""
+    """Empty map_ids → silent (None) regardless of state."""
     scratch = tmp_path / "scratch.json"
-    assert not should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[],
+            source=None,
+            scratch_path=scratch,
+        )
+        is None
     )
 
 
 def test_duplicate_same_scope_same_ids_silent(tmp_path: Path) -> None:
-    """After mark_emitted, the same scope+ids should not re-emit."""
+    """After mark_emitted, the same scope+ids should not re-emit (None)."""
     scratch = tmp_path / "scratch.json"
     map_ids = [_mk("personal", "kb-1"), _mk("personal", "kb-2")]
     mark_emitted(session_id="s1", scope="proj", map_ids=map_ids, scratch_path=scratch)
-    assert not should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=map_ids,
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=map_ids,
+            source=None,
+            scratch_path=scratch,
+        )
+        is None
     )
 
 
 def test_subset_of_surfaced_silent(tmp_path: Path) -> None:
-    """A strict subset of already-surfaced keys on the same scope is silent."""
+    """A strict subset of already-surfaced keys on the same scope is silent (None)."""
     scratch = tmp_path / "scratch.json"
     mark_emitted(
         session_id="s1",
@@ -73,57 +83,69 @@ def test_subset_of_surfaced_silent(tmp_path: Path) -> None:
         map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2"), _mk("personal", "kb-3")],
         scratch_path=scratch,
     )
-    assert not should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1")],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1")],
+            source=None,
+            scratch_path=scratch,
+        )
+        is None
     )
 
 
 def test_scope_drift_re_emits(tmp_path: Path) -> None:
-    """A different scope on the same session re-emits."""
+    """A different scope on the same session re-emits, reason=scope-change."""
     scratch = tmp_path / "scratch.json"
     mark_emitted(
         session_id="s1", scope="proj-a", map_ids=[_mk("personal", "kb-1")], scratch_path=scratch
     )
-    assert should_emit(
-        session_id="s1",
-        scope="proj-b",
-        map_ids=[_mk("personal", "kb-9")],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj-b",
+            map_ids=[_mk("personal", "kb-9")],
+            source=None,
+            scratch_path=scratch,
+        )
+        == EmitReason.SCOPE_CHANGE
     )
 
 
 def test_new_ids_re_emits(tmp_path: Path) -> None:
-    """Same scope but a new key (not a subset) re-emits."""
+    """Same scope but a new key (not a subset) re-emits, reason=new-maps."""
     scratch = tmp_path / "scratch.json"
     mark_emitted(
         session_id="s1", scope="proj", map_ids=[_mk("personal", "kb-1")], scratch_path=scratch
     )
-    assert should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2")],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2")],
+            source=None,
+            scratch_path=scratch,
+        )
+        == EmitReason.NEW_MAPS
     )
 
 
 def test_source_compact_bypasses_subset_check(tmp_path: Path) -> None:
-    """source=compact re-emits even when the keys are already surfaced."""
+    """source=compact re-emits even when the keys are already surfaced, reason=compact."""
     scratch = tmp_path / "scratch.json"
     mark_emitted(
         session_id="s1", scope="proj", map_ids=[_mk("personal", "kb-1")], scratch_path=scratch
     )
-    assert should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1")],
-        source="compact",
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1")],
+            source="compact",
+            scratch_path=scratch,
+        )
+        == EmitReason.COMPACT
     )
 
 
@@ -140,37 +162,46 @@ def test_compact_then_mark_updates_scratch(tmp_path: Path) -> None:
         scratch_path=scratch,
     )
     # Subsequent same scope+ids must now be silent (subset of surfaced)
-    assert not should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2")],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2")],
+            source=None,
+            scratch_path=scratch,
+        )
+        is None
     )
 
 
 def test_missing_scratch_treated_as_fresh(tmp_path: Path) -> None:
-    """A scratch path that does not exist behaves like fresh state."""
+    """A scratch path that does not exist behaves like fresh state (first-emission)."""
     scratch = tmp_path / "does-not-exist.json"
-    assert should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1")],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1")],
+            source=None,
+            scratch_path=scratch,
+        )
+        == EmitReason.FIRST_EMISSION
     )
 
 
 def test_corrupt_scratch_treated_as_fresh(tmp_path: Path) -> None:
-    """A corrupt scratch file does not raise; behaves like fresh state."""
+    """A corrupt scratch file does not raise; behaves like fresh state (first-emission)."""
     scratch = tmp_path / "scratch.json"
     scratch.write_text("this is { not valid json", encoding="utf-8")
-    assert should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1")],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1")],
+            source=None,
+            scratch_path=scratch,
+        )
+        == EmitReason.FIRST_EMISSION
     )
 
 
@@ -193,13 +224,16 @@ def test_same_id_different_labels_do_not_collide(tmp_path: Path) -> None:
         scratch_path=scratch,
     )
     # personal/kb-1 is a NEW key even though the id matches an existing
-    # team/kb-1 — should re-emit.
-    assert should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1")],
-        source=None,
-        scratch_path=scratch,
+    # team/kb-1 — should re-emit, reason=new-maps.
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1")],
+            source=None,
+            scratch_path=scratch,
+        )
+        == EmitReason.NEW_MAPS
     )
 
 
@@ -256,21 +290,28 @@ def test_legacy_bare_string_ids_back_parse_to_personal_label(tmp_path: Path) -> 
     scratch.write_text(json.dumps(legacy_payload), encoding="utf-8")
     # The same keys, post-migration, are now suppressed under the
     # 'personal' legacy label:
-    assert not should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2")],
-        source=None,
-        scratch_path=scratch,
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("personal", "kb-1"), _mk("personal", "kb-2")],
+            source=None,
+            scratch_path=scratch,
+        )
+        is None
     )
     # A team-labelled key with the SAME id is treated as new — the legacy
-    # entries were promoted to 'personal', not to every label.
-    assert should_emit(
-        session_id="s1",
-        scope="proj",
-        map_ids=[_mk("team", "kb-1")],
-        source=None,
-        scratch_path=scratch,
+    # entries were promoted to 'personal', not to every label. reason=new-maps
+    # since last_scope ("proj") already matches the requested scope.
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj",
+            map_ids=[_mk("team", "kb-1")],
+            source=None,
+            scratch_path=scratch,
+        )
+        == EmitReason.NEW_MAPS
     )
 
 
@@ -295,3 +336,46 @@ def test_malformed_pair_elements_skipped(tmp_path: Path) -> None:
         _mk("personal", "kb-1"),
         _mk("personal", "kb-legacy"),
     }
+
+
+# ---------------------------------------------------------------------------
+# EmitReason precedence: a multi-cause emission reports the highest-precedence
+# reason, in the same branch order should_emit() already evaluates.
+# ---------------------------------------------------------------------------
+
+
+def test_compact_wins_over_scope_change_and_new_maps(tmp_path: Path) -> None:
+    """source=compact takes precedence even when scope AND maps also changed."""
+    scratch = tmp_path / "scratch.json"
+    mark_emitted(
+        session_id="s1", scope="proj-a", map_ids=[_mk("personal", "kb-1")], scratch_path=scratch
+    )
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj-b",
+            map_ids=[_mk("personal", "kb-2")],
+            source="compact",
+            scratch_path=scratch,
+        )
+        == EmitReason.COMPACT
+    )
+
+
+def test_scope_change_wins_over_new_maps(tmp_path: Path) -> None:
+    """A scope change takes precedence over a new-maps signal on the same call."""
+    scratch = tmp_path / "scratch.json"
+    mark_emitted(
+        session_id="s1", scope="proj-a", map_ids=[_mk("personal", "kb-1")], scratch_path=scratch
+    )
+    # Both the scope AND the map set differ from what's on the scratch file.
+    assert (
+        should_emit(
+            session_id="s1",
+            scope="proj-b",
+            map_ids=[_mk("personal", "kb-2")],
+            source=None,
+            scratch_path=scratch,
+        )
+        == EmitReason.SCOPE_CHANGE
+    )

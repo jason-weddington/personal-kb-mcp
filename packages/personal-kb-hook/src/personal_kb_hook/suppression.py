@@ -23,6 +23,7 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from personal_kb_hook.index_reader import MapKey
@@ -32,6 +33,28 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+class EmitReason(StrEnum):
+    """Why :func:`should_emit` decided to emit the roster.
+
+    Members mirror the four emitting branches in :func:`should_emit`, in
+    the SAME precedence order the code evaluates them: precedence decides
+    which reason a multi-cause emission reports (e.g. a compact event on a
+    session whose scope also drifted reports ``COMPACT``, not
+    ``SCOPE_CHANGE``, because the compact check runs first).
+
+    When :func:`should_emit` decides NOT to emit, it returns ``None``
+    rather than a member of this enum — callers must use an explicit
+    ``is not None`` check, not truthiness, since a falsy-but-not-None
+    sentinel would be an easy trap here.
+    """
+
+    COMPACT = "compact"
+    FIRST_EMISSION = "first-emission"
+    SCOPE_CHANGE = "scope-change"
+    NEW_MAPS = "new-maps"
+
 
 # Legacy label assigned to bare-string ids found in pre-P1 scratch files.
 # Matches the label used by roster.load_roster() when it synthesizes the
@@ -122,26 +145,35 @@ def should_emit(
     map_ids: list[MapKey],
     source: str | None,
     scratch_path: Path | None = None,
-) -> bool:
-    """Decide whether to emit the directory string.
+) -> EmitReason | None:
+    """Decide whether to emit the directory string, and WHY.
 
-    Emit only when ``map_ids`` is non-empty AND any of:
-      * ``source == 'compact'`` (compaction event — always re-seed),
-      * no scratch file yet,
-      * the resolved scope differs from ``last_scope``,
-      * the resolved map keys are NOT already a subset of ``surfaced_map_ids``.
+    Returns the :class:`EmitReason` for the first matching branch, in this
+    precedence order (do not reorder — precedence decides which reason a
+    multi-cause emission reports), or ``None`` when not emitting:
+      * ``map_ids`` empty -> ``None`` (nothing to show),
+      * ``source == 'compact'`` -> :attr:`EmitReason.COMPACT` (compaction
+        event — always re-seed),
+      * no scratch file yet -> :attr:`EmitReason.FIRST_EMISSION`,
+      * the resolved scope differs from ``last_scope`` ->
+        :attr:`EmitReason.SCOPE_CHANGE`,
+      * the resolved map keys are NOT already a subset of
+        ``surfaced_map_ids`` -> :attr:`EmitReason.NEW_MAPS`,
+      * otherwise -> ``None`` (already surfaced; suppressed).
     """
     if not map_ids:
-        return False
+        return None
     target = scratch_path or get_hook_scratch_path(session_id)
     state = _read_scratch(target)
     if source == "compact":
-        return True
+        return EmitReason.COMPACT
     if state.last_scope is None:
-        return True
+        return EmitReason.FIRST_EMISSION
     if state.last_scope != scope:
-        return True
-    return not set(map_ids).issubset(state.surfaced_map_ids)
+        return EmitReason.SCOPE_CHANGE
+    if not set(map_ids).issubset(state.surfaced_map_ids):
+        return EmitReason.NEW_MAPS
+    return None
 
 
 def mark_emitted(

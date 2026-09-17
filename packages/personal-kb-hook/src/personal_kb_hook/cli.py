@@ -430,12 +430,13 @@ def main(argv: list[str] | None = None) -> None:
         source_str = source if isinstance(source, str) else None
 
         # Early return (c): suppression says no
-        if not should_emit(
+        emit_reason = should_emit(
             session_id=session_id_str,
             scope=project_ref,
             map_ids=all_map_ids,
             source=source_str,
-        ):
+        )
+        if emit_reason is None:
             _flush_whisper()
             return
 
@@ -489,7 +490,10 @@ def main(argv: list[str] | None = None) -> None:
                         "map_id": _entry["id"],
                         "source_kb": _label,
                         "cwd_project": project_ref,
-                        "trigger_context": {"cwd_project": project_ref},
+                        "trigger_context": {
+                            "cwd_project": project_ref,
+                            "emit_reason": emit_reason.value,
+                        },
                         "emitted_ts": _ts,
                         "consumed": False,
                         "consumed_ts": None,
