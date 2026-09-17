@@ -537,13 +537,18 @@ class ListenerRequest(BaseModel):
     the service accepts whatever arrives.  ``operating`` lists the MCP-server
     labels that are currently active in the caller's session.  ``source_label``
     is used ONLY for the ``{source}`` substitution in the gate prompt; it falls
-    back to ``cwd_project`` then ``'unknown'`` when omitted.
+    back to ``cwd_project`` then ``'unknown'`` when omitted. ``session_id`` was
+    already present on the hook-side wire body (used for the debug excerpt-hash
+    cache key) but had no field here, so pydantic silently dropped it; it is
+    now captured so the ``listener_decisions`` telemetry row can be attributed
+    to a session.
     """
 
     text: str = Field(min_length=1)
     cwd_project: str | None = None
     operating: list[str] = Field(default_factory=list)
     source_label: str | None = None
+    session_id: str | None = None
 
 
 class ListenerPointer(BaseModel):
@@ -568,6 +573,25 @@ class ListenerResponse(BaseModel):
     reason: str = ""
 
 
+# Closed sets for the ``listener_decisions`` telemetry sink (see
+# ``kb_service.database`` schema + ``listener_routes._record_listener_decision``).
+# ``decision`` is exactly one of these two values.
+ListenerDecisionOutcome = Literal["whisper", "declined"]
+
+# ``reason`` enumerates every actual return branch in ``listener_routes.listener()``
+# — one member per branch, no catch-all. Keep in 1:1 sync with that function.
+ListenerDecisionReason = Literal[
+    "kill-switch",
+    "no-candidates",
+    "rule-a",
+    "rule-b",
+    "no-llm",
+    "vote-split",
+    "vote-none",
+    "whispered",
+]
+
+
 class WhisperTelemetryRow(BaseModel):
     """One whisper-efficacy telemetry row (roster shown or listener whisper).
 
@@ -577,6 +601,13 @@ class WhisperTelemetryRow(BaseModel):
     at the DB boundary.  ``build_engine`` is read defensively from
     ``HEADLESS_BUILD_ENGINE`` on the hook side — ``None`` is the
     interactive/control-plane case.
+
+    ``pointers`` was already sent by the hook on every roster row (the map's
+    pointer ids, used hook-side for chain-credit) but had no field here, so
+    pydantic's default ``extra='ignore'`` silently dropped it at the wire
+    boundary and the server could never recompute attribution. It is now
+    captured and folded into ``trigger_context`` (as a JSON key, NOT a new
+    column) at the route boundary.
     """
 
     session_id: str
@@ -590,6 +621,7 @@ class WhisperTelemetryRow(BaseModel):
     consumed: bool = False
     consumed_ts: str | None = None
     build_engine: str | None = None
+    pointers: list[str] | None = None
 
 
 class WhisperTelemetryFlushRequest(BaseModel):

@@ -19,6 +19,7 @@ the composite-key upsert.
 import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -87,15 +88,29 @@ class _RecordingTelemetryPool:
                     "consumed_ts": consumed_ts,
                     "build_engine": build_engine,
                     "flushed_at": flushed_at,
+                    "emit_count": 1,
+                    "last_emitted_ts": emitted_ts,
                 }
             else:
                 # ON CONFLICT DO UPDATE — only the five mutable columns win;
                 # emitted_ts / source_kb / host / cwd_project are NOT overwritten.
+                # emit_count counts EMISSIONS, not deliveries: it increments
+                # only when this row carries a LATER emitted_ts than the one
+                # already counted, because flush_session() re-POSTs the whole
+                # whisper-log on every Stop and mark_consumed() rewrites rows
+                # in place. Mirrors the real SQL's timestamptz comparison +
+                # GREATEST (not a bare text compare — TEXT ordering depends on
+                # the database collation).
                 existing["consumed"] = consumed
                 existing["consumed_ts"] = consumed_ts
                 existing["build_engine"] = build_engine
                 existing["flushed_at"] = flushed_at
                 existing["trigger_context"] = trigger_context
+                _prev = datetime.fromisoformat(existing["last_emitted_ts"])
+                _this = datetime.fromisoformat(emitted_ts)
+                if _this > _prev:
+                    existing["emit_count"] += 1
+                    existing["last_emitted_ts"] = emitted_ts
         return "OK"
 
 
@@ -337,25 +352,116 @@ def test_idempotent_reflush_collapses_via_on_conflict(
     assert final["consumed"] == 1, "second flush's consumed=true must win via DO UPDATE"
     assert final["consumed_ts"] == "2026-06-17T09:00:00+00:00"
     assert final["build_engine"] == "claude-code"
+    # A re-DELIVERY of an emission already counted must NOT bump emit_count.
+    # flush_session() re-POSTs the entire whisper-log on every Stop and leaves
+    # the file in place, and mark_consumed() rewrites a row before the next
+    # flush — so this exact shape (same emitted_ts, consumed now true) happens
+    # on every turn of every session. Counting it would make emit_count a
+    # measure of flush volume rather than of re-emission.
+    assert final["emit_count"] == 1
+    assert final["last_emitted_ts"] == "2026-06-17T08:00:00+00:00"
 
 
-# ─── rows carrying the new hook-side ``pointers`` field don't 500 ───────────
+# ─── re-emission counting: emit_count / last_emitted_ts ─────────────────────
 
 
-def test_flush_tolerates_extra_pointers_field_on_row(
+def test_first_emission_sets_emit_count_1_and_last_emitted_ts_equal_emitted_ts(
     telemetry_client: TestClient,
     telemetry_pool: _RecordingTelemetryPool,
 ) -> None:
-    """A row with an unknown ``pointers`` field must NOT 500 the flush.
+    """A brand-new (session, surface, map_id) row starts at emit_count=1 with
+    last_emitted_ts equal to emitted_ts."""
+    app.dependency_overrides[get_current_user] = fake_user
 
-    Rollout order: an upgraded personal-kb-hook now appends a top-level
-    ``pointers`` list to every roster jsonl row so :func:`mark_consumed`
-    can chain-credit map → detail fetches (GTD 88441f9c). The service
-    ``WhisperTelemetryRow`` model has no ``pointers`` field, but its
-    default pydantic-v2 config (``extra='ignore'``) silently drops
-    unknown keys — so a pre-pointer-model service accepting a pointer-
-    carrying flush is a no-op-safe schema evolution. This test locks
-    that in and doubles as the AC's explicit verification.
+    resp = telemetry_client.post(
+        "/api/kb/telemetry/whispers",
+        json={
+            "rows": [
+                _row(
+                    session_id="sY",
+                    map_id="kb-00001",
+                    emitted_ts="2026-09-01T00:00:00+00:00",
+                )
+            ]
+        },
+    )
+    assert resp.status_code == 200
+
+    row = telemetry_pool.rows[("sY", "roster", "kb-00001")]
+    assert row["emit_count"] == 1
+    assert row["emitted_ts"] == "2026-09-01T00:00:00+00:00"
+    assert row["last_emitted_ts"] == "2026-09-01T00:00:00+00:00"
+
+
+def test_two_emissions_increment_count_and_advance_last_emitted_ts_only(
+    telemetry_client: TestClient,
+    telemetry_pool: _RecordingTelemetryPool,
+) -> None:
+    """Two genuine emissions of the same map in one session -> emit_count=2.
+
+    ``emitted_ts`` stays pinned to the FIRST emission's timestamp;
+    ``last_emitted_ts`` advances to the SECOND emission's timestamp. A
+    suppressed hook run in between never appends a jsonl row at all (see
+    ``personal-kb-hook``'s ``should_emit()`` / its
+    ``test_suppressed_second_run_appends_no_row_...`` test) so nothing is
+    POSTed for it -- there is deliberately no third request here standing in
+    for the suppressed run, since "nothing sent" IS its effect on this table.
+    """
+    app.dependency_overrides[get_current_user] = fake_user
+    key = ("sZ", "roster", "kb-00001")
+
+    resp1 = telemetry_client.post(
+        "/api/kb/telemetry/whispers",
+        json={
+            "rows": [
+                _row(
+                    session_id="sZ",
+                    map_id="kb-00001",
+                    emitted_ts="2026-09-01T00:00:00+00:00",
+                )
+            ]
+        },
+    )
+    assert resp1.status_code == 200
+
+    resp2 = telemetry_client.post(
+        "/api/kb/telemetry/whispers",
+        json={
+            "rows": [
+                _row(
+                    session_id="sZ",
+                    map_id="kb-00001",
+                    emitted_ts="2026-09-01T00:05:00+00:00",
+                )
+            ]
+        },
+    )
+    assert resp2.status_code == 200
+
+    row = telemetry_pool.rows[key]
+    assert row["emit_count"] == 2
+    assert row["emitted_ts"] == "2026-09-01T00:00:00+00:00", (
+        "original emitted_ts must never move"
+    )
+    assert row["last_emitted_ts"] == "2026-09-01T00:05:00+00:00"
+
+
+# ─── rows carrying the hook-side ``pointers`` field ─────────────────────────
+
+
+def test_flush_folds_pointers_into_trigger_context(
+    telemetry_client: TestClient,
+    telemetry_pool: _RecordingTelemetryPool,
+) -> None:
+    """A row's ``pointers`` list is folded into ``trigger_context["pointers"]``.
+
+    The hook appends a top-level ``pointers`` list to every roster jsonl row
+    so :func:`mark_consumed` can chain-credit map -> detail fetches (GTD
+    88441f9c). ``WhisperTelemetryRow.pointers`` now captures that field (it
+    used to be silently dropped by pydantic's default ``extra='ignore'`` --
+    the GTD 65b308de "dead field" fix) and the route persists it into
+    ``trigger_context`` as a JSON key, NOT a new column, so server-side
+    attribution is recomputable.
     """
     app.dependency_overrides[get_current_user] = fake_user
 
@@ -372,13 +478,38 @@ def test_flush_tolerates_extra_pointers_field_on_row(
     assert resp.json() == {"upserted": 1}
 
     # The row was upserted; the trigger_context TEXT round-trips including
-    # the piggybacked ``consumed_via`` key.
+    # the piggybacked ``consumed_via`` key AND the folded-in pointers list.
     assert len(telemetry_pool.calls) == 1
     _sql, args = telemetry_pool.calls[0]
     trigger_context_text = args[6]
     assert isinstance(trigger_context_text, str)
     parsed = json.loads(trigger_context_text)
-    assert parsed == {"cwd_project": "alpha", "consumed_via": "pointer"}
+    assert parsed == {
+        "cwd_project": "alpha",
+        "consumed_via": "pointer",
+        "pointers": ["kb-00043", "kb-00044"],
+    }
+
+
+def test_flush_row_without_pointers_field_omits_pointers_key(
+    telemetry_client: TestClient,
+    telemetry_pool: _RecordingTelemetryPool,
+) -> None:
+    """A row that omits ``pointers`` (older hook, or a listener row) leaves
+    ``trigger_context`` untouched -- no spurious ``pointers: null`` key."""
+    app.dependency_overrides[get_current_user] = fake_user
+
+    row = _row(map_id="kb-00042", surface="roster", consumed=False)
+    row["trigger_context"] = {"cwd_project": "alpha"}
+    assert "pointers" not in row
+
+    resp = telemetry_client.post("/api/kb/telemetry/whispers", json={"rows": [row]})
+    assert resp.status_code == 200
+
+    _sql, args = telemetry_pool.calls[0]
+    parsed = json.loads(args[6])
+    assert parsed == {"cwd_project": "alpha"}
+    assert "pointers" not in parsed
 
 
 # ─── endpoint is mounted ─────────────────────────────────────────────────────

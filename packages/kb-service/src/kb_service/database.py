@@ -110,6 +110,40 @@ _SCHEMA_STATEMENTS: list[str] = [
         PRIMARY KEY (session_id, surface, map_id)
     )
     """,
+    # emit_count / last_emitted_ts: added idempotently for the ALREADY-DEPLOYED
+    # table (three instances, 2000+ live rows) — ADD COLUMN IF NOT EXISTS is
+    # safe to re-run on every init_db(). emit_count NOT NULL DEFAULT 1 backfills
+    # existing rows to 1 as part of the ALTER itself (Postgres 11+ fast default).
+    # last_emitted_ts starts NULL for pre-existing rows; the UPDATE below
+    # backfills it to the existing emitted_ts exactly once (subsequent runs are
+    # no-ops since the WHERE clause only matches unbackfilled rows).
+    "ALTER TABLE whisper_telemetry"
+    " ADD COLUMN IF NOT EXISTS emit_count INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE whisper_telemetry ADD COLUMN IF NOT EXISTS last_emitted_ts TEXT",
+    "UPDATE whisper_telemetry SET last_emitted_ts = emitted_ts"
+    " WHERE last_emitted_ts IS NULL",
+    # listener_decisions: SERVICE/AUTH DB sink recording the listener gate's
+    # decision on EVERY request, including declines (kill-switch, rule-A/B
+    # drops, no-LLM, non-unanimous votes) that today leave no durable trace.
+    # Insert-only (one row per listener request); no composite PK / upsert —
+    # unlike whisper_telemetry there is nothing to conflict on or update.
+    """
+    CREATE TABLE IF NOT EXISTS listener_decisions (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        session_id TEXT,
+        cwd_project TEXT,
+        source_kb TEXT NOT NULL,
+        decided_ts TEXT NOT NULL,
+        candidates_considered INTEGER NOT NULL,
+        decision TEXT NOT NULL CHECK (decision IN ('whisper', 'declined')),
+        reason TEXT NOT NULL CHECK (reason IN (
+            'kill-switch', 'no-candidates', 'rule-a', 'rule-b', 'no-llm',
+            'vote-split', 'vote-none', 'whispered'
+        ))
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_listener_decisions_decided_ts"
+    " ON listener_decisions(decided_ts)",
 ]
 
 
