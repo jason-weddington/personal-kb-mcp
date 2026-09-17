@@ -33,11 +33,20 @@ this file needs to guard.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
 
+from embedding_retry_queue_shape import (
+    EXPECTED_C_COLLATION_COLUMN,
+    EXPECTED_COLUMNS,
+    EXPECTED_INDEX_COLUMNS,
+    EXPECTED_INTEGER_COLUMNS,
+    EXPECTED_PRIMARY_KEY,
+    EXPECTED_TEXT_COLUMNS,
+)
 from kb_core.embedding_retry import (
     _claim_due,
     _vectorless_unqueued_count,
@@ -427,3 +436,73 @@ async def test_vectorless_unqueued_count_not_exists_subquery_on_asyncpg(
 
     stats = await queue_stats(pg_kb, now=now)
     assert stats["vectorless_unqueued"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Schema parity guard (GTD 93ae476e) — embedding_retry_queue is hand-defined
+# TWICE (SQLite in kb_core.db.schema, Postgres inline in
+# PostgresBackend._apply_schema_locked) with nothing enforcing the two stay
+# in step. This test introspects the LIVE Postgres table shape and checks it
+# against the single shared expectation in embedding_retry_queue_shape.py —
+# the SQLite counterpart (test_embedding_retry_queue_sqlite_schema.py)
+# checks the same constants against a live SQLite table. A column added to
+# one backend and forgotten in the other fails whichever side's constant it
+# broke.
+# ---------------------------------------------------------------------------
+
+
+async def test_embedding_retry_queue_matches_expected_shape_on_postgres(
+    pg_kb: PostgresBackend,
+) -> None:
+    """Introspect embedding_retry_queue on live Postgres and check its shape.
+
+    Checks, via ``information_schema.columns`` and ``pg_indexes``:
+
+    * the exact column-name set (``EXPECTED_COLUMNS``);
+    * ``attempts`` is an integer type and every other column is a text type;
+    * ``entry_id`` is the primary key;
+    * ``next_attempt_at`` carries ``COLLATE "C"`` (``collation_name = 'C'``);
+    * an index on ``(status, next_attempt_at)`` exists.
+    """
+    cursor = await pg_kb.execute(
+        "SELECT column_name, data_type, collation_name FROM information_schema.columns"
+        " WHERE table_schema = current_schema() AND table_name = 'embedding_retry_queue'"
+    )
+    columns = await cursor.fetchall()
+
+    actual_column_names = {row["column_name"] for row in columns}
+    assert actual_column_names == EXPECTED_COLUMNS
+
+    actual_integer_columns = {
+        row["column_name"] for row in columns if row["data_type"] == "integer"
+    }
+    actual_text_columns = {row["column_name"] for row in columns if row["data_type"] == "text"}
+    assert actual_integer_columns == EXPECTED_INTEGER_COLUMNS
+    assert actual_text_columns == EXPECTED_TEXT_COLUMNS
+
+    collation_by_column = {row["column_name"]: row["collation_name"] for row in columns}
+    assert collation_by_column[EXPECTED_C_COLLATION_COLUMN] == "C"
+
+    pk_cursor = await pg_kb.execute(
+        "SELECT kcu.column_name FROM information_schema.table_constraints tc"
+        " JOIN information_schema.key_column_usage kcu"
+        "   ON tc.constraint_name = kcu.constraint_name"
+        "   AND tc.table_schema = kcu.table_schema"
+        " WHERE tc.table_schema = current_schema()"
+        "   AND tc.table_name = 'embedding_retry_queue'"
+        "   AND tc.constraint_type = 'PRIMARY KEY'"
+    )
+    pk_rows = await pk_cursor.fetchall()
+    assert [row["column_name"] for row in pk_rows] == [EXPECTED_PRIMARY_KEY]
+
+    idx_cursor = await pg_kb.execute(
+        "SELECT indexdef FROM pg_indexes"
+        " WHERE schemaname = current_schema() AND tablename = 'embedding_retry_queue'"
+    )
+    indexdefs = [row["indexdef"] for row in await idx_cursor.fetchall()]
+    expected_cols_pattern = (
+        r"\(\s*" + r"\s*,\s*".join(re.escape(col) for col in EXPECTED_INDEX_COLUMNS) + r"\s*\)"
+    )
+    assert any(
+        re.search(expected_cols_pattern, indexdef, re.IGNORECASE) for indexdef in indexdefs
+    ), f"no index on {EXPECTED_INDEX_COLUMNS} found; indexdefs={indexdefs}"
