@@ -137,6 +137,15 @@ ignore_missing_imports = true
 module = ["asyncpg", "asyncpg.*"]
 ignore_missing_imports = true
 
+# sqlite-vec is a best-effort runtime import (search degrades to FTS-only
+# without it) and ships no stubs, so whether mypy sees it depends on
+# whether the extra happens to be installed in the checkout being checked.
+# Without this override the gate passes locally and fails on a dispatch
+# host — env-dependent red that has nothing to do with the change under test.
+[[tool.mypy.overrides]]
+module = ["sqlite_vec", "sqlite_vec.*"]
+ignore_missing_imports = true
+
 [[tool.mypy.overrides]]
 module = ["scrubadub", "scrubadub.*"]
 ignore_missing_imports = true
