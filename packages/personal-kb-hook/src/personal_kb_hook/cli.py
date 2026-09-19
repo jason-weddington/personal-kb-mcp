@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 from personal_kb_hook import http_index, listener, telemetry, whisper_debug
 from personal_kb_hook.index_reader import MapKey
+from personal_kb_hook.listener_worker import _MAX_POINTERS_PER_KB
 from personal_kb_hook.paths import get_listener_cache_path
 from personal_kb_hook.render import (
     compose_directory,
@@ -239,11 +240,12 @@ def main(argv: list[str] | None = None) -> None:
         # own try/except so that any listener failure leaves directory intact.
         #
         # P2 schema: ``pending`` is a LIST of per-KB pointer objects
-        # ``{label, id, short_title, long_title}`` (≤ 1 per label after the
-        # worker's arbitration); ``whispered_map_ids`` is a list of
-        # two-element ``[label, id]`` lists. Pre-P2 cache files used
-        # ``pending`` as a single dict and ``whispered_map_ids`` as bare-id
-        # strings — both are back-parsed tolerantly to label ``'personal'``.
+        # ``{label, id, short_title, long_title}`` (≤ _MAX_POINTERS_PER_KB=2
+        # per label after the worker's arbitration, GTD 66ea1fe4);
+        # ``whispered_map_ids`` is a list of two-element ``[label, id]``
+        # lists. Pre-P2 cache files used ``pending`` as a single dict and
+        # ``whispered_map_ids`` as bare-id strings — both are back-parsed
+        # tolerantly to label ``'personal'``.
         whisper: str | None = None
         whisper_cache_path: Path | None = None
         whisper_pre_pairs: list[list[str]] = []
@@ -323,13 +325,16 @@ def main(argv: list[str] | None = None) -> None:
                         if (_p["label"], _p["id"]) in pre_set:
                             whisper_debug.append_prompt_suppress(session_id_w, _p["id"])
 
-                    # Defensive one-per-KB cap (preserve first per label).
-                    seen_labels: set[str] = set()
+                    # Per-KB cap of _MAX_POINTERS_PER_KB (GTD 66ea1fe4: up to
+                    # 2 pointers may survive per label — preserve the first
+                    # _MAX_POINTERS_PER_KB, in their cache-file (server
+                    # evidence) order).
+                    label_drain_counts: dict[str, int] = {}
                     capped: list[dict[str, str]] = []
                     for p in filtered:
-                        if p["label"] in seen_labels:
+                        if label_drain_counts.get(p["label"], 0) >= _MAX_POINTERS_PER_KB:
                             continue
-                        seen_labels.add(p["label"])
+                        label_drain_counts[p["label"]] = label_drain_counts.get(p["label"], 0) + 1
                         capped.append(p)
 
                     if capped:
@@ -358,13 +363,25 @@ def main(argv: list[str] | None = None) -> None:
 
                         ordered = sorted(capped, key=_order_key)
 
+                        # Group by label (stable — preserves `ordered`'s
+                        # winner-label-first, then each label's own
+                        # evidence order) so render_whisper renders a KB's
+                        # 1..2 pointers on ONE line (GTD 66ea1fe4).
+                        grouped_by_label: dict[str, list[dict[str, str]]] = {}
+                        label_order: list[str] = []
+                        for p in ordered:
+                            if p["label"] not in grouped_by_label:
+                                grouped_by_label[p["label"]] = []
+                                label_order.append(p["label"])
+                            grouped_by_label[p["label"]].append(p)
+
                         lines = [
                             render_whisper(
-                                p,
-                                label=p["label"],
+                                grouped_by_label[lbl],
+                                label=lbl,
                                 multi_kb=multi_kb_w,
                             )
-                            for p in ordered
+                            for lbl in label_order
                         ]
                         whisper = "\n".join(lines)
                         whisper_cache_path = _wcp

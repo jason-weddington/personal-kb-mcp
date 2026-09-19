@@ -16,24 +16,33 @@ Behaviour (P2 multi-KB fan-out, BUILT DARK):
   with a ``Bearer {entry.key}`` token and ``Content-Type: application/json``
   (``_TIMEOUT`` = 30 seconds, stdlib ``urllib`` only, no retries). The
   entire per-KB iteration — request build, urlopen, body read/decode,
-  ``json.loads``, dict check, ``'pointer'``-key check, and
-  :func:`_validate_map` — is wrapped in ONE broad ``try / except
-  Exception ⇒ None`` block so ANY failure for that label yields ``None``
-  and the loop continues. (``URLError`` / ``HTTPError`` /
-  ``TimeoutError`` / ``JSONDecodeError`` / ``UnicodeDecodeError`` /
-  non-dict body / missing ``'pointer'`` / validation failure are
-  illustrative members of that catch, not an exhaustive enumeration.)
-* Collects ``(label, validated_pointer-or-None)`` pairs in roster order,
-  then runs CLIENT-SIDE SUPPRESS-ONLY arbitration: drop nulls, title-dedup
-  by ``str.strip().casefold()`` of ``short_title`` (winner per the
-  detached-worker tie-break: source_label-in-roster → ``'personal'`` →
-  first roster entry), and a defensive one-per-KB cap. Arbitration NEVER
-  elevates, re-scores, synthesizes, or reorders by relevance.
+  ``json.loads``, dict check, ``'pointers'``/``'pointer'``-key check, and
+  per-element :func:`_validate_map` — is wrapped in ONE broad ``try /
+  except Exception ⇒ []`` block so ANY failure for that label yields an
+  empty pointers list and the loop continues. (``URLError`` /
+  ``HTTPError`` / ``TimeoutError`` / ``JSONDecodeError`` /
+  ``UnicodeDecodeError`` / non-dict body / missing ``'pointers'``/
+  ``'pointer'`` / validation failure are illustrative members of that
+  catch, not an exhaustive enumeration.)
+* GTD 66ea1fe4: the server's primary field is the PLURAL ``pointers`` — a
+  list of 0..``_MAX_POINTERS_PER_KB`` (2) pointers per KB, in evidence
+  order (a map is a subject area; more than one can be genuinely
+  implicated). The legacy singular ``pointer`` field is read ONLY as a
+  fallback when ``pointers`` is absent (an old, pre-66ea1fe4 server).
+* Collects ``(label, validated_pointers)`` pairs in roster order, then
+  runs CLIENT-SIDE SUPPRESS-ONLY arbitration: flatten to (label, pointer)
+  pairs, title-dedup by ``str.strip().casefold()`` of ``short_title``
+  (winner per the detached-worker tie-break: source_label-in-roster →
+  ``'personal'`` → first roster entry), and a per-KB cap of
+  ``_MAX_POINTERS_PER_KB``. Arbitration NEVER elevates, re-scores,
+  synthesizes, or reorders by relevance — each KB's own evidence order is
+  preserved.
 * When at least one pointer survives arbitration, atomically merges the
   winners into the cache at ``argv[2]`` as a per-KB-provenance ``pending``
-  list ``[{label, id, short_title, long_title}, ...]`` (≤ 1 per label),
-  with ``whispered_map_ids`` preserved in the ``[label, id]`` shape
-  (tolerantly back-parsing any pre-P2 bare-id strings).
+  list ``[{label, id, short_title, long_title}, ...]`` (≤
+  ``_MAX_POINTERS_PER_KB`` per label), with ``whispered_map_ids``
+  preserved in the ``[label, id]`` shape (tolerantly back-parsing any
+  pre-P2 bare-id strings).
 * On empty arbitration result or any failure: cache is left unchanged.
 * **Always** deletes the request tmp file.
 * **Always** exits 0 (top-level broad ``except``).
@@ -66,6 +75,12 @@ _TIMEOUT: float = 30.0
 # — matches the literal used by suppression._LEGACY_LABEL and the roster
 # loader's synthesized 'personal' fallback entry.
 _LEGACY_LABEL = "personal"
+
+# GTD 66ea1fe4: the server now returns a LIST of up to
+# kb_service.models.MAX_POINTERS_PER_RESPONSE (2) pointers per request (a
+# map is a subject area; more than one can be genuinely implicated).
+# Enforced defensively here too, in case a server ever sends more.
+_MAX_POINTERS_PER_KB = 2
 
 
 def _validate_map(map_obj: object) -> dict[str, str] | None:
@@ -101,19 +116,29 @@ def _validate_map(map_obj: object) -> dict[str, str] | None:
 def _post_one_kb(
     entry: roster.KbEntry,
     body_bytes: bytes,
-) -> tuple[dict[str, str] | None, str]:
-    """POST the manifest to ONE KB; return (validated pointer or None, reason).
+) -> tuple[list[dict[str, str]], str]:
+    """POST the manifest to ONE KB; return (validated pointers, reason).
+
+    GTD 66ea1fe4: the server's primary field is now the PLURAL ``pointers``
+    (a JSON list of 0..2 pointer dicts, in evidence order). ``pointer``
+    (singular) is READ ONLY as a fallback when ``pointers`` is absent —
+    i.e. an old, pre-66ea1fe4 server — so a rolling upgrade where the hook
+    lands before every KB's service does degrades gracefully rather than
+    treating every such KB as a transport error.
 
     The second tuple element is the server-provided debug ``reason``
     string (defaulted to ``""`` if the server omitted it / sent a non-str)
     on every path that successfully reached and parsed the server
-    response — INCLUDING the null-pointer path (the server still
-    explains WHY it returned null). On EVERY early-None / exception
-    path (non-dict body, missing ``pointer`` key, HTTP/URL/Timeout
-    errors, JSON decode errors, validation failures, or any unexpected
-    exception), the pinned literal ``"transport-error"`` is returned
-    so a failed POST is DISTINGUISHABLE in the debug log from a clean
-    server no-injection reason. NEVER raises.
+    response — INCLUDING the empty-pointers path (the server still
+    explains WHY it returned nothing). On EVERY early-empty / exception
+    path (non-dict body, missing ``pointers``/``pointer`` key,
+    non-list ``pointers``, HTTP/URL/Timeout errors, JSON decode errors, or
+    any unexpected exception), the pinned literal ``"transport-error"`` is
+    returned so a failed POST is DISTINGUISHABLE in the debug log from a
+    clean server no-injection reason. Each element of ``pointers`` is
+    validated independently via :func:`_validate_map` — an invalid element
+    is dropped rather than failing the whole batch — and the surviving list
+    is capped defensively at ``_MAX_POINTERS_PER_KB``. NEVER raises.
     """
     try:
         endpoint = entry.url.rstrip("/") + "/api/kb/listener"
@@ -130,35 +155,57 @@ def _post_one_kb(
             body = resp.read().decode("utf-8")
         data: Any = json.loads(body)
         if not isinstance(data, dict):
-            return (None, "transport-error")
-        if "pointer" not in data:
-            return (None, "transport-error")
+            return ([], "transport-error")
         raw_reason: Any = data.get("reason", "")
         reason = raw_reason if isinstance(raw_reason, str) else ""
-        pointer: Any = data["pointer"]
-        if pointer is None:
-            return (None, reason)
-        return (_validate_map(pointer), reason)
+
+        raw_pointers: Any
+        if "pointers" in data:
+            raw_pointers = data["pointers"]
+            if not isinstance(raw_pointers, list):
+                return ([], "transport-error")
+        elif "pointer" in data:
+            single: Any = data["pointer"]
+            raw_pointers = [] if single is None else [single]
+        else:
+            return ([], "transport-error")
+
+        validated: list[dict[str, str]] = []
+        for raw_pointer in raw_pointers:
+            if len(validated) >= _MAX_POINTERS_PER_KB:
+                break
+            v = _validate_map(raw_pointer)
+            if v is not None:
+                validated.append(v)
+        return (validated, reason)
     except Exception:
-        return (None, "transport-error")
+        return ([], "transport-error")
 
 
 def _arbitrate(
-    candidates: list[tuple[str, dict[str, str] | None]],
+    candidates: list[tuple[str, list[dict[str, str]]]],
     roster_entries: list[roster.KbEntry],
     source_label: str | None,
 ) -> list[tuple[str, dict[str, str]]]:
     """Suppress-only client-side arbitration.
 
+    ``candidates`` is one ``(label, pointers)`` pair per roster KB, where
+    ``pointers`` is the (already server/``_post_one_kb``-capped) list of
+    0..``_MAX_POINTERS_PER_KB`` pointers that KB returned, in evidence
+    order (GTD 66ea1fe4 — a map is a subject area, so more than one can be
+    genuinely implicated).
+
     Deterministic steps, in order (NEVER elevates or re-scores):
 
-    (a) Drop every null pointer.
+    (a) Flatten: drop every empty-pointers KB, expand the rest to
+        ``(label, pointer)`` pairs, preserving each KB's own evidence
+        order.
     (b) Title-dedup: group surviving candidates by
         ``str.strip().casefold()`` of ``short_title`` and keep the
         tie-break winner per group.
-    (c) One-per-KB cap: at most one pointer survives per ``label`` (a
-        defensive no-op today, since each KB returns exactly one pointer
-        per request).
+    (c) Per-KB cap: at most ``_MAX_POINTERS_PER_KB`` pointers survive per
+        ``label`` (preserving each KB's evidence order — was a defensive
+        1-per-label no-op pre-66ea1fe4, now load-bearing).
 
     Tie-break order (detached-worker fallback — does NOT call
     ``resolve_project`` / ``http_index.load_index``):
@@ -169,8 +216,8 @@ def _arbitrate(
        IF present in the roster.
     3. The first KB in roster order.
     """
-    # (a) Drop nulls.
-    surviving = [(label, p) for label, p in candidates if p is not None]
+    # (a) Flatten, dropping KBs with no surviving pointers.
+    surviving = [(label, p) for label, plist in candidates for p in plist]
     if not surviving:
         return []
 
@@ -214,13 +261,16 @@ def _arbitrate(
         group.sort(key=lambda lp: label_rank.get(lp[0], 1_000_000))
         deduped.append(group[0])
 
-    # (c) One-per-KB cap (defensive).
-    seen_labels: set[str] = set()
+    # (c) Per-KB cap: at most _MAX_POINTERS_PER_KB survive per label,
+    # preserving each label's evidence order (deduped is still ordered by
+    # first-appearance within `surviving`, i.e. roster order then each KB's
+    # own evidence order).
+    label_counts: dict[str, int] = {}
     final: list[tuple[str, dict[str, str]]] = []
     for label, pointer in deduped:
-        if label in seen_labels:
+        if label_counts.get(label, 0) >= _MAX_POINTERS_PER_KB:
             continue
-        seen_labels.add(label)
+        label_counts[label] = label_counts.get(label, 0) + 1
         final.append((label, pointer))
 
     return final
@@ -338,15 +388,15 @@ def main() -> None:
         # Sequential fan-out across the roster, in order. Each iteration is
         # individually guarded so a failure for one KB never aborts the loop.
         # Each entry now carries the per-KB `reason` string alongside the
-        # pointer-or-None; the reason flows into the whisper-debug RUN block
-        # written below. `_arbitrate`'s signature is unchanged — we only pass
-        # the pointer component to it.
-        candidates_with_reason: list[tuple[str, tuple[dict[str, str] | None, str]]] = []
+        # (possibly plural, GTD 66ea1fe4) pointers list; the reason flows
+        # into the whisper-debug RUN block written below. `_arbitrate`'s
+        # signature takes the list directly — no unwrapping needed.
+        candidates_with_reason: list[tuple[str, tuple[list[dict[str, str]], str]]] = []
         for entry in roster_entries:
             result = _post_one_kb(entry, body_bytes)
             candidates_with_reason.append((entry.label, result))
-        candidates: list[tuple[str, dict[str, str] | None]] = [
-            (label, pointer) for label, (pointer, _reason) in candidates_with_reason
+        candidates: list[tuple[str, list[dict[str, str]]]] = [
+            (label, pointers) for label, (pointers, _reason) in candidates_with_reason
         ]
 
         # Client-side, suppress-only arbitration.
@@ -360,8 +410,10 @@ def main() -> None:
         dbg_session_id = request_data.get("session_id")
         if isinstance(dbg_session_id, str) and dbg_session_id:
             per_kb_lines = [
-                f"  {label} -> {(pointer['id'] if pointer is not None else 'none')} ({reason})"
-                for label, (pointer, reason) in candidates_with_reason
+                f"  {label} -> "
+                f"{(', '.join(p['id'] for p in pointers) if pointers else 'none')} "
+                f"({reason})"
+                for label, (pointers, reason) in candidates_with_reason
             ]
             if winners:
                 outcome_lines = [

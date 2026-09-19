@@ -540,7 +540,7 @@ def test_render_whisper_with_long_title() -> None:
         "short_title": "Authentication",
         "long_title": "OAuth2 flow diagram",
     }
-    result = render_whisper(entry)
+    result = render_whisper([entry])
     assert result == "Possibly relevant map — [kb-00001] Authentication: OAuth2 flow diagram"
 
 
@@ -551,7 +551,7 @@ def test_render_whisper_without_long_title() -> None:
         "short_title": "Ingestion",
         "long_title": "",
     }
-    result = render_whisper(entry)
+    result = render_whisper([entry])
     assert result == "Possibly relevant map — [kb-00002] Ingestion"
     assert ": " not in result
 
@@ -563,14 +563,14 @@ def test_render_whisper_none_long_title() -> None:
         "short_title": "Graph",
         "long_title": None,  # type: ignore[typeddict-item]
     }
-    result = render_whisper(entry)
+    result = render_whisper([entry])
     assert result == "Possibly relevant map — [kb-00003] Graph"
 
 
 def test_render_whisper_em_dash_codepoint() -> None:
     """Whisper uses U+2014 EM DASH, not a hyphen."""
     entry: dict[str, object] = {"id": "kb-1", "short_title": "X", "long_title": ""}
-    result = render_whisper(entry)
+    result = render_whisper([entry])
     assert "—" in result
 
 
@@ -584,11 +584,61 @@ def test_render_whisper_scaffold_disjoint_from_banned_tokens() -> None:
         "short_title": "Authentication",
         "long_title": "OAuth2 flow",
     }
-    result = render_whisper(entry)
+    result = render_whisper([entry])
     lowered_words = set(result.lower().split())
     assert lowered_words.isdisjoint(BANNED_TOKENS), (
         f"Whisper contains banned token(s): {lowered_words & BANNED_TOKENS}"
     )
+
+
+# ---------------------------------------------------------------------------
+# render_whisper — plural (2-map) form (GTD 66ea1fe4)
+# ---------------------------------------------------------------------------
+
+
+def test_render_whisper_plural_two_maps_single_kb() -> None:
+    """Two maps from one KB render on ONE line, comma-separated, pluralized
+    header, SHORT titles only (no long_title, even when populated)."""
+    entries: list[dict[str, object]] = [
+        {"id": "kb-00001", "short_title": "MapA", "long_title": "Details A"},
+        {"id": "kb-00002", "short_title": "MapB", "long_title": "Details B"},
+    ]
+    result = render_whisper(entries)
+    assert result == "Possibly relevant maps — [kb-00001] MapA, [kb-00002] MapB"
+    assert "Details A" not in result
+    assert "Details B" not in result
+
+
+def test_render_whisper_plural_two_maps_multi_kb_label_prefix() -> None:
+    """Plural form in a multi-KB roster prefixes EACH map with '<label>/'."""
+    entries: list[dict[str, object]] = [
+        {"id": "kb-00001", "short_title": "MapA", "long_title": ""},
+        {"id": "kb-00002", "short_title": "MapB", "long_title": ""},
+    ]
+    result = render_whisper(entries, label="team", multi_kb=True)
+    assert result == "Possibly relevant maps — team/[kb-00001] MapA, team/[kb-00002] MapB"
+
+
+def test_render_whisper_plural_uses_maps_header() -> None:
+    """The plural header is 'Possibly relevant maps' (with an 's'), not the
+    singular 'Possibly relevant map'."""
+    entries: list[dict[str, object]] = [
+        {"id": "kb-1", "short_title": "A", "long_title": ""},
+        {"id": "kb-2", "short_title": "B", "long_title": ""},
+    ]
+    result = render_whisper(entries)
+    assert result.startswith("Possibly relevant maps —")
+
+
+def test_render_whisper_singular_still_uses_map_header() -> None:
+    """A single-element list still renders the SINGULAR header (regression
+    guard against the plural form leaking into the 1-map case)."""
+    entries: list[dict[str, object]] = [
+        {"id": "kb-1", "short_title": "A", "long_title": ""},
+    ]
+    result = render_whisper(entries)
+    assert result.startswith("Possibly relevant map —")
+    assert "maps" not in result.lower()
 
 
 # ---------------------------------------------------------------------------

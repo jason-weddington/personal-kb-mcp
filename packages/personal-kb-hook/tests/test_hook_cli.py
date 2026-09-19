@@ -1747,6 +1747,108 @@ def test_whisper_same_id_different_labels_dont_collide(
     assert out == "Possibly relevant map — team/[kb-77] Shared"
 
 
+def test_whisper_two_pointers_same_kb_one_line(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """GTD 66ea1fe4: a single KB's 2 pending pointers render on ONE line,
+    comma-separated, with the pluralized header — not two separate lines."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-plural-one-kb"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(
+        cache_path,
+        [
+            _pending_map("kb-00001", "MapA", "", label="personal"),
+            _pending_map("kb-00002", "MapB", "", label="personal"),
+        ],
+        [],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    assert out == "Possibly relevant maps — [kb-00001] MapA, [kb-00002] MapB"
+
+    # Post-emission: pending cleared, BOTH ids recorded as whispered.
+    updated = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert updated["pending"] == []
+    assert ["personal", "kb-00001"] in updated["whispered_map_ids"]
+    assert ["personal", "kb-00002"] in updated["whispered_map_ids"]
+
+
+def test_whisper_two_pointers_one_already_whispered_only_other_emits(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """When one of a KB's 2 pending pointers was already whispered this
+    session, only the NEW one is emitted — as a singular-header line."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-plural-partial-suppress"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(
+        cache_path,
+        [
+            _pending_map("kb-00001", "MapA", "", label="personal"),
+            _pending_map("kb-00002", "MapB", "", label="personal"),
+        ],
+        [["personal", "kb-00001"]],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    assert out == "Possibly relevant map — [kb-00002] MapB"
+    assert "kb-00001" not in out
+
+
+def test_whisper_three_pending_same_kb_capped_at_two(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+) -> None:
+    """A cache file with 3 pending pointers for one KB (should never happen
+    given the worker's own cap, but defended anyway) drains only 2."""
+    _listener_env(monkeypatch)
+    session_id = "whisper-plural-overcap"
+    cache_path = get_listener_cache_path(session_id)
+    _write_listener_cache(
+        cache_path,
+        [
+            _pending_map("kb-00001", "MapA", "", label="personal"),
+            _pending_map("kb-00002", "MapB", "", label="personal"),
+            _pending_map("kb-00003", "MapC", "", label="personal"),
+        ],
+        [],
+    )
+
+    rc, out = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(hook_env["root"]),
+            "session_id": session_id,
+        },
+        args=["--format=text"],
+    )
+    assert rc == 0
+    assert out == "Possibly relevant maps — [kb-00001] MapA, [kb-00002] MapB"
+    assert "kb-00003" not in out
+
+
 # ---------------------------------------------------------------------------
 # Whisper-debug PROMPT-path lines (UserPromptSubmit)
 # ---------------------------------------------------------------------------

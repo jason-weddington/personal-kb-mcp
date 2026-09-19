@@ -10,11 +10,15 @@ Covers the P2 fan-out behaviour:
   order.
 - Per-KB failure isolation: a failure for any single KB never aborts the
   loop; surviving KBs' pointers still flow into the cache.
-- Suppress-only client-side arbitration: drop nulls, title-dedup (with
-  ``str.strip().casefold()`` normalisation), one-per-KB cap; tie-break
+- Suppress-only client-side arbitration: drop empties, title-dedup (with
+  ``str.strip().casefold()`` normalisation), per-KB cap of 2; tie-break
   order is source_label-in-roster → 'personal' → first roster entry.
+- GTD 66ea1fe4: the server's primary field is the PLURAL ``pointers`` (a
+  list of 0..2 pointers per KB, in evidence order) — a map is a subject
+  area, and more than one can be genuinely implicated. The legacy singular
+  ``pointer`` field is read as a fallback only when ``pointers`` is absent.
 - Cache schema is the (label, id)-provenance shape: ``pending`` is a list
-  of per-KB pointer dicts ``{label, id, short_title, long_title}`` (≤1 per
+  of per-KB pointer dicts ``{label, id, short_title, long_title}`` (≤2 per
   label); ``whispered_map_ids`` is a list of ``[label, id]`` lists with
   tolerant legacy bare-id back-parse.
 - Empty roster: ZERO POSTs, tmp deleted, cache untouched, exit 0.
@@ -822,6 +826,262 @@ def test_distinct_titles_per_kb_both_survive_one_per_label(
     assert len(result["pending"]) == 2
 
 
+# ---------------------------------------------------------------------------
+# GTD 66ea1fe4: plural ``pointers`` per KB
+# ---------------------------------------------------------------------------
+
+
+def test_plural_pointers_from_one_kb_both_cached(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single KB returning 2 pointers (plural field) caches BOTH, in order."""
+    cache_path = worker_env["cache_dir"] / "listener-plural.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {"text": "hello", "project_ref": "proj", "operated": []},
+        cache_path,
+        lambda *a, **kw: _ok_response(
+            {
+                "pointers": [
+                    {"id": "kb-00001", "short_title": "MapA", "long_title": "A"},
+                    {"id": "kb-00002", "short_title": "MapB", "long_title": "B"},
+                ]
+            }
+        ),
+    )
+    result = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert result["pending"] == [
+        {"label": "personal", "id": "kb-00001", "short_title": "MapA", "long_title": "A"},
+        {"label": "personal", "id": "kb-00002", "short_title": "MapB", "long_title": "B"},
+    ]
+
+
+def test_plural_pointers_capped_at_two_per_kb(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A KB returning MORE than 2 pointers (violates the server contract) is
+    defensively capped at 2 client-side — the 3rd is dropped."""
+    cache_path = worker_env["cache_dir"] / "listener-overcap.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {"text": "hello", "project_ref": "proj", "operated": []},
+        cache_path,
+        lambda *a, **kw: _ok_response(
+            {
+                "pointers": [
+                    {"id": "kb-00001", "short_title": "MapA", "long_title": ""},
+                    {"id": "kb-00002", "short_title": "MapB", "long_title": ""},
+                    {"id": "kb-00003", "short_title": "MapC", "long_title": ""},
+                ]
+            }
+        ),
+    )
+    result = json.loads(cache_path.read_text(encoding="utf-8"))
+    ids = [p["id"] for p in result["pending"]]
+    assert ids == ["kb-00001", "kb-00002"]
+
+
+def test_plural_pointers_invalid_element_dropped_valid_kept(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One invalid element in ``pointers`` is dropped without discarding the
+    other, valid element (per-element validation, not all-or-nothing)."""
+    cache_path = worker_env["cache_dir"] / "listener-mixedvalid.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {"text": "hello", "project_ref": "proj", "operated": []},
+        cache_path,
+        lambda *a, **kw: _ok_response(
+            {
+                "pointers": [
+                    {"id": "", "short_title": "Bad"},  # invalid: empty id
+                    {"id": "kb-00002", "short_title": "MapB", "long_title": ""},
+                ]
+            }
+        ),
+    )
+    result = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert [p["id"] for p in result["pending"]] == ["kb-00002"]
+
+
+def test_plural_pointers_empty_list_no_cache_write(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty ``pointers`` list behaves like a null pointer: no cache write."""
+    cache_path = worker_env["cache_dir"] / "listener-emptyplural.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {"text": "hello", "project_ref": "proj", "operated": []},
+        cache_path,
+        lambda *a, **kw: _ok_response({"pointers": []}),
+    )
+    _assert_cache_untouched(cache_path)
+
+
+def test_plural_pointers_non_list_value_is_transport_error(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-list ``pointers`` value is treated as a transport error (cache untouched)."""
+    cache_path = worker_env["cache_dir"] / "listener-badplural.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {"text": "hello", "project_ref": "proj", "operated": []},
+        cache_path,
+        lambda *a, **kw: _ok_response({"pointers": "not-a-list"}),
+    )
+    _assert_cache_untouched(cache_path)
+
+
+def test_pointers_field_takes_precedence_over_legacy_pointer_field(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When BOTH ``pointers`` and the deprecated ``pointer`` alias are present
+    (the actual GTD 66ea1fe4 server shape — the model always populates
+    both), ``pointers`` wins and ``pointer`` is ignored."""
+    cache_path = worker_env["cache_dir"] / "listener-precedence.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {"text": "hello", "project_ref": "proj", "operated": []},
+        cache_path,
+        lambda *a, **kw: _ok_response(
+            {
+                "pointer": {"id": "kb-legacy", "short_title": "Legacy", "long_title": ""},
+                "pointers": [
+                    {"id": "kb-00001", "short_title": "MapA", "long_title": ""},
+                    {"id": "kb-00002", "short_title": "MapB", "long_title": ""},
+                ],
+            }
+        ),
+    )
+    result = json.loads(cache_path.read_text(encoding="utf-8"))
+    ids = [p["id"] for p in result["pending"]]
+    assert ids == ["kb-00001", "kb-00002"]
+    assert "kb-legacy" not in ids
+
+
+def test_legacy_singular_pointer_field_still_works(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OLD (pre-66ea1fe4) server response with ONLY the singular ``pointer``
+    field (no ``pointers`` key at all) still produces a 1-element pending
+    list — graceful degradation during a rolling hook-before-service upgrade.
+    """
+    cache_path = worker_env["cache_dir"] / "listener-legacyonly.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {"text": "hello", "project_ref": "proj", "operated": []},
+        cache_path,
+        lambda *a, **kw: _ok_response(
+            {"pointer": {"id": "kb-old-server", "short_title": "OldServer", "long_title": ""}}
+        ),
+    )
+    result = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert result["pending"] == [
+        {
+            "label": "personal",
+            "id": "kb-old-server",
+            "short_title": "OldServer",
+            "long_title": "",
+        }
+    ]
+
+
+def test_two_kbs_each_return_two_pointers_all_four_survive(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two KBs each returning 2 pointers with distinct titles -> all 4 survive,
+    2 per label, each label's own evidence order preserved."""
+    _stub_roster(
+        monkeypatch,
+        [
+            ("personal", "https://personal.kb/", "p-secret"),
+            ("team", "https://team.kb/", "t-secret"),
+        ],
+    )
+
+    def routed_urlopen(req: urllib.request.Request, timeout: float | None = None) -> _MockResponse:
+        if "personal.kb" in req.full_url:
+            return _ok_response(
+                {
+                    "pointers": [
+                        {"id": "kb-p-1", "short_title": "PersonalA", "long_title": ""},
+                        {"id": "kb-p-2", "short_title": "PersonalB", "long_title": ""},
+                    ]
+                }
+            )
+        return _ok_response(
+            {
+                "pointers": [
+                    {"id": "kb-t-1", "short_title": "TeamA", "long_title": ""},
+                    {"id": "kb-t-2", "short_title": "TeamB", "long_title": ""},
+                ]
+            }
+        )
+
+    cache_path = worker_env["cache_dir"] / "listener-fourway.json"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {"text": "x", "cwd_project": None, "operating": [], "source_label": None},
+        cache_path,
+        routed_urlopen,
+    )
+    result = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert len(result["pending"]) == 4
+    personal_ids = [p["id"] for p in result["pending"] if p["label"] == "personal"]
+    team_ids = [p["id"] for p in result["pending"] if p["label"] == "team"]
+    assert personal_ids == ["kb-p-1", "kb-p-2"]
+    assert team_ids == ["kb-t-1", "kb-t-2"]
+
+
+def test_arbitrate_per_kb_cap_is_a_real_safety_net_not_just_post_one_kb() -> None:
+    """Direct unit test of ``_arbitrate``'s own per-KB cap.
+
+    ``_post_one_kb`` already caps each KB's raw pointers list at
+    ``_MAX_POINTERS_PER_KB`` before ``_arbitrate`` ever sees it, so this
+    path is unreachable through ``main()`` alone. Call ``_arbitrate``
+    directly with 3 distinctly-titled pointers for ONE label to prove its
+    OWN cap is independently load-bearing (defense-in-depth), not merely
+    inherited from the parse step.
+    """
+    roster_entries = [roster.KbEntry(label="personal", url="https://p.kb", key="k")]
+    candidates: list[tuple[str, list[dict[str, str]]]] = [
+        (
+            "personal",
+            [
+                {"id": "kb-1", "short_title": "Alpha", "long_title": ""},
+                {"id": "kb-2", "short_title": "Beta", "long_title": ""},
+                {"id": "kb-3", "short_title": "Gamma", "long_title": ""},
+            ],
+        )
+    ]
+    winners = listener_worker._arbitrate(candidates, roster_entries, None)
+    assert [pointer["id"] for _label, pointer in winners] == ["kb-1", "kb-2"]
+
+
 def test_label_id_provenance_in_whispered_map_ids(
     worker_env: dict[str, Path],
     tmp_path: Path,
@@ -1113,6 +1373,52 @@ def test_whisper_debug_run_block_written(
 
     # Outcome reflects post-arbitration winners: kb-team-1 survives.
     assert "=> WHISPER kb-team-1 next turn" in content
+
+
+def test_whisper_debug_run_block_plural_pointers_comma_joined(
+    worker_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A KB returning 2 pointers renders BOTH ids, comma-joined, on its
+    per-KB debug line, and both get their own WHISPER outcome line."""
+    _stub_roster(
+        monkeypatch,
+        [("personal", "https://personal.kb/", "p-secret")],
+    )
+
+    def routed_urlopen(req: urllib.request.Request, timeout: float | None = None) -> _MockResponse:
+        return _ok_response(
+            {
+                "pointers": [
+                    {"id": "kb-00001", "short_title": "MapA", "long_title": ""},
+                    {"id": "kb-00002", "short_title": "MapB", "long_title": ""},
+                ],
+                "reason": "matched kb-00001, kb-00002 (majority 2/3)",
+            }
+        )
+
+    cache_path = worker_env["cache_dir"] / "listener-debugplural.json"
+    session_id = "sess-debug-plural"
+    _run_worker(
+        monkeypatch,
+        tmp_path,
+        {
+            "text": "hello",
+            "cwd_project": None,
+            "operating": [],
+            "source_label": None,
+            "session_id": session_id,
+        },
+        cache_path,
+        routed_urlopen,
+    )
+
+    debug_log = worker_env["cache_dir"] / f"whisper-debug-{session_id}.log"
+    content = debug_log.read_text(encoding="utf-8")
+    assert "personal -> kb-00001, kb-00002 (matched kb-00001, kb-00002 (majority 2/3))" in content
+    assert "=> WHISPER kb-00001 next turn" in content
+    assert "=> WHISPER kb-00002 next turn" in content
 
 
 def test_whisper_debug_run_block_no_whisper_outcome(

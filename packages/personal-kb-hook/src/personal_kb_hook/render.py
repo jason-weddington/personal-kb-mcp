@@ -32,7 +32,7 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from personal_kb_hook.index_reader import MapEntry, MapKey
 
@@ -217,34 +217,19 @@ def render_new_maps(new_maps: list[tuple[MapKey, MapEntry]]) -> str | None:
     return f"{header} {_EM_DASH} {body}"
 
 
-def render_whisper(
+def _whisper_pointer_text(
     map_entry: Mapping[str, object],
-    label: str | None = None,
-    multi_kb: bool = False,
+    *,
+    label: str | None,
+    multi_kb: bool,
+    include_long_title: bool,
 ) -> str:
-    """Render the whisper line for a pending listener map.
+    """Render ONE pointer's ``<prefix>[<id>] <short_title>[: <long_title>]`` chunk.
 
-    The output is keyed on whether the roster contains more than one KB
-    (``multi_kb``), NOT on a distinct-label count (which
-    :func:`render_cross_directory` uses) — at the call site,
-    :func:`render_whisper` sees one candidate at a time, so it cannot
-    inspect distinct labels itself.
-
-    Four format branches (all use the U+2014 em dash with a single space
-    on each side):
-
-    * single-KB, empty long_title:
-      ``Possibly relevant map — [<id>] <short_title>``
-    * single-KB, populated long_title:
-      ``Possibly relevant map — [<id>] <short_title>: <long_title>``
-    * multi-KB, empty long_title:
-      ``Possibly relevant map — <label>/[<id>] <short_title>``
-    * multi-KB, populated long_title:
-      ``Possibly relevant map — <label>/[<id>] <short_title>: <long_title>``
-
-    When ``long_title`` is empty the ``': <long_title>'`` suffix is omitted.
-    The scaffold phrase contains no banned tokens; no runtime filtering of
-    server-supplied titles is performed.
+    Shared by both :func:`render_whisper` branches (singular and plural).
+    ``include_long_title=False`` is used for the plural (2-map) form, which
+    is SHORT-titles-only (matches :func:`render_new_maps`'s convention) so
+    the one-line whisper doesn't grow unbounded with two long titles.
     """
     entry_id = map_entry.get("id")
     short_title = map_entry.get("short_title")
@@ -256,9 +241,66 @@ def render_whisper(
     if not isinstance(long_title, str) or not long_title:
         long_title = ""
     prefix = f"{label}/" if (multi_kb and label) else ""
-    if long_title:
-        return f"Possibly relevant map {_EM_DASH} {prefix}[{entry_id}] {short_title}: {long_title}"
-    return f"Possibly relevant map {_EM_DASH} {prefix}[{entry_id}] {short_title}"
+    if include_long_title and long_title:
+        return f"{prefix}[{entry_id}] {short_title}: {long_title}"
+    return f"{prefix}[{entry_id}] {short_title}"
+
+
+def render_whisper(
+    map_entries: Sequence[Mapping[str, object]],
+    label: str | None = None,
+    multi_kb: bool = False,
+) -> str:
+    """Render the whisper line for a KB's 1..2 pending listener map(s).
+
+    GTD 66ea1fe4: a map is a SUBJECT AREA, and evidence can legitimately
+    implicate more than one from the SAME KB — the server response now
+    carries up to ``MAX_POINTERS_PER_RESPONSE`` (2) pointers per request, in
+    evidence order. ``map_entries`` holds all of them (already capped and
+    ordered by the caller); this function renders them onto ONE line, with
+    a singular/plural header. ``label``/``multi_kb`` describe the single
+    source KB all of ``map_entries`` came from — the same call-site
+    constraint :func:`render_cross_directory` avoids but this module's
+    other short-form surfaces (render_new_maps) share.
+
+    Singular (``len(map_entries) == 1``) — four format branches, UNCHANGED
+    from the pre-66ea1fe4 shape (all use the U+2014 em dash with a single
+    space on each side):
+
+    * single-KB, empty long_title:
+      ``Possibly relevant map — [<id>] <short_title>``
+    * single-KB, populated long_title:
+      ``Possibly relevant map — [<id>] <short_title>: <long_title>``
+    * multi-KB, empty long_title:
+      ``Possibly relevant map — <label>/[<id>] <short_title>``
+    * multi-KB, populated long_title:
+      ``Possibly relevant map — <label>/[<id>] <short_title>: <long_title>``
+
+    Plural (``len(map_entries) == 2``) — comma-separated, SHORT titles only
+    (no long_title, matching :func:`render_new_maps`'s convention so the
+    line stays a genuine one-liner), pluralized header:
+
+    * ``Possibly relevant maps — [<id1>] <short1>, [<id2>] <short2>``
+    * multi-KB: ``Possibly relevant maps — <label>/[<id1>] <short1>, <label>/[<id2>] <short2>``
+
+    When ``long_title`` is empty (singular case) the ``': <long_title>'``
+    suffix is omitted. The scaffold phrase contains no banned tokens; no
+    runtime filtering of server-supplied titles is performed. An empty
+    ``map_entries`` is a caller error (never happens in practice — cli.py
+    only calls this with a non-empty group) and renders a bare scaffold.
+    """
+    entries = list(map_entries)
+    if len(entries) == 1:
+        body = _whisper_pointer_text(
+            entries[0], label=label, multi_kb=multi_kb, include_long_title=True
+        )
+        return f"Possibly relevant map {_EM_DASH} {body}"
+    parts = [
+        _whisper_pointer_text(e, label=label, multi_kb=multi_kb, include_long_title=False)
+        for e in entries
+    ]
+    header = "Possibly relevant maps"
+    return f"{header} {_EM_DASH} {', '.join(parts)}"
 
 
 def render_claude_json(event_name: str, directory: str) -> str:
