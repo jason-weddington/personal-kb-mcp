@@ -1853,3 +1853,39 @@ def test_whisper_debug_prompt_inject_empty_short_title_renders_empty_quotes(
     debug_log = hook_env["root"] / ".cache" / "personal_kb" / f"whisper-debug-{session_id}.log"
     content = debug_log.read_text(encoding="utf-8")
     assert 'PROMPT inject kb-empty-title ""' in content
+
+
+# ---------------------------------------------------------------------------
+# read_prompt_text helper (GTD 022837d4) — not wired into any behavior yet.
+# ---------------------------------------------------------------------------
+
+
+def test_read_prompt_text_returns_prompt_value() -> None:
+    assert cli.read_prompt_text({"prompt": "hello there"}) == "hello there"
+
+
+def test_read_prompt_text_returns_user_input_value_when_prompt_absent() -> None:
+    assert cli.read_prompt_text({"user_input": "docs spelling"}) == "docs spelling"
+
+
+def test_read_prompt_text_prefers_prompt_when_both_present() -> None:
+    assert cli.read_prompt_text({"prompt": "real one", "user_input": "docs one"}) == "real one"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"prompt": ""},
+        {"user_input": ""},
+        {"prompt": "", "user_input": ""},
+        {"prompt": 123},
+        {"user_input": 123},
+        {"prompt": None, "user_input": None},
+        {"other_key": "value"},
+    ],
+)
+def test_read_prompt_text_returns_none_for_missing_empty_or_non_string(
+    payload: dict[str, Any],
+) -> None:
+    assert cli.read_prompt_text(payload) is None

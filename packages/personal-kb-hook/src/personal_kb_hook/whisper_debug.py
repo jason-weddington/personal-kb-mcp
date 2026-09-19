@@ -74,6 +74,18 @@ def _operating_repr(operating: Any) -> str:
     return "[" + ",".join(parts) + "]"
 
 
+def _event_repr(event_name: Any) -> str:
+    """Render the hook event name for the header. ``?`` when unavailable.
+
+    Defensive: the debug writer must never be able to break a hook run,
+    so a missing or non-str ``event_name`` renders as the literal ``?``
+    rather than raising or omitting the field.
+    """
+    if isinstance(event_name, str) and event_name:
+        return event_name
+    return "?"
+
+
 def _append_lines(session_id: str, lines: list[str]) -> None:
     """Append ``lines`` to the per-session debug log. Silent-on-failure.
 
@@ -103,6 +115,7 @@ def _append_lines(session_id: str, lines: list[str]) -> None:
 def append_run_block(
     session_id: str,
     *,
+    event_name: Any = None,
     cwd_project: Any,
     operating: Any,
     text: Any,
@@ -113,18 +126,27 @@ def append_run_block(
 
     Block shape:
 
-    * header — ``=== <ISO-8601 UTC ts> listener run | cwd_project=<val-or-None> |
-      operating=[<comma-joined>] ===``
+    * header — ``=== <ISO-8601 UTC ts> listener run | event=<name-or-?> |
+      cwd_project=<val-or-None> | operating=[<comma-joined>] ===``
     * ``transcript: <excerpt-or-none>``
     * one ``  <label> -> <winner-id-or-none> (<reason>)`` per roster entry
       (already formatted by the caller and passed as ``per_kb_lines``).
     * outcome — one ``  => WHISPER <id> next turn`` per surviving winner,
       OR a single ``  => no whisper`` line (caller-built; passed as
       ``outcome_lines``).
+
+    ``event_name`` is the payload's ``hook_event_name`` — the hook event
+    that produced this listener run (e.g. ``Stop``). When missing or not
+    a str, the header renders ``event=?`` rather than raising or
+    omitting the field: the debug writer must never be able to break a
+    hook run. The field is ADDED to the existing header shape (not a
+    restructure) so existing greps against ``cwd_project=`` /
+    ``operating=`` keep working.
     """
     cwd_str = cwd_project if isinstance(cwd_project, str) else None
     header = (
         f"=== {now_iso()} listener run | "
+        f"event={_event_repr(event_name)} | "
         f"cwd_project={cwd_str} | "
         f"operating={_operating_repr(operating)} ==="
     )

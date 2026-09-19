@@ -371,6 +371,7 @@ def main() -> None:
                 outcome_lines = ["  => no whisper"]
             whisper_debug.append_run_block(
                 dbg_session_id,
+                event_name=request_data.get("hook_event_name"),
                 cwd_project=request_data.get("cwd_project"),
                 operating=request_data.get("operating"),
                 text=request_data.get("text"),

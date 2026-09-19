@@ -79,6 +79,27 @@ def _read_payload() -> dict[str, object] | None:
     return obj
 
 
+def read_prompt_text(payload: dict[str, object]) -> str | None:
+    """Read the user prompt text from a ``UserPromptSubmit`` payload.
+
+    Checks ``prompt`` FIRST — the key empirically observed on a real
+    headless run on 2026-09-19 (payload keys were exactly ``cwd``,
+    ``hook_event_name``, ``permission_mode``, ``prompt``, ``prompt_id``,
+    ``session_id``, ``transcript_path``) — then falls back to
+    ``user_input``, the spelling the official docs claim. When BOTH are
+    present, ``prompt`` wins. Returns ``None`` when neither key is
+    present, or when the only present value(s) are not a non-empty str.
+
+    Not wired into any behavior today — it exists so the upcoming
+    inline-listener work cannot get the key wrong.
+    """
+    for key in ("prompt", "user_input"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _emit(args: argparse.Namespace, event_name: str, text: str) -> None:
     """Write ``text`` to stdout in the chosen format."""
     if args.format == "claude-json":
@@ -183,6 +204,7 @@ def main(argv: list[str] | None = None) -> None:
                 "operating": operated,
                 "source_label": project_ref_stop,
                 "session_id": session_id_stop,
+                "hook_event_name": event_name,
             }
 
             # Write request to a NamedTemporaryFile (worker will delete it)
