@@ -113,6 +113,7 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         decision,
         reason,
         vote_shape,
+        candidate_signal,
     ) = args
     return {
         "session_id": session_id,
@@ -123,6 +124,7 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         "decision": decision,
         "reason": reason,
         "vote_shape": vote_shape,
+        "candidate_signal": candidate_signal,
     }
 
 
@@ -149,6 +151,7 @@ def test_decision_kill_switch(
     assert row["decision"] == "declined"
     assert row["reason"] == "kill-switch"
     assert row["candidates_considered"] == 0
+    assert row["candidate_signal"] == ""
     assert row["session_id"] == "sess-1"
     assert row["cwd_project"] == "proj-a"
 
@@ -174,6 +177,7 @@ def test_decision_no_candidates_from_retrieval(
     assert row["decision"] == "declined"
     assert row["reason"] == "fallback-direct"  # was "no-candidates" pre-fallback
     assert row["candidates_considered"] == 0
+    assert row["candidate_signal"] == ""  # decline branches never attribute a signal
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -198,6 +202,7 @@ def test_decision_rule_a(
     assert row["decision"] == "declined"
     assert row["reason"] == "fallback-direct"  # was "rule-a" pre-fallback
     assert row["candidates_considered"] == 0
+    assert row["candidate_signal"] == ""
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -224,6 +229,7 @@ def test_decision_rule_b(
     assert row["decision"] == "declined"
     assert row["reason"] == "fallback-direct"  # was "rule-b" pre-fallback
     assert row["candidates_considered"] == 0
+    assert row["candidate_signal"] == ""
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -248,6 +254,7 @@ def test_decision_no_llm(
     assert row["decision"] == "declined"
     assert row["reason"] == "fallback-direct"  # was "no-llm" pre-fallback
     assert row["candidates_considered"] == 1
+    assert row["candidate_signal"] == ""
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -279,6 +286,10 @@ def test_decision_whispered(
     assert row["reason"] == "fallback-direct"
     assert row["candidates_considered"] == 1
     assert row["vote_shape"] == '[["kb-00001"], ["kb-00001"], ["kb-00001"]]'
+    # Sole candidate came from the detail-match retrieval's fallback leg (no
+    # maps_projects/maps_rows seeded in this fixture -> the lexical path
+    # never fires here).
+    assert row["candidate_signal"] == "fallback"
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -314,6 +325,7 @@ def test_decision_vote_majority_whispers(
     assert row["reason"] == "fallback-direct"  # was "vote-split" pre-fallback
     assert row["candidates_considered"] == 2
     assert row["vote_shape"] == '[["kb-00001"], ["kb-00001"], ["kb-00002"]]'
+    assert row["candidate_signal"] == "fallback"
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -349,6 +361,7 @@ def test_decision_no_majority_declines(
     assert row["reason"] == "fallback-direct"  # was "vote-split" pre-fallback
     assert row["candidates_considered"] == 3
     assert row["vote_shape"] == '[["kb-00001"], ["kb-00002"], ["kb-00003"]]'
+    assert row["candidate_signal"] == ""
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -379,6 +392,7 @@ def test_decision_vote_none(
     assert row["reason"] == "fallback-direct"  # was "vote-none" pre-fallback
     assert row["candidates_considered"] == 1
     assert row["vote_shape"] == "[[], [], []]"
+    assert row["candidate_signal"] == ""
 
 
 # ─── (b) exactly one INSERT per request ─────────────────────────────────────
@@ -526,6 +540,7 @@ def test_decision_primary_path_rule_a_keeps_granular_reason(
     assert row["decision"] == "declined"
     assert row["reason"] == "rule-a"
     assert row["candidates_considered"] == 0
+    assert row["candidate_signal"] == ""
 
 
 # ─── endpoint mounted (sanity, mirrors test_listener_routes.py) ─────────────

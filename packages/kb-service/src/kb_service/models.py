@@ -635,6 +635,13 @@ ListenerDecisionReason = Literal[
     "fallback-direct",
 ]
 
+# ``candidate_signal`` (GTD be964e94): records WHICH candidate-retrieval
+# signal produced the surfaced candidate on a 'whisper' decision — see the
+# ``candidate_signal`` column comment in ``kb_service.database`` for the
+# full explanation and the query this makes possible. '' (not-applicable) on
+# every decline branch.
+ListenerCandidateSignal = Literal["", "lexical", "detail", "fallback"]
+
 
 class WhisperTelemetryRow(BaseModel):
     """One whisper-efficacy telemetry row (roster shown or listener whisper).

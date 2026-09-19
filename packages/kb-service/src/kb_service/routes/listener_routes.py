@@ -31,11 +31,25 @@ path yields zero candidate maps (e.g. a map with no outbound pointer edges),
 the route falls back to today's direct mental_map search so behaviour cannot
 regress below current — see :func:`_retrieve_candidate_maps` for detail.
 
+Lexical candidate path (GTD be964e94): detail-matching cannot fire for any
+map that owns no chunky detail entry pointing at it — measured on the live
+service, only 3.8% of active entries are pointed at by any map. A project
+name or map title is a distinctive, low-cardinality token; a prompt that
+literally names one is strong, free, deterministic evidence that its
+subject area is implicated, no LLM required. :func:`_retrieve_lexical_candidates`
+runs ALONGSIDE detail-matching (never instead of it) and
+:func:`_retrieve_candidates` merges the two signals into one deduplicated,
+ranked candidate list before Rules A/B and the vote ever see it — see that
+function's docstring for the merge/precedence rules.
+
 Every request also writes a best-effort ``listener_decisions`` row (SERVICE
 DB) recording WHY the request ended the way it did — including declines,
 which previously left no durable trace at all (GTD 65b308de). The write is
 fire-and-forget from the caller's perspective: any DB failure is logged and
-swallowed so the listener response is never affected.
+swallowed so the listener response is never affected. The row also records
+(GTD be964e94) WHICH candidate signal (lexical / detail / fallback) produced
+a whispered pointer, via ``candidate_signal`` — see
+:func:`_record_listener_decision`.
 """
 
 import asyncio
@@ -43,6 +57,7 @@ import collections
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
@@ -54,6 +69,7 @@ from kb_service.auth import get_current_user
 from kb_service.database import get_db
 from kb_service.models import (
     MAX_POINTERS_PER_RESPONSE,
+    ListenerCandidateSignal,
     ListenerDecisionReason,
     ListenerPointer,
     ListenerRequest,
@@ -71,8 +87,8 @@ logger = logging.getLogger(__name__)
 _DECISION_INSERT_SQL = (
     "INSERT INTO listener_decisions ("
     "session_id, cwd_project, source_kb, decided_ts, candidates_considered,"
-    " decision, reason, vote_shape"
-    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+    " decision, reason, vote_shape, candidate_signal"
+    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
 )
 
 # ── Candidate retrieval tuning (all pinned literals per GTD bf40d4f1) ───────
@@ -90,6 +106,77 @@ _MAP_CANDIDATE_CAP = 5
 # The fallback path mirrors today's pre-fix retrieval verbatim: direct
 # mental_map search, limit=5.
 _FALLBACK_MAP_SEARCH_LIMIT = 5
+
+# ── Lexical candidate path tuning (all pinned literals per GTD be964e94) ───
+# Minimum length, in characters, a project_ref or a single title token must
+# have to be eligible for lexical substring matching. Guards short/incidental
+# tokens (a 2-3 char ref, a short common word buried in a longer title) from
+# driving a false-positive match. Measured against the live map roster (5
+# map-bearing projects, 27 active maps): every real project_ref clears this
+# comfortably.
+MIN_LEXICAL_TOKEN_LEN = 6
+# Lead fix at merge (review of be964e94): a SINGLE non-stopword title token
+# is not evidence. Probed against the three real agent-gtd map titles the
+# branch's own eval uses as decoys, 4 of 4 ordinary sentences produced a
+# candidate — "let me dispatch the next wave and check the worker logs",
+# "reviewing file attachments on the PR", and so on. Every false candidate
+# converts a request that would have SHORT-CIRCUITED with zero candidates
+# into three concurrent Sonnet calls, so the cost lands on exactly the
+# orchestration chatter Jason writes all day. A project_ref match stays
+# single-signal (refs are distinctive by construction); a title-only match
+# now needs two distinct non-stopword tokens, which "Dispatch Service &
+# Worker" requires both of rather than either.
+MIN_LEXICAL_TITLE_TOKEN_MATCHES = 2
+# Small, pinned stopword set: generic title words that must NOT drive a
+# lexical match on their own. A match still fires on a map's project_ref (no
+# stopword check there — refs are already distinctive by construction) or on
+# any OTHER, non-stopword title token; only a stopword-only title cannot,
+# alone, surface a map lexically.
+_LEXICAL_TITLE_STOPWORDS = frozenset(
+    {
+        "project",
+        "system",
+        "server",
+        "service",
+        "config",
+        "general",
+        "status",
+        "update",
+        "details",
+        "overview",
+        "network",
+        "machine",
+        "database",
+        "cluster",
+        "runbook",
+        "summary",
+        "orientation",
+    }
+)
+# Collapses any run of hyphen/underscore/whitespace to a single space, so
+# 'camera-profiles', 'camera_profiles' and 'camera profiles' all normalize to
+# the identical 'camera profiles' — the AC's hyphen/underscore/space-variant
+# requirement.
+#
+# Lead fix at merge (review of be964e94): splitting on ONLY [-_\s] meant a
+# project named inside a real path missed — '~/git/camera-profiles-data/' and
+# 'work on camera-profiles.' both failed, and that path form is the item's own
+# motivating example. Every non-alphanumeric run is a separator, so slashes,
+# dots, quotes, parens and backticks all normalize away. Applied after
+# lowercasing, so the class only needs a-z0-9.
+_LEXICAL_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
+
+# Merge precedence tiers (GTD be964e94 AC3): a map found by BOTH the lexical
+# and detail signals ranks above one found by either alone; a lexical
+# project_ref match outranks a detail-only match (higher precision); a
+# lexical TITLE-token match sits between the two (still lexical, but a
+# title-word mention is weaker evidence than a project-name mention);
+# detail-only candidates rank last, in their existing best-detail-rank order.
+# Lower value == ranks first.
+_TIER_BOTH_SIGNALS = 0
+_TIER_LEXICAL_PROJECT_REF = 1
+_TIER_LEXICAL_TITLE = 2
+_TIER_DETAIL_ONLY = 3
 
 # ── Plural-pointer output contract (all pinned literals per GTD 66ea1fe4) ──
 # Majority threshold for the reframed set-returning vote: a candidate is
@@ -258,6 +345,237 @@ async def _retrieve_candidate_maps(
     return fallback_entries, True, fallback_evidence
 
 
+# ── Lexical candidate path (GTD be964e94) ────────────────────────────────────
+
+_ACTIVE_MAPS_SQL = (
+    "SELECT id, project_ref, short_title FROM knowledge_entries"
+    " WHERE is_active = 1 AND entry_type = 'mental_map'"
+)
+
+
+async def _active_mental_maps(db: Any) -> list[tuple[str, str | None, str]]:
+    """Return ``(id, project_ref, short_title)`` for every ACTIVE mental map.
+
+    Used only by :func:`_retrieve_lexical_candidates` to scan a project's
+    small, low-cardinality map roster (GTD be964e94 evidence: "5 map-bearing
+    projects, 27 active maps") for a literal project-name / map-title mention
+    in the request text — independent of, and unaffected by, whatever
+    :func:`_retrieve_candidate_maps` (detail-match retrieval) did or didn't
+    find. No params to bind — this is a flat scan with two literal filters,
+    same portable-SQL convention (``?`` placeholders where params exist) as
+    :func:`_owning_active_maps`.
+    """
+    cursor = await db.execute(_ACTIVE_MAPS_SQL)
+    rows = await cursor.fetchall()
+    return [
+        (str(row[0]), (str(row[1]) if row[1] is not None else None), str(row[2]))
+        for row in rows
+    ]
+
+
+def _normalize_lexical(text: str) -> str:
+    """Lowercase, then collapse hyphen/underscore/whitespace runs to one space.
+
+    Makes 'camera-profiles', 'camera_profiles' and 'camera profiles' (and any
+    mix thereof) normalize identically, and turns a hyphen-joined path token
+    like 'camera-profiles-data' into the space-separated 'camera profiles
+    data' — which is what lets :func:`_lexical_word_match` treat 'camera
+    profiles' as a whole-word-bounded match inside it.
+    """
+    return _LEXICAL_SEPARATOR_RE.sub(" ", text.strip().lower()).strip()
+
+
+def _lexical_word_match(haystack_normalized: str, needle_normalized: str) -> bool:
+    """True if ``needle`` occurs in ``haystack``, bounded by start/end/space.
+
+    Both arguments must already be run through :func:`_normalize_lexical`.
+    Bounding the match on whitespace (rather than matching "anywhere") is
+    what makes a hyphen-joined path token like 'camera-profiles-data' —
+    normalized to 'camera profiles data' — match the needle 'camera
+    profiles' (immediately followed by a space, then 'data'), while still
+    refusing to match an unrelated word that merely contains the needle's
+    letters run together with no separator (e.g. 'megacamera' normalizes to
+    a single space-free word, so it is never bounded by a space immediately
+    before 'camera' and cannot match the needle 'camera').
+    """
+    if not needle_normalized:
+        return False
+    pattern = r"(?:^|(?<=\s))" + re.escape(needle_normalized) + r"(?:$|(?=\s))"
+    return re.search(pattern, haystack_normalized) is not None
+
+
+async def _retrieve_lexical_candidates(
+    db: Any, text: str, cwd_project: str | None
+) -> dict[str, bool]:
+    """Lexical project_ref / map-title candidate path (GTD be964e94).
+
+    Case-insensitively matches ``text`` against every ACTIVE mental map's
+    ``project_ref`` and ``short_title`` (:func:`_active_mental_maps`) — a
+    cheap, deterministic, high-precision complement to detail-match
+    retrieval (:func:`_retrieve_candidate_maps`); see the module docstring.
+    Runs ALONGSIDE detail matching, never in place of it — the caller
+    (:func:`_retrieve_candidates`) merges both signals into one list.
+
+    Guards (all pinned literals — see the module-level constants above):
+
+    * ``MIN_LEXICAL_TOKEN_LEN`` — a project_ref, or an individual title
+      token, shorter than this is NOT eligible for substring matching.
+    * A map whose ``project_ref`` equals ``cwd_project`` is excluded BEFORE
+      matching (Rule A, later in the route, would drop it anyway on any
+      signal — excluding it here keeps this signal's own candidate list,
+      and the telemetry attribution derived from it, honest).
+    * ``_LEXICAL_TITLE_STOPWORDS`` — a generic title token cannot drive a
+      match on its own; only the project_ref, or a non-stopword title
+      token, may.
+
+    No LLM call, no network — pure string work over at most a few dozen rows
+    (the pinned literal AC's latency bar).
+
+    Returns ``{map_id: matched_via_project_ref}``: ``True`` when the match
+    came from the (higher-precision) ``project_ref``, ``False`` when it came
+    only from a ``short_title`` token. A map that matches via both still
+    reports ``True`` — the caller ranks by the higher-precision tier.
+    """
+    normalized_text = _normalize_lexical(text)
+    if not normalized_text:
+        return {}
+
+    hits: dict[str, bool] = {}
+    for map_id, project_ref, short_title in await _active_mental_maps(db):
+        if project_ref is not None and project_ref == cwd_project:
+            continue
+
+        if (
+            project_ref
+            and len(project_ref) >= MIN_LEXICAL_TOKEN_LEN
+            and _lexical_word_match(normalized_text, _normalize_lexical(project_ref))
+        ):
+            hits[map_id] = True
+            continue
+
+        if short_title:
+            matched_title_tokens = 0
+            for token in _normalize_lexical(short_title).split(" "):
+                if len(token) < MIN_LEXICAL_TOKEN_LEN:
+                    continue
+                if token in _LEXICAL_TITLE_STOPWORDS:
+                    continue
+                if _lexical_word_match(normalized_text, token):
+                    matched_title_tokens += 1
+            if matched_title_tokens >= MIN_LEXICAL_TITLE_TOKEN_MATCHES:
+                hits[map_id] = False
+    return hits
+
+
+async def _retrieve_candidates(
+    kb: "KnowledgeBase", text: str, cwd_project: str | None
+) -> tuple[
+    list[KnowledgeEntry],
+    bool,
+    dict[str, _CandidateEvidence],
+    dict[str, ListenerCandidateSignal],
+]:
+    """Merge the lexical and detail-match candidate signals (GTD be964e94 AC3).
+
+    Runs both :func:`_retrieve_candidate_maps` (detail-match, GTD bf40d4f1 —
+    left entirely untouched, including its own internal fallback) and
+    :func:`_retrieve_lexical_candidates` (lexical, GTD be964e94), then merges
+    into ONE deduplicated candidate list:
+
+    * A map found by BOTH signals ranks above one found by either alone
+      (``_TIER_BOTH_SIGNALS``).
+    * A lexical project_ref match outranks a detail-only match — it is the
+      higher-precision signal (``_TIER_LEXICAL_PROJECT_REF``).
+    * A lexical title-token-only match also outranks a detail-only match,
+      but sits below a project_ref match (``_TIER_LEXICAL_TITLE``).
+    * Detail-only candidates keep their existing best-detail-rank ordering,
+      below both lexical tiers (``_TIER_DETAIL_ONLY``).
+    * Ties within a tier break by map id ascending.
+
+    The merged list is capped at ``_MAP_CANDIDATE_CAP`` — same pinned cap as
+    the detail-only path, applied AFTER the merge.
+
+    Returns ``(candidates, used_fallback, evidence, signal_source)``:
+
+    * ``candidates`` / ``used_fallback`` / ``evidence`` are exactly the
+      shapes :func:`_retrieve_candidate_maps` returned alone (Rule A, Rule B
+      and the vote consume them identically — GTD be964e94 AC5). A
+      lexical-only candidate is synthesized evidence
+      ``_CandidateEvidence(hit_count=1, best_rank=1)`` so it automatically
+      clears :func:`_meets_second_slot_bar` if it lands in a non-primary
+      slot — deliberate: a literal project-name/title mention is treated as
+      at least as strong as a rank-1 detail hit. A map found by both signals
+      keeps its detail ``hit_count`` but its ``best_rank`` is tightened to
+      ``min(existing, 1)`` for the same reason.
+    * ``signal_source`` maps each candidate id to which signal is credited
+      for it — ``"lexical"`` (present in the lexical hits, regardless of
+      whether detail-matching also found it — lexical is the higher-
+      precision signal so it wins attribution), ``"fallback"`` (detail-only,
+      via the detail-match retrieval's own direct-search fallback), or
+      ``"detail"`` (detail-only, via detail-match's primary path). Consumed
+      by :func:`_record_listener_decision` (``candidate_signal`` column) so
+      "which signal produced a whisper" is answerable straight off
+      ``listener_decisions`` — see that column's comment in
+      ``kb_service.database`` for the exact query.
+    """
+    detail_candidates, used_fallback, detail_evidence = await _retrieve_candidate_maps(
+        kb, text
+    )
+    lexical_hits = await _retrieve_lexical_candidates(kb.db, text, cwd_project)
+
+    detail_by_id = {entry.id: entry for entry in detail_candidates}
+
+    lexical_only_ids = [mid for mid in lexical_hits if mid not in detail_by_id]
+    lexical_only_entries: dict[str, KnowledgeEntry] = {}
+    for map_id in lexical_only_ids:
+        entry = await kb.get(map_id)
+        # Defense-in-depth, mirrors _retrieve_candidate_maps: re-check
+        # active/mental_map in case of a race with deactivation between the
+        # active-maps scan and this fetch.
+        if (
+            entry is not None
+            and entry.is_active
+            and entry.entry_type == EntryType.MENTAL_MAP
+        ):
+            lexical_only_entries[map_id] = entry
+
+    entries_by_id: dict[str, KnowledgeEntry] = {}
+    tier: dict[str, int] = {}
+    merged_evidence: dict[str, _CandidateEvidence] = {}
+    signal_source: dict[str, ListenerCandidateSignal] = {}
+
+    for map_id, entry in detail_by_id.items():
+        entries_by_id[map_id] = entry
+        ev = detail_evidence[map_id]
+        if map_id in lexical_hits:
+            tier[map_id] = _TIER_BOTH_SIGNALS
+            merged_evidence[map_id] = _CandidateEvidence(
+                hit_count=ev.hit_count, best_rank=min(ev.best_rank, 1)
+            )
+            signal_source[map_id] = "lexical"
+        else:
+            tier[map_id] = _TIER_DETAIL_ONLY
+            merged_evidence[map_id] = ev
+            signal_source[map_id] = "fallback" if used_fallback else "detail"
+
+    for map_id, entry in lexical_only_entries.items():
+        entries_by_id[map_id] = entry
+        matched_project_ref = lexical_hits[map_id]
+        tier[map_id] = (
+            _TIER_LEXICAL_PROJECT_REF if matched_project_ref else _TIER_LEXICAL_TITLE
+        )
+        merged_evidence[map_id] = _CandidateEvidence(hit_count=1, best_rank=1)
+        signal_source[map_id] = "lexical"
+
+    ordered_ids = sorted(
+        entries_by_id,
+        key=lambda mid: (tier[mid], merged_evidence[mid].best_rank, mid),
+    )[:_MAP_CANDIDATE_CAP]
+
+    merged_candidates = [entries_by_id[mid] for mid in ordered_ids]
+    return merged_candidates, used_fallback, merged_evidence, signal_source
+
+
 async def _record_listener_decision(
     *,
     session_id: str | None,
@@ -267,6 +585,7 @@ async def _record_listener_decision(
     reason: ListenerDecisionReason,
     fallback: bool = False,
     vote_shape: str = "",
+    candidate_signal: ListenerCandidateSignal = "",
 ) -> None:
     """Best-effort insert of one ``listener_decisions`` row. Never raises.
 
@@ -288,6 +607,13 @@ async def _record_listener_decision(
     reframed set-returning vote's effect on whisper rate is measurable
     directly from ``listener_decisions`` without re-deriving it from logs.
 
+    ``candidate_signal`` (GTD be964e94) is which candidate-retrieval signal
+    produced the surfaced pointer — ``"lexical"`` / ``"detail"`` /
+    ``"fallback"`` — populated by the caller ONLY on the "whispered" branch
+    (default ``""`` everywhere else, including every decline branch — see
+    the column comment in ``kb_service.database`` for the full vocabulary
+    and the query it makes answerable).
+
     A failure here (bad DSN, pool exhaustion, whatever) is logged at DEBUG
     and swallowed: this write must never fail or slow the listener response.
     """
@@ -305,6 +631,7 @@ async def _record_listener_decision(
             decision,
             stored_reason,
             vote_shape,
+            candidate_signal,
         )
     except Exception as exc:  # best-effort telemetry: must never raise
         logger.debug("listener decision write failed: %s", exc)
@@ -404,9 +731,9 @@ async def listener(
     Steps:
     1. Kill switch — return ``{pointer: null, pointers: []}`` if
        ``KB_LISTENER_ENABLED != 'TRUE'``.
-    2. Retrieval — detail-match + owning-map resolution, ranked/deduped/capped
-       at 5, falling back to a direct mental_map search on zero candidates
-       (see :func:`_retrieve_candidate_maps`).
+    2. Retrieval — detail-match + owning-map resolution MERGED with the
+       lexical project_ref/title path, ranked/deduped/capped at 5 (see
+       :func:`_retrieve_candidates`, GTD be964e94).
     3. Rule A — drop candidates whose ``project_ref == cwd_project``.
     4. Rule B — drop candidates whose ``operated_via`` hint is in ``body.operating``.
     5. Short-circuit — return null if no candidates remain or no LLM available.
@@ -446,8 +773,10 @@ async def listener(
 
     kb = request.app.state.kb
 
-    # ── Candidate retrieval (detail-match + owning-map resolution) ───────────
-    candidates, used_fallback, evidence = await _retrieve_candidate_maps(kb, body.text)
+    # ── Candidate retrieval (lexical + detail-match, merged) ─────────────────
+    candidates, used_fallback, evidence, signal_source = await _retrieve_candidates(
+        kb, body.text, body.cwd_project
+    )
     n_retrieved = len(candidates)
 
     # ── Rule A: cross-project filter ──────────────────────────────────────────
@@ -542,7 +871,8 @@ async def listener(
     }
 
     # Evidence order: `entries` is already ranked best-evidence-first by
-    # _retrieve_candidate_maps, so filtering it (rather than sorting
+    # _retrieve_candidates (lexical/both-signal tiers first, then detail-only
+    # in best-detail-rank order), so filtering it (rather than sorting
     # majority_ids some other way) preserves that order for free.
     ranked_majority = [e for e in entries if e.id in majority_ids]
 
@@ -561,6 +891,12 @@ async def listener(
             selected.append(e)
 
     if selected:
+        # Attribution (GTD be964e94): credit the PRIMARY (best-evidence,
+        # first-slot) selected pointer's signal — the query this feeds
+        # ("how many whispers came from lexical vs detail vs fallback") is
+        # about the surfaced whisper as a whole, and the primary pointer is
+        # the one that earned the slot without needing the evidence bar.
+        candidate_signal = signal_source.get(selected[0].id, "")
         await _record_listener_decision(
             session_id=body.session_id,
             cwd_project=body.cwd_project,
@@ -569,6 +905,7 @@ async def listener(
             reason="whispered",
             fallback=used_fallback,
             vote_shape=vote_shape,
+            candidate_signal=candidate_signal,
         )
         reason_parts = [
             f"{e.id} ({'unanimous 3/3' if vote_counts[e.id] == 3 else 'majority 2/3'})"

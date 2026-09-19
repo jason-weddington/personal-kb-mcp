@@ -167,6 +167,31 @@ _SCHEMA_STATEMENTS: list[str] = [
     # effect on whisper rate be measured directly off this table.
     "ALTER TABLE listener_decisions"
     " ADD COLUMN IF NOT EXISTS vote_shape TEXT NOT NULL DEFAULT ''",
+    # candidate_signal (GTD be964e94): added idempotently for the ALREADY-
+    # DEPLOYED table, same ADD COLUMN IF NOT EXISTS pattern as vote_shape
+    # above. Records WHICH candidate-retrieval signal produced the surfaced
+    # candidate on a 'whisper' decision:
+    #   'lexical'  — the new project_ref/title substring path (be964e94),
+    #                 including maps ALSO found by detail-matching (lexical
+    #                 is the higher-precision signal so it wins attribution)
+    #   'detail'   — the primary detail-match retrieval path (bf40d4f1)
+    #   'fallback' — that same retrieval's own direct-mental_map-search
+    #                fallback (used when detail-matching resolves zero
+    #                candidate maps)
+    # '' (default) on every decline branch, and on 'whisper' rows written
+    # before this migration. Answers "how many whispers came from the
+    # lexical path vs detail matching vs fallback" with:
+    #   SELECT candidate_signal, COUNT(*) FROM listener_decisions
+    #   WHERE decision = 'whisper' GROUP BY candidate_signal;
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS candidate_signal TEXT NOT NULL DEFAULT ''",
+    # Same DROP+ADD CONSTRAINT idempotency pattern used for the 'reason'
+    # CHECK above — safe to re-run on every init_db() call.
+    "ALTER TABLE listener_decisions"
+    " DROP CONSTRAINT IF EXISTS listener_decisions_candidate_signal_check",
+    "ALTER TABLE listener_decisions"
+    " ADD CONSTRAINT listener_decisions_candidate_signal_check"
+    " CHECK (candidate_signal IN ('', 'lexical', 'detail', 'fallback'))",
 ]
 
 
