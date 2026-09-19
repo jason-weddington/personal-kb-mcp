@@ -17,6 +17,10 @@ Coverage map (stdlib-only — monkeypatch urllib.request.urlopen):
       once (v1 routing — no per-source_kb fan-out).
   (7) Orphan-sweep flushes + deletes a foreign-session log.
   (8) All paths silent-on-failure (no exception escapes; rc==0).
+  (9) Inline-POST timeout bounding (GTD 54675d39): a hung opener swallows
+      without raising; orphan_sweep's absolute wall budget stops the sweep
+      early via a stubbed monotonic clock, leaving unreached files on disk;
+      a normal flush is unchanged; a successfully-POSTed orphan is unlinked.
 
 All assertions are stdlib-only. The hook package's ``dependencies = []``
 invariant is preserved; the only imports are stdlib (json, hashlib, socket,
@@ -30,6 +34,7 @@ import io
 import json
 import socket
 import sys
+import time
 import unittest.mock
 import urllib.request
 from pathlib import Path
@@ -1098,3 +1103,153 @@ def test_append_row_silent_when_dir_unwritable(
 
     # Should not raise.
     telemetry.append_row("any", {"session_id": "any", "map_id": "kb-1"})
+
+
+# ─── (9) inline-POST timeout bounding (GTD 54675d39) ────────────────────────
+
+
+def _seed_orphan_log(session_id: str, map_id: str) -> None:
+    """Append one minimal roster row to an orphan session's whisper-log."""
+    telemetry.append_row(
+        session_id,
+        {
+            "session_id": session_id,
+            "host": "h",
+            "surface": "roster",
+            "map_id": map_id,
+            "source_kb": "personal",
+            "cwd_project": "p",
+            "trigger_context": {},
+            "emitted_ts": "2026-06-17T00:00:00+00:00",
+            "consumed": False,
+            "consumed_ts": None,
+            "build_engine": None,
+        },
+    )
+
+
+def test_timeout_constant_is_bounded_at_three_seconds() -> None:
+    """_TIMEOUT is the literal 3.0s bound (mirrors http_index.py's philosophy)."""
+    assert telemetry._TIMEOUT == 3.0
+
+
+def test_orphan_sweep_swallows_hung_opener_and_leaves_file(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A stubbed opener that sleeps past the (shrunk) timeout and then raises
+    results in a swallowed failure — no exception escapes — matching the
+    existing silent-on-failure contract. The unflushed file stays on disk.
+    """
+    # Shrink _TIMEOUT for the test so it doesn't have to sleep 3+ real
+    # seconds to prove the point; the swallow behavior is timeout-value
+    # independent.
+    monkeypatch.setattr(telemetry, "_TIMEOUT", 0.01)
+
+    def hung_opener(*_args: Any, **_kwargs: Any) -> Any:
+        time.sleep(0.02)  # simulate running past the timeout
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", hung_opener)
+
+    foreign = "sess-hung"
+    _seed_orphan_log(foreign, "kb-hung")
+    foreign_path = get_whisper_log_path(foreign)
+    assert foreign_path.exists()
+
+    # Must not raise.
+    telemetry.orphan_sweep("sess-current")
+
+    # POST failed silently -> file was never unlinked.
+    assert foreign_path.exists()
+
+
+def test_orphan_sweep_stops_at_wall_budget_and_leaves_remaining_files(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A stubbed monotonic clock that has exhausted the budget mid-sweep
+    stops the loop early — files not yet reached are left present on disk,
+    never deleted unflushed.
+    """
+    _seed_orphan_log("sess-orphan-a", "kb-a")
+    _seed_orphan_log("sess-orphan-b", "kb-b")
+    _seed_orphan_log("sess-orphan-c", "kb-c")
+    path_a = get_whisper_log_path("sess-orphan-a")
+    path_b = get_whisper_log_path("sess-orphan-b")
+    path_c = get_whisper_log_path("sess-orphan-c")
+    assert path_a.exists() and path_b.exists() and path_c.exists()
+
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    # First call computes the deadline (start + budget); the second call is
+    # the pre-POST check for the first candidate (still under budget, so it
+    # is swept); the third call is the pre-POST check for the second
+    # candidate and reports the budget as exhausted.
+    clock_values = iter([0.0, 1.0, 999.0, 999.0, 999.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock_values))
+
+    telemetry.orphan_sweep("sess-current")
+
+    # Only the first (alphabetically first) candidate was POSTed + deleted.
+    assert len(recorder.calls) == 1
+    assert not path_a.exists()
+    # The remaining files were left on disk untouched.
+    assert path_b.exists()
+    assert path_c.exists()
+
+
+def test_orphan_sweep_success_still_unlinks_file(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """A file whose POST succeeded is still unlinked (unchanged behavior)."""
+    _seed_orphan_log("sess-orphan-ok", "kb-ok")
+    path = get_whisper_log_path("sess-orphan-ok")
+    assert path.exists()
+
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    telemetry.orphan_sweep("sess-current")
+
+    assert len(recorder.calls) == 1
+    assert not path.exists()
+
+
+def test_flush_session_normal_success_posts_every_row_unchanged(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """No behavior change when the service is reachable and fast: a normal
+    flush still POSTs every row and still returns the same value (None).
+    """
+    session_id = "sess-normal-flush"
+    _seed_orphan_log(session_id, "kb-1")
+    telemetry.append_row(
+        session_id,
+        {
+            "session_id": session_id,
+            "host": "h",
+            "surface": "roster",
+            "map_id": "kb-2",
+            "source_kb": "personal",
+            "cwd_project": "p",
+            "trigger_context": {},
+            "emitted_ts": "2026-06-17T00:00:00+00:00",
+            "consumed": False,
+            "consumed_ts": None,
+            "build_engine": None,
+        },
+    )
+
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = telemetry.flush_session(session_id)
+
+    assert result is None
+    assert len(recorder.calls) == 1
+    body = recorder.calls[0]["body"]
+    assert isinstance(body, dict)
+    sent_ids = {r["map_id"] for r in body["rows"]}
+    assert sent_ids == {"kb-1", "kb-2"}
+    # Left on disk on a 2xx per the documented composite-PK re-flush contract.
+    assert get_whisper_log_path(session_id).exists()

@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
@@ -48,9 +49,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT: float = 30.0
+# Per-POST network read bound. Telemetry is best-effort analytics that runs
+# INLINE on hook-event paths (Stop's flush_session, SessionStart's
+# orphan_sweep) — it must never be able to cost a session minutes on a host
+# where the KB service hangs rather than refuses. Mirrors http_index.py's
+# 1.5s-per-call / 3.0s-wall-deadline bounding philosophy.
+_TIMEOUT: float = 3.0
 _TELEMETRY_PATH = "/api/kb/telemetry/whispers"
 _ORPHAN_SWEEP_CAP = 20
+
+# Absolute wall budget for orphan_sweep's whole loop, independent of the
+# file-count cap above. Checked with a monotonic clock before each POST so a
+# host with many orphaned logs and a hanging/slow KB service cannot turn
+# SessionStart into a multi-minute stall. Files not reached before the
+# budget is exhausted are left on disk for the next session's sweep — never
+# deleted unflushed.
+_ORPHAN_SWEEP_BUDGET_SECONDS: float = 5.0
 
 
 def now_ts() -> str:
@@ -191,7 +205,8 @@ def _post_telemetry(url: str, key: str, rows: list[dict[str, Any]]) -> bool:
     """POST ``{"rows": rows}`` to ``{url}/api/kb/telemetry/whispers``.
 
     Returns ``True`` iff the response status is 2xx. Stdlib ``urllib`` only;
-    silent-on-failure. 30s timeout, Bearer auth, no retries.
+    silent-on-failure. :data:`_TIMEOUT`-second timeout, Bearer auth, no
+    retries.
     """
     try:
         endpoint = url.rstrip("/") + _TELEMETRY_PATH
@@ -278,6 +293,13 @@ def orphan_sweep(current_session_id: str) -> None:
     files) POSTs its rows to the same telemetry endpoint and, on a 2xx,
     deletes the orphaned file. Safety net for sessions where Stop did not
     fire. Silent-on-failure; stdlib only.
+
+    Bounded by TWO independent limits: the :data:`_ORPHAN_SWEEP_CAP` file
+    count, AND an absolute :data:`_ORPHAN_SWEEP_BUDGET_SECONDS` wall budget
+    measured with ``time.monotonic()`` (never ``time.time()``, which can
+    jump). The budget is checked before each POST; once it is exhausted the
+    sweep returns immediately, LEAVING any remaining files on disk — they
+    are picked up by a future session's sweep, never deleted unflushed.
     """
     try:
         creds = _legacy_url_key()
@@ -291,12 +313,17 @@ def orphan_sweep(current_session_id: str) -> None:
 
         candidates = sorted(cache_dir.glob("whisper-log-*.jsonl"))
         swept = 0
+        deadline = time.monotonic() + _ORPHAN_SWEEP_BUDGET_SECONDS
         for path in candidates:
             if swept >= _ORPHAN_SWEEP_CAP:
                 return
             sid = _parse_session_id_from_filename(path.name)
             if sid is None or sid == current_session_id:
                 continue
+            if time.monotonic() >= deadline:
+                # Budget exhausted: stop now, leave remaining files for the
+                # next sweep rather than risk further inline blocking.
+                return
             swept += 1
             try:
                 rows = _read_jsonl(path)
