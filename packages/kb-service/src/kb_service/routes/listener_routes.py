@@ -1,8 +1,19 @@
 """Listener gate: POST /api/kb/listener.
 
-Surfaces a single KB mental-map pointer when an AI agent's working context
-matches an orientation map with high confidence (unanimous-3 Sonnet votes,
-rules A + B candidate filtering).
+Surfaces up to :data:`kb_service.models.MAX_POINTERS_PER_RESPONSE` KB
+mental-map pointers when an AI agent's working context matches one or more
+orientation maps with sufficient confidence (majority-of-3 Sonnet votes over
+a SET of candidate ids, rules A + B candidate filtering, an evidence bar for
+any pointer beyond the first).
+
+THE REFRAME (GTD 66ea1fe4, Jason 2026-09-19): a map is a SUBJECT AREA; detail
+entries are the facts inside it. When several high-quality detail hits
+resolve to more than one owning map, more than one map is relevant and both
+should surface — capped at
+:data:`kb_service.models.MAX_POINTERS_PER_RESPONSE` (2) so the one-line
+whisper doesn't regrow into a roster. A second (or later) pointer is only
+ever emitted when it clears its OWN evidence bar (:func:`_meets_second_slot_bar`)
+— it does not ride along just because a stronger candidate matched.
 
 Kill switch: returns ``{"pointer": null}`` immediately when the env var
 ``KB_LISTENER_ENABLED`` is not set to ``'TRUE'`` (default ``'FALSE'`` — opt-in
@@ -29,10 +40,11 @@ swallowed so the listener response is never affected.
 
 import asyncio
 import collections
+import json
 import logging
 import os
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from fastapi import APIRouter, Depends, Request
 from kb_core.models.entry import EntryType, KnowledgeEntry
@@ -41,6 +53,7 @@ from kb_core.models.search import SearchQuery
 from kb_service.auth import get_current_user
 from kb_service.database import get_db
 from kb_service.models import (
+    MAX_POINTERS_PER_RESPONSE,
     ListenerDecisionReason,
     ListenerPointer,
     ListenerRequest,
@@ -58,8 +71,8 @@ logger = logging.getLogger(__name__)
 _DECISION_INSERT_SQL = (
     "INSERT INTO listener_decisions ("
     "session_id, cwd_project, source_kb, decided_ts, candidates_considered,"
-    " decision, reason"
-    ") VALUES ($1, $2, $3, $4, $5, $6, $7)"
+    " decision, reason, vote_shape"
+    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
 )
 
 # ── Candidate retrieval tuning (all pinned literals per GTD bf40d4f1) ───────
@@ -77,6 +90,49 @@ _MAP_CANDIDATE_CAP = 5
 # The fallback path mirrors today's pre-fix retrieval verbatim: direct
 # mental_map search, limit=5.
 _FALLBACK_MAP_SEARCH_LIMIT = 5
+
+# ── Plural-pointer output contract (all pinned literals per GTD 66ea1fe4) ──
+# Majority threshold for the reframed set-returning vote: a candidate is
+# emitted only when it appears in AT LEAST this many of the 3 concurrent
+# voters' returned sets. (Unanimity across free-form SETS would abstain even
+# more than the old single-id unanimous-3 gate; majority is the intentional
+# loosening that also targets the abstain problem — see GTD 66ea1fe4.)
+_VOTE_MAJORITY_THRESHOLD = 2
+# Max ids a single voter's reply may contribute to its own set (mirrors the
+# "at most 2" instruction in the gate prompt; enforced defensively here too
+# in case a voter ignores the instruction).
+_VOTE_MAX_IDS_PER_VOTER = MAX_POINTERS_PER_RESPONSE
+# Evidence bar for any pointer BEYOND the first (best-evidence) one: it must
+# independently earn its slot rather than simply riding along with a
+# stronger candidate. A candidate clears the bar if EITHER:
+#   (a) at least this many DISTINCT detail-entry hits resolve to it, or
+#   (b) its single best detail hit ranked at or above (numerically <=) this
+#       position in the detail search.
+_SECOND_SLOT_MIN_HIT_COUNT = 2
+_SECOND_SLOT_MAX_RANK = 3
+
+
+class _CandidateEvidence(NamedTuple):
+    """Per-candidate-map evidence, used only to gate non-primary pointers.
+
+    ``hit_count`` — number of DISTINCT top-N detail hits that resolved to
+    this map via the ``references`` edge (primary path), or ``1`` for a map
+    surfaced by the direct-map-search fallback (it wasn't detail-hit-owned
+    at all, so it stands alone). ``best_rank`` — the best (smallest) rank
+    among those hits (primary path), or the map's 1-based position in the
+    fallback search results (fallback path).
+    """
+
+    hit_count: int
+    best_rank: int
+
+
+def _meets_second_slot_bar(evidence: "_CandidateEvidence") -> bool:
+    """True if a non-primary candidate has independent support (see AC)."""
+    return (
+        evidence.hit_count >= _SECOND_SLOT_MIN_HIT_COUNT
+        or evidence.best_rank <= _SECOND_SLOT_MAX_RANK
+    )
 
 
 async def _owning_active_maps(db: Any, detail_ids: list[str]) -> list[tuple[str, str]]:
@@ -113,7 +169,7 @@ async def _owning_active_maps(db: Any, detail_ids: list[str]) -> list[tuple[str,
 
 async def _retrieve_candidate_maps(
     kb: "KnowledgeBase", text: str
-) -> tuple[list[KnowledgeEntry], bool]:
+) -> tuple[list[KnowledgeEntry], bool, dict[str, _CandidateEvidence]]:
     """Detail-match retrieval: find candidate mental maps via chunky details.
 
     1. Search the NON-map corpus for ``text`` (no entry_type restriction on
@@ -135,7 +191,13 @@ async def _retrieve_candidate_maps(
     construction), falls back to today's direct ``mental_map`` search so
     behaviour cannot regress below current.
 
-    Returns ``(candidate_maps, used_fallback)``, in candidate-rank order.
+    Returns ``(candidate_maps, used_fallback, evidence)``, in candidate-rank
+    order. ``evidence`` (GTD 66ea1fe4) maps each candidate's id to its
+    :class:`_CandidateEvidence` — the hit-count/best-rank pair the caller
+    uses to decide whether a NON-primary pointer earns its slot (see
+    :func:`_meets_second_slot_bar`). For the fallback path, each returned
+    map gets ``hit_count=1`` (it wasn't detail-hit-owned — it stands alone)
+    and ``best_rank`` equal to its 1-based position in the fallback results.
     """
     raw_results, _ = await kb.search(
         SearchQuery(query=text, limit=_DETAIL_SEARCH_FETCH_LIMIT)
@@ -148,16 +210,19 @@ async def _retrieve_candidate_maps(
         detail_rank = {entry.id: i + 1 for i, entry in enumerate(detail_hits)}
         owning = await _owning_active_maps(kb.db, list(detail_rank))
         best_rank: dict[str, int] = {}
+        hit_details: dict[str, set[str]] = collections.defaultdict(set)
         for target, source in owning:
             rank = detail_rank.get(target)
             if rank is None:
                 continue
+            hit_details[source].add(target)
             if source not in best_rank or rank < best_rank[source]:
                 best_rank[source] = rank
 
         if best_rank:
             ranked_map_ids = sorted(best_rank, key=lambda mid: (best_rank[mid], mid))
             candidates: list[KnowledgeEntry] = []
+            evidence: dict[str, _CandidateEvidence] = {}
             for map_id in ranked_map_ids[:_MAP_CANDIDATE_CAP]:
                 entry = await kb.get(map_id)
                 # Defense-in-depth: _owning_active_maps already filters to
@@ -169,8 +234,12 @@ async def _retrieve_candidate_maps(
                     and entry.entry_type == EntryType.MENTAL_MAP
                 ):
                     candidates.append(entry)
+                    evidence[map_id] = _CandidateEvidence(
+                        hit_count=len(hit_details[map_id]),
+                        best_rank=best_rank[map_id],
+                    )
             if candidates:
-                return candidates, False
+                return candidates, False, evidence
 
     # ── Fallback: detail-matching yielded zero candidate maps ───────────────
     # Mirrors the pre-fix retrieval verbatim so behaviour cannot regress.
@@ -181,7 +250,12 @@ async def _retrieve_candidate_maps(
             limit=_FALLBACK_MAP_SEARCH_LIMIT,
         )
     )
-    return [r.entry for r in fallback_results], True
+    fallback_entries = [r.entry for r in fallback_results]
+    fallback_evidence = {
+        e.id: _CandidateEvidence(hit_count=1, best_rank=i + 1)
+        for i, e in enumerate(fallback_entries)
+    }
+    return fallback_entries, True, fallback_evidence
 
 
 async def _record_listener_decision(
@@ -192,6 +266,7 @@ async def _record_listener_decision(
     candidates_considered: int,
     reason: ListenerDecisionReason,
     fallback: bool = False,
+    vote_shape: str = "",
 ) -> None:
     """Best-effort insert of one ``listener_decisions`` row. Never raises.
 
@@ -205,6 +280,13 @@ async def _record_listener_decision(
     ``reason`` is overridden to ``"fallback-direct"`` so the fallback is
     distinguishable in telemetry, at the cost of the granular per-branch
     reason for that subset of requests (decision itself is unaffected).
+
+    ``vote_shape`` (GTD 66ea1fe4) is a ``json.dumps``-encoded list of the
+    three voters' raw candidate-id sets (e.g. ``'[["kb-1"],["kb-1","kb-2"],[]]'``),
+    empty string ``""`` on every branch that never reached the LLM gate
+    (kill-switch, no-candidates, rule-A/B, no-llm) — recorded so the
+    reframed set-returning vote's effect on whisper rate is measurable
+    directly from ``listener_decisions`` without re-deriving it from logs.
 
     A failure here (bad DSN, pool exhaustion, whatever) is logged at DEBUG
     and swallowed: this write must never fail or slow the listener response.
@@ -222,6 +304,7 @@ async def _record_listener_decision(
             candidates_considered,
             decision,
             stored_reason,
+            vote_shape,
         )
     except Exception as exc:  # best-effort telemetry: must never raise
         logger.debug("listener decision write failed: %s", exc)
@@ -269,29 +352,45 @@ def _build_prompt(text: str, source: str, entries: list[KnowledgeEntry]) -> str:
         " Ordinary in-project coding/debugging needs NO map."
     )
     reply = (
-        "Reply with AT MOST ONE candidate id (the single most load-bearing),"
-        " or exactly NONE. When in doubt: NONE. No other text."
+        "Reply with the SET of candidate subject areas implicated by what the"
+        " agent wrote (comma-separated ids, AT MOST 2), or exactly NONE if"
+        " none qualify. When in doubt about any one candidate: leave it out."
+        " No other text."
     )
     blocks = _basic_blocks(entries)
     return f"{header}\n\n{context}\n\n{quote}\n\n{instruction}\n\n{blocks}\n\n{reply}"
 
 
-def _parse_vote(text: str | None, valid_ids: set[str]) -> str | None:
-    """Parse a single ``generate()`` response into a valid candidate id or None.
+def _parse_vote_set(text: str | None, valid_ids: set[str]) -> tuple[str, ...]:
+    """Parse a single ``generate()`` response into a SET of candidate ids.
 
-    Port of ``run_gate15.py::sonnet`` lines 158-166.  A ``generate()``
-    returning ``None`` (provider failure — anthropic.py swallows exceptions)
-    counts as a None vote.
+    Reframed (GTD 66ea1fe4) from the single-id-or-None ``run_gate15.py`` port:
+    a voter now answers "which subset of candidates is implicated?" rather
+    than "which single id, if any?". A ``generate()`` returning ``None``
+    (provider failure — anthropic.py swallows exceptions) counts as an empty
+    set, same as an explicit "NONE" reply. Ids not in ``valid_ids`` (the
+    retrieve-and-cite invariant) are dropped. The result is capped at
+    ``_VOTE_MAX_IDS_PER_VOTER``, keeping the FIRST-mentioned valid ids in
+    case a voter ignores the "at most 2" instruction.
+
+    Returns an ordered ``tuple`` (first-mention order), NOT a ``frozenset``:
+    a real Python set/frozenset of strings iterates in an order that depends
+    on ``PYTHONHASHSEED``, which would make the debug tie-break in the
+    non-majority branch below silently non-reproducible across processes.
+    Membership (``in``) and counting both work identically on a tuple.
     """
     if text is None:
-        return None
+        return ()
     stripped = text.strip()
     if stripped.upper().startswith("NONE"):
-        return None
+        return ()
     tokens = [t.strip() for t in stripped.replace("\n", ",").split(",")]
     ids = [t for t in tokens if t.startswith("kb-")]
-    valid = [i for i in ids if i in valid_ids]
-    return valid[0] if valid else None
+    valid_in_order: list[str] = []
+    for i in ids:
+        if i in valid_ids and i not in valid_in_order:
+            valid_in_order.append(i)
+    return tuple(valid_in_order[:_VOTE_MAX_IDS_PER_VOTER])
 
 
 @router.post("/listener", response_model=ListenerResponse)
@@ -300,18 +399,23 @@ async def listener(
     request: Request,
     user: Annotated[User, Depends(get_current_user)],
 ) -> ListenerResponse:
-    """Listener gate: surface a single KB map pointer or return null.
+    """Listener gate: surface 0..MAX_POINTERS_PER_RESPONSE KB map pointers.
 
     Steps:
-    1. Kill switch — return ``{pointer: null}`` if ``KB_LISTENER_ENABLED != 'TRUE'``.
+    1. Kill switch — return ``{pointer: null, pointers: []}`` if
+       ``KB_LISTENER_ENABLED != 'TRUE'``.
     2. Retrieval — detail-match + owning-map resolution, ranked/deduped/capped
        at 5, falling back to a direct mental_map search on zero candidates
        (see :func:`_retrieve_candidate_maps`).
     3. Rule A — drop candidates whose ``project_ref == cwd_project``.
     4. Rule B — drop candidates whose ``operated_via`` hint is in ``body.operating``.
     5. Short-circuit — return null if no candidates remain or no LLM available.
-    6. LLM gate — fire 3 concurrent ``kb.synthesis_llm.generate(prompt)`` calls.
-    7. Verdict — all 3 votes identical and non-None → return pointer; else null.
+    6. LLM gate — fire 3 concurrent ``kb.synthesis_llm.generate(prompt)`` calls,
+       each returning a SET of candidate ids (GTD 66ea1fe4 reframe).
+    7. Verdict — a candidate is emitted iff it appears in >= 2 of the 3
+       returned sets (majority); ordered by evidence rank, any pointer past
+       the first must also clear :func:`_meets_second_slot_bar`; result is
+       capped at ``MAX_POINTERS_PER_RESPONSE``.
 
     Every return path also fires a best-effort ``listener_decisions`` write
     (see :func:`_record_listener_decision`) so declines are no longer
@@ -336,13 +440,14 @@ async def listener(
         )
         return ListenerResponse(
             pointer=None,
+            pointers=[],
             reason="kill-switch: KB_LISTENER_ENABLED!=TRUE",
         )
 
     kb = request.app.state.kb
 
     # ── Candidate retrieval (detail-match + owning-map resolution) ───────────
-    candidates, used_fallback = await _retrieve_candidate_maps(kb, body.text)
+    candidates, used_fallback, evidence = await _retrieve_candidate_maps(kb, body.text)
     n_retrieved = len(candidates)
 
     # ── Rule A: cross-project filter ──────────────────────────────────────────
@@ -393,7 +498,7 @@ async def listener(
             reason=decision_reason,
             fallback=used_fallback,
         )
-        return ListenerResponse(pointer=None, reason=reason)
+        return ListenerResponse(pointer=None, pointers=[], reason=reason)
 
     # ── Short-circuit (split): candidates exist but no LLM ───────────────────
     if kb.synthesis_llm is None:
@@ -405,7 +510,9 @@ async def listener(
             reason="no-llm",
             fallback=used_fallback,
         )
-        return ListenerResponse(pointer=None, reason="no-injection: LLM unavailable")
+        return ListenerResponse(
+            pointer=None, pointers=[], reason="no-injection: LLM unavailable"
+        )
 
     # ── LLM gate: 3 concurrent votes ─────────────────────────────────────────
     entries = candidates
@@ -418,14 +525,42 @@ async def listener(
         kb.synthesis_llm.generate(prompt),
     )
 
-    votes = [_parse_vote(v, valid_ids) for v in raw_votes]
+    vote_sets = [_parse_vote_set(v, valid_ids) for v in raw_votes]
+    # Recorded verbatim (as sorted lists for reproducible JSON) so the
+    # reframed vote's effect is measurable straight off listener_decisions.
+    vote_shape = json.dumps([sorted(s) for s in vote_sets])
 
-    # ── Unanimous verdict ─────────────────────────────────────────────────────
-    # All 3 votes must be identical AND non-None.
-    # Retrieve-and-cite invariant: winner_id can only come from valid_ids.
-    if votes[0] is not None and all(v == votes[0] for v in votes):
-        winner_id = votes[0]
-        winner_entry = next(e for e in entries if e.id == winner_id)
+    # ── Majority verdict ──────────────────────────────────────────────────────
+    # A candidate is emitted iff it appears in >= _VOTE_MAJORITY_THRESHOLD of
+    # the 3 returned sets (a materially looser bar than the old "all 3
+    # identical AND non-None" unanimity, by design — see module docstring).
+    # Retrieve-and-cite invariant: every id here already came from valid_ids
+    # (enforced inside _parse_vote_set).
+    vote_counts = collections.Counter(mid for s in vote_sets for mid in s)
+    majority_ids = {
+        mid for mid, count in vote_counts.items() if count >= _VOTE_MAJORITY_THRESHOLD
+    }
+
+    # Evidence order: `entries` is already ranked best-evidence-first by
+    # _retrieve_candidate_maps, so filtering it (rather than sorting
+    # majority_ids some other way) preserves that order for free.
+    ranked_majority = [e for e in entries if e.id in majority_ids]
+
+    selected: list[KnowledgeEntry] = []
+    for i, e in enumerate(ranked_majority):
+        if len(selected) >= MAX_POINTERS_PER_RESPONSE:
+            break
+        if i == 0:
+            # The single best-evidence majority winner is never second-guessed
+            # by the evidence bar — it already cleared retrieval, Rules A/B,
+            # and a real vote majority.
+            selected.append(e)
+            continue
+        ev = evidence.get(e.id)
+        if ev is not None and _meets_second_slot_bar(ev):
+            selected.append(e)
+
+    if selected:
         await _record_listener_decision(
             session_id=body.session_id,
             cwd_project=body.cwd_project,
@@ -433,22 +568,26 @@ async def listener(
             candidates_considered=len(candidates),
             reason="whispered",
             fallback=used_fallback,
+            vote_shape=vote_shape,
         )
+        reason_parts = [
+            f"{e.id} ({'unanimous 3/3' if vote_counts[e.id] == 3 else 'majority 2/3'})"
+            for e in selected
+        ]
         return ListenerResponse(
-            pointer=ListenerPointer(id=winner_id, short_title=winner_entry.short_title),
-            reason=f"matched {winner_id} (unanimous 3/3)",
+            pointer=None,
+            pointers=[
+                ListenerPointer(id=e.id, short_title=e.short_title) for e in selected
+            ],
+            reason=f"matched {', '.join(reason_parts)}",
         )
 
-    # ── Non-unanimous fall-through ───────────────────────────────────────────
-    # Derive (best_id, best_count) from non-None votes; covers BOTH the 2/3
-    # split AND the 1-1-1 three-distinct-votes case (tie-break by Counter
-    # insertion order — acceptable for a debug-only string). When all three
-    # votes are None, no candidate received a vote at all.
-    non_none = [v for v in votes if v is not None]
-    if non_none:
-        best_id, best_count = collections.Counter(non_none).most_common(1)[0]
+    # ── No candidate reached majority ────────────────────────────────────────
+    if vote_counts:
+        best_id, best_count = vote_counts.most_common(1)[0]
         reason = (
-            f"no-injection: best candidate {best_id} not unanimous ({best_count}/3)"
+            f"no-injection: no candidate reached majority "
+            f"(best: {best_id} {best_count}/3)"
         )
         decision_reason = "vote-split"
     else:
@@ -461,5 +600,6 @@ async def listener(
         candidates_considered=len(candidates),
         reason=decision_reason,
         fallback=used_fallback,
+        vote_shape=vote_shape,
     )
-    return ListenerResponse(pointer=None, reason=reason)
+    return ListenerResponse(pointer=None, pointers=[], reason=reason)

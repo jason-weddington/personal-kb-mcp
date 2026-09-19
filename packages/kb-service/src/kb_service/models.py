@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from kb_core.models.entry import KnowledgeEntry
 from kb_core.models.search import SearchResult
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --- Auth / User Schemas ---
 
@@ -558,6 +558,15 @@ class ListenerPointer(BaseModel):
     short_title: str
 
 
+# Pinned literal (GTD 66ea1fe4): hard cap on how many map pointers a single
+# listener response may carry. A map is a SUBJECT AREA — plural evidence can
+# legitimately implicate more than one — but the whisper is a one-line
+# surface, and 3+ titles recreates the roster-noise problem this line of
+# work exists to fix. Kept here (not in listener_routes.py) so the response
+# model and the route agree on the same constant without a circular import.
+MAX_POINTERS_PER_RESPONSE = 2
+
+
 class ListenerResponse(BaseModel):
     """Response for ``POST /api/kb/listener``.
 
@@ -567,10 +576,35 @@ class ListenerResponse(BaseModel):
     unanimous match / non-unanimous). It is always present in the
     serialized body but defaulted so existing callers that build
     ``ListenerResponse(pointer=...)`` keep working unchanged.
+
+    ``pointers`` (GTD 66ea1fe4) is the widened output contract: a LIST of
+    0..``MAX_POINTERS_PER_RESPONSE`` pointers, in evidence-rank order (best
+    evidence first). ``pointer`` is now a DEPRECATED single-pointer alias —
+    kept because ``personal_kb_hook.listener_worker._post_one_kb`` reads
+    ``data["pointer"]`` directly off the raw JSON body (grepped both repos:
+    that is the one production reader; see GTD 66ea1fe4 final comment) — it
+    is populated with ``pointers[0]`` when non-empty, else ``None``. New
+    callers should read ``pointers``; ``pointer`` may be removed once every
+    reader has migrated.
     """
 
-    pointer: ListenerPointer | None
+    pointer: ListenerPointer | None = None
+    pointers: list[ListenerPointer] = Field(default_factory=list)
     reason: str = ""
+
+    @model_validator(mode="after")
+    def _populate_deprecated_alias(self) -> "ListenerResponse":
+        """Keep ``pointer`` in sync with ``pointers[0]`` when not set explicitly.
+
+        Construction sites in this codebase build ``ListenerResponse`` via
+        ``pointers=[...]`` only; this validator derives the deprecated
+        ``pointer`` alias from it so callers never have to set both. If a
+        caller DOES pass an explicit non-None ``pointer``, it is left
+        untouched (defensive — no current caller does this).
+        """
+        if self.pointer is None and self.pointers:
+            self.pointer = self.pointers[0]
+        return self
 
 
 # Closed sets for the ``listener_decisions`` telemetry sink (see

@@ -92,7 +92,9 @@ async def test_single_detail_resolves_single_map_no_fallback() -> None:
     kb.db.rows_for["graph_edges"] = [("kb-10001", "kb-20001")]
     kb.entries["kb-20001"] = _map_entry("kb-20001")
 
-    candidates, used_fallback = await _retrieve_candidate_maps(kb, "rsync raw-pairs")
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(
+        kb, "rsync raw-pairs"
+    )
 
     assert used_fallback is False
     assert [c.id for c in candidates] == ["kb-20001"]
@@ -124,7 +126,7 @@ async def test_dedupe_two_details_same_map_appears_once() -> None:
     ]
     kb.entries["kb-20001"] = _map_entry("kb-20001")
 
-    candidates, used_fallback = await _retrieve_candidate_maps(kb, "text")
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     assert used_fallback is False
     assert [c.id for c in candidates] == ["kb-20001"]
@@ -140,7 +142,7 @@ async def test_many_to_many_one_detail_owned_by_two_maps() -> None:
     kb.entries["kb-20001"] = _map_entry("kb-20001")
     kb.entries["kb-20002"] = _map_entry("kb-20002")
 
-    candidates, used_fallback = await _retrieve_candidate_maps(kb, "text")
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     assert used_fallback is False
     # Both maps tie at best-rank=1 (owned by the same, single detail hit) ->
@@ -165,7 +167,7 @@ async def test_ranking_uses_best_rank_not_hit_count() -> None:
     kb.entries["kb-20001"] = _map_entry("kb-20001")
     kb.entries["kb-20002"] = _map_entry("kb-20002")
 
-    candidates, _ = await _retrieve_candidate_maps(kb, "text")
+    candidates, _, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     # Map B (rank 1) ranks ahead of map A (rank 2) despite A being hit twice.
     assert [c.id for c in candidates] == ["kb-20002", "kb-20001"]
@@ -183,7 +185,7 @@ async def test_tie_break_is_map_id_ascending_regardless_of_edge_order() -> None:
     for mid in ("kb-20099", "kb-20001", "kb-20050"):
         kb.entries[mid] = _map_entry(mid)
 
-    candidates, _ = await _retrieve_candidate_maps(kb, "text")
+    candidates, _, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     assert [c.id for c in candidates] == ["kb-20001", "kb-20050", "kb-20099"]
 
@@ -197,7 +199,7 @@ async def test_cap_at_five_candidate_maps() -> None:
     for i in range(6):
         kb.entries[f"kb-2{i:04d}"] = _map_entry(f"kb-2{i:04d}")
 
-    candidates, used_fallback = await _retrieve_candidate_maps(kb, "text")
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     assert used_fallback is False
     assert len(candidates) == _MAP_CANDIDATE_CAP == 5
@@ -220,7 +222,7 @@ async def test_top_n_20_detail_hits_only() -> None:
     kb.db.rows_for["graph_edges"] = [(beyond_n_detail_id, beyond_n_map_id)]
     kb.entries[beyond_n_map_id] = _map_entry(beyond_n_map_id)
 
-    candidates, used_fallback = await _retrieve_candidate_maps(kb, "text")
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     # Zero candidate maps resolve (the only edge is beyond top-20) -> fallback.
     assert used_fallback is True
@@ -240,7 +242,7 @@ async def test_fallback_when_no_detail_hits_at_all() -> None:
     """Zero detail hits -> straight to the fallback direct mental_map search."""
     kb = _make_kb([])  # empty search results
 
-    candidates, used_fallback = await _retrieve_candidate_maps(kb, "text")
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     assert used_fallback is True
     assert candidates == []
@@ -266,7 +268,7 @@ async def test_fallback_when_detail_hits_have_no_owning_edges() -> None:
     # params) -- reassign it here to model the second call's response.
     kb.results = _detail_results(fallback_map)
 
-    candidates, used_fallback = await _retrieve_candidate_maps(kb, "text")
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     assert used_fallback is True
     assert [c.id for c in candidates] == ["kb-20001"]
@@ -280,7 +282,7 @@ async def test_fallback_when_resolved_map_id_is_stale_or_missing() -> None:
     kb.db.rows_for["graph_edges"] = [("kb-10001", "kb-20001")]
     # Deliberately do NOT register kb-20001 in kb.entries -> kb.get() -> None.
 
-    _candidates, used_fallback = await _retrieve_candidate_maps(kb, "text")
+    _candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
 
     assert used_fallback is True
     # Fallback search reuses fake_kb.results (still the original detail hit,

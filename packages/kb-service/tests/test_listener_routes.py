@@ -7,11 +7,18 @@ Test matrix (cases a-k):
   (d) rule A drops the cwd-project candidate
   (e) rule B drops the operated candidate
   (f) unanimous 3-vote pick -> pointer; asserts search shape + prompt content
-  (g) split vote (2-1) -> null
-  (h) any None vote -> null
+  (g) 2/3 majority vote (GTD 66ea1fe4 reframe: majority, not unanimity, is
+      now enough) -> whisper; a genuine 3-way split (no id reaches 2/3) -> null
+  (h) a None/abstain vote alongside a 2/3 majority still whispers; all-None
+      -> null
   (i) non-candidate id vote -> null
   (j) zero candidates after filters -> null; asserts search once, zero LLM calls
   (k) synthesis_llm is None with non-empty candidates -> null; zero LLM calls
+  (l) plural pointers: two majority-voted candidates, both meeting the
+      second-slot evidence bar -> both returned, in evidence order
+  (m) earned second slot: a weakly-supported second candidate reaching
+      majority is DROPPED (no independent evidence) -> only the strong one
+      returned
 
 Candidates in cases (d)-(k) are seeded via ``fake_kb.results`` using
 ``_make_map_result`` (``entry_type=MENTAL_MAP``). Since GTD bf40d4f1, the
@@ -114,6 +121,7 @@ def test_listener_kill_switch(
     body = resp.json()
     assert body == {
         "pointer": None,
+        "pointers": [],
         "reason": "kill-switch: KB_LISTENER_ENABLED!=TRUE",
     }
     # The reason key is present and a str (pinned per AC).
@@ -148,6 +156,7 @@ def test_listener_rule_a_drops_cwd_project(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
+        "pointers": [],
         "reason": "no-injection: 1 candidate(s), all dropped by rule-A (cwd-project)",
     }
     # Detail search finds zero non-map hits (the seeded result is a map) ->
@@ -184,6 +193,7 @@ def test_listener_rule_a_keeps_other_project(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": {"id": "kb-00001", "short_title": "Other Map"},
+        "pointers": [{"id": "kb-00001", "short_title": "Other Map"}],
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
 
@@ -217,7 +227,7 @@ def test_listener_rule_b_drops_operated_candidate(
     rule_b_reason = (
         "no-injection: 1 candidate(s), all dropped by rule-B (operating-manifest)"
     )
-    assert resp.json() == {"pointer": None, "reason": rule_b_reason}
+    assert resp.json() == {"pointer": None, "pointers": [], "reason": rule_b_reason}
     # Falls back to the direct map search (see module docstring); two calls.
     assert len(fake_kb.search_calls) == 2
 
@@ -252,6 +262,7 @@ def test_listener_rule_b_keeps_unmatched_hint(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": {"id": "kb-00001", "short_title": "Personal KB Map"},
+        "pointers": [{"id": "kb-00001", "short_title": "Personal KB Map"}],
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
 
@@ -282,6 +293,7 @@ def test_listener_rule_b_no_hint_never_dropped(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": {"id": "kb-00001", "short_title": "No Hint Map"},
+        "pointers": [{"id": "kb-00001", "short_title": "No Hint Map"}],
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
 
@@ -339,6 +351,7 @@ def test_listener_unanimous_pick_with_assertions(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": {"id": "kb-00001", "short_title": "Home Network Map"},
+        "pointers": [{"id": "kb-00001", "short_title": "Home Network Map"}],
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
 
@@ -374,22 +387,24 @@ def test_listener_unanimous_pick_with_assertions(
     assert "x" * 400 in prompt
     assert "_TRUNCATED" not in prompt
 
-    assert prompt.endswith("When in doubt: NONE. No other text.")
+    assert prompt.endswith(
+        "When in doubt about any one candidate: leave it out. No other text."
+    )
 
     # all three calls receive the same prompt
     for call_prompt, _ in fake_llm.generate_calls:
         assert call_prompt == prompt
 
 
-# ─── (g) split vote (2-1) -> null ────────────────────────────────────────────
+# ─── (g) 2/3 majority whispers; a genuine 3-way split does not ─────────────
 
 
-def test_listener_split_vote_returns_null(
+def test_listener_majority_vote_whispers(
     client: TestClient,
     fake_kb: FakeKnowledgeBase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 2-1 split vote (non-unanimous) produces {pointer: null}."""
+    """GTD 66ea1fe4 reframe: a 2/3 majority (no longer full unanimity) whispers."""
     monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
     fake_kb.results = [
         _make_map_result("kb-00001", short_title="Map One"),
@@ -400,7 +415,41 @@ def test_listener_split_vote_returns_null(
     fake_llm = FakeLLM()
     fake_llm.enqueue("kb-00001")  # vote 1
     fake_llm.enqueue("kb-00001")  # vote 2
-    fake_llm.enqueue("kb-00002")  # vote 3 — splits
+    fake_llm.enqueue(
+        "kb-00002"
+    )  # vote 3 — different candidate, still a 2/3 majority for kb-00001
+    fake_kb.synthesis_llm = fake_llm
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post("/api/kb/listener", json={"text": "hello"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "pointer": {"id": "kb-00001", "short_title": "Map One"},
+        "pointers": [{"id": "kb-00001", "short_title": "Map One"}],
+        "reason": "matched kb-00001 (majority 2/3)",
+    }
+    assert len(fake_llm.generate_calls) == 3
+
+
+def test_listener_no_majority_three_way_split_returns_null(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three distinct single-id votes: no id reaches the 2/3 majority bar."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [
+        _make_map_result("kb-00001", short_title="Map One"),
+        _make_map_result("kb-00002", short_title="Map Two"),
+        _make_map_result("kb-00003", short_title="Map Three"),
+    ]
+    fake_kb.filtered_count = 3
+
+    fake_llm = FakeLLM()
+    fake_llm.enqueue("kb-00001")
+    fake_llm.enqueue("kb-00002")
+    fake_llm.enqueue("kb-00003")
     fake_kb.synthesis_llm = fake_llm
 
     app.dependency_overrides[get_current_user] = fake_user
@@ -409,20 +458,21 @@ def test_listener_split_vote_returns_null(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
-        "reason": "no-injection: best candidate kb-00001 not unanimous (2/3)",
+        "pointers": [],
+        "reason": "no-injection: no candidate reached majority (best: kb-00001 1/3)",
     }
     assert len(fake_llm.generate_calls) == 3
 
 
-# ─── (h) any None vote -> null ───────────────────────────────────────────────
+# ─── (h) a None/abstain vote alongside a majority still whispers ───────────
 
 
-def test_listener_none_vote_returns_null(
+def test_listener_partial_abstain_still_reaches_majority(
     client: TestClient,
     fake_kb: FakeKnowledgeBase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Any None vote (provider failure or NONE response) produces {pointer: null}."""
+    """One voter abstaining (None) doesn't block the other two from a majority."""
     monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
     fake_kb.results = [_make_map_result("kb-00001", short_title="Test Map")]
     fake_kb.filtered_count = 1
@@ -430,7 +480,34 @@ def test_listener_none_vote_returns_null(
     fake_llm = FakeLLM()
     fake_llm.enqueue("kb-00001")
     fake_llm.enqueue("kb-00001")
-    fake_llm.enqueue(None)  # one None vote
+    fake_llm.enqueue(None)  # one abstaining vote
+    fake_kb.synthesis_llm = fake_llm
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post("/api/kb/listener", json={"text": "hello"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "pointer": {"id": "kb-00001", "short_title": "Test Map"},
+        "pointers": [{"id": "kb-00001", "short_title": "Test Map"}],
+        "reason": "matched kb-00001 (majority 2/3)",
+    }
+
+
+def test_listener_all_none_votes_returns_null(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All three voters abstaining (None) produces {pointer: null}."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [_make_map_result("kb-00001", short_title="Test Map")]
+    fake_kb.filtered_count = 1
+
+    fake_llm = FakeLLM()
+    fake_llm.enqueue(None)
+    fake_llm.enqueue(None)
+    fake_llm.enqueue(None)
     fake_kb.synthesis_llm = fake_llm
 
     app.dependency_overrides[get_current_user] = fake_user
@@ -439,7 +516,8 @@ def test_listener_none_vote_returns_null(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
-        "reason": "no-injection: best candidate kb-00001 not unanimous (2/3)",
+        "pointers": [],
+        "reason": "no-injection: no candidate received a vote (0/3)",
     }
 
 
@@ -465,6 +543,7 @@ def test_listener_none_text_vote_returns_null(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
+        "pointers": [],
         "reason": "no-injection: no candidate received a vote (0/3)",
     }
 
@@ -498,6 +577,7 @@ def test_listener_non_candidate_id_vote_returns_null(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
+        "pointers": [],
         "reason": "no-injection: no candidate received a vote (0/3)",
     }
 
@@ -533,6 +613,7 @@ def test_listener_zero_candidates_short_circuits(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
+        "pointers": [],
         "reason": "no-injection: 1 candidate(s), all dropped by rule-A (cwd-project)",
     }
     assert len(fake_kb.search_calls) == 2
@@ -559,6 +640,7 @@ def test_listener_no_synthesis_llm_returns_null(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
+        "pointers": [],
         "reason": "no-injection: LLM unavailable",
     }
     assert len(fake_kb.search_calls) == 2
@@ -687,6 +769,7 @@ def test_listener_primary_path_unanimous_pick_end_to_end(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": {"id": "kb-00001", "short_title": "Camera Profiles Map"},
+        "pointers": [{"id": "kb-00001", "short_title": "Camera Profiles Map"}],
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
     # No fallback needed — exactly one search call (the detail search).
@@ -725,10 +808,175 @@ def test_listener_primary_path_rule_a_drops_resolved_map(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
+        "pointers": [],
         "reason": "no-injection: 1 candidate(s), all dropped by rule-A (cwd-project)",
     }
     # Primary path resolved exactly one candidate -> no fallback search.
     assert len(fake_kb.search_calls) == 1
+
+
+# ─── (l)/(m) plural pointers (GTD 66ea1fe4) ─────────────────────────────────
+
+
+def test_listener_plural_pointers_both_earn_their_slot(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two majority-voted maps, both independently supported -> both returned,
+    in evidence order (kb-00001 at best-rank 1, kb-00002 earning its slot via
+    2 distinct detail hits)."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [
+        _make_detail_result("kb-00099", project_ref="camera-profiles"),  # rank 1
+        _make_detail_result("kb-00098", project_ref="grit-mile"),  # rank 2
+        _make_detail_result("kb-00097", project_ref="grit-mile"),  # rank 3
+    ]
+    fake_kb.filtered_count = 0
+    fake_kb.db.rows_for["graph_edges"] = [
+        ("kb-00099", "kb-00001"),
+        ("kb-00098", "kb-00002"),
+        ("kb-00097", "kb-00002"),  # kb-00002's 2nd distinct detail hit
+    ]
+    fake_kb.entries["kb-00001"] = KnowledgeEntry(
+        id="kb-00001",
+        short_title="Camera Profiles Map",
+        long_title="Camera Profiles Map (long)",
+        knowledge_details="Orientation map for camera-profiles.",
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="camera-profiles",
+        is_active=True,
+    )
+    fake_kb.entries["kb-00002"] = KnowledgeEntry(
+        id="kb-00002",
+        short_title="Grit Mile Map",
+        long_title="Grit Mile Map (long)",
+        knowledge_details="Orientation map for grit-mile.",
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="grit-mile",
+        is_active=True,
+    )
+
+    fake_llm = FakeLLM()
+    fake_llm.enqueue("kb-00001, kb-00002")
+    fake_llm.enqueue("kb-00001, kb-00002")
+    fake_llm.enqueue("kb-00001, kb-00002")
+    fake_kb.synthesis_llm = fake_llm
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post(
+        "/api/kb/listener",
+        json={"text": "hello", "cwd_project": "other-project"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "pointer": {"id": "kb-00001", "short_title": "Camera Profiles Map"},
+        "pointers": [
+            {"id": "kb-00001", "short_title": "Camera Profiles Map"},
+            {"id": "kb-00002", "short_title": "Grit Mile Map"},
+        ],
+        "reason": "matched kb-00001 (unanimous 3/3), kb-00002 (unanimous 3/3)",
+    }
+
+
+def test_listener_weak_second_candidate_does_not_ride_along(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second majority-voted map with only ONE detail hit ranked past the
+    top-3 does NOT earn a slot — proves the second slot is earned, not filled.
+    """
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [
+        _make_detail_result("kb-00099", project_ref="camera-profiles"),  # rank 1
+        _make_detail_result("kb-00098", project_ref="noise-a"),  # rank 2, no edge
+        _make_detail_result("kb-00097", project_ref="noise-b"),  # rank 3, no edge
+        _make_detail_result("kb-00096", project_ref="grit-mile"),  # rank 4
+    ]
+    fake_kb.filtered_count = 0
+    fake_kb.db.rows_for["graph_edges"] = [
+        ("kb-00099", "kb-00001"),
+        ("kb-00096", "kb-00002"),  # kb-00002's ONLY hit, at rank 4 (> top-3)
+    ]
+    fake_kb.entries["kb-00001"] = KnowledgeEntry(
+        id="kb-00001",
+        short_title="Camera Profiles Map",
+        long_title="Camera Profiles Map (long)",
+        knowledge_details="Orientation map for camera-profiles.",
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="camera-profiles",
+        is_active=True,
+    )
+    fake_kb.entries["kb-00002"] = KnowledgeEntry(
+        id="kb-00002",
+        short_title="Grit Mile Map",
+        long_title="Grit Mile Map (long)",
+        knowledge_details="Orientation map for grit-mile.",
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="grit-mile",
+        is_active=True,
+    )
+
+    fake_llm = FakeLLM()
+    fake_llm.enqueue("kb-00001, kb-00002")
+    fake_llm.enqueue("kb-00001, kb-00002")
+    fake_llm.enqueue("kb-00001, kb-00002")
+    fake_kb.synthesis_llm = fake_llm
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post(
+        "/api/kb/listener",
+        json={"text": "hello", "cwd_project": "other-project"},
+    )
+
+    assert resp.status_code == 200
+    # Both candidates reached a 3/3 majority, but kb-00002 has hit_count=1
+    # and best_rank=4 — it clears neither second-slot evidence bar, so only
+    # the strongly-evidenced kb-00001 is emitted.
+    assert resp.json() == {
+        "pointer": {"id": "kb-00001", "short_title": "Camera Profiles Map"},
+        "pointers": [{"id": "kb-00001", "short_title": "Camera Profiles Map"}],
+        "reason": "matched kb-00001 (unanimous 3/3)",
+    }
+
+
+def test_listener_caps_at_two_even_with_three_way_majority(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three candidates can each independently reach a 2/3 majority (voters
+    overlapping pairwise: {A,B}, {B,C}, {C,A} — each id appears in exactly 2
+    of the 3 sets). The hard MAX_POINTERS_PER_RESPONSE=2 cap still applies:
+    only the top-2 by evidence rank are emitted, never three."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [
+        _make_map_result("kb-00001", short_title="Map One"),
+        _make_map_result("kb-00002", short_title="Map Two"),
+        _make_map_result("kb-00003", short_title="Map Three"),
+    ]
+    fake_kb.filtered_count = 3
+
+    fake_llm = FakeLLM()
+    fake_llm.enqueue("kb-00001, kb-00002")
+    fake_llm.enqueue("kb-00002, kb-00003")
+    fake_llm.enqueue("kb-00003, kb-00001")
+    fake_kb.synthesis_llm = fake_llm
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post("/api/kb/listener", json={"text": "hello"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "pointer": {"id": "kb-00001", "short_title": "Map One"},
+        "pointers": [
+            {"id": "kb-00001", "short_title": "Map One"},
+            {"id": "kb-00002", "short_title": "Map Two"},
+        ],
+        "reason": "matched kb-00001 (majority 2/3), kb-00002 (majority 2/3)",
+    }
 
 
 # ─── endpoint is mounted ─────────────────────────────────────────────────────

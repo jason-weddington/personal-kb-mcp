@@ -112,6 +112,7 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         candidates_considered,
         decision,
         reason,
+        vote_shape,
     ) = args
     return {
         "session_id": session_id,
@@ -121,6 +122,7 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         "candidates_considered": candidates_considered,
         "decision": decision,
         "reason": reason,
+        "vote_shape": vote_shape,
     }
 
 
@@ -276,15 +278,18 @@ def test_decision_whispered(
     # was "whispered" pre-fallback; `decision` still correctly says "whisper"
     assert row["reason"] == "fallback-direct"
     assert row["candidates_considered"] == 1
+    assert row["vote_shape"] == '[["kb-00001"], ["kb-00001"], ["kb-00001"]]'
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
-def test_decision_vote_split(
+def test_decision_vote_majority_whispers(
     client: TestClient,
     fake_kb: FakeKnowledgeBase,
     monkeypatch: pytest.MonkeyPatch,
     decision_pool: _RecordingDecisionPool,
 ) -> None:
+    """GTD 66ea1fe4 reframe: a 2/3 majority (previously a non-unanimous
+    decline) now whispers — ``decision`` flips to "whisper" accordingly."""
     monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
     fake_kb.results = [
         _make_map_result("kb-00001", short_title="Map One"),
@@ -305,9 +310,45 @@ def test_decision_vote_split(
     assert resp.status_code == 200
 
     row = _decision_args(decision_pool)
-    assert row["decision"] == "declined"
+    assert row["decision"] == "whisper"
     assert row["reason"] == "fallback-direct"  # was "vote-split" pre-fallback
     assert row["candidates_considered"] == 2
+    assert row["vote_shape"] == '[["kb-00001"], ["kb-00001"], ["kb-00002"]]'
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_decision_no_majority_declines(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """A genuine 3-way split (no id reaches the 2/3 majority bar) still declines."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [
+        _make_map_result("kb-00001", short_title="Map One"),
+        _make_map_result("kb-00002", short_title="Map Two"),
+        _make_map_result("kb-00003", short_title="Map Three"),
+    ]
+    fake_kb.filtered_count = 3
+
+    fake_llm = FakeLLM()
+    fake_llm.enqueue("kb-00001")
+    fake_llm.enqueue("kb-00002")
+    fake_llm.enqueue("kb-00003")
+    fake_kb.synthesis_llm = fake_llm
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post(
+        "/api/kb/listener", json={"text": "hello", "session_id": "sess-7b"}
+    )
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    assert row["decision"] == "declined"
+    assert row["reason"] == "fallback-direct"  # was "vote-split" pre-fallback
+    assert row["candidates_considered"] == 3
+    assert row["vote_shape"] == '[["kb-00001"], ["kb-00002"], ["kb-00003"]]'
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -337,6 +378,7 @@ def test_decision_vote_none(
     assert row["decision"] == "declined"
     assert row["reason"] == "fallback-direct"  # was "vote-none" pre-fallback
     assert row["candidates_considered"] == 1
+    assert row["vote_shape"] == "[[], [], []]"
 
 
 # ─── (b) exactly one INSERT per request ─────────────────────────────────────
@@ -388,6 +430,7 @@ def test_decision_write_failure_does_not_break_response(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": None,
+        "pointers": [],
         "reason": "kill-switch: KB_LISTENER_ENABLED!=TRUE",
     }
     # The pool recorded no successful call (it raised), proving the write was
@@ -425,6 +468,7 @@ def test_decision_write_failure_with_candidates_and_llm_path(
     assert resp.status_code == 200
     assert resp.json() == {
         "pointer": {"id": "kb-00001", "short_title": "Home Network Map"},
+        "pointers": [{"id": "kb-00001", "short_title": "Home Network Map"}],
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
 

@@ -159,6 +159,14 @@ _SCHEMA_STATEMENTS: list[str] = [
     "'kill-switch', 'no-candidates', 'rule-a', 'rule-b', 'no-llm',"
     " 'vote-split', 'vote-none', 'whispered', 'fallback-direct'"
     "))",
+    # vote_shape (GTD 66ea1fe4): added idempotically for the ALREADY-DEPLOYED
+    # table, same ADD COLUMN IF NOT EXISTS pattern as whisper_telemetry above.
+    # json.dumps of the 3 voters' raw candidate-id sets, e.g.
+    # '[["kb-1"],["kb-1","kb-2"],[]]'; '' (default) on every branch that
+    # never reached the LLM gate. Lets the reframed set-returning vote's
+    # effect on whisper rate be measured directly off this table.
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS vote_shape TEXT NOT NULL DEFAULT ''",
 ]
 
 
