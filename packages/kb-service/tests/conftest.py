@@ -106,12 +106,26 @@ class FakeKbDb:
         self.calls: list[tuple[str, Any]] = []
         self.committed: int = 0
 
+        # ── pointer-candidates route (nudge_routes.py) ──────────────────────
+        # Settable per-test; vector_search_result defaults to [] (no hits).
+        self.has_owning_map: bool = False
+        self.own_embedding: list[float] | None = None
+        self.vector_search_result: list[tuple[str, float]] = []
+        self.vector_search_calls: list[tuple[list[float], dict[str, Any]]] = []
+
     async def execute(self, sql: str, params: Any = ()) -> FakeCursor:
         self.calls.append((sql, params))
         # rows_for: first-match-wins in insertion order (substring of SQL)
         for key, rows in self.rows_for.items():
             if key in sql:
                 return FakeCursor(rows)
+        if "graph_edges" in sql:
+            return FakeCursor([(1,)] if self.has_owning_map else [])
+        if "knowledge_vec" in sql:
+            if self.own_embedding is None:
+                return FakeCursor([])
+            vec_str = "[" + ",".join(str(v) for v in self.own_embedding) + "]"
+            return FakeCursor([(vec_str,)])
         if self._kb is not None and "mental_map" in sql:
             maps_rows = (
                 self._kb.maps_rows
@@ -123,6 +137,33 @@ class FakeKbDb:
 
     async def commit(self) -> None:
         self.committed += 1
+
+    async def vector_search(
+        self,
+        embedding: list[float],
+        limit: int = 20,
+        *,
+        project_ref: str | None = None,
+        entry_type: str | None = None,
+        tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
+    ) -> list[tuple[str, float]]:
+        """Fake of the kb-core ``Database.vector_search`` protocol method."""
+        self.vector_search_calls.append(
+            (
+                embedding,
+                {
+                    "limit": limit,
+                    "project_ref": project_ref,
+                    "entry_type": entry_type,
+                    "tags": tags,
+                    "contributor": contributor,
+                    "team": team,
+                },
+            )
+        )
+        return self.vector_search_result
 
 
 class FakeGraph:

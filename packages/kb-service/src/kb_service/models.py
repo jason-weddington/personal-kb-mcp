@@ -724,3 +724,38 @@ class EmbeddingQueueStatusResponse(BaseModel):
     vectorless_unqueued: int
     worker_enabled: bool
     worker_running: bool
+
+
+# --- Pointer-candidates (capture-time map nudge, server half) ---
+
+
+class PointerCandidatesRequest(BaseModel):
+    """Request body for ``POST /api/kb/pointer-candidates``."""
+
+    entry_id: str
+
+
+class PointerCandidate(BaseModel):
+    """A single candidate mental_map that might want to point at an entry."""
+
+    map_id: str
+    short_title: str
+    project_ref: str | None
+    distance: float
+
+
+class PointerCandidatesResponse(BaseModel):
+    """Response for ``POST /api/kb/pointer-candidates``.
+
+    ``has_owning_map`` is true when an ACTIVE mental_map already has a
+    ``references`` edge targeting the entry — the client uses this to stay
+    silent, and ``candidates`` MAY be empty in that case (the route does not
+    bother computing candidates once an owning map is found). Every
+    degenerate case (no embedding yet, no project_ref, no maps in the
+    project) reports ``has_owning_map=False, candidates=[]`` rather than an
+    error — the one exception is a genuinely-missing ``entry_id``, which is
+    a 404.
+    """
+
+    has_owning_map: bool
+    candidates: list[PointerCandidate]
