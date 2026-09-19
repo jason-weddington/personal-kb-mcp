@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from personal_kb_hook.index_reader import MapEntry
+    from personal_kb_hook.index_reader import MapEntry, MapKey
 
 # Em-dash separator after the project_ref. Matches preflight.py's separator
 # style in the main package; the test asserts the U+2014 codepoint, not a hyphen.
@@ -56,6 +56,12 @@ BANNED_TOKENS: frozenset[str] = frozenset(
         "consult",
     }
 )
+
+# Display cap for the new-maps delta FYI (render_new_maps). A display limit
+# only: every new map is still recorded as surfaced and still gets a
+# telemetry row (see personal_kb_hook.cli) — this constant governs only how
+# many are NAMED in the emitted text before an "(+N more)" suffix.
+NEW_MAPS_DISPLAY_CAP = 5
 
 
 def render_directory(project_ref: str, maps: list[MapEntry]) -> str:
@@ -165,6 +171,50 @@ def compose_directory(
     if line2:
         return line2
     return None
+
+
+def render_new_maps(new_maps: list[tuple[MapKey, MapEntry]]) -> str | None:
+    """Render the delta FYI line for maps newly surfaced this session.
+
+    ``new_maps`` is the FULL delta — every map not already in the
+    session's ``surfaced_map_ids`` — as ``(MapKey, MapEntry)`` pairs, NOT
+    pre-capped by the caller. Returns ``None`` when ``new_maps`` is empty
+    (defensive; the empty-delta guard is enforced by the caller in
+    :mod:`personal_kb_hook.cli`, which must not call this at all in that
+    case).
+
+    Entries are sorted into stable order by :class:`MapKey`'s natural
+    ``(label, id)`` tuple ordering before display, so repeated calls over
+    the same delta always name the same maps in the same order. When more
+    than :data:`NEW_MAPS_DISPLAY_CAP` maps are new, only the first
+    ``NEW_MAPS_DISPLAY_CAP`` (in that order) are named and a
+    ``(+N more)`` suffix reports how many were left off — a display limit
+    only; the caller still records and telemeters every map in the delta.
+
+    Format (SHORT titles only, no long_title — matches render_whisper):
+    * exactly one new map:
+      ``New map — <label>/[<id>] <short_title>``
+    * more than one:
+      ``New maps — <label>/[<id>] <short_title>, <label>/[<id>] <short_title>``
+    * capped:
+      ``New maps — ... <label>/[<id>] <short_title> (+N more)``
+
+    The source-KB ``label`` is ALWAYS included — unlike :func:`render_whisper`,
+    which only prefixes it in multi-KB rosters — so a single-KB roster's
+    delta FYI still reads consistently with the (always-labelled) form
+    other short-form surfaces use.
+    """
+    if not new_maps:
+        return None
+    ordered = sorted(new_maps, key=lambda pair: pair[0])
+    shown = ordered[:NEW_MAPS_DISPLAY_CAP]
+    overflow = len(ordered) - len(shown)
+    parts = [f"{key.label}/[{entry['id']}] {entry['short_title']}" for key, entry in shown]
+    header = "New map" if len(ordered) == 1 else "New maps"
+    body = ", ".join(parts)
+    if overflow > 0:
+        body = f"{body} (+{overflow} more)"
+    return f"{header} {_EM_DASH} {body}"
 
 
 def render_whisper(

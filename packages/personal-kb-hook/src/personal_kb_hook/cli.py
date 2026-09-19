@@ -32,10 +32,15 @@ if TYPE_CHECKING:
 from personal_kb_hook import http_index, listener, telemetry, whisper_debug
 from personal_kb_hook.index_reader import MapKey
 from personal_kb_hook.paths import get_listener_cache_path
-from personal_kb_hook.render import compose_directory, render_claude_json, render_whisper
+from personal_kb_hook.render import (
+    compose_directory,
+    render_claude_json,
+    render_new_maps,
+    render_whisper,
+)
 from personal_kb_hook.resolver import resolve_project
 from personal_kb_hook.roster import load_roster
-from personal_kb_hook.suppression import mark_emitted, should_emit
+from personal_kb_hook.suppression import EmitReason, get_surfaced_map_ids, mark_emitted, should_emit
 
 _SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse"})
 _KB_GET_TOOL_NAMES = frozenset({"mcp__personal-kb__kb_get", "mcp__team-kb__team_kb_get"})
@@ -440,10 +445,43 @@ def main(argv: list[str] | None = None) -> None:
             _flush_whisper()
             return
 
-        directory = compose_directory(project_ref, maps, index)
-        if directory is None:
-            _flush_whisper()
-            return
+        # Orientation reasons (first-emission, compact, scope-change) get the
+        # FULL roster, byte-identical to the pre-delta behavior. new-maps
+        # gets ONLY a delta FYI naming the maps this session has not already
+        # seen — never the full directory (that re-injection is the defect
+        # this switch fixes). telemetry_pairs mirrors exactly what gets
+        # announced-as-new in THIS emission, so the telemetry loop below stays
+        # branch-agnostic; mark_ids mirrors what mark_emitted() unions in.
+        telemetry_pairs: list[tuple[str, Any]]
+        mark_ids: list[MapKey]
+
+        if emit_reason == EmitReason.NEW_MAPS:
+            surfaced = get_surfaced_map_ids(session_id=session_id_str)
+            delta_pairs: list[tuple[MapKey, Any]] = [
+                (key, entry)
+                for key, (_label, entry) in zip(all_map_ids, all_pairs, strict=True)
+                if key not in surfaced
+            ]
+            # Empty-delta guard: should_emit() only returns NEW_MAPS when the
+            # resolved set is NOT a subset of surfaced_map_ids, so this is
+            # normally unreachable. If it happens anyway, emit NOTHING and
+            # write NO telemetry — never fall back to the full directory.
+            if not delta_pairs:
+                _flush_whisper()
+                return
+            directory = render_new_maps(delta_pairs)
+            if directory is None:
+                _flush_whisper()
+                return
+            telemetry_pairs = [(key.label, entry) for key, entry in delta_pairs]
+            mark_ids = [key for key, _entry in delta_pairs]
+        else:
+            directory = compose_directory(project_ref, maps, index)
+            if directory is None:
+                _flush_whisper()
+                return
+            telemetry_pairs = all_pairs
+            mark_ids = all_map_ids
 
         # Compose final output: directory + optional whisper (whisper last)
         combined = directory + "\n" + whisper if whisper else directory
@@ -453,14 +491,15 @@ def main(argv: list[str] | None = None) -> None:
         mark_emitted(
             session_id=session_id_str,
             scope=project_ref,
-            map_ids=all_map_ids,
+            map_ids=mark_ids,
         )
 
-        # Whisper-telemetry roster emit: one jsonl row per shown MapKey
-        # (own + cross-project). append_row is internally silent-on-failure;
-        # the outer try/except in main() backstops anything else.
-        # build_engine reads HEADLESS_BUILD_ENGINE defensively; unset => null
-        # (interactive/control-plane).
+        # Whisper-telemetry roster emit: one jsonl row per map ANNOUNCED-AS-NEW
+        # in this emission — the full set (own + cross-project) for the
+        # orientation reasons, or just the delta for new-maps. append_row is
+        # internally silent-on-failure; the outer try/except in main()
+        # backstops anything else. build_engine reads HEADLESS_BUILD_ENGINE
+        # defensively; unset => null (interactive/control-plane).
         #
         # Each row carries the map's ``pointers`` list — the kb-ids the map's
         # body mentions — so telemetry.mark_consumed can chain-credit this
@@ -474,7 +513,7 @@ def main(argv: list[str] | None = None) -> None:
             _host = socket.gethostname()
             _engine = telemetry.build_engine()
             _ts = telemetry.now_ts()
-            for _label, _entry in all_pairs:
+            for _label, _entry in telemetry_pairs:
                 _raw_ptrs = _entry.get("pointers", [])
                 _row_pointers: list[str] = (
                     [p for p in _raw_ptrs if isinstance(p, str) and p]

@@ -176,6 +176,24 @@ def should_emit(
     return None
 
 
+def get_surfaced_map_ids(
+    *,
+    session_id: str,
+    scratch_path: Path | None = None,
+) -> frozenset[MapKey]:
+    """Return the map keys already surfaced this session (read-only).
+
+    Lets a caller (the ``new-maps`` delta path in
+    :mod:`personal_kb_hook.cli`) compute which of a freshly resolved map
+    set are genuinely new, without reaching into the private
+    :func:`_read_scratch`. Does not mutate the scratch file. Missing/corrupt
+    scratch -> empty set, matching :func:`should_emit`'s fresh-state
+    treatment.
+    """
+    target = scratch_path or get_hook_scratch_path(session_id)
+    return frozenset(_read_scratch(target).surfaced_map_ids)
+
+
 def mark_emitted(
     *,
     session_id: str,

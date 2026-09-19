@@ -310,7 +310,12 @@ def test_suppressed_second_run_appends_no_row_and_first_reason_is_first_emission
 def test_new_maps_emit_reason_recorded_on_re_emission(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
-    """A genuine second emission (new map key) records reason=new-maps."""
+    """A genuine second emission (new map key) records reason=new-maps.
+
+    Post-delta-FYI (GTD 64f71a8a): the second emission is a DELTA — it
+    telemeters ONLY the genuinely new map (kb-2), not kb-1, which was
+    already surfaced and announced in the first-emission batch.
+    """
     (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
     monkeypatch.chdir(hook_env["root"])
 
@@ -339,7 +344,7 @@ def test_new_maps_emit_reason_recorded_on_re_emission(
             ]
         },
     )
-    rc2, _ = _run_cli(
+    rc2, out2 = _run_cli(
         monkeypatch,
         {
             "hook_event_name": "UserPromptSubmit",
@@ -349,12 +354,15 @@ def test_new_maps_emit_reason_recorded_on_re_emission(
         ["--format=text"],
     )
     assert rc2 == 0
+    # Delta FYI, not the full directory re-injected.
+    assert out2 == "New map — personal/[kb-2] ingest"
 
     rows = _read_log("sess-newmaps")
-    # First emission: 1 row (kb-1, first-emission). Second: 2 rows (kb-1 + kb-2, new-maps).
-    assert len(rows) == 3
+    # First emission: 1 row (kb-1, first-emission). Second (delta): 1 row
+    # (kb-2 only, new-maps) — kb-1 is NOT re-announced/re-telemetered.
+    assert len(rows) == 2
     second_batch = rows[1:]
-    assert {r["map_id"] for r in second_batch} == {"kb-1", "kb-2"}
+    assert {r["map_id"] for r in second_batch} == {"kb-2"}
     for row in second_batch:
         assert row["trigger_context"]["emit_reason"] == "new-maps"
 
