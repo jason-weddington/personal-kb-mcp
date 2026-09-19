@@ -302,6 +302,52 @@ async def test_owning_active_maps_empty_input_short_circuits() -> None:
     assert kb.db.calls == []
 
 
+# ─── counter plumbing (GTD 268e2af3) ────────────────────────────────────────
+#
+# The listener route derives its `n_retrieved` telemetry counter as
+# `len(candidates)` straight off this function's return value (see
+# `listener_routes.py::listener`) — captured BEFORE rule A / rule B ever
+# touch `candidates`. These tests pin that len(...) contract at the
+# retrieval-function boundary: whatever this function returns IS the
+# pre-rule-A pool the route records into `listener_decisions.candidate_ids`.
+
+
+async def test_retrieved_candidate_count_feeds_n_retrieved_contract() -> None:
+    """Multiple resolved candidates: len(candidates) is what n_retrieved reads.
+
+    Mirrors the many-to-many case (one detail hit owned by two maps) but
+    exists specifically to pin the count the route treats as n_retrieved —
+    a regression here would silently under/over-count per-stage attrition.
+    """
+    kb = _make_kb([_detail_entry("kb-10001")])
+    kb.db.rows_for["graph_edges"] = [
+        ("kb-10001", "kb-20001"),
+        ("kb-10001", "kb-20002"),
+    ]
+    kb.entries["kb-20001"] = _map_entry("kb-20001")
+    kb.entries["kb-20002"] = _map_entry("kb-20002")
+
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
+
+    assert used_fallback is False
+    n_retrieved = len(candidates)
+    assert n_retrieved == 2
+    # The route captures candidate ids from exactly this list, pre-rule-A.
+    assert [c.id for c in candidates] == ["kb-20001", "kb-20002"]
+
+
+async def test_fallback_path_candidate_count_also_feeds_n_retrieved_contract() -> None:
+    """Same len(...) contract holds on the fallback retrieval path."""
+    kb = _make_kb([])  # no detail hits -> fallback
+    fallback_maps = [_map_entry("kb-30001"), _map_entry("kb-30002")]
+    kb.results = _detail_results(*fallback_maps)
+
+    candidates, used_fallback, _evidence = await _retrieve_candidate_maps(kb, "text")
+
+    assert used_fallback is True
+    assert len(candidates) == 2
+
+
 async def test_owning_active_maps_query_shape_and_params() -> None:
     """The reverse-join query filters edge_type/entry_type/is_active and binds
     detail ids as parameters (portable '?' placeholders, no f-string data)."""

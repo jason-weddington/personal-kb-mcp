@@ -13,20 +13,27 @@ Test matrix:
   (b) exactly one INSERT per listener request (never more, never fewer).
   (c) a raising DB layer still yields a normal 200 response (best-effort,
       never fails or slows the caller).
-  (d) fallback-direct: any whisper/decline reached via the fallback
-      direct-map-search path (GTD bf40d4f1) is recorded with
-      reason="fallback-direct" instead of the granular branch reason, while
-      `decision` (whisper/declined) stays correct.
+  (d) primary (non-fallback) path keeps the granular reason and records
+      retrieval_path="primary".
+  (e) THE REASON MASK IS GONE (GTD 268e2af3): `reason` ALWAYS stays the
+      granular per-branch value, even when the fallback direct-map-search
+      path (GTD bf40d4f1) ran — the fallback is now recorded separately in
+      the `retrieval_path` column ("fallback-direct" / "primary"), so a
+      fallback-path decline's real decline cause is never destroyed.
+  (f) candidate_ids / whispered_ids / per-stage counters: candidate_ids is
+      the PRE-RULE-A retrieved pool (non-empty even for a rule-a/rule-b
+      decline — the entire point of the column); whispered_ids is only
+      non-empty on the whisper path; n_retrieved/n_after_a/n_after_b track
+      attrition through the two filter stages.
 
 ``_make_map_result`` seeds ``entry_type=MENTAL_MAP`` results, which the
 PRIMARY detail-match retrieval stage always filters out (see GTD bf40d4f1) —
-so every case in matrix (a) exercises the FALLBACK path by construction, and
-the stored `reason` is therefore "fallback-direct" rather than the granular
-per-branch value the pre-fix code recorded. A dedicated primary-path (no
-fallback) case proves the granular reason is preserved when detail-matching
-itself resolves the candidate.
+so every case in matrix (a) exercises the FALLBACK path by construction. A
+dedicated primary-path (no fallback) case (d) proves retrieval_path flips to
+"primary" when detail-matching itself resolves the candidate.
 """
 
+import json
 from typing import Any
 
 import pytest
@@ -114,6 +121,12 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         reason,
         vote_shape,
         candidate_signal,
+        candidate_ids,
+        whispered_ids,
+        n_retrieved,
+        n_after_a,
+        n_after_b,
+        retrieval_path,
     ) = args
     return {
         "session_id": session_id,
@@ -125,6 +138,12 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         "reason": reason,
         "vote_shape": vote_shape,
         "candidate_signal": candidate_signal,
+        "candidate_ids": json.loads(candidate_ids),
+        "whispered_ids": json.loads(whispered_ids),
+        "n_retrieved": n_retrieved,
+        "n_after_a": n_after_a,
+        "n_after_b": n_after_b,
+        "retrieval_path": retrieval_path,
     }
 
 
@@ -154,6 +173,12 @@ def test_decision_kill_switch(
     assert row["candidate_signal"] == ""
     assert row["session_id"] == "sess-1"
     assert row["cwd_project"] == "proj-a"
+    # Kill switch fires before retrieval ever runs.
+    assert row["candidate_ids"] == []
+    assert row["whispered_ids"] == []
+    assert row["n_retrieved"] == 0
+    assert row["n_after_a"] == 0
+    assert row["n_after_b"] == 0
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -175,9 +200,16 @@ def test_decision_no_candidates_from_retrieval(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "fallback-direct"  # was "no-candidates" pre-fallback
+    # GTD 268e2af3: reason stays granular even on the fallback path; the
+    # fallback itself is recorded separately in retrieval_path.
+    assert row["reason"] == "no-candidates"
+    assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 0
     assert row["candidate_signal"] == ""  # decline branches never attribute a signal
+    assert row["candidate_ids"] == []
+    assert row["n_retrieved"] == 0
+    assert row["n_after_a"] == 0
+    assert row["n_after_b"] == 0
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -200,9 +232,16 @@ def test_decision_rule_a(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "fallback-direct"  # was "rule-a" pre-fallback
+    # THE load-bearing assertion (GTD 268e2af3): a rule-a decline still
+    # records the FULL pre-filter candidate pool, non-empty.
+    assert row["reason"] == "rule-a"
+    assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 0
     assert row["candidate_signal"] == ""
+    assert row["candidate_ids"] == ["kb-00001"]
+    assert row["n_retrieved"] == 1
+    assert row["n_after_a"] == 0
+    assert row["n_after_b"] == 0
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -227,9 +266,14 @@ def test_decision_rule_b(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "fallback-direct"  # was "rule-b" pre-fallback
+    assert row["reason"] == "rule-b"
+    assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 0
     assert row["candidate_signal"] == ""
+    assert row["candidate_ids"] == ["kb-00001"]
+    assert row["n_retrieved"] == 1
+    assert row["n_after_a"] == 1
+    assert row["n_after_b"] == 0
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -252,9 +296,14 @@ def test_decision_no_llm(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "fallback-direct"  # was "no-llm" pre-fallback
+    assert row["reason"] == "no-llm"
+    assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 1
     assert row["candidate_signal"] == ""
+    assert row["candidate_ids"] == ["kb-00001"]
+    assert row["n_retrieved"] == 1
+    assert row["n_after_a"] == 1
+    assert row["n_after_b"] == 1
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -282,14 +331,19 @@ def test_decision_whispered(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "whisper"
-    # was "whispered" pre-fallback; `decision` still correctly says "whisper"
-    assert row["reason"] == "fallback-direct"
+    assert row["reason"] == "whispered"
+    assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 1
     assert row["vote_shape"] == '[["kb-00001"], ["kb-00001"], ["kb-00001"]]'
     # Sole candidate came from the detail-match retrieval's fallback leg (no
     # maps_projects/maps_rows seeded in this fixture -> the lexical path
     # never fires here).
     assert row["candidate_signal"] == "fallback"
+    assert row["candidate_ids"] == ["kb-00001"]
+    assert row["whispered_ids"] == ["kb-00001"]
+    assert row["n_retrieved"] == 1
+    assert row["n_after_a"] == 1
+    assert row["n_after_b"] == 1
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -322,10 +376,16 @@ def test_decision_vote_majority_whispers(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "whisper"
-    assert row["reason"] == "fallback-direct"  # was "vote-split" pre-fallback
+    assert row["reason"] == "whispered"
+    assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 2
     assert row["vote_shape"] == '[["kb-00001"], ["kb-00001"], ["kb-00002"]]'
     assert row["candidate_signal"] == "fallback"
+    assert row["candidate_ids"] == ["kb-00001", "kb-00002"]
+    assert row["whispered_ids"] == ["kb-00001"]
+    assert row["n_retrieved"] == 2
+    assert row["n_after_a"] == 2
+    assert row["n_after_b"] == 2
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -358,10 +418,16 @@ def test_decision_no_majority_declines(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "fallback-direct"  # was "vote-split" pre-fallback
+    assert row["reason"] == "vote-split"
+    assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 3
     assert row["vote_shape"] == '[["kb-00001"], ["kb-00002"], ["kb-00003"]]'
     assert row["candidate_signal"] == ""
+    assert row["candidate_ids"] == ["kb-00001", "kb-00002", "kb-00003"]
+    assert row["whispered_ids"] == []
+    assert row["n_retrieved"] == 3
+    assert row["n_after_a"] == 3
+    assert row["n_after_b"] == 3
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -389,10 +455,16 @@ def test_decision_vote_none(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "fallback-direct"  # was "vote-none" pre-fallback
+    assert row["reason"] == "vote-none"
+    assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 1
     assert row["vote_shape"] == "[[], [], []]"
     assert row["candidate_signal"] == ""
+    assert row["candidate_ids"] == ["kb-00001"]
+    assert row["whispered_ids"] == []
+    assert row["n_retrieved"] == 1
+    assert row["n_after_a"] == 1
+    assert row["n_after_b"] == 1
 
 
 # ─── (b) exactly one INSERT per request ─────────────────────────────────────
@@ -487,7 +559,7 @@ def test_decision_write_failure_with_candidates_and_llm_path(
     }
 
 
-# ─── (d) primary (non-fallback) path keeps the granular reason ─────────────
+# ─── (d) primary (non-fallback) path: retrieval_path == "primary" ──────────
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")
@@ -498,8 +570,9 @@ def test_decision_primary_path_rule_a_keeps_granular_reason(
     decision_pool: _RecordingDecisionPool,
 ) -> None:
     """When detail-matching itself resolves a candidate (no fallback), the
-    stored reason stays the granular per-branch value — "fallback-direct" is
-    reserved for decisions reached via the fallback path.
+    stored reason is the granular per-branch value AND retrieval_path
+    records "primary" — "fallback-direct" is reserved for retrieval_path on
+    decisions reached via the fallback path (see matrix (e) below for that).
     """
     monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
     fake_kb.results = [
@@ -539,8 +612,49 @@ def test_decision_primary_path_rule_a_keeps_granular_reason(
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
     assert row["reason"] == "rule-a"
+    assert row["retrieval_path"] == "primary"
     assert row["candidates_considered"] == 0
     assert row["candidate_signal"] == ""
+    # PRE-RULE-A capture: candidate_ids is non-empty even though the
+    # candidate was dropped by rule A before the LLM ever ran.
+    assert row["candidate_ids"] == ["kb-00001"]
+    assert row["n_retrieved"] == 1
+    assert row["n_after_a"] == 0
+    assert row["n_after_b"] == 0
+
+
+# ─── (e) fallback-path decline records BOTH reason and retrieval_path ──────
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_decision_fallback_path_records_both_reason_and_retrieval_path(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """A fallback-path decline records its REAL granular reason ("rule-a")
+    AND separately flags that the fallback retrieval path ran
+    (retrieval_path="fallback-direct") — the reason mask (GTD 268e2af3) is
+    gone; neither field is sacrificed for the other.
+    """
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    # A MENTAL_MAP result is excluded by the primary detail-match stage
+    # (GTD bf40d4f1), so this always falls back to direct mental_map search.
+    fake_kb.results = [_make_map_result("kb-00001", project_ref="my-project")]
+    fake_kb.filtered_count = 1
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post(
+        "/api/kb/listener",
+        json={"text": "hello", "cwd_project": "my-project", "session_id": "sess-14"},
+    )
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    assert row["reason"] == "rule-a"
+    assert row["retrieval_path"] == "fallback-direct"
+    assert row["candidate_ids"] == ["kb-00001"]
 
 
 # ─── endpoint mounted (sanity, mirrors test_listener_routes.py) ─────────────

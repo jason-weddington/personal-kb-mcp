@@ -87,9 +87,17 @@ logger = logging.getLogger(__name__)
 _DECISION_INSERT_SQL = (
     "INSERT INTO listener_decisions ("
     "session_id, cwd_project, source_kb, decided_ts, candidates_considered,"
-    " decision, reason, vote_shape, candidate_signal"
-    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+    " decision, reason, vote_shape, candidate_signal, candidate_ids,"
+    " whispered_ids, n_retrieved, n_after_a, n_after_b, retrieval_path"
+    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,"
+    " $14, $15)"
 )
+
+# retrieval_path values (GTD 268e2af3): whether the direct-mental_map-search
+# FALLBACK ran (see _retrieve_candidate_maps), split out of `reason` so the
+# granular decline cause is never masked by "fallback-direct" again.
+_RETRIEVAL_PATH_PRIMARY = "primary"
+_RETRIEVAL_PATH_FALLBACK = "fallback-direct"
 
 # ── Candidate retrieval tuning (all pinned literals per GTD bf40d4f1) ───────
 # Over-fetch bound for the detail-corpus search: the SearchQuery.limit max
@@ -586,19 +594,33 @@ async def _record_listener_decision(
     fallback: bool = False,
     vote_shape: str = "",
     candidate_signal: ListenerCandidateSignal = "",
+    candidate_ids: list[str] | None = None,
+    whispered_ids: list[str] | None = None,
+    n_retrieved: int = 0,
+    n_after_a: int = 0,
+    n_after_b: int = 0,
 ) -> None:
     """Best-effort insert of one ``listener_decisions`` row. Never raises.
 
     ``decision`` is derived from ``reason`` — "whisper" iff reason ==
-    "whispered", "declined" otherwise — BEFORE the ``fallback`` override
-    below, so it stays correct regardless of which retrieval path produced
-    the decision.
+    "whispered", "declined" otherwise.
 
-    ``fallback=True`` means this decision was reached via the direct-search
-    fallback path (see :func:`_retrieve_candidate_maps`): the stored
-    ``reason`` is overridden to ``"fallback-direct"`` so the fallback is
-    distinguishable in telemetry, at the cost of the granular per-branch
-    reason for that subset of requests (decision itself is unaffected).
+    ``reason`` (GTD 268e2af3) is ALWAYS stored verbatim — it is no longer
+    masked to ``"fallback-direct"`` when the fallback retrieval path ran.
+    Whether the fallback ran now lives in the separate ``retrieval_path``
+    column (derived from ``fallback`` below), so both the granular decline
+    cause AND the retrieval path are recoverable from the same row.
+
+    ``candidate_ids`` (GTD 268e2af3) is the RETRIEVED candidate pool,
+    captured by the caller BEFORE rule A / rule B filter it — a decision
+    declined by rule A or rule B therefore still records a non-empty list.
+    ``whispered_ids`` is the (possibly empty) subset actually surfaced to
+    the caller. Contrast with the existing ``vote_shape`` column, which
+    stores each voter's raw CHOSEN set — "the pool we voted on", not this.
+
+    ``n_retrieved`` / ``n_after_a`` / ``n_after_b`` (GTD 268e2af3) are the
+    per-stage candidate counts already computed by the route, so rule-A and
+    rule-B attrition are measurable independently.
 
     ``vote_shape`` (GTD 66ea1fe4) is a ``json.dumps``-encoded list of the
     three voters' raw candidate-id sets (e.g. ``'[["kb-1"],["kb-1","kb-2"],[]]'``),
@@ -618,7 +640,7 @@ async def _record_listener_decision(
     and swallowed: this write must never fail or slow the listener response.
     """
     decision = "whisper" if reason == "whispered" else "declined"
-    stored_reason: ListenerDecisionReason = "fallback-direct" if fallback else reason
+    retrieval_path = _RETRIEVAL_PATH_FALLBACK if fallback else _RETRIEVAL_PATH_PRIMARY
     try:
         pool = await get_db()
         await pool.execute(
@@ -629,9 +651,15 @@ async def _record_listener_decision(
             datetime.now(UTC).isoformat(),
             candidates_considered,
             decision,
-            stored_reason,
+            reason,
             vote_shape,
             candidate_signal,
+            json.dumps(candidate_ids or []),
+            json.dumps(whispered_ids or []),
+            n_retrieved,
+            n_after_a,
+            n_after_b,
+            retrieval_path,
         )
     except Exception as exc:  # best-effort telemetry: must never raise
         logger.debug("listener decision write failed: %s", exc)
@@ -748,7 +776,8 @@ async def listener(
     (see :func:`_record_listener_decision`) so declines are no longer
     invisible — never affects the response, even if the write fails. Writes
     from the fallback retrieval path are recorded with the distinguishing
-    ``reason="fallback-direct"``.
+    ``retrieval_path="fallback-direct"``; ``reason`` always stays the
+    granular per-branch value (GTD 268e2af3).
     """
     # source_kb identifies which KB context this decision is attributed to
     # (this service is single-KB-per-stack; mirrors the {source} substitution
@@ -778,6 +807,10 @@ async def listener(
         kb, body.text, body.cwd_project
     )
     n_retrieved = len(candidates)
+    # PRE-RULE-A capture (GTD 268e2af3): the retrieved pool, before rule A/B
+    # filter it. This is what makes a rule-a/rule-b decline's candidate_ids
+    # non-empty — captured here because `candidates` is reassigned below.
+    candidate_ids = [e.id for e in candidates]
 
     # ── Rule A: cross-project filter ──────────────────────────────────────────
     # Drop every candidate whose project_ref equals cwd_project.
@@ -798,7 +831,7 @@ async def listener(
             and e.hints["operated_via"] in operating_set
         )
     ]
-    n_after_b = len(candidates)  # noqa: F841 — per-stage counter pinned by AC; reads as 0 below
+    n_after_b = len(candidates)
 
     # ── Short-circuit (split): no candidates ─────────────────────────────────
     # Attribute the drop using the per-stage counters so the debug `reason`
@@ -826,6 +859,10 @@ async def listener(
             candidates_considered=0,
             reason=decision_reason,
             fallback=used_fallback,
+            candidate_ids=candidate_ids,
+            n_retrieved=n_retrieved,
+            n_after_a=n_after_a,
+            n_after_b=n_after_b,
         )
         return ListenerResponse(pointer=None, pointers=[], reason=reason)
 
@@ -838,6 +875,10 @@ async def listener(
             candidates_considered=len(candidates),
             reason="no-llm",
             fallback=used_fallback,
+            candidate_ids=candidate_ids,
+            n_retrieved=n_retrieved,
+            n_after_a=n_after_a,
+            n_after_b=n_after_b,
         )
         return ListenerResponse(
             pointer=None, pointers=[], reason="no-injection: LLM unavailable"
@@ -906,6 +947,11 @@ async def listener(
             fallback=used_fallback,
             vote_shape=vote_shape,
             candidate_signal=candidate_signal,
+            candidate_ids=candidate_ids,
+            whispered_ids=[e.id for e in selected],
+            n_retrieved=n_retrieved,
+            n_after_a=n_after_a,
+            n_after_b=n_after_b,
         )
         reason_parts = [
             f"{e.id} ({'unanimous 3/3' if vote_counts[e.id] == 3 else 'majority 2/3'})"
@@ -938,5 +984,9 @@ async def listener(
         reason=decision_reason,
         fallback=used_fallback,
         vote_shape=vote_shape,
+        candidate_ids=candidate_ids,
+        n_retrieved=n_retrieved,
+        n_after_a=n_after_a,
+        n_after_b=n_after_b,
     )
     return ListenerResponse(pointer=None, pointers=[], reason=reason)

@@ -192,6 +192,37 @@ _SCHEMA_STATEMENTS: list[str] = [
     "ALTER TABLE listener_decisions"
     " ADD CONSTRAINT listener_decisions_candidate_signal_check"
     " CHECK (candidate_signal IN ('', 'lexical', 'detail', 'fallback'))",
+    # Listener telemetry (GTD 268e2af3): added idempotently for the
+    # ALREADY-DEPLOYED table, same ADD COLUMN IF NOT EXISTS pattern as
+    # vote_shape above — three live instances hold this table and existing
+    # rows must survive, backfilling to the defaults below.
+    #
+    # candidate_ids: json.dumps of the RETRIEVED candidate pool, captured
+    # BEFORE rule A / rule B filter it (the whole point of this column —
+    # a rule-a/rule-b decline must still show a non-empty list here).
+    # whispered_ids: json.dumps of the ids actually surfaced to the caller
+    # (empty list on every declined decision). Contrast with the existing
+    # vote_shape column, which stores each voter's raw CHOSEN set, not "the
+    # pool we voted on" or "what we whispered".
+    # n_retrieved / n_after_a / n_after_b: per-stage candidate counts, so
+    # rule-A and rule-B attrition are measurable independently instead of
+    # being thrown away after the route computes them.
+    # retrieval_path: whether the direct-mental_map-search FALLBACK ran
+    # (see _retrieve_candidate_maps) — split out of `reason` so the
+    # granular decline cause (rule-a, rule-b, vote-none, ...) is never
+    # masked by "fallback-direct" again.
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS candidate_ids TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS whispered_ids TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS n_retrieved INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS n_after_a INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS n_after_b INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS retrieval_path TEXT NOT NULL DEFAULT ''",
 ]
 
 
