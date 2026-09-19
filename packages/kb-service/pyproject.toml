@@ -1,6 +1,6 @@
 [project]
 name = "personal-kb-web-service"
-version = "0.1.0"
+version = "1.0.0"
 description = "Hosted HTTP API wrapping the kb-core engine behind authentication."
 requires-python = ">=3.13"
 dependencies = [
