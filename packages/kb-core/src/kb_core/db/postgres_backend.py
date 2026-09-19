@@ -390,6 +390,15 @@ class PostgresBackend:
                 entry_id,
             )
 
+    async def delete_deterministic_edges(self, entry_id: str) -> None:
+        """Remove non-LLM edges for a given source entry, preserving LLM edges."""
+        async with self._conn() as conn:
+            await conn.execute(
+                "DELETE FROM graph_edges WHERE source = $1"
+                " AND properties::jsonb->>'source' IS DISTINCT FROM 'llm'",
+                entry_id,
+            )
+
     # -- Sequence --
 
     async def next_sequence_value(self) -> int:

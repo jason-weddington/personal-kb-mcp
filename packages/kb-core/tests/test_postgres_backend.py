@@ -25,10 +25,23 @@ FTS, pgvector ``<=>`` cosine + ``::vector`` cast, sequence RETURNING,
 
 Note on jsonb usage
 -------------------
-``properties::jsonb->>`` in :meth:`PostgresBackend.delete_llm_edges` is
-the ONLY jsonb-operator usage in ``postgres_backend.py``, so the
-delete_llm_edges regression is the sole json-operator regression case
-this file needs to guard.
+``properties::jsonb->>`` appears in :meth:`PostgresBackend.delete_llm_edges`
+and, since kb-017b7606 (see below), in
+:meth:`PostgresBackend.delete_deterministic_edges` — the two json-operator
+regression cases this file needs to guard.
+
+kb-017b7606 — delete_deterministic_edges selectivity
+-----------------------------------------------------
+A metadata-only entry update (tags/hints/title, no ``knowledge_details``)
+still unconditionally rebuilds deterministic graph edges via
+``GraphBuilder._clear_edges_for_source``. That rebuild must clear only the
+deterministic edges it re-derives and leave LLM-enriched edges
+(``properties.source == "llm"``) untouched, or every enrichment edge on an
+entry gets silently and permanently destroyed by the next tags-only update.
+The fix adds :meth:`PostgresBackend.delete_deterministic_edges`, the mirror
+image of ``delete_llm_edges`` (same ``properties::jsonb->>'source'`` cast,
+inverted selection via ``IS DISTINCT FROM`` for NULL-safety). The test below
+proves it selectively deletes the non-LLM edge and preserves the LLM one.
 """
 
 from __future__ import annotations
@@ -133,6 +146,64 @@ async def test_delete_llm_edges_selective_on_postgres(pg_kb: PostgresBackend) ->
     assert len(remaining) == 1
     assert remaining[0][0] == "references"
     assert "manual" in remaining[0][1]
+
+
+# ---------------------------------------------------------------------------
+# kb-017b7606 regression: delete_deterministic_edges properties::jsonb->> path
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_deterministic_edges_selective_on_postgres(pg_kb: PostgresBackend) -> None:
+    """delete_deterministic_edges removes only non-``source='llm'`` edges.
+
+    Mirror image of :func:`test_delete_llm_edges_selective_on_postgres`:
+    same jsonb cast, inverted selection. This is what
+    ``GraphBuilder._clear_edges_for_source`` now calls ahead of every
+    rebuild so a metadata-only update can't destroy enrichment edges.
+
+    1. Inserts two ``graph_nodes`` (``src2`` and ``tgt2``).
+    2. Inserts two ``graph_edges`` both ``src2 -> tgt2`` with distinct
+       ``edge_type`` values — one flagged ``"source": "llm"``, one with
+       the deterministic-builder default properties ``'{}'`` (no
+       ``source`` key at all, exercising the NULL-safety of
+       ``IS DISTINCT FROM``).
+    3. Calls :meth:`PostgresBackend.delete_deterministic_edges` for ``src2``.
+    4. Asserts the llm-flagged edge survives and the deterministic edge is gone.
+    """
+    ts = "2026-01-01T00:00:00Z"
+
+    await pg_kb.execute(
+        "INSERT INTO graph_nodes (node_id, node_type, created_at) VALUES (?, ?, ?)",
+        ("src2", "entry", ts),
+    )
+    await pg_kb.execute(
+        "INSERT INTO graph_nodes (node_id, node_type, created_at) VALUES (?, ?, ?)",
+        ("tgt2", "entry", ts),
+    )
+
+    await pg_kb.execute(
+        "INSERT INTO graph_edges (source, target, edge_type, properties, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("src2", "tgt2", "relates_to", '{"source": "llm"}', ts),
+    )
+    await pg_kb.execute(
+        "INSERT INTO graph_edges (source, target, edge_type, properties, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("src2", "tgt2", "has_tag", "{}", ts),
+    )
+
+    await pg_kb.delete_deterministic_edges("src2")
+
+    cursor = await pg_kb.execute(
+        "SELECT edge_type, properties FROM graph_edges WHERE source = ?",
+        ("src2",),
+    )
+    rows = await cursor.fetchall()
+    remaining = [(row["edge_type"], row["properties"]) for row in rows]
+
+    assert len(remaining) == 1
+    assert remaining[0][0] == "relates_to"
+    assert "llm" in remaining[0][1]
 
 
 # ---------------------------------------------------------------------------

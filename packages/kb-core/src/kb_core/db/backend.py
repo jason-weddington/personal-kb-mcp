@@ -122,6 +122,15 @@ class Database(Protocol):
         """Delete LLM-enriched graph edges."""
         ...
 
+    async def delete_deterministic_edges(self, entry_id: str) -> None:
+        """Delete graph edges for a source that are NOT LLM-enriched.
+
+        Used to clear the deterministic edge set (has_tag, in_project,
+        supersedes, references, extracted_from, ...) ahead of a rebuild
+        without destroying edges the enricher previously derived.
+        """
+        ...
+
     async def vacuum(self) -> str:
         """Backend-specific optimization. Returns status string."""
         ...

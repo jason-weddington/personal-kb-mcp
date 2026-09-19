@@ -296,6 +296,14 @@ class SQLiteBackend:
             (entry_id,),
         )
 
+    async def delete_deterministic_edges(self, entry_id: str) -> None:
+        """Remove non-LLM edges for a given source entry, preserving LLM edges."""
+        await self._conn.execute(
+            "DELETE FROM graph_edges"
+            " WHERE source = ? AND json_extract(properties, '$.source') IS NOT 'llm'",
+            (entry_id,),
+        )
+
     # -- Backend protocol helpers --
     #
     # The following methods let the SQLiteBackend stand in for the higher-level

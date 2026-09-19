@@ -128,8 +128,19 @@ class GraphBuilder:
         )
 
     async def _clear_edges_for_source(self, source: str) -> None:
-        """Delete all outgoing edges for a given source node."""
-        await self._db.execute("DELETE FROM graph_edges WHERE source = ?", (source,))
+        """Delete the deterministic outgoing edges for a given source node.
+
+        Only clears edges this builder itself re-derives (has_tag,
+        in_project, supersedes, references, mentions_person, uses_tool,
+        related_to/custom hint edges). LLM-enriched edges (marked with
+        ``properties.source == "llm"`` by :class:`GraphEnricher`) are left
+        untouched so that a metadata-only update — one that never runs
+        enrichment because ``content_changed`` is False — doesn't
+        permanently destroy the enrichment graph. Enrichment edges are only
+        cleared by the enricher itself, immediately before it repopulates
+        them (see ``GraphEnricher._clear_enrichment_edges``).
+        """
+        await self._db.delete_deterministic_edges(source)
 
 
 def _as_list(value: object) -> list[object]:
