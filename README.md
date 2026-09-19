@@ -260,7 +260,7 @@ Every `mental_map` must have **at least one outbound pointer**. A pointer is any
 - a `superseded_by` field on the entry;
 - a `related_entities` hint with either a dict carrying an `id`/`target` or a bare entry id string.
 
-Tags, project refs, and person/tool hints **do not** count — those are categorization, not orientation. `kb_store` rejects an orphan map (zero pointers) before any row is written, with an error: *"A mental_map entry requires at least one outbound pointer … A map with zero pointers is an orphan note, not a map."*
+Tags, project refs, and person/tool hints **do not** count — those are categorization, not orientation. `kb_store` rejects an orphan map (zero pointers) on **create**, before any row is written, with an error: *"A mental_map entry requires at least one outbound pointer … A map with zero pointers is an orphan note, not a map."* As of 2026-09-19 the hosted service runs the same guard on **update**, evaluating the effective post-update body, so an update can no longer strip a map's last pointer; the local/no-auth kb-core path is still unguarded. Don't treat "the store would have caught it" as a substitute for checking your own map's pointers — the update guard is new, and every map authored before it predates that check.
 
 ### What a map should *not* contain (fact-free discipline)
 

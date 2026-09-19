@@ -46,6 +46,13 @@ echo "== workflows -> $WF_DIR =="
 mkdir -p "$WF_DIR"
 for wf in "$SCRIPT_DIR"/*.workflow.js; do
   [ -e "$wf" ] || continue
+  # Force a readable mode on the source file before linking, so a restrictive
+  # local umask (or prior manual chmod) on this machine can't leave the
+  # symlinked workflow unreadable on the next one. Matches the file's
+  # git-tracked mode (100644); idempotent.
+  # Best-effort: a read-only or root-owned clone must not abort the whole
+  # installer before the symlink and the hook install happen.
+  chmod 644 "$wf" 2>/dev/null || true
   ln -sfn "$wf" "$WF_DIR/$(basename "$wf")"
   echo "  /$(basename "$wf" .workflow.js)  ->  $wf"
 done
