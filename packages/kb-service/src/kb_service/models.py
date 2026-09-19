@@ -580,6 +580,15 @@ ListenerDecisionOutcome = Literal["whisper", "declined"]
 
 # ``reason`` enumerates every actual return branch in ``listener_routes.listener()``
 # — one member per branch, no catch-all. Keep in 1:1 sync with that function.
+#
+# ``fallback-direct`` is the one exception to "one member per branch": when
+# the detail-matching retrieval path yields zero candidate maps, the route
+# falls back to a direct mental_map search (today's pre-fix behavior). ANY
+# terminal decision (whisper or decline) reached via that fallback path is
+# recorded with reason="fallback-direct" INSTEAD OF the granular branch
+# reason below, so the fallback is distinguishable in telemetry even though
+# it costs per-branch granularity for that subset of requests. ``decision``
+# (whisper/declined) is still derived correctly regardless of the override.
 ListenerDecisionReason = Literal[
     "kill-switch",
     "no-candidates",
@@ -589,6 +598,7 @@ ListenerDecisionReason = Literal[
     "vote-split",
     "vote-none",
     "whispered",
+    "fallback-direct",
 ]
 
 

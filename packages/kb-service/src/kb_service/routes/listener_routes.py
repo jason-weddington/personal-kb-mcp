@@ -8,6 +8,18 @@ Kill switch: returns ``{"pointer": null}`` immediately when the env var
 ``KB_LISTENER_ENABLED`` is not set to ``'TRUE'`` (default ``'FALSE'`` — opt-in
 pilot only; flip on the dev server when piloting).
 
+Candidate retrieval (GTD bf40d4f1): mental maps are DELIBERATELY fact-free
+(the map-purity lint rejects file paths, ENV_VAR tokens, dotted identifiers
+and slash-joined paths from map bodies), so searching maps directly against a
+real prompt cannot discriminate — the tokens a prompt contains are exactly
+the tokens maps do not have. Retrieval instead searches the chunky DETAIL
+entries (which are full of paths/identifiers/numbers by design), then
+resolves each detail hit to its owning mental map(s) via the deterministic
+``references`` graph edge (see :func:`_retrieve_candidate_maps`). When that
+path yields zero candidate maps (e.g. a map with no outbound pointer edges),
+the route falls back to today's direct mental_map search so behaviour cannot
+regress below current — see :func:`_retrieve_candidate_maps` for detail.
+
 Every request also writes a best-effort ``listener_decisions`` row (SERVICE
 DB) recording WHY the request ended the way it did — including declines,
 which previously left no durable trace at all (GTD 65b308de). The write is
@@ -20,7 +32,7 @@ import collections
 import logging
 import os
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from kb_core.models.entry import EntryType, KnowledgeEntry
@@ -36,6 +48,9 @@ from kb_service.models import (
     User,
 )
 
+if TYPE_CHECKING:
+    from kb_core import KnowledgeBase
+
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
 logger = logging.getLogger(__name__)
@@ -47,6 +62,127 @@ _DECISION_INSERT_SQL = (
     ") VALUES ($1, $2, $3, $4, $5, $6, $7)"
 )
 
+# ── Candidate retrieval tuning (all pinned literals per GTD bf40d4f1) ───────
+# Over-fetch bound for the detail-corpus search: the SearchQuery.limit max
+# (le=50). We search with NO entry_type filter (the full corpus) then drop
+# mental_map hits client-side, since SearchQuery only supports an entry_type
+# EQUALITY filter, not an exclusion.
+_DETAIL_SEARCH_FETCH_LIMIT = 50
+# Pinned literal N: the top N non-map detail hits considered for owning-map
+# resolution, after excluding entry_type='mental_map' from the fetch above.
+_DETAIL_TOP_N = 20
+# Pinned literal cap on the deduplicated candidate MAP list, applied before
+# Rule A/B and the vote — keeps the gate prompt the size it is today.
+_MAP_CANDIDATE_CAP = 5
+# The fallback path mirrors today's pre-fix retrieval verbatim: direct
+# mental_map search, limit=5.
+_FALLBACK_MAP_SEARCH_LIMIT = 5
+
+
+async def _owning_active_maps(db: Any, detail_ids: list[str]) -> list[tuple[str, str]]:
+    """Reverse-resolve detail entry ids to their owning ACTIVE mental_map ids.
+
+    One indexed query: ``graph_edges`` (``edge_type='references'``) joined to
+    ``knowledge_entries`` so only ACTIVE ``mental_map`` sources are returned
+    (deactivated maps, or edges whose source is some other entry type, never
+    surface). Portable across SQLite/Postgres — ``?`` placeholders only (the
+    Postgres backend's translator rewrites ``?`` -> ``$N`` and nothing else;
+    see :mod:`kb_core.graph.queries` for the established convention).
+
+    Returns a list of ``(detail_id, owning_map_id)`` pairs — i.e.
+    ``(target, source)`` in graph-edge terms. A detail id with no matching
+    row contributes nothing (caller treats that as "no owning map").
+    """
+    if not detail_ids:
+        return []
+    # The only interpolated text is a run of literal '?' placeholders (one per
+    # detail id) -- the ids themselves are bound as query parameters below,
+    # never spliced into the SQL string, so this is not an injection vector.
+    placeholders = ",".join("?" for _ in detail_ids)
+    sql = (
+        "SELECT ge.target, ge.source FROM graph_edges ge"  # noqa: S608
+        " JOIN knowledge_entries ke ON ke.id = ge.source"
+        " WHERE ge.edge_type = 'references' AND ge.target IN ("
+        + placeholders
+        + ") AND ke.entry_type = 'mental_map' AND ke.is_active = 1"
+    )
+    cursor = await db.execute(sql, list(detail_ids))
+    rows = await cursor.fetchall()
+    return [(str(row[0]), str(row[1])) for row in rows]
+
+
+async def _retrieve_candidate_maps(
+    kb: "KnowledgeBase", text: str
+) -> tuple[list[KnowledgeEntry], bool]:
+    """Detail-match retrieval: find candidate mental maps via chunky details.
+
+    1. Search the NON-map corpus for ``text`` (no entry_type restriction on
+       the query itself — filtered client-side, see
+       ``_DETAIL_SEARCH_FETCH_LIMIT``), take the top ``_DETAIL_TOP_N`` hits.
+    2. Resolve each hit to its owning ACTIVE mental_map(s) via the
+       ``references`` graph edge (:func:`_owning_active_maps`) — genuinely
+       many-to-many: one detail can be owned by several maps, one map is
+       typically hit via several details.
+    3. Aggregate to a DEDUPLICATED set of candidate maps, ranked by the BEST
+       (numerically smallest) rank of any detail that resolves to them —
+       rank position, not the fused search score (which is a
+       ``1/(60+rank)`` RRF artefact with no discriminating power). Ties
+       break by map id ascending for reproducibility.
+    4. Cap at ``_MAP_CANDIDATE_CAP``, then fetch the full entries.
+
+    When step 3 yields zero candidate maps (e.g. one of the two active maps
+    with no outbound ``references`` edge — unreachable by detail-matching by
+    construction), falls back to today's direct ``mental_map`` search so
+    behaviour cannot regress below current.
+
+    Returns ``(candidate_maps, used_fallback)``, in candidate-rank order.
+    """
+    raw_results, _ = await kb.search(
+        SearchQuery(query=text, limit=_DETAIL_SEARCH_FETCH_LIMIT)
+    )
+    detail_hits = [
+        r.entry for r in raw_results if r.entry.entry_type != EntryType.MENTAL_MAP
+    ][:_DETAIL_TOP_N]
+
+    if detail_hits:
+        detail_rank = {entry.id: i + 1 for i, entry in enumerate(detail_hits)}
+        owning = await _owning_active_maps(kb.db, list(detail_rank))
+        best_rank: dict[str, int] = {}
+        for target, source in owning:
+            rank = detail_rank.get(target)
+            if rank is None:
+                continue
+            if source not in best_rank or rank < best_rank[source]:
+                best_rank[source] = rank
+
+        if best_rank:
+            ranked_map_ids = sorted(best_rank, key=lambda mid: (best_rank[mid], mid))
+            candidates: list[KnowledgeEntry] = []
+            for map_id in ranked_map_ids[:_MAP_CANDIDATE_CAP]:
+                entry = await kb.get(map_id)
+                # Defense-in-depth: _owning_active_maps already filters to
+                # active mental_map sources at the SQL level; re-check here
+                # in case of a race (map deactivated between the two calls).
+                if (
+                    entry is not None
+                    and entry.is_active
+                    and entry.entry_type == EntryType.MENTAL_MAP
+                ):
+                    candidates.append(entry)
+            if candidates:
+                return candidates, False
+
+    # ── Fallback: detail-matching yielded zero candidate maps ───────────────
+    # Mirrors the pre-fix retrieval verbatim so behaviour cannot regress.
+    fallback_results, _ = await kb.search(
+        SearchQuery(
+            query=text,
+            entry_type=EntryType.MENTAL_MAP,
+            limit=_FALLBACK_MAP_SEARCH_LIMIT,
+        )
+    )
+    return [r.entry for r in fallback_results], True
+
 
 async def _record_listener_decision(
     *,
@@ -55,15 +191,26 @@ async def _record_listener_decision(
     source_kb: str,
     candidates_considered: int,
     reason: ListenerDecisionReason,
+    fallback: bool = False,
 ) -> None:
     """Best-effort insert of one ``listener_decisions`` row. Never raises.
 
     ``decision`` is derived from ``reason`` — "whisper" iff reason ==
-    "whispered", "declined" otherwise. A failure here (bad DSN, pool
-    exhaustion, whatever) is logged at DEBUG and swallowed: this write must
-    never fail or slow the listener response.
+    "whispered", "declined" otherwise — BEFORE the ``fallback`` override
+    below, so it stays correct regardless of which retrieval path produced
+    the decision.
+
+    ``fallback=True`` means this decision was reached via the direct-search
+    fallback path (see :func:`_retrieve_candidate_maps`): the stored
+    ``reason`` is overridden to ``"fallback-direct"`` so the fallback is
+    distinguishable in telemetry, at the cost of the granular per-branch
+    reason for that subset of requests (decision itself is unaffected).
+
+    A failure here (bad DSN, pool exhaustion, whatever) is logged at DEBUG
+    and swallowed: this write must never fail or slow the listener response.
     """
     decision = "whisper" if reason == "whispered" else "declined"
+    stored_reason: ListenerDecisionReason = "fallback-direct" if fallback else reason
     try:
         pool = await get_db()
         await pool.execute(
@@ -74,7 +221,7 @@ async def _record_listener_decision(
             datetime.now(UTC).isoformat(),
             candidates_considered,
             decision,
-            reason,
+            stored_reason,
         )
     except Exception as exc:  # best-effort telemetry: must never raise
         logger.debug("listener decision write failed: %s", exc)
@@ -157,7 +304,9 @@ async def listener(
 
     Steps:
     1. Kill switch — return ``{pointer: null}`` if ``KB_LISTENER_ENABLED != 'TRUE'``.
-    2. Search — ``EntryType.MENTAL_MAP``, ``limit=5``, query = ``body.text``.
+    2. Retrieval — detail-match + owning-map resolution, ranked/deduped/capped
+       at 5, falling back to a direct mental_map search on zero candidates
+       (see :func:`_retrieve_candidate_maps`).
     3. Rule A — drop candidates whose ``project_ref == cwd_project``.
     4. Rule B — drop candidates whose ``operated_via`` hint is in ``body.operating``.
     5. Short-circuit — return null if no candidates remain or no LLM available.
@@ -166,7 +315,9 @@ async def listener(
 
     Every return path also fires a best-effort ``listener_decisions`` write
     (see :func:`_record_listener_decision`) so declines are no longer
-    invisible — never affects the response, even if the write fails.
+    invisible — never affects the response, even if the write fails. Writes
+    from the fallback retrieval path are recorded with the distinguishing
+    ``reason="fallback-direct"``.
     """
     # source_kb identifies which KB context this decision is attributed to
     # (this service is single-KB-per-stack; mirrors the {source} substitution
@@ -190,18 +341,15 @@ async def listener(
 
     kb = request.app.state.kb
 
-    # ── Candidate retrieval ───────────────────────────────────────────────────
-    results, _ = await kb.search(
-        SearchQuery(query=body.text, entry_type=EntryType.MENTAL_MAP, limit=5)
-    )
-    n_retrieved = len(results)
+    # ── Candidate retrieval (detail-match + owning-map resolution) ───────────
+    candidates, used_fallback = await _retrieve_candidate_maps(kb, body.text)
+    n_retrieved = len(candidates)
 
     # ── Rule A: cross-project filter ──────────────────────────────────────────
     # Drop every candidate whose project_ref equals cwd_project.
     # When cwd_project is null, rule A drops nothing.
-    candidates = list(results)
     if body.cwd_project is not None:
-        candidates = [r for r in candidates if r.entry.project_ref != body.cwd_project]
+        candidates = [e for e in candidates if e.project_ref != body.cwd_project]
     n_after_a = len(candidates)
 
     # ── Rule B: operating context filter ─────────────────────────────────────
@@ -209,11 +357,11 @@ async def listener(
     # Maps with no operated_via hint are never dropped by rule B.
     operating_set = set(body.operating)
     candidates = [
-        r
-        for r in candidates
+        e
+        for e in candidates
         if not (
-            isinstance(r.entry.hints.get("operated_via"), str)
-            and r.entry.hints["operated_via"] in operating_set
+            isinstance(e.hints.get("operated_via"), str)
+            and e.hints["operated_via"] in operating_set
         )
     ]
     n_after_b = len(candidates)  # noqa: F841 — per-stage counter pinned by AC; reads as 0 below
@@ -243,6 +391,7 @@ async def listener(
             source_kb=source_kb,
             candidates_considered=0,
             reason=decision_reason,
+            fallback=used_fallback,
         )
         return ListenerResponse(pointer=None, reason=reason)
 
@@ -254,11 +403,12 @@ async def listener(
             source_kb=source_kb,
             candidates_considered=len(candidates),
             reason="no-llm",
+            fallback=used_fallback,
         )
         return ListenerResponse(pointer=None, reason="no-injection: LLM unavailable")
 
     # ── LLM gate: 3 concurrent votes ─────────────────────────────────────────
-    entries = [r.entry for r in candidates]
+    entries = candidates
     prompt = _build_prompt(body.text, source_kb, entries)
     valid_ids = {e.id for e in entries}
 
@@ -282,6 +432,7 @@ async def listener(
             source_kb=source_kb,
             candidates_considered=len(candidates),
             reason="whispered",
+            fallback=used_fallback,
         )
         return ListenerResponse(
             pointer=ListenerPointer(id=winner_id, short_title=winner_entry.short_title),
@@ -309,5 +460,6 @@ async def listener(
         source_kb=source_kb,
         candidates_considered=len(candidates),
         reason=decision_reason,
+        fallback=used_fallback,
     )
     return ListenerResponse(pointer=None, reason=reason)

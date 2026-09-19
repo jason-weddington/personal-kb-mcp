@@ -13,9 +13,21 @@ Test matrix (cases a-k):
   (j) zero candidates after filters -> null; asserts search once, zero LLM calls
   (k) synthesis_llm is None with non-empty candidates -> null; zero LLM calls
 
-Candidates are seeded via ``fake_kb.results``; the LLM is injected via
-``fake_kb.synthesis_llm = fake_llm``.  All tests are hermetic — no live
-Postgres, Ollama, or network.
+Candidates in cases (d)-(k) are seeded via ``fake_kb.results`` using
+``_make_map_result`` (``entry_type=MENTAL_MAP``). Since GTD bf40d4f1, the
+PRIMARY retrieval stage searches the non-map corpus first and filters out
+``entry_type=MENTAL_MAP`` hits client-side — so a ``mental_map``-only
+``fake_kb.results`` always yields zero detail hits, which triggers the
+FALLBACK direct-map search (mirroring the exact pre-fix retrieval). That
+fallback search reuses ``fake_kb.results`` verbatim, so these cases still
+exercise Rule A/B/vote exactly as before; the only change is that
+``fake_kb.search_calls`` now has TWO entries (detail search, then fallback
+map search) instead of one. The detail-match PRIMARY path itself (no
+fallback) is covered by ``tests/test_listener_retrieval.py``, which drives
+``_retrieve_candidate_maps`` directly.
+
+The LLM is injected via ``fake_kb.synthesis_llm = fake_llm``.  All tests are
+hermetic — no live Postgres, Ollama, or network.
 """
 
 import pytest
@@ -138,8 +150,10 @@ def test_listener_rule_a_drops_cwd_project(
         "pointer": None,
         "reason": "no-injection: 1 candidate(s), all dropped by rule-A (cwd-project)",
     }
-    # Search ran once; rule A filtered the only candidate; LLM not reached
-    assert len(fake_kb.search_calls) == 1
+    # Detail search finds zero non-map hits (the seeded result is a map) ->
+    # falls back to a direct map search; rule A then filters the only
+    # candidate; LLM not reached.
+    assert len(fake_kb.search_calls) == 2
 
 
 def test_listener_rule_a_keeps_other_project(
@@ -204,7 +218,8 @@ def test_listener_rule_b_drops_operated_candidate(
         "no-injection: 1 candidate(s), all dropped by rule-B (operating-manifest)"
     )
     assert resp.json() == {"pointer": None, "reason": rule_b_reason}
-    assert len(fake_kb.search_calls) == 1
+    # Falls back to the direct map search (see module docstring); two calls.
+    assert len(fake_kb.search_calls) == 2
 
 
 def test_listener_rule_b_keeps_unmatched_hint(
@@ -328,11 +343,19 @@ def test_listener_unanimous_pick_with_assertions(
     }
 
     # ── search shape ──────────────────────────────────────────────────────────
-    assert len(fake_kb.search_calls) == 1
-    q, _ = fake_kb.search_calls[0]
-    assert q.query == "which machine runs traefik"
-    assert q.entry_type == EntryType.MENTAL_MAP
-    assert q.limit == 5
+    # fake_kb.results seeds MENTAL_MAP entries, so the primary detail search
+    # (call 0) filters them all out and the route falls back (call 1) to the
+    # direct map search — see module docstring.
+    assert len(fake_kb.search_calls) == 2
+    detail_q, _ = fake_kb.search_calls[0]
+    assert detail_q.query == "which machine runs traefik"
+    assert detail_q.entry_type is None
+    assert detail_q.limit == 50
+
+    fallback_q, _ = fake_kb.search_calls[1]
+    assert fallback_q.query == "which machine runs traefik"
+    assert fallback_q.entry_type == EntryType.MENTAL_MAP
+    assert fallback_q.limit == 5
 
     # ── LLM call count ────────────────────────────────────────────────────────
     assert len(fake_llm.generate_calls) == 3
@@ -512,7 +535,7 @@ def test_listener_zero_candidates_short_circuits(
         "pointer": None,
         "reason": "no-injection: 1 candidate(s), all dropped by rule-A (cwd-project)",
     }
-    assert len(fake_kb.search_calls) == 1
+    assert len(fake_kb.search_calls) == 2
     assert len(fake_llm.generate_calls) == 0
 
 
@@ -538,7 +561,7 @@ def test_listener_no_synthesis_llm_returns_null(
         "pointer": None,
         "reason": "no-injection: LLM unavailable",
     }
-    assert len(fake_kb.search_calls) == 1
+    assert len(fake_kb.search_calls) == 2
 
 
 # ─── source_label fallback ───────────────────────────────────────────────────
@@ -593,6 +616,119 @@ def test_listener_source_label_fallback_to_unknown(
     assert resp.status_code == 200
     prompt, _ = fake_llm.generate_calls[0]
     assert 'working in the project "unknown"' in prompt
+
+
+# ─── detail-match primary path (GTD bf40d4f1), end-to-end via HTTP ─────────
+#
+# Aggregation/dedupe/cap/ordering/fallback mechanics are unit-tested directly
+# against `_retrieve_candidate_maps` in tests/test_listener_retrieval.py.
+# These end-to-end cases prove the primary path is wired into the full route
+# (Rule A/B, the vote, and the response shape) without going through the
+# fallback branch.
+
+
+def _make_detail_result(entry_id: str, **kwargs: object) -> SearchResult:
+    """A non-map SearchResult (chunky detail entry) for seeding fake_kb.results."""
+    defaults: dict[str, object] = {
+        "id": entry_id,
+        "short_title": f"Detail {entry_id}",
+        "long_title": f"Detail {entry_id} (long)",
+        "knowledge_details": "rsync camera-profiles-data raw-pairs a7r6 dispatch-host-a",
+        "entry_type": EntryType.FACTUAL_REFERENCE,
+    }
+    defaults.update(kwargs)
+    entry = KnowledgeEntry(**defaults)
+    return SearchResult(
+        entry=entry,
+        score=1.0 / 61,
+        effective_confidence=0.9,
+        staleness_warning=None,
+        match_source="fts",
+    )
+
+
+def test_listener_primary_path_unanimous_pick_end_to_end(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Detail hit resolves to its owning map via the primary path (no fallback);
+    Rule A/B and the unanimous vote apply to the resolved map exactly as today.
+    """
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [_make_detail_result("kb-00099", project_ref="camera-profiles")]
+    fake_kb.filtered_count = 0
+    fake_kb.db.rows_for["graph_edges"] = [("kb-00099", "kb-00001")]
+    fake_kb.entries["kb-00001"] = KnowledgeEntry(
+        id="kb-00001",
+        short_title="Camera Profiles Map",
+        long_title="Camera Profiles Map (long title)",
+        knowledge_details="Orientation map for camera-profiles.",
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="camera-profiles",
+        is_active=True,
+    )
+
+    fake_llm = FakeLLM()
+    fake_llm.enqueue("kb-00001")
+    fake_llm.enqueue("kb-00001")
+    fake_llm.enqueue("kb-00001")
+    fake_kb.synthesis_llm = fake_llm
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post(
+        "/api/kb/listener",
+        json={
+            "text": "rsync the a7r6 raw-pairs to dispatch-host-a",
+            "cwd_project": "grit-mile",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "pointer": {"id": "kb-00001", "short_title": "Camera Profiles Map"},
+        "reason": "matched kb-00001 (unanimous 3/3)",
+    }
+    # No fallback needed — exactly one search call (the detail search).
+    assert len(fake_kb.search_calls) == 1
+    detail_q, _ = fake_kb.search_calls[0]
+    assert detail_q.entry_type is None
+    assert detail_q.limit == 50
+
+
+def test_listener_primary_path_rule_a_drops_resolved_map(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rule A drops a primary-path-resolved candidate whose project_ref matches."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [_make_detail_result("kb-00099")]
+    fake_kb.filtered_count = 0
+    fake_kb.db.rows_for["graph_edges"] = [("kb-00099", "kb-00001")]
+    fake_kb.entries["kb-00001"] = KnowledgeEntry(
+        id="kb-00001",
+        short_title="My Project Map",
+        long_title="My Project Map (long)",
+        knowledge_details="Orientation map.",
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="my-project",
+        is_active=True,
+    )
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post(
+        "/api/kb/listener",
+        json={"text": "hello", "cwd_project": "my-project"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "pointer": None,
+        "reason": "no-injection: 1 candidate(s), all dropped by rule-A (cwd-project)",
+    }
+    # Primary path resolved exactly one candidate -> no fallback search.
+    assert len(fake_kb.search_calls) == 1
 
 
 # ─── endpoint is mounted ─────────────────────────────────────────────────────

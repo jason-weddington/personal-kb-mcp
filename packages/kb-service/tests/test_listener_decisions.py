@@ -13,6 +13,18 @@ Test matrix:
   (b) exactly one INSERT per listener request (never more, never fewer).
   (c) a raising DB layer still yields a normal 200 response (best-effort,
       never fails or slows the caller).
+  (d) fallback-direct: any whisper/decline reached via the fallback
+      direct-map-search path (GTD bf40d4f1) is recorded with
+      reason="fallback-direct" instead of the granular branch reason, while
+      `decision` (whisper/declined) stays correct.
+
+``_make_map_result`` seeds ``entry_type=MENTAL_MAP`` results, which the
+PRIMARY detail-match retrieval stage always filters out (see GTD bf40d4f1) —
+so every case in matrix (a) exercises the FALLBACK path by construction, and
+the stored `reason` is therefore "fallback-direct" rather than the granular
+per-branch value the pre-fix code recorded. A dedicated primary-path (no
+fallback) case proves the granular reason is preserved when detail-matching
+itself resolves the candidate.
 """
 
 from typing import Any
@@ -158,7 +170,7 @@ def test_decision_no_candidates_from_retrieval(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "no-candidates"
+    assert row["reason"] == "fallback-direct"  # was "no-candidates" pre-fallback
     assert row["candidates_considered"] == 0
 
 
@@ -182,7 +194,7 @@ def test_decision_rule_a(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "rule-a"
+    assert row["reason"] == "fallback-direct"  # was "rule-a" pre-fallback
     assert row["candidates_considered"] == 0
 
 
@@ -208,7 +220,7 @@ def test_decision_rule_b(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "rule-b"
+    assert row["reason"] == "fallback-direct"  # was "rule-b" pre-fallback
     assert row["candidates_considered"] == 0
 
 
@@ -232,7 +244,7 @@ def test_decision_no_llm(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "no-llm"
+    assert row["reason"] == "fallback-direct"  # was "no-llm" pre-fallback
     assert row["candidates_considered"] == 1
 
 
@@ -261,7 +273,8 @@ def test_decision_whispered(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "whisper"
-    assert row["reason"] == "whispered"
+    # was "whispered" pre-fallback; `decision` still correctly says "whisper"
+    assert row["reason"] == "fallback-direct"
     assert row["candidates_considered"] == 1
 
 
@@ -293,7 +306,7 @@ def test_decision_vote_split(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "vote-split"
+    assert row["reason"] == "fallback-direct"  # was "vote-split" pre-fallback
     assert row["candidates_considered"] == 2
 
 
@@ -322,7 +335,7 @@ def test_decision_vote_none(
 
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
-    assert row["reason"] == "vote-none"
+    assert row["reason"] == "fallback-direct"  # was "vote-none" pre-fallback
     assert row["candidates_considered"] == 1
 
 
@@ -414,6 +427,61 @@ def test_decision_write_failure_with_candidates_and_llm_path(
         "pointer": {"id": "kb-00001", "short_title": "Home Network Map"},
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
+
+
+# ─── (d) primary (non-fallback) path keeps the granular reason ─────────────
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_decision_primary_path_rule_a_keeps_granular_reason(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """When detail-matching itself resolves a candidate (no fallback), the
+    stored reason stays the granular per-branch value — "fallback-direct" is
+    reserved for decisions reached via the fallback path.
+    """
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb.results = [
+        SearchResult(
+            entry=KnowledgeEntry(
+                id="kb-00099",
+                short_title="Detail entry",
+                long_title="Detail entry (long)",
+                knowledge_details="rsync camera-profiles-data raw-pairs a7r6",
+                entry_type=EntryType.FACTUAL_REFERENCE,
+            ),
+            score=1.0 / 61,
+            effective_confidence=0.9,
+            staleness_warning=None,
+            match_source="fts",
+        )
+    ]
+    fake_kb.filtered_count = 0
+    fake_kb.db.rows_for["graph_edges"] = [("kb-00099", "kb-00001")]
+    fake_kb.entries["kb-00001"] = KnowledgeEntry(
+        id="kb-00001",
+        short_title="My Project Map",
+        long_title="My Project Map (long)",
+        knowledge_details="Orientation map.",
+        entry_type=EntryType.MENTAL_MAP,
+        project_ref="my-project",
+        is_active=True,
+    )
+
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post(
+        "/api/kb/listener",
+        json={"text": "hello", "cwd_project": "my-project", "session_id": "sess-13"},
+    )
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    assert row["decision"] == "declined"
+    assert row["reason"] == "rule-a"
+    assert row["candidates_considered"] == 0
 
 
 # ─── endpoint mounted (sanity, mirrors test_listener_routes.py) ─────────────
