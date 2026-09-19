@@ -166,6 +166,14 @@ def _map_value_error(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=409, detail=msg)
 
 
+_MAP_DEACTIVATE_BLOCKED = (
+    "mental_map entries cannot be deactivated via this endpoint. Deactivating a "
+    "map strips its outbound graph edges (see the scoped delete in this file), "
+    "which would silently orphan every detail entry the map pointed to from the "
+    "listener's detail -> owning-map reverse lookup."
+)
+
+
 # ─── endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -223,6 +231,29 @@ async def store(
     expires_at = _parse_ttl(body.ttl)
     if body.knowledge_details:
         _check_secrets(body.knowledge_details, kb)
+
+    # The orphan check must run against the EFFECTIVE post-update body, not the
+    # raw request body: knowledge_details is legitimately None on a
+    # metadata-only update (a tags-only or hints-only change), and entry_type
+    # is legitimately None when the update doesn't touch it. Fetch the current
+    # row and merge the same way kb-core's own update_entry does (mirrors
+    # knowledge_store.py's effective_details / merged_hints computation), so a
+    # tags-only update to a map whose STORED body already has a pointer is not
+    # rejected as an orphan.
+    existing = await kb.get(entry_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
+    effective_entry_type = (
+        body.entry_type if body.entry_type is not None else existing.entry_type
+    )
+    effective_details = (
+        body.knowledge_details if body.knowledge_details else existing.knowledge_details
+    )
+    effective_hints: dict[str, Any] = dict(existing.hints)
+    if body.hints:
+        effective_hints.update(body.hints)
+    _check_orphan_mental_map(effective_entry_type, effective_details, effective_hints)
+
     try:
         entry = await kb.update(
             entry_id,
@@ -330,14 +361,32 @@ async def deactivate(
     request: Request,
     user: Annotated[User, Depends(get_current_user)],
 ) -> EntryActionResponse:
-    """Deactivate a knowledge base entry and clean up its outbound graph edges."""
+    """Deactivate a knowledge base entry and clean up its outbound graph edges.
+
+    mental_map entries are rejected with 422 — see ``_MAP_DEACTIVATE_BLOCKED``.
+    """
     kb = request.app.state.kb
+    existing = await kb.get(entry_id)
+    if existing is not None and existing.entry_type is EntryType.MENTAL_MAP:
+        raise HTTPException(status_code=422, detail=_MAP_DEACTIVATE_BLOCKED)
     try:
         entry: KnowledgeEntry = await kb.deactivate(entry_id, contributor=user.email)
     except ValueError as exc:
         raise _map_value_error(exc) from exc
-    # Replicate the MCP channel's graph cleanup (kb_maintain reactivate path):
-    await kb.db.execute("DELETE FROM graph_edges WHERE source = ?", (entry_id,))
+    # Replicate the MCP channel's graph cleanup (kb_maintain reactivate path).
+    # Scoped (not blanket) to exclude mental_map sources: the guard above
+    # already keeps a map from reaching this line via this endpoint, but the
+    # delete is scoped too as defense in depth against the same hazard
+    # kb-core's own equivalent delete was narrowed for (personal_kb commit
+    # 8917cb0, graph/builder.py::_clear_edges_for_source ->
+    # Database.delete_deterministic_edges) — a map's outbound "references"
+    # edges are exactly what the listener's detail -> owning-map reverse
+    # lookup depends on. Non-map entries are unaffected.
+    await kb.db.execute(
+        "DELETE FROM graph_edges WHERE source = ? AND source NOT IN "
+        "(SELECT id FROM knowledge_entries WHERE entry_type = 'mental_map')",
+        (entry_id,),
+    )
     await kb.db.commit()
     return EntryActionResponse(entry=entry)
 

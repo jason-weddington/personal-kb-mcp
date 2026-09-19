@@ -13,11 +13,12 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from kb_core.models.entry import EntryType, KnowledgeEntry
 
 import kb_service.routes.kb_write_routes as kb_write_routes_module
 from kb_service.auth import get_current_user
 from kb_service.main import app
-from tests.conftest import FakeKnowledgeBase, fake_admin_user, fake_user
+from tests.conftest import FakeKnowledgeBase, fake_admin_user, fake_user, make_entry
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -143,6 +144,8 @@ def test_store_create_mental_map_with_kb_ref_passes(client: TestClient) -> None:
 def test_store_update_happy_path(client: TestClient) -> None:
     """Update path calls kb.update, returns action=updated + entry."""
     _authed(client)
+    kb_setup: FakeKnowledgeBase = app.state.kb
+    kb_setup.entries["kb-00001"] = make_entry("kb-00001")
     resp = client.post(
         "/api/kb/store",
         json={**_STORE_VALID, "update_entry_id": "kb-00001"},
@@ -174,6 +177,9 @@ def test_store_update_inactive_409(client: TestClient) -> None:
     """ValueError 'is inactive and cannot be updated' → 409."""
     _authed(client)
     kb: FakeKnowledgeBase = app.state.kb
+    # The pre-update orphan check now fetches the existing entry first — it
+    # must exist for kb.update to even be reached.
+    kb.entries["kb-00001"] = make_entry("kb-00001")
     kb._update_raises = ValueError("Entry kb-00001 is inactive and cannot be updated")
     resp = client.post(
         "/api/kb/store",
@@ -192,6 +198,8 @@ def test_store_update_confidence_level_omitted_passes_none(
     resets to 0.9.  The service treats an omitted field as no-change.
     """
     _authed(client)
+    kb_setup: FakeKnowledgeBase = app.state.kb
+    kb_setup.entries["kb-00001"] = make_entry("kb-00001")
     resp = client.post(
         "/api/kb/store",
         json={"update_entry_id": "kb-00001"},
@@ -202,6 +210,137 @@ def test_store_update_confidence_level_omitted_passes_none(
     assert kb.update_calls
     _entry_id, kwargs = kb.update_calls[-1]
     assert kwargs["confidence_level"] is None
+
+
+def _map_entry(
+    entry_id: str = "kb-00001",
+    knowledge_details: str = "See kb-00042 for details.",
+    hints: dict[str, Any] | None = None,
+) -> KnowledgeEntry:
+    """A stored mental_map entry with an outbound pointer, for update tests."""
+    return KnowledgeEntry(
+        id=entry_id,
+        short_title="A map",
+        long_title="A mental map entry",
+        knowledge_details=knowledge_details,
+        entry_type=EntryType.MENTAL_MAP,
+        hints=hints or {},
+    )
+
+
+def test_store_update_metadata_only_map_untouched_succeeds(client: TestClient) -> None:
+    """THE TRAP: a tags-only update to a map whose STORED body has a pointer
+    must succeed — knowledge_details is None on the request (metadata-only),
+    so the orphan check must fall back to the entry's current stored body
+    rather than 422 on the absent request body."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = _map_entry("kb-00001")
+    resp = client.post(
+        "/api/kb/store",
+        json={"update_entry_id": "kb-00001", "tags": ["reorg"]},
+    )
+    assert resp.status_code == 200
+    assert kb.update_calls
+    _entry_id, kwargs = kb.update_calls[-1]
+    assert kwargs["knowledge_details"] is None
+    assert kwargs["tags"] == ["reorg"]
+
+
+def test_store_update_hints_only_map_untouched_succeeds(client: TestClient) -> None:
+    """A hints-only update (no knowledge_details) to a map whose stored body
+    has a pointer must also succeed — same trap, different field."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = _map_entry("kb-00001")
+    resp = client.post(
+        "/api/kb/store",
+        json={"update_entry_id": "kb-00001", "hints": {"tag": "reorg"}},
+    )
+    assert resp.status_code == 200
+
+
+def test_store_update_map_orphaned_via_effective_body_422(client: TestClient) -> None:
+    """Clearing a map's knowledge_details pointer with no replacement hint
+    must 422 — the EFFECTIVE post-update body (request details, since present)
+    has no pointer."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = _map_entry("kb-00001")
+    resp = client.post(
+        "/api/kb/store",
+        json={"update_entry_id": "kb-00001", "knowledge_details": "No pointers now."},
+    )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert isinstance(detail, str)
+    assert "A mental_map entry requires at least one outbound pointer" in detail
+    assert not kb.update_calls
+
+
+def test_store_update_map_becomes_orphan_when_stored_body_has_no_pointer_422(
+    client: TestClient,
+) -> None:
+    """A metadata-only update on a map whose STORED body already has zero
+    pointers (pre-existing orphan, or entry_type flipped to mental_map on
+    this same request with no pointer) must still 422."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = _map_entry(
+        "kb-00001", knowledge_details="No pointers stored."
+    )
+    resp = client.post(
+        "/api/kb/store",
+        json={"update_entry_id": "kb-00001", "tags": ["x"]},
+    )
+    assert resp.status_code == 422
+    assert not kb.update_calls
+
+
+def test_store_update_map_pointer_via_merged_hint_succeeds(client: TestClient) -> None:
+    """A request hint merges with the entry's EXISTING hints (not replaces
+    them) — mirrors kb-core's update_entry merge. A request-supplied
+    supersedes hint satisfies the check even though the stored body/hints
+    have no pointer of their own."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = _map_entry(
+        "kb-00001", knowledge_details="No pointers stored.", hints={}
+    )
+    resp = client.post(
+        "/api/kb/store",
+        json={"update_entry_id": "kb-00001", "hints": {"supersedes": "kb-00099"}},
+    )
+    assert resp.status_code == 200
+
+
+def test_store_update_entry_type_flip_to_map_checks_effective_body(
+    client: TestClient,
+) -> None:
+    """Flipping entry_type to mental_map on an entry whose stored body has no
+    pointer, with no new pointer supplied, must 422 (effective type is the
+    REQUEST's entry_type when present)."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = make_entry("kb-00001")  # factual_reference, no pointer
+    resp = client.post(
+        "/api/kb/store",
+        json={"update_entry_id": "kb-00001", "entry_type": "mental_map"},
+    )
+    assert resp.status_code == 422
+
+
+def test_store_update_not_found_uses_direct_404(client: TestClient) -> None:
+    """Update on an entry the orphan-check pre-fetch can't find → 404, without
+    ever reaching kb.update."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    resp = client.post(
+        "/api/kb/store",
+        json={**_STORE_VALID, "update_entry_id": "kb-99999"},
+    )
+    assert resp.status_code == 404
+    assert not kb.update_calls
 
 
 # ─── POST /api/kb/store_batch ────────────────────────────────────────────────
@@ -304,10 +443,12 @@ def test_deactivate_happy_path(client: TestClient) -> None:
     entry_id, contributor = kb.deactivate_calls[-1]
     assert entry_id == "kb-00001"
     assert contributor == "tester@example.com"
-    # graph cleanup
+    # graph cleanup — scoped to exclude mental_map sources (defense in depth,
+    # see the guard test below for the primary block on map entries).
     assert kb.db.calls, "db.execute was not called"
     sql, params = kb.db.calls[-1]
     assert "DELETE FROM graph_edges WHERE source = ?" in sql
+    assert "mental_map" in sql
     assert params == ("kb-00001",)
     assert kb.db.committed >= 1
 
@@ -334,6 +475,70 @@ def test_deactivate_already_inactive_409(client: TestClient) -> None:
     kb._deactivate_raises = ValueError("Entry kb-00001 is already inactive")
     resp = client.post("/api/kb/entries/kb-00001/deactivate")
     assert resp.status_code == 409
+
+
+def test_deactivate_mental_map_422(client: TestClient) -> None:
+    """Deactivating a mental_map entry is rejected with a clear 4xx message,
+    and never reaches kb.deactivate or the graph-edge delete."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = _map_entry("kb-00001")
+    resp = client.post("/api/kb/entries/kb-00001/deactivate")
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert isinstance(detail, str)
+    assert "mental_map" in detail
+    assert not kb.deactivate_calls
+    assert not kb.db.calls
+
+
+def test_deactivate_non_map_entry_unaffected(client: TestClient) -> None:
+    """A non-map entry_type deactivates normally — the guard only blocks maps."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = make_entry("kb-00001")  # factual_reference
+    resp = client.post("/api/kb/entries/kb-00001/deactivate")
+    assert resp.status_code == 200
+    assert kb.deactivate_calls
+
+
+async def test_map_references_edges_survive_update_and_attempted_deactivate(
+    client: TestClient,
+) -> None:
+    """The listener's detail -> owning-map reverse lookup depends on a map's
+    outbound 'references' edges. Prove they survive: a metadata-only update
+    doesn't touch graph_edges at all, and a blocked deactivate attempt never
+    issues the delete — so a direct graph_edges query for edge_type=
+    'references' still resolves the map's detail entries afterward."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    map_id = "kb-00001"
+    kb.entries[map_id] = _map_entry(map_id)
+    references_row = (map_id, "kb-00042", "references")
+    kb.db.rows_for["edge_type = 'references'"] = [references_row]
+
+    async def _references_for(source: str) -> list[Any]:
+        cursor = await kb.db.execute(
+            "SELECT source, target, edge_type FROM graph_edges"
+            " WHERE source = ? AND edge_type = 'references'",
+            (source,),
+        )
+        return await cursor.fetchall()
+
+    # Metadata-only update: no delete of any kind is issued.
+    resp = client.post(
+        "/api/kb/store",
+        json={"update_entry_id": map_id, "tags": ["reorg"]},
+    )
+    assert resp.status_code == 200
+    assert not any("DELETE" in sql for sql, _ in kb.db.calls)
+    assert await _references_for(map_id) == [references_row]
+
+    # Attempted deactivate is blocked before any delete is issued.
+    resp = client.post(f"/api/kb/entries/{map_id}/deactivate")
+    assert resp.status_code == 422
+    assert not any("DELETE" in sql for sql, _ in kb.db.calls)
+    assert await _references_for(map_id) == [references_row]
 
 
 # ─── POST /api/kb/entries/{id}/reactivate ────────────────────────────────────
