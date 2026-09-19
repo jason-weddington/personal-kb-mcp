@@ -2,6 +2,282 @@
 
 <!-- version list -->
 
+## v0.67.0 (2026-09-19)
+
+### Bug Fixes
+
+- Apply metadata filters to the vector leg of hybrid search
+  ([`e4d36d6`](https://github.com/jason-weddington/personal-kb-mcp/commit/e4d36d6fd61ca3e45c2237be36a576bf4ebce5e6))
+
+- Cast properties to jsonb in delete_llm_edges (Postgres)
+  ([`6fe8ab6`](https://github.com/jason-weddington/personal-kb-mcp/commit/6fe8ab6ccf760525b562881f03364d82138ab04b))
+
+- Declare kb-core as a runtime dependency of personal-kb
+  ([`57fb447`](https://github.com/jason-weddington/personal-kb-mcp/commit/57fb447a437960d1d09658bb31499fd536be4de4))
+
+- Hook listener request uses the pinned endpoint contract (cwd_project/operating/source_label)
+  ([`dc74dfc`](https://github.com/jason-weddington/personal-kb-mcp/commit/dc74dfcb4d75f246b144362f947340414c6811aa))
+
+- Require sqlite-vec >=0.1.9 — 0.1.6 aarch64 wheel ships a 32-bit binary
+  ([`cd5ccda`](https://github.com/jason-weddington/personal-kb-mcp/commit/cd5ccdaf2076d79766cbb004ee89ee20bc16f1e5))
+
+- Worker parses the pinned listener response shape (pointer)
+  ([`4061296`](https://github.com/jason-weddington/personal-kb-mcp/commit/40612961e7366aaa2fdc817b8380adf187258d2a))
+
+- **embeddings**: Bound retries on post-embed write failure
+  ([`d1b8484`](https://github.com/jason-weddington/personal-kb-mcp/commit/d1b8484dce48243b9e242f5dd451a43502924ad3))
+
+- **graph**: Implement neighbors() + get_entries() on SQLiteBackend
+  ([`8bbac72`](https://github.com/jason-weddington/personal-kb-mcp/commit/8bbac723f5d45e8e7aec2600dbb32fbcaadec943))
+
+- **graph**: Stop metadata-only updates from deleting LLM-enriched edges
+  ([`8917cb0`](https://github.com/jason-weddington/personal-kb-mcp/commit/8917cb0dde5f94b0675e7b60be5f44189400de16))
+
+- **hook**: Cap telemetry POST timeout and bound the orphan sweep
+  ([`4703fe1`](https://github.com/jason-weddington/personal-kb-mcp/commit/4703fe11cfc73790a4ac620380de86ca678c6e73))
+
+- **kb-core**: Fail, not skip, postgres tests when KB_REQUIRE_POSTGRES_TESTS=1
+  ([`ad4c0a0`](https://github.com/jason-weddington/personal-kb-mcp/commit/ad4c0a0d128b308dee3a7b3b5d31df97f7152cc3))
+
+- **llm**: Place Anthropic cache_control on content blocks, not a top-level kwarg
+  ([`c615980`](https://github.com/jason-weddington/personal-kb-mcp/commit/c61598092fd110e282a6b2dd1497972bf9d0d5d2))
+
+- **tests**: Stub boto3 in IAM auth test so it doesn't hit real AWS
+  ([`522913f`](https://github.com/jason-weddington/personal-kb-mcp/commit/522913f9641f4628b6e931097de5c49bcd0b661a))
+
+### Chores
+
+- Bump personal-kb-web-service lock pin to the SQLite-default commit
+  ([`6f0df0e`](https://github.com/jason-weddington/personal-kb-mcp/commit/6f0df0e0860c311be1dddb5a9e362f7c30218df1))
+
+- Decouple release from deploy; github-gated release discipline
+  ([`7f9434b`](https://github.com/jason-weddington/personal-kb-mcp/commit/7f9434b4606623906dbfbe9b7bce8bb362b6bd28))
+
+- Default test command excludes live-API eval tests
+  ([`016aeee`](https://github.com/jason-weddington/personal-kb-mcp/commit/016aeee9bdf158bf73d90dba8afd0578b5dea392))
+
+- Delete the deprecated in-repo web explorer
+  ([`cf393ce`](https://github.com/jason-weddington/personal-kb-mcp/commit/cf393ce3fac8e80ee6aa07ebaafef2f1bb523153))
+
+- Drop smithy-json fork pin for PyPI 0.2.2
+  ([`f662c55`](https://github.com/jason-weddington/personal-kb-mcp/commit/f662c55c1d8ae38c1fb2d6b9017dbb6b4a1dc442))
+
+- Lower coverage floor to the post-extraction baseline
+  ([`36d1db4`](https://github.com/jason-weddington/personal-kb-mcp/commit/36d1db4027ef7ba17df30720d4a7593d537fec51))
+
+- Release.sh stamps the standalone hook package to the repo version
+  ([`ba9d749`](https://github.com/jason-weddington/personal-kb-mcp/commit/ba9d74960d3ca11692dc8cb0f6cc1c582c859e47))
+
+- Tell build agents how to handle the sqlite-vec sandbox gap
+  ([`a73e48d`](https://github.com/jason-weddington/personal-kb-mcp/commit/a73e48d2da4fae4d0ef907133d00e275dae1612d))
+
+- Update roadmap priorities and refresh agent eval baseline
+  ([`c2dfc8e`](https://github.com/jason-weddington/personal-kb-mcp/commit/c2dfc8e573a0a220be0a21dfc48f46c1e249eb74))
+
+- Vendor map-building workflows + per-machine setup.sh
+  ([`6bda001`](https://github.com/jason-weddington/personal-kb-mcp/commit/6bda001f27b3e6265cb3b0dbb685d5e11f89cb88))
+
+- **kb-core**: Stop mypy depending on whether sqlite-vec is installed
+  ([`21a05fd`](https://github.com/jason-weddington/personal-kb-mcp/commit/21a05fd5f9334dfc0a85b19756270006da4ed9bd))
+
+### Documentation
+
+- Add cross-project knowledge surfacing to ROADMAP Next
+  ([`a0a609c`](https://github.com/jason-weddington/personal-kb-mcp/commit/a0a609ca61e0121d6afb2642c49281e0c0c599d6))
+
+- Add mental map spec
+  ([`756b5c7`](https://github.com/jason-weddington/personal-kb-mcp/commit/756b5c7267a7922ffcd64513eb643ca89530c2d2))
+
+- Correct get_personal_kb_url docstring (no in-process fallback post-14ff626)
+  ([`fd75595`](https://github.com/jason-weddington/personal-kb-mcp/commit/fd755957e4b9129cea1eb81b7f285d600457e80a))
+
+- Correct the zero-pointer invariant the workflow taught agents
+  ([`5dec8ba`](https://github.com/jason-weddington/personal-kb-mcp/commit/5dec8ba21aaac1a2cf640e04c7ce43fe43f878cd))
+
+- Cover the full mental_map feature in README + how_it_works
+  ([`2b8963b`](https://github.com/jason-weddington/personal-kb-mcp/commit/2b8963ba90597b51d193cbffda7cde83e67605ce))
+
+- Drop [postgres] from client install examples + purge dead explorer env vars
+  ([`077a4a0`](https://github.com/jason-weddington/personal-kb-mcp/commit/077a4a0df893d146d06666ee720b023481a2f825))
+
+- Fix personal-kb-hook install command (package name)
+  ([`1f3ace0`](https://github.com/jason-weddington/personal-kb-mcp/commit/1f3ace02d8f68a98e78b388f8cd961df04188750))
+
+- Headless agents expect working sqlite-vec, self-verify eval
+  ([`2e33353`](https://github.com/jason-weddington/personal-kb-mcp/commit/2e33353f1d09bc42fb88bd57a9f6397a38ef01a7))
+
+- Record mental maps under Done in ROADMAP
+  ([`aab5e41`](https://github.com/jason-weddington/personal-kb-mcp/commit/aab5e41132183518f1349331948bcac4fbf3be72))
+
+- Rework root how_it_works.md for thin-client split + listener
+  ([`df3b547`](https://github.com/jason-weddington/personal-kb-mcp/commit/df3b54735993d067ab576d943a75859ee0587b73))
+
+- Roadmap — dynamic awareness injection (computed graph neighborhood)
+  ([`b108f31`](https://github.com/jason-weddington/personal-kb-mcp/commit/b108f31349d57ccb8b4e2a7c82e9a2e2c679b821))
+
+- Settled mental-map design after adversarial debate
+  ([`75d6930`](https://github.com/jason-weddington/personal-kb-mcp/commit/75d69305a589bca3a71a46a3ec08bd71761fb6ed))
+
+- **kb-core**: Author engine-internals how_it_works.md
+  ([`d1dbf13`](https://github.com/jason-weddington/personal-kb-mcp/commit/d1dbf13952d52471408f9e9c3b1aad2d13436218))
+
+### Features
+
+- Add mental_map entry_type as first-class storable
+  ([`11657b0`](https://github.com/jason-weddington/personal-kb-mcp/commit/11657b07189318472daaf2e75862a44893aebda4))
+
+- Advisory fact-free lint for mental_map bodies (§7.3)
+  ([`e3bd55a`](https://github.com/jason-weddington/personal-kb-mcp/commit/e3bd55a7502f0c09c809c62458392d42f49b6002))
+
+- Chain-credit whisper telemetry consumed via map pointer lists
+  ([`a2a6ece`](https://github.com/jason-weddington/personal-kb-mcp/commit/a2a6ece8e969925c7984ee6e1e091ead0d702421))
+
+- Expose raw per-leg relevance signals on SearchResult
+  ([`b88af59`](https://github.com/jason-weddington/personal-kb-mcp/commit/b88af590117354896afaef881c403cb013377d26))
+
+- Kb-core distribution-readiness + clean-install smoke check
+  ([`ea1b2ef`](https://github.com/jason-weddington/personal-kb-mcp/commit/ea1b2ef2f6225ee1b6f9efd46dfe901570ea285e))
+
+- Kb_preflight Maps index for mental_map pull surfacing (§7.7)
+  ([`400b3e7`](https://github.com/jason-weddington/personal-kb-mcp/commit/400b3e77681a5caa70a36ff0512728a33f8dbbb4))
+
+- KnowledgeBase facade + create_sqlite/create_postgres factories
+  ([`24346da`](https://github.com/jason-weddington/personal-kb-mcp/commit/24346da8f0dc55eb6c24c4a6292e43b4e474139e))
+
+- Lift retrieve/synthesis bodies into kb_core.query
+  ([`afdd7f5`](https://github.com/jason-weddington/personal-kb-mcp/commit/afdd7f5e3ed6f825ce314b2fa77f4938ee4c1573))
+
+- Listener Gate 0 — cross-project map titles in the hook injection
+  ([`f158973`](https://github.com/jason-weddington/personal-kb-mcp/commit/f15897365957dfe4ee3c135b066f8bd3cfc566fc))
+
+- Listener Gate 2b — whisper-next-turn live injection in the hook
+  ([`4e1d08b`](https://github.com/jason-weddington/personal-kb-mcp/commit/4e1d08b4aaf02d0e4b9193f3762ef96bff3f2f08))
+
+- Local real-time whisper-decision debug log (hook side)
+  ([`71d9bf0`](https://github.com/jason-weddington/personal-kb-mcp/commit/71d9bf0ee679ae42a484ef2ee955c4b332aece11))
+
+- Make silent graph-enrichment failures observable
+  ([`cdbbda6`](https://github.com/jason-weddington/personal-kb-mcp/commit/cdbbda6c36c7a8dac1811cfb11f7b7e089339128))
+
+- Maps index per-instance files + startup rebuild + LISTEN/NOTIFY refresh
+  ([`020118a`](https://github.com/jason-weddington/personal-kb-mcp/commit/020118aab4bcb2e5808ae6a5fd775468895347cc))
+
+- MCP server auto-spawns a singleton local kb-service daemon
+  ([`dc0c5c5`](https://github.com/jason-weddington/personal-kb-mcp/commit/dc0c5c55a121a23e4d56ae4514df8eee8c7fd103))
+
+- Move + de-env ingest pipeline into kb_core
+  ([`a0f3424`](https://github.com/jason-weddington/personal-kb-mcp/commit/a0f3424fa2197670128dcc33e330989e2f3a42d1))
+
+- Move + de-env LLM provider impls into kb_core
+  ([`edd2ef7`](https://github.com/jason-weddington/personal-kb-mcp/commit/edd2ef79b0e98965e13363d8e4a217708b145546))
+
+- Move + de-env search/embeddings into kb_core
+  ([`c56d1e2`](https://github.com/jason-weddington/personal-kb-mcp/commit/c56d1e25021ca1163328faca03ed00a6b103ab68))
+
+- Move formatters/ttl/coverage + graph/agent into kb_core
+  ([`60fa381`](https://github.com/jason-weddington/personal-kb-mcp/commit/60fa381bc73b0d021ebc43f462a935ea32a23eaf))
+
+- Move pure-core nucleus into kb_core with re-export shims
+  ([`415d3e4`](https://github.com/jason-weddington/personal-kb-mcp/commit/415d3e4273dcbe8b5badb509ccbde7b12b180616))
+
+- On-GET pointer-rot note for mental_map (§7.4)
+  ([`cb86550`](https://github.com/jason-weddington/personal-kb-mcp/commit/cb865503163b08d86ea991243b565565e85bac55))
+
+- Per-request attribution kwargs on ingest facade + dry_run on ingest_text
+  ([`ba9d5c5`](https://github.com/jason-weddington/personal-kb-mcp/commit/ba9d5c59e9719158ec9d9f2b406324aecfc6db2b))
+
+- Personal-kb-hook push surface + .kb_project convention (§7.7)
+  ([`e34da86`](https://github.com/jason-weddington/personal-kb-mcp/commit/e34da86b38207fb6d3b6bf00a2dca31048020b72))
+
+- Personal-kb[local] extra + local-mode README so onboarding actually works
+  ([`9112cb7`](https://github.com/jason-weddington/personal-kb-mcp/commit/9112cb7c0b47fe6a7f70bdc68b0a1257a54df335))
+
+- Prompt caching on multi-turn Anthropic paths
+  ([`7e77cf3`](https://github.com/jason-weddington/personal-kb-mcp/commit/7e77cf3fbbf23e23cb4f0e51388399300fb6ad6d))
+
+- Rewire the MCP channel onto the KnowledgeBase facade
+  ([`e47e1f4`](https://github.com/jason-weddington/personal-kb-mcp/commit/e47e1f4459593a125cbcf3d0845da3b080ed0bfb))
+
+- Rewire the web channel onto KnowledgeBase + drop dead shims
+  ([`176fbac`](https://github.com/jason-weddington/personal-kb-mcp/commit/176fbac618701bf66fbb385a9d33b9f30d4de813))
+
+- Scaffold kb-core package + KbConfig + import-purity guard
+  ([`0fac760`](https://github.com/jason-weddington/personal-kb-mcp/commit/0fac760d6afcce52802f1dae1d6646fc68cf16a1))
+
+- Setup.sh local/remote mode branch
+  ([`ec840bb`](https://github.com/jason-weddington/personal-kb-mcp/commit/ec840bb8cfd5c77521dcdf7cd6ff8f6c7117bd8a))
+
+- Split personal-kb-hook into a standalone zero-dependency package
+  ([`0789ff2`](https://github.com/jason-weddington/personal-kb-mcp/commit/0789ff2064b4314f38da3bcbf30b3bbe9b4bffc5))
+
+- Surface ALL of a project's maps (drop the LIMIT 5 cap)
+  ([`0a1a3c4`](https://github.com/jason-weddington/personal-kb-mcp/commit/0a1a3c462033f9504f70231502506f266232d011))
+
+- Thin MCP client — Backend seam (HttpBackend + LocalBackend) + 16 tool shims
+  ([`3dbf276`](https://github.com/jason-weddington/personal-kb-mcp/commit/3dbf276d84ae327efe2ee45acfa16fc500bb5631))
+
+- Whisper-efficacy telemetry on the hook side (4 touchpoints)
+  ([`97737d0`](https://github.com/jason-weddington/personal-kb-mcp/commit/97737d0a193f963febae3acd5674817c42908d80))
+
+- **embeddings**: Keep the embedding model warm via per-request keep_alive
+  ([`3b90958`](https://github.com/jason-weddington/personal-kb-mcp/commit/3b90958d82f3209509e41da8c36cbe55b9358179))
+
+- **embeddings**: Self-healing embedding retry queue
+  ([`7ba56bf`](https://github.com/jason-weddington/personal-kb-mcp/commit/7ba56bf1bc877a84da574490bfc75b5c6d418f78))
+
+- **eval**: Extend search-eval corpus with LongMemEval 5-ability taxonomy
+  ([`cf58a5f`](https://github.com/jason-weddington/personal-kb-mcp/commit/cf58a5f7aa4f317f41f5a1048c74951fed68cf22))
+
+- **hook**: Accept up to two map pointers per KB
+  ([`905a33a`](https://github.com/jason-weddington/personal-kb-mcp/commit/905a33ab27e5885a6c1a8f0518d938481fd8123f))
+
+- **hook**: Announce new maps as a one-line delta, not the full roster
+  ([`961bd97`](https://github.com/jason-weddington/personal-kb-mcp/commit/961bd97566de80d83fa4af7246c92fb9a9d2032f))
+
+- **hook**: HTTP fetch of maps-index with silent local fallback
+  ([`5b7dda7`](https://github.com/jason-weddington/personal-kb-mcp/commit/5b7dda71b37b46f130340d72f8d4d075c561fec0))
+
+- **hook**: Listener (whisper) fan-out across the KB roster (P2, built dark)
+  ([`5eff34f`](https://github.com/jason-weddington/personal-kb-mcp/commit/5eff34f3d36f7d0197eedf01f36305b0b1ae0b0c))
+
+- **hook**: Maps-index fan-out across the KB roster (P1, coverage-only)
+  ([`92b729b`](https://github.com/jason-weddington/personal-kb-mcp/commit/92b729b170a0ec1da2a03c46132e1a1635e5498b))
+
+- **hook**: Record the hook event name in the whisper-debug header
+  ([`d6a43ce`](https://github.com/jason-weddington/personal-kb-mcp/commit/d6a43ce33958ca4ee7630d7f9d34c19a4f4442b5))
+
+- **hook**: Record why the map roster emitted
+  ([`4d6efee`](https://github.com/jason-weddington/personal-kb-mcp/commit/4d6efee274a18b66aa504aa64909043b88055ba0))
+
+- **hook**: Roster loader + legacy fallback (P0, no behavior change)
+  ([`19bf607`](https://github.com/jason-weddington/personal-kb-mcp/commit/19bf607777e3d29a334ded11d671fbd0dff67254))
+
+### Refactoring
+
+- Delete LocalBackend + maps_index_writer + LISTEN/NOTIFY (thin client everywhere)
+  ([`14ff626`](https://github.com/jason-weddington/personal-kb-mcp/commit/14ff6262234eb70f9bc1a60e962fe468a0a981cf))
+
+- Maps index renders orientation (long_title), leads the primer
+  ([`e7801c1`](https://github.com/jason-weddington/personal-kb-mcp/commit/e7801c13535be5b28b06e4cfa09912a39eaace4e))
+
+- Remove on-disk JSONL fallback from the maps-index hook
+  ([`63c5122`](https://github.com/jason-weddington/personal-kb-mcp/commit/63c5122662520467df9828e9c719b908f8105490))
+
+### Testing
+
+- CI contract + smoke tests for the documented local-mode install path
+  ([`d3e7873`](https://github.com/jason-weddington/personal-kb-mcp/commit/d3e7873d32563f582725cb4195efb5f32619c11b))
+
+- Contract-test that local-mode README blocks never set KB_DATABASE_URL
+  ([`ed4c4d5`](https://github.com/jason-weddington/personal-kb-mcp/commit/ed4c4d5ddf4442861edb779eccd1faa3a718413e))
+
+- Kb-core real-Postgres integration suite (KB_TEST_DATABASE_URL, skippable)
+  ([`c91209b`](https://github.com/jason-weddington/personal-kb-mcp/commit/c91209bb5e3efb989bae60fd2d91879c43c700fc))
+
+- **kb-core**: Guard SQLite/Postgres parity for embedding_retry_queue
+  ([`76bf7bd`](https://github.com/jason-weddington/personal-kb-mcp/commit/76bf7bd9704fa7a3dc64c2e5ebc56f808f4956d6))
+
+
 ## v0.66.1 (2026-04-21)
 
 ### Bug Fixes

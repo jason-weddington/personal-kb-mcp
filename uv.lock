@@ -1640,7 +1640,7 @@ wheels = [
 
 [[package]]
 name = "personal-kb"
-version = "0.66.1"
+version = "0.67.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1724,7 +1724,7 @@ dev = [
 
 [[package]]
 name = "personal-kb-hook"
-version = "0.66.1"
+version = "0.67.0"
 source = { editable = "packages/personal-kb-hook" }
 
 [[package]]
