@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from kb_core import Attribution
 
 import kb_service.attribution as attribution_module
-from kb_service.attribution import resolve_attribution
+from kb_service.attribution import is_machine_principal, resolve_attribution
 from kb_service.auth import get_current_user
 from kb_service.main import app
 from tests.conftest import StatefulFakeDbPool, fake_admin_user, fake_user
@@ -190,3 +190,52 @@ def test_put_settings_trims_whitespace(client: TestClient) -> None:
     resp = client.get("/api/settings")
     assert resp.status_code == 200
     assert resp.json() == {"team": "docs-platform"}
+
+
+# ---------------------------------------------------------------------------
+# (h) is_machine_principal — config-absent/-present via the same
+#     machine_principal_email app_config key resolve_attribution's sibling
+#     accessor reads. Not enforced anywhere yet (see cli.py / this item's
+#     acceptance criteria) — these are pure accessor tests.
+# ---------------------------------------------------------------------------
+
+
+async def test_is_machine_principal_config_absent_is_false_for_everyone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No app_config row at all — must be False even for an admin.
+    pool = StatefulFakeDbPool({})
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return pool
+
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+    assert await is_machine_principal(fake_user()) is False
+    assert await is_machine_principal(fake_admin_user()) is False
+
+
+async def test_is_machine_principal_config_present_identifies_exactly_that_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = StatefulFakeDbPool({"machine_principal_email": "tester@example.com"})
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return pool
+
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+    assert await is_machine_principal(fake_user()) is True
+    # A different (even admin) user is not the machine principal.
+    assert await is_machine_principal(fake_admin_user()) is False
+
+
+async def test_is_machine_principal_config_blank_is_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Stored blank string normalises to None, same as resolve_attribution's team.
+    pool = StatefulFakeDbPool({"machine_principal_email": "   "})
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return pool
+
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+    assert await is_machine_principal(fake_user()) is False

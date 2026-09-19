@@ -15,6 +15,11 @@ from kb_core import Attribution
 from kb_service.database import get_db
 from kb_service.models import User
 
+# app_config key naming the machine-principal user's email. Absent row means
+# NO user is the machine principal — see is_machine_principal() below. Set
+# via `kb-service set-machine-principal --email ...` (kb_service.cli).
+MACHINE_PRINCIPAL_EMAIL_KEY = "machine_principal_email"
+
 
 async def get_setting(key: str) -> str | None:
     """Return the raw stored value for *key*, or None when no row exists.
@@ -76,3 +81,22 @@ async def resolve_attribution(user: User) -> Attribution:
     """
     team_raw = await get_setting("team")
     return Attribution(contributor=user.email, team=_normalize(team_raw))
+
+
+async def is_machine_principal(user: User) -> bool:
+    """Return True iff *user* is the configured machine principal.
+
+    Reads the 'machine_principal_email' key from app_config via the same
+    get_setting() accessor resolve_attribution() uses for 'team'. When the
+    config row is absent (the default — no machine principal has been
+    designated yet) this returns False for EVERY user, including admins;
+    there is no fallback identity that could accidentally promote someone.
+
+    Not enforced anywhere yet — this is a plain accessor other modules can
+    call once a later item wires it into route behaviour.
+    """
+    configured_raw = await get_setting(MACHINE_PRINCIPAL_EMAIL_KEY)
+    configured = _normalize(configured_raw)
+    if configured is None:
+        return False
+    return user.email == configured
