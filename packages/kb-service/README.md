@@ -40,6 +40,20 @@ and team KBs are two deployments of identical code pointed at different DBs.
 frontend, and restarts. Runbooks: dev server **kb-01746**, production cutover
 **kb-01765**, per-machine hook/listener setup **kb-01784**.
 
+## Installing somnus on the KB hosts
+
+`somnus`, the nightly map-maintenance loop binary (see
+`docs/nightly-map-maintenance-design.md`), is delivered to the KB hosts by `scripts/install-somnus.sh`.
+It resolves the target token by fetching `latest` from the artifact host (artifact-host's Caddy, default `https://artifacts.lab.example.com`), verifies the artifact exists at that token, and installs it on each of `kb-host-1`, `kb-host-2` and `kb-host-3` (overridable via `KB_HOSTS`), skipping hosts already current.
+
+Run it as `./scripts/install-somnus.sh` — or pin a token with `--version <TOKEN>` and retarget with `KB_HOSTS="kb-host-2"`.
+It is idempotent and safe on a fresh host, attempts every host even when one is powered off, prints a per-host summary (installed / skipped-already-current / unreachable / failed), and exits non-zero unless every host ended at the target token.
+It restarts nothing: somnus is a timer-invoked subprocess, so there is no daemon to bounce and the next timer fire picks up the new binary.
+On a failed post-install version check it rolls back to the previous binary rather than leaving a broken one, because the run is unattended.
+
+This path is deliberately independent of the dispatch fleet's installer (`agent-gtd-dispatch/talos-update.sh`, same artifact host, different session).
+Per Jason's ruling of 2026-09-19, every session owns its own release tooling, so the KB hosts and the dispatch fleet can legitimately run different tokens at different times — nothing may assume fleet-wide version uniformity, and changing one installer must not force a change on the other.
+
 ## Development
 
 See `CLAUDE.md` for commands, layout, and the KB entries that hold the
