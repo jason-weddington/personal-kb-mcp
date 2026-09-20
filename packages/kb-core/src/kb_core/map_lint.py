@@ -126,14 +126,34 @@ class MapLintFinding:
     message: str
 
 
+def map_pointer_ids(text: str) -> set[str]:
+    r"""Return the DISTINCT kb- pointer ids in the body, verbatim as matched.
+
+    Pure function. Ids matching ``kb-[0-9]{4,5}`` wherever they appear.
+    Deliberately NOT a parse of any gloss layout — the corpus's maps use incompatible ones.
+
+    No normalisation: a 4-digit id stays 4 digits wide; the set is not padded or case-folded.
+    The caller compares the strings it stored, so it must get back exactly what was matched.
+
+    This is the id SET the map-op write path compares.
+    The web service's ``POST /api/kb/map-op`` gate checks additive-only (``new ⊇ old``) with it.
+    It also checks exactly-one-pointer-per-call: ``new \ old`` has exactly one member.
+
+    It lives here, beside the budget that counts the same ids, so the regex has ONE call site.
+    The count and the id set therefore cannot drift apart.
+    A second copy of the pattern in the caller is the drift this pair has been bitten by twice.
+    """
+    return set(_POINTER_ID_RE.findall(text))
+
+
 def count_map_pointers(text: str) -> int:
     """Count distinct kb- pointer ids in the body, format-agnostically.
 
-    Pure function. Distinct ids matching ``kb-[0-9]{4,5}`` — deliberately NOT
-    a parse of any gloss layout, since the corpus's maps gloss their pointers
-    in incompatible ways (inline bulleted lists vs. prose paragraphs).
+    Pure function. Distinct ids matching ``kb-[0-9]{4,5}``, never a parse of any gloss layout.
+
+    Defined as the size of :func:`map_pointer_ids`, so the count and the id set can never disagree.
     """
-    return len(set(_POINTER_ID_RE.findall(text)))
+    return len(map_pointer_ids(text))
 
 
 def map_body_budget(pointer_count: int) -> int:

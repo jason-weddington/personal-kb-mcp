@@ -31,6 +31,7 @@ from kb_core.map_lint import (
     count_map_pointers,
     lint_map_body,
     map_body_budget,
+    map_pointer_ids,
 )
 
 
@@ -140,6 +141,55 @@ def test_multiple_findings_are_all_reported_in_rule_order():
 )
 def test_pointer_bodies_are_clean(body: str):
     assert lint_map_body(body) == []
+
+
+# --- map_pointer_ids: the id SET the map-op write path compares -------------
+#
+# The web service's POST /api/kb/map-op write gate verifies every write by
+# set arithmetic over the kb-XXXXX refs in the submitted map body
+# (additive-only means new ⊇ old; exactly-one-pointer-per-call means
+# new \ old has exactly one member). It must use the SAME regex the lint
+# and the body budget already use, which is why the set extraction lives
+# here beside count_map_pointers instead of as a second pattern in the
+# caller. Every case below also asserts the parity invariant that is the
+# point of the extraction: the count is len() of the id set, never an
+# independent match.
+
+POINTER_ID_CASES = [
+    # body -> expected id set (verbatim as matched, distinct, unsorted)
+    ("", set()),
+    ("orients the auth subsystem; follow the edges to sources", set()),
+    ("kb-01724 kb-01724 kb-01724", {"kb-01724"}),
+    ("see kb-1234 and kb-01234", {"kb-1234", "kb-01234"}),
+    (
+        "kb-03257 points at kb-01724 twice: kb-03257, kb-01724",
+        {"kb-03257", "kb-01724"},
+    ),
+    ("kb-123 and kb-abcde are not ids", set()),
+    # The regex matches at most five digits, so a six-digit run matches its
+    # first five verbatim — pinned so the caller knows the set it compares
+    # is exactly what the budget counted.
+    ("kb-123456", {"kb-12345"}),
+]
+
+POINTER_ID_BODIES = [body for body, _ in POINTER_ID_CASES]
+
+
+@pytest.mark.parametrize(("body", "expected"), POINTER_ID_CASES)
+def test_map_pointer_ids_returns_distinct_verbatim_ids(body, expected):
+    assert map_pointer_ids(body) == expected
+
+
+@pytest.mark.parametrize("body", POINTER_ID_BODIES)
+def test_count_is_always_the_length_of_the_id_set(body):
+    """count_map_pointers and map_pointer_ids cannot drift apart."""
+    assert count_map_pointers(body) == len(map_pointer_ids(body))
+
+
+def test_map_pointer_ids_does_not_normalize_or_pad():
+    """A 4-digit id comes back 4 digits wide — no zero-padding, no case folding."""
+    assert map_pointer_ids("kb-1234") == {"kb-1234"}
+    assert map_pointer_ids("KB-1234") == set()
 
 
 # --- budget boundary --------------------------------------------------------

@@ -68,7 +68,20 @@ from kb_core.embedding_retry import (
     queue_stats,
     resolve,
 )
+from kb_core.map_caps import count_maps_created_since
 from kb_core.store.knowledge_store import KnowledgeStore
+from map_caps_fixture import (
+    CONTRIBUTOR as MAP_CAPS_CONTRIBUTOR,
+)
+from map_caps_fixture import (
+    EXPECTED_COUNTS as MAP_CAPS_EXPECTED_COUNTS,
+)
+from map_caps_fixture import (
+    SEED_ENTRIES as MAP_CAPS_SEED_ENTRIES,
+)
+from map_caps_fixture import (
+    SINCE as MAP_CAPS_SINCE,
+)
 from map_cluster_ledger_shape import (
     EXPECTED_COLUMNS as MCL_EXPECTED_COLUMNS,
 )
@@ -787,3 +800,61 @@ async def test_map_eligibility_counts_on_postgres(pg_kb: PostgresBackend) -> Non
         )
 
     assert await pg_kb.map_eligibility_counts() == list(EXPECTED_COUNTS)
+
+
+# ---------------------------------------------------------------------------
+# Map caps (somnus per-night structural caps) — one SQL count, both backends.
+# kb_core.map_caps.count_maps_created_since owns the statement and branches
+# on exactly one dialect token: the Postgres leg carries ``COLLATE "C"`` on
+# the ``created_at >=`` range comparison because that column is TEXT (see
+# the module docstring for the type audit). The test below seeds the SAME
+# shared corpus the SQLite suite uses (map_caps_fixture.py) and asserts the
+# SAME expected ints, so the collation pin cannot drift silently.
+# ---------------------------------------------------------------------------
+
+
+async def test_count_maps_created_since_on_postgres(pg_kb: PostgresBackend) -> None:
+    """The Postgres leg of the caps count returns the SAME ints as SQLite.
+
+    Seeds the shared ``MAP_CAPS_SEED_ENTRIES`` corpus and asserts ``MAP_CAPS_EXPECTED_COUNTS``.
+
+    One expectation for both dialects, so the collation pin cannot drift silently.
+
+    The inclusive-boundary row ``kb-90001`` was created at exactly ``MAP_CAPS_SINCE``.
+
+    It is in the corpus so the ``COLLATE "C"`` comparison is exercised at equality.
+
+    A collation that reordered the ``+00:00`` suffix would flip that row's answer.
+    """
+
+    for row in MAP_CAPS_SEED_ENTRIES:
+        await pg_kb.execute(
+            "INSERT INTO knowledge_entries"
+            " (id, project_ref, short_title, long_title, knowledge_details, entry_type,"
+            " contributor, created_at, updated_at, is_active)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row,
+        )
+
+    for (contributor, project_ref), expected in MAP_CAPS_EXPECTED_COUNTS.items():
+        assert (
+            await count_maps_created_since(
+                pg_kb,
+                contributor=contributor,
+                since=MAP_CAPS_SINCE,
+                project_ref=project_ref,
+            )
+            == expected
+        ), f"contributor={contributor!r} project_ref={project_ref!r}"
+
+    # The boundary row is the one case the table above could pass without:
+    # name it. kb-90001 must be stored at exactly MAP_CAPS_SINCE, in the same
+    # normalization the count applies, or the "counted" row is a different
+    # instant from the one the test claims.
+    assert MAP_CAPS_CONTRIBUTOR == "somnus"
+    cursor = await pg_kb.execute(
+        "SELECT created_at FROM knowledge_entries WHERE id = ?", ("kb-90001",)
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row["created_at"] == MAP_CAPS_SINCE.astimezone(UTC).isoformat()
