@@ -32,6 +32,7 @@ from kb_service.routes.kb_routes import router as kb_router
 from kb_service.routes.kb_write_routes import router as kb_write_router
 from kb_service.routes.listener_routes import router as listener_router
 from kb_service.routes.map_eligibility_routes import router as map_eligibility_router
+from kb_service.routes.map_lint_routes import router as map_lint_router
 from kb_service.routes.maps_routes import router as maps_router
 from kb_service.routes.nudge_routes import router as nudge_router
 from kb_service.routes.query_routes import router as query_router
@@ -198,6 +199,7 @@ app.include_router(listener_router)
 app.include_router(telemetry_router)
 app.include_router(embedding_queue_router)
 app.include_router(map_eligibility_router)
+app.include_router(map_lint_router)
 app.include_router(nudge_router)
 
 

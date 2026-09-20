@@ -10,6 +10,13 @@ All six endpoints live under ``/api/kb`` and require authentication.
 LLM graph enrichment (store, store_batch) runs synchronously inside the
 request; a batch may take tens of seconds.  No streaming or timeout machinery
 is added in this item.
+
+mental_map writes carry the machine-principal lint gate
+(``_check_machine_principal_map_lint``): when the writer is the configured
+machine principal, a kb-core map-lint finding rejects the write with 422
+(the nightly loop's only mechanical purity check — see
+docs/nightly-map-maintenance-design.md).  For every other user the lint is
+advisory (rendered by the MCP channel) and never blocks a write here.
 """
 
 import logging
@@ -19,10 +26,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from kb_core.ingest.safety import detect_secrets_in_content
+from kb_core.map_lint import lint_map_body
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.ttl import compute_expires_at
 
-from kb_service.attribution import resolve_attribution
+from kb_service.attribution import is_machine_principal, resolve_attribution
 from kb_service.auth import get_current_user, require_admin
 from kb_service.models import User
 from kb_service.models_kb import (
@@ -158,6 +166,49 @@ def _check_orphan_mental_map(
         )
 
 
+async def _check_machine_principal_map_lint(
+    entry_type: EntryType,
+    effective_details: str,
+    user: User,
+    *,
+    prefix: str = "",
+) -> None:
+    """Raise 422 when the machine principal writes a lint-failing mental_map.
+
+    HARD gate, machine principal ONLY (docs/nightly-map-maintenance-design.md,
+    Phase 0 "server-side hard lint for the machine principal"): the nightly
+    map-maintenance loop writes over HTTP, so the write path is the only
+    place its bodies can be mechanically checked — without this gate every
+    purity rule in that design reduces to a prompt instruction. The lint is
+    kb-core's single-source-of-truth one (``kb_core.map_lint``), the same
+    findings the dry-run endpoint (``map_lint_routes``) reports and the MCP
+    channel renders as advisories.
+
+    For every OTHER user the lint stays ADVISORY (MCP channel) and the write
+    succeeds: hard-gating humans would reject the corpus's best maps, which
+    legitimately trip the advisory. With no ``machine_principal_email``
+    config row set, ``is_machine_principal`` returns False for EVERYONE
+    including admins, so the gate is inert and no write is rejected.
+
+    Follows ``_check_orphan_mental_map`` for shape and status code (422).
+    """
+    if entry_type is not EntryType.MENTAL_MAP:
+        return
+    if not await is_machine_principal(user):
+        return
+    findings = lint_map_body(effective_details)
+    if not findings:
+        return
+    rendered = "; ".join(f"{f.code.value}: {f.message}" for f in findings)
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"{prefix}Map lint findings reject this mental_map write by the "
+            f"machine principal: {rendered}"
+        ),
+    )
+
+
 def _map_value_error(exc: ValueError) -> HTTPException:
     """Map a kb-core ``ValueError`` to HTTP 404 (not found) or 409 (conflict)."""
     msg = str(exc)
@@ -205,6 +256,9 @@ async def store(
         _check_secrets(body.knowledge_details, kb)
         entry_type = body.entry_type or EntryType.FACTUAL_REFERENCE
         _check_orphan_mental_map(entry_type, body.knowledge_details, body.hints)
+        await _check_machine_principal_map_lint(
+            entry_type, body.knowledge_details, user
+        )
 
         entry: KnowledgeEntry = await kb.store(
             short_title=body.short_title,
@@ -253,6 +307,16 @@ async def store(
     if body.hints:
         effective_hints.update(body.hints)
     _check_orphan_mental_map(effective_entry_type, effective_details, effective_hints)
+    # Machine-principal map-lint gate — same EFFECTIVE-body view as the orphan
+    # check above, for the same reason: a mental_map is the entry after the
+    # update, so any write by the machine principal that would leave a map
+    # failing the lint is rejected, including a metadata-only update whose
+    # stored body fails. The somnus loop always sends full bodies on automated
+    # updates (design: "full-body writes on every automated update"), so this
+    # never rejects a legitimate automated write.
+    await _check_machine_principal_map_lint(
+        effective_entry_type, effective_details, user
+    )
 
     try:
         entry = await kb.update(
@@ -321,6 +385,9 @@ async def store_batch(
                     "supersedes/related_entities hint)."
                 ),
             )
+        await _check_machine_principal_map_lint(
+            raw.entry_type, raw.knowledge_details, user, prefix=prefix
+        )
 
     # ── build facade dicts ────────────────────────────────────────────────
     entry_dicts: list[dict[str, Any]] = []
