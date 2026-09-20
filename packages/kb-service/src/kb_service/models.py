@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from kb_core.models.entry import KnowledgeEntry
 from kb_core.models.search import SearchResult
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # --- Auth / User Schemas ---
 
@@ -731,6 +731,126 @@ class EmbeddingQueueStatusResponse(BaseModel):
     vectorless_unqueued: int
     worker_enabled: bool
     worker_running: bool
+
+
+# --- Map eligibility (review + override surface) ---
+
+
+class MapEligibilityEvidenceModel(BaseModel):
+    """Lossless mirror of kb-core's ``MapEligibilityEvidence`` dataclass.
+
+    Field-for-field copy of ``kb_core.map_eligibility.MapEligibilityEvidence``
+    (source of truth: kb_core/map_eligibility.py).  Converted via
+    ``dataclasses.asdict()`` in the route — the dataclass is NOT imported
+    into this module.
+    """
+
+    project_ref: str
+    mappable: int
+    ingested: int
+    hand_authored: int
+    maps: int
+    top_prefix: str
+    top_prefix_share: float
+    is_ingest_corpus: bool
+    is_too_thin: bool
+    is_journal: bool
+    computed_eligible: bool
+
+
+class MapEligibilityOverrideModel(BaseModel):
+    """Lossless mirror of kb-core's ``MapEligibilityOverride`` dataclass.
+
+    Field-for-field copy of ``kb_core.map_eligibility.MapEligibilityOverride``
+    (source of truth: kb_core/map_eligibility.py).  Converted via
+    ``dataclasses.asdict()`` in the route — the dataclass is NOT imported
+    into this module.
+    """
+
+    project_ref: str
+    eligible: bool
+    reason: str
+    set_by: str | None
+    set_at: str
+
+
+class MapEligibilityVerdictModel(BaseModel):
+    """Lossless mirror of kb-core's ``MapEligibilityVerdict`` dataclass.
+
+    Field-for-field copy of ``kb_core.map_eligibility.MapEligibilityVerdict``
+    (source of truth: kb_core/map_eligibility.py).  Converted via
+    ``dataclasses.asdict()`` in the route — the dataclass is NOT imported
+    into this module.
+    """
+
+    evidence: MapEligibilityEvidenceModel
+    override: MapEligibilityOverrideModel | None
+    effective_eligible: bool
+    decided_by: Literal["computed", "override"]
+    orphaned: bool
+
+
+class MapEligibilityResponse(BaseModel):
+    """Response for ``GET /api/kb/map-eligibility`` (admin-only).
+
+    Exactly ``{"projects": [...]}`` — every verdict, eligible and
+    ineligible alike, in kb-core's own (``project_ref``-ascending) order,
+    with ``top_prefix_share`` unrounded.
+    """
+
+    projects: list[MapEligibilityVerdictModel]
+
+
+class MapEligibilityOverrideSetRequest(BaseModel):
+    """Request body for ``POST /api/kb/map-eligibility/override``."""
+
+    project_ref: str = Field(..., min_length=1)
+    eligible: bool
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+    @field_validator("project_ref", "reason")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        """Reject a blank value and return the stripped form."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+
+class MapEligibilityOverrideClearRequest(BaseModel):
+    """Request body for ``POST /api/kb/map-eligibility/override/clear``."""
+
+    project_ref: str = Field(..., min_length=1)
+
+    @field_validator("project_ref")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        """Reject a blank value and return the stripped form."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+
+class MapEligibilityOverrideResponse(BaseModel):
+    """Response for both override POST endpoints.
+
+    ``changed`` is unconditionally ``True`` on the set endpoint and means
+    "the upsert executed", NOT "the effective verdict moved" — whether it
+    moved is recoverable from the ``was=`` field of the engine's
+    ``map_eligibility_override_set`` audit row.  On the clear endpoint it is
+    the engine's own return: ``False`` when no override row existed.
+
+    ``verdict`` is the post-write resolved verdict for the ref; it is null
+    exactly when the ref is absent from the post-write list, which is
+    reachable only on the clear path (clearing an override on a ref with
+    zero mappable entries removes it from both the counts query and the
+    override table).
+    """
+
+    changed: bool
+    verdict: MapEligibilityVerdictModel | None
 
 
 # --- Pointer-candidates (capture-time map nudge, server half) ---

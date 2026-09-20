@@ -14,6 +14,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from kb_core.ingest.ingester import FileResult
+from kb_core.map_eligibility import (
+    MapEligibilityOverride,
+    MapEligibilityVerdict,
+    classify,
+)
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.search import SearchResult
 
@@ -277,6 +282,10 @@ class FakeKnowledgeBase:
         self.deactivate_calls: list[tuple[str, str]] = []
         self.reactivate_calls: list[tuple[str, str]] = []
         self.bulk_update_calls: list[dict[str, Any]] = []
+        self.map_eligibility_verdicts: list[MapEligibilityVerdict] = []
+        self.set_map_eligibility_override_calls: list[tuple[str, dict[str, Any]]] = []
+        self.clear_map_eligibility_override_calls: list[str] = []
+        self.clear_map_eligibility_override_result: bool = True
 
         # injectable errors (write surface)
         self._update_raises: ValueError | None = None
@@ -436,6 +445,33 @@ class FakeKnowledgeBase:
         }
 
     embedding_worker_running: bool = True
+
+    # ── map eligibility (override review surface) ────────────────────────────
+
+    async def map_eligibility(self) -> list[MapEligibilityVerdict]:
+        """Return the configured verdict list (tests set it directly)."""
+        return self.map_eligibility_verdicts
+
+    async def set_map_eligibility_override(
+        self,
+        project_ref: str,
+        *,
+        eligible: bool,
+        reason: str,
+        set_by: str | None = None,
+    ) -> MapEligibilityOverride:
+        """Record the call and return the fake override row."""
+        self.set_map_eligibility_override_calls.append(
+            (project_ref, {"eligible": eligible, "reason": reason, "set_by": set_by})
+        )
+        return MapEligibilityOverride(
+            project_ref, eligible, reason, set_by, "2026-09-19T12:00:00+00:00"
+        )
+
+    async def clear_map_eligibility_override(self, project_ref: str) -> bool:
+        """Record the call and return the configured clear result."""
+        self.clear_map_eligibility_override_calls.append(project_ref)
+        return self.clear_map_eligibility_override_result
 
     # ── write surface (P2) ───────────────────────────────────────────────────
 
@@ -768,6 +804,46 @@ def make_search_result() -> SearchResult:
         effective_confidence=0.9,
         staleness_warning=None,
         match_source="hybrid",
+    )
+
+
+def make_map_eligibility_verdict(
+    project_ref: str,
+    *,
+    mappable: int,
+    ingested: int,
+    top_prefix_count: int,
+    top_prefix: str,
+    maps: int = 0,
+    override: MapEligibilityOverride | None = None,
+    orphaned: bool = False,
+) -> MapEligibilityVerdict:
+    """Build one MapEligibilityVerdict via kb-core's own ``classify``.
+
+    The evidence fields are NEVER hand-populated — kb-core's
+    ``classify()`` is the single source of truth for the flag logic, so
+    the fixtures track it instead of re-encoding it.
+    """
+    evidence = classify(
+        project_ref,
+        mappable=mappable,
+        ingested=ingested,
+        top_prefix_count=top_prefix_count,
+        top_prefix=top_prefix,
+        maps=maps,
+    )
+    if override is not None:
+        effective_eligible = override.eligible
+        decided_by = "override"
+    else:
+        effective_eligible = evidence.computed_eligible
+        decided_by = "computed"
+    return MapEligibilityVerdict(
+        evidence=evidence,
+        override=override,
+        effective_eligible=effective_eligible,
+        decided_by=decided_by,
+        orphaned=orphaned,
     )
 
 
