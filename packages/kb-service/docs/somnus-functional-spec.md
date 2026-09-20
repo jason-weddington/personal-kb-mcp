@@ -100,7 +100,7 @@ Never `deactivate` a map (on the HTTP path that path deletes the map's outbound 
 
   Worth keeping distinct from a thing Jason already killed: an arbitrary per-turn **output** ceiling truncates a generation mid-flight and makes output bind before context does. A cumulative **run** budget terminates cleanly between turns, exactly as the wall-clock budget does, and truncates nothing. The two collapse into "token caps are bad" very easily.
 - No compaction. Per-unit context is ~11k tokens against a 200k window; the highest fill ever observed on real work in that corpus is 80.1%.
-- **Assert at startup that the working directory is NOT a git repo.** `finish(done)` rejects `TreeUnchanged`, and an HTTP-only agent changes no files — so a stray `.git` turns the fail-open into a fail-closed and every run burns its full budget.
+- **No git-related startup assertion.** An earlier draft required asserting the working directory is *not* a git repo, on the reasoning that `finish(done)` rejects `TreeUnchanged` and an HTTP-only agent changes no files, so a stray `.git` would make every run burn its budget. **That was true only before the observer seam existed.** With a custom `ChangeObserver` supplied, `observe_tree` is not called on the baseline or on any of the three finish-time observations — git is never consulted, a stray `.git` is inert, and an assertion refusing to start in a directory that happens to be a repo would block a legitimate deployment for nothing.
 
 ## Structural caps, per night
 
