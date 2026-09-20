@@ -8,10 +8,37 @@ are handled inside the backend, not in application code.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+# The WHERE clause that defines "mappable" for the whole map-maintenance
+# feature (nightly map maintenance, Loop 1 eligibility): an active,
+# non-mental_map entry that belongs to a project. Both backends MUST
+# interpolate this constant into their ``map_eligibility_counts`` SQL
+# rather than repeat the literal — the clause appears nowhere else in
+# either repo today, and the later nightly loop needs the same entry set
+# again. Written as a parenthesized single-element string so the physical
+# line stays under 100 columns.
+MAPPABLE_ENTRY_WHERE_SQL = (
+    "is_active = 1 AND entry_type <> 'mental_map' AND project_ref IS NOT NULL"
+)
+
+
+class MapEligibilityCounts(NamedTuple):
+    """Per-project counts feeding the map-eligibility classifier.
+
+    A NamedTuple rather than a bare tuple so a transposed column is
+    impossible at either backend's implementation site.
+    """
+
+    project_ref: str
+    mappable: int
+    ingested: int
+    top_prefix_count: int
+    top_prefix: str
+    maps: int
 
 
 @runtime_checkable
@@ -128,6 +155,26 @@ class Database(Protocol):
         Used to clear the deterministic edge set (has_tag, in_project,
         supersedes, references, extracted_from, ...) ahead of a rebuild
         without destroying edges the enricher previously derived.
+        """
+        ...
+
+    async def map_eligibility_counts(self) -> list[MapEligibilityCounts]:
+        """Per-project mappable-entry counts for map-eligibility classification.
+
+        Exactly ONE SQL statement with ZERO bind parameters — a backend-
+        internal full scan, so it bypasses the ``?`` translator on
+        Postgres. Returns one row per ``project_ref`` that has at least
+        one mappable entry (``MAPPABLE_ENTRY_WHERE_SQL``), so
+        ``project_ref IS NULL`` entries are excluded and a project with
+        only ``mental_map`` entries is absent entirely — such a project
+        reports ``maps = 0`` in the synthesized override-only row built
+        by ``kb_core.map_eligibility.resolve_eligibility``. The JSON-array
+        unnest of ``ingested_files.entry_ids``, the title-prefix
+        expression and its tie-break are backend-owned because the two
+        dialects diverge (``json_each`` vs
+        ``jsonb_array_elements_text(entry_ids::jsonb)``,
+        ``instr``/``substr`` vs ``split_part``). ``maps`` is
+        reporting-only and affects no verdict.
         """
         ...
 

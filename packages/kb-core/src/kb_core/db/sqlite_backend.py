@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from kb_core.db.backend import MAPPABLE_ENTRY_WHERE_SQL, MapEligibilityCounts
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -44,6 +46,63 @@ def _escape_fts_query(query: str) -> str:
         return ""
     cleaned = [t.replace('"', "") for t in tokens]
     return " ".join(f'"{t}"' for t in cleaned if t)
+
+
+# Map-eligibility counts (nightly map maintenance, Loop 1). One statement,
+# zero bind parameters, one row per project_ref with at least one mappable
+# entry. The title prefix is everything before the first ':' — the
+# instr/substr CASE reproduces Postgres ``split_part(short_title, ':', 1)``
+# on all three shapes ('Run: alpha' -> 'Run', 'No colon here' -> itself,
+# ': leading colon' -> ''). The Postgres counterpart diverges in exactly
+# four places (split_part, jsonb_array_elements_text, the COLLATE "C"
+# tie-break, the required derived-table alias) — see
+# postgres_backend._MAP_ELIGIBILITY_COUNTS_SQL.
+_MAP_ELIGIBILITY_COUNTS_TEMPLATE = """
+WITH mappable AS (
+    SELECT id, project_ref,
+           CASE WHEN instr(short_title, ':') > 0
+                THEN substr(short_title, 1, instr(short_title, ':') - 1)
+                ELSE short_title END AS prefix
+    FROM knowledge_entries
+    WHERE {mappable_where}
+), ing AS (
+    SELECT DISTINCT j.value AS entry_id
+    FROM ingested_files f, json_each(f.entry_ids) j
+    WHERE f.is_active = 1
+), per AS (
+    SELECT m.project_ref AS project_ref, COUNT(*) AS mappable,
+           COUNT(i.entry_id) AS ingested
+    FROM mappable m LEFT JOIN ing i ON i.entry_id = m.id
+    GROUP BY m.project_ref
+), pref AS (
+    SELECT project_ref, prefix, COUNT(*) AS n FROM mappable
+    GROUP BY project_ref, prefix
+), topp AS (
+    SELECT project_ref, prefix, n FROM (
+        SELECT project_ref, prefix, n,
+               ROW_NUMBER() OVER (
+                   PARTITION BY project_ref ORDER BY n DESC, prefix
+               ) AS rn
+        FROM pref
+    ) WHERE rn = 1
+), maps AS (
+    SELECT project_ref, COUNT(*) AS n
+    FROM knowledge_entries
+    WHERE is_active = 1 AND entry_type = 'mental_map' AND project_ref IS NOT NULL
+    GROUP BY project_ref
+)
+SELECT p.project_ref, p.mappable, p.ingested,
+       t.n AS top_prefix_count, t.prefix AS top_prefix,
+       COALESCE(mp.n, 0) AS maps
+FROM per p
+JOIN topp t ON t.project_ref = p.project_ref
+LEFT JOIN maps mp ON mp.project_ref = p.project_ref
+ORDER BY p.project_ref
+"""
+
+_MAP_ELIGIBILITY_COUNTS_SQL = _MAP_ELIGIBILITY_COUNTS_TEMPLATE.format(
+    mappable_where=MAPPABLE_ENTRY_WHERE_SQL
+)
 
 
 class SQLiteCursor:
@@ -303,6 +362,32 @@ class SQLiteBackend:
             " WHERE source = ? AND json_extract(properties, '$.source') IS NOT 'llm'",
             (entry_id,),
         )
+
+    # -- Map eligibility counts (nightly map maintenance, Loop 1) --
+
+    async def map_eligibility_counts(self) -> list[MapEligibilityCounts]:
+        """Per-project mappable-entry counts (one full-scan statement, no binds).
+
+        The DISTINCT in ``ing`` is load-bearing: without it an entry listed
+        in two active ``ingested_files`` rows multiplies its mappable row
+        in the LEFT JOIN and inflates BOTH ``mappable`` and ``ingested``.
+        The ``ROW_NUMBER() ... ORDER BY n DESC, prefix`` tie-break is
+        byte-ordered on SQLite (BINARY collation), so the empty-string
+        prefix of a leading-colon title wins a tie deterministically.
+        """
+        cursor = await self._conn.execute(_MAP_ELIGIBILITY_COUNTS_SQL)
+        rows = await cursor.fetchall()
+        return [
+            MapEligibilityCounts(
+                str(r["project_ref"]),
+                int(r["mappable"]),
+                int(r["ingested"]),
+                int(r["top_prefix_count"]),
+                str(r["top_prefix"]),
+                int(r["maps"]),
+            )
+            for r in rows
+        ]
 
     # -- Backend protocol helpers --
     #

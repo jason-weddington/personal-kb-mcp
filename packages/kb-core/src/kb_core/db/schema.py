@@ -129,6 +129,9 @@ async def apply_schema(db: Database) -> None:
     # Embedding retry queue table
     await apply_embedding_retry_queue_schema(db)
 
+    # Map eligibility override table (human verdicts over the computed predicate)
+    await apply_map_eligibility_override_schema(db)
+
     # Deployment config table
     await apply_deployment_config_schema(db)
 
@@ -269,6 +272,29 @@ CREATE INDEX IF NOT EXISTS idx_embed_queue_due ON embedding_retry_queue(status, 
 async def apply_embedding_retry_queue_schema(db: Database) -> None:
     """Create embedding_retry_queue table."""
     await db.executescript(EMBEDDING_RETRY_QUEUE_SCHEMA_SQL)
+    await db.commit()
+
+
+MAP_ELIGIBILITY_OVERRIDE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS map_eligibility_override (
+    project_ref TEXT PRIMARY KEY,
+    eligible INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    set_by TEXT,
+    set_at TEXT NOT NULL
+);
+"""
+
+
+async def apply_map_eligibility_override_schema(db: Database) -> None:
+    """Create map_eligibility_override table (human eligibility verdicts).
+
+    One row per project_ref — the PK is the only access path, so no
+    secondary index. ``eligible`` is INTEGER 0/1 to match the house
+    ``is_active INTEGER`` convention, which keeps one DDL column list
+    valid on both backends.
+    """
+    await db.executescript(MAP_ELIGIBILITY_OVERRIDE_SCHEMA_SQL)
     await db.commit()
 
 

@@ -69,6 +69,29 @@ from kb_core.embedding_retry import (
     resolve,
 )
 from kb_core.store.knowledge_store import KnowledgeStore
+from map_eligibility_counts_fixture import (
+    EXPECTED_COUNTS,
+    SEED_ENTRIES,
+    SEED_INGESTED_FILES,
+)
+from map_eligibility_override_shape import (
+    EXPECTED_COLUMNS as ME_EXPECTED_COLUMNS,
+)
+from map_eligibility_override_shape import (
+    EXPECTED_INDEX_COUNT as ME_EXPECTED_INDEX_COUNT,
+)
+from map_eligibility_override_shape import (
+    EXPECTED_INTEGER_COLUMNS as ME_EXPECTED_INTEGER_COLUMNS,
+)
+from map_eligibility_override_shape import (
+    EXPECTED_NULLABLE_COLUMNS,
+)
+from map_eligibility_override_shape import (
+    EXPECTED_PRIMARY_KEY as ME_EXPECTED_PRIMARY_KEY,
+)
+from map_eligibility_override_shape import (
+    EXPECTED_TEXT_COLUMNS as ME_EXPECTED_TEXT_COLUMNS,
+)
 
 if TYPE_CHECKING:
     # Only used in ``pg_kb: PostgresBackend`` annotations below (stringified
@@ -577,3 +600,104 @@ async def test_embedding_retry_queue_matches_expected_shape_on_postgres(
     assert any(
         re.search(expected_cols_pattern, indexdef, re.IGNORECASE) for indexdef in indexdefs
     ), f"no index on {EXPECTED_INDEX_COLUMNS} found; indexdefs={indexdefs}"
+
+
+# ---------------------------------------------------------------------------
+# Map eligibility (nightly map maintenance, Loop 1) — shape parity + counts.
+# The override table is hand-defined TWICE (SQLite in kb_core.db.schema,
+# Postgres inline in _apply_schema_locked); the counts query diverges by
+# design (split_part / jsonb_array_elements_text / COLLATE "C"). Both tests
+# below check against the SAME shared expectation modules the SQLite suite
+# uses (map_eligibility_override_shape.py / map_eligibility_counts_fixture.py),
+# so a dialect drift fails on whichever side runs.
+# ---------------------------------------------------------------------------
+
+
+async def test_map_eligibility_override_matches_expected_shape_on_postgres(
+    pg_kb: PostgresBackend,
+) -> None:
+    """Introspect map_eligibility_override on live Postgres and check its shape.
+
+    Checks, via ``information_schema.columns``, ``information_schema.
+    key_column_usage`` and ``pg_indexes``:
+
+    * the exact column-name set (``ME_EXPECTED_COLUMNS``);
+    * ``eligible`` is an integer type and every other column is a text type;
+    * ``project_ref`` is the primary key;
+    * ``set_by`` is the only nullable column;
+    * exactly one index exists — the PK index (no secondary index; the
+      table holds one row per project_ref and the PK is the only access
+      path).
+
+    No collation assertion: nothing in this feature orders or range-compares
+    any column of this table, so no column carries a ``COLLATE "C"`` pin
+    (unlike embedding_retry_queue.next_attempt_at).
+    """
+    cursor = await pg_kb.execute(
+        "SELECT column_name, data_type, is_nullable FROM information_schema.columns"
+        " WHERE table_schema = current_schema() AND table_name = 'map_eligibility_override'"
+    )
+    columns = await cursor.fetchall()
+
+    actual_column_names = {row["column_name"] for row in columns}
+    assert actual_column_names == ME_EXPECTED_COLUMNS
+
+    actual_integer_columns = {
+        row["column_name"] for row in columns if row["data_type"] == "integer"
+    }
+    actual_text_columns = {row["column_name"] for row in columns if row["data_type"] == "text"}
+    assert actual_integer_columns == ME_EXPECTED_INTEGER_COLUMNS
+    assert actual_text_columns == ME_EXPECTED_TEXT_COLUMNS
+
+    assert {
+        row["column_name"] for row in columns if row["is_nullable"] == "YES"
+    } == EXPECTED_NULLABLE_COLUMNS
+
+    pk_cursor = await pg_kb.execute(
+        "SELECT kcu.column_name FROM information_schema.table_constraints tc"
+        " JOIN information_schema.key_column_usage kcu"
+        "   ON tc.constraint_name = kcu.constraint_name"
+        "   AND tc.table_schema = kcu.table_schema"
+        " WHERE tc.table_schema = current_schema()"
+        "   AND tc.table_name = 'map_eligibility_override'"
+        "   AND tc.constraint_type = 'PRIMARY KEY'"
+    )
+    pk_rows = await pk_cursor.fetchall()
+    assert [row["column_name"] for row in pk_rows] == [ME_EXPECTED_PRIMARY_KEY]
+
+    idx_cursor = await pg_kb.execute(
+        "SELECT indexname FROM pg_indexes"
+        " WHERE schemaname = current_schema() AND tablename = 'map_eligibility_override'"
+    )
+    indexdefs = [row["indexname"] for row in await idx_cursor.fetchall()]
+    assert len(indexdefs) == ME_EXPECTED_INDEX_COUNT
+
+
+async def test_map_eligibility_counts_on_postgres(pg_kb: PostgresBackend) -> None:
+    """The Postgres counts query returns the SAME EXPECTED_COUNTS as SQLite.
+
+    Seeds the throwaway DB from the shared ``SEED_ENTRIES`` /
+    ``SEED_INGESTED_FILES`` corpus and asserts
+    ``await pg_kb.map_eligibility_counts()`` equals the shared
+    ``EXPECTED_COUNTS`` — one expectation for both dialects, so the
+    instr/substr vs split_part, json_each vs jsonb_array_elements_text, and
+    COLLATE "C" tie-break divergences cannot drift apart silently.
+    """
+    for row in SEED_ENTRIES:
+        await pg_kb.execute(
+            "INSERT INTO knowledge_entries"
+            " (id, project_ref, short_title, long_title, knowledge_details, entry_type,"
+            " created_at, updated_at, is_active)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row,
+        )
+    for row in SEED_INGESTED_FILES:
+        await pg_kb.execute(
+            "INSERT INTO ingested_files"
+            " (relative_path, content_hash, note_node_id, entry_ids, summary, file_size,"
+            " file_extension, ingested_at, updated_at, is_active)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row,
+        )
+
+    assert await pg_kb.map_eligibility_counts() == list(EXPECTED_COUNTS)

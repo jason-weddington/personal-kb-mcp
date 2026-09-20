@@ -90,6 +90,7 @@ if TYPE_CHECKING:
     from kb_core.graph.enricher import GraphEnricher
     from kb_core.ingest.ingester import FileIngester, FileResult, IngestResult
     from kb_core.llm.provider import LLMProvider
+    from kb_core.map_eligibility import MapEligibilityOverride, MapEligibilityVerdict
     from kb_core.models.search import SearchQuery, SearchResult
     from kb_core.search.embedder_protocol import Embedder
 
@@ -1230,6 +1231,54 @@ class KnowledgeBase:
         from kb_core.embedding_retry import queue_stats
 
         return await queue_stats(self._db, now=datetime.now(UTC))
+
+    async def map_eligibility(self) -> list[MapEligibilityVerdict]:
+        """Resolve map-eligibility verdicts (computed evidence + human overrides).
+
+        One verdict per project that has mappable entries or an override
+        row; the caller filters — an eligible-only variant is deliberately
+        not offered yet.
+        """
+        from kb_core.map_eligibility import resolve_eligibility
+
+        return await resolve_eligibility(self._db)
+
+    async def set_map_eligibility_override(
+        self,
+        project_ref: str,
+        *,
+        eligible: bool,
+        reason: str,
+        set_by: str | None = None,
+    ) -> MapEligibilityOverride:
+        """Upsert the human map-eligibility verdict for ``project_ref``.
+
+        ``set_by`` is passed through VERBATIM with no
+        ``self._config.attribution.contributor`` fallback: that config
+        value is process-wide while this is a per-request human decision,
+        and the hosted service constructs its ``app.state.kb`` with a bare
+        ``Attribution()`` whose contributor resolves to NULL anyway. The
+        HTTP/MCP caller owns threading the real identity in.
+        """
+        from kb_core.map_eligibility import set_override
+
+        return await set_override(
+            self._db,
+            project_ref,
+            eligible=eligible,
+            reason=reason,
+            set_by=set_by,
+            now=datetime.now(UTC),
+        )
+
+    async def clear_map_eligibility_override(self, project_ref: str) -> bool:
+        """Clear the human map-eligibility verdict for ``project_ref``.
+
+        Returns ``True`` iff an override row was actually deleted.
+        """
+        from kb_core.map_eligibility import clear_override
+
+        return await clear_override(self._db, project_ref)
 
     @property
     def embedding_worker_running(self) -> bool:

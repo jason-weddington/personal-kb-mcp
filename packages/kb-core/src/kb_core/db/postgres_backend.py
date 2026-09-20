@@ -12,6 +12,8 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from kb_core.db.backend import MAPPABLE_ENTRY_WHERE_SQL, MapEligibilityCounts
+
 if TYPE_CHECKING:
     import ssl as ssl_module
     from collections.abc import AsyncIterator, Callable
@@ -59,6 +61,64 @@ def _translate_placeholders(sql: str) -> str:
         i += 1
 
     return "".join(out)
+
+
+# Map-eligibility counts (nightly map maintenance, Loop 1) — the Postgres
+# dialect twin of sqlite_backend._MAP_ELIGIBILITY_COUNTS_TEMPLATE. One
+# statement, zero bind parameters, one row per project_ref with at least
+# one mappable entry. Exactly four dialect differences from the SQLite
+# version and nothing else: ``split_part`` for the title prefix;
+# ``jsonb_array_elements_text(entry_ids::jsonb)`` for the unnest (the
+# ``entry_ids`` column is TEXT here — the ::jsonb cast is required, same
+# bug class as kb-02915); ``COLLATE "C"`` on both ORDER BYs so ordering
+# is byte-wise and cross-backend deterministic (glibc orders `comfyui` and
+# `ComfyUI` differently from SQLite BINARY); and the required ``s`` alias
+# on the derived table.
+_MAP_ELIGIBILITY_COUNTS_TEMPLATE = """
+WITH mappable AS (
+    SELECT id, project_ref,
+           split_part(short_title, ':', 1) AS prefix
+    FROM knowledge_entries
+    WHERE {mappable_where}
+), ing AS (
+    SELECT DISTINCT jsonb_array_elements_text(entry_ids::jsonb) AS entry_id
+    FROM ingested_files
+    WHERE is_active = 1
+), per AS (
+    SELECT m.project_ref AS project_ref, COUNT(*) AS mappable,
+           COUNT(i.entry_id) AS ingested
+    FROM mappable m LEFT JOIN ing i ON i.entry_id = m.id
+    GROUP BY m.project_ref
+), pref AS (
+    SELECT project_ref, prefix, COUNT(*) AS n FROM mappable
+    GROUP BY project_ref, prefix
+), topp AS (
+    SELECT project_ref, prefix, n FROM (
+        SELECT project_ref, prefix, n,
+               ROW_NUMBER() OVER (
+                   PARTITION BY project_ref
+                   ORDER BY n DESC, prefix COLLATE "C"
+               ) AS rn
+        FROM pref
+    ) s WHERE rn = 1
+), maps AS (
+    SELECT project_ref, COUNT(*) AS n
+    FROM knowledge_entries
+    WHERE is_active = 1 AND entry_type = 'mental_map' AND project_ref IS NOT NULL
+    GROUP BY project_ref
+)
+SELECT p.project_ref, p.mappable, p.ingested,
+       t.n AS top_prefix_count, t.prefix AS top_prefix,
+       COALESCE(mp.n, 0) AS maps
+FROM per p
+JOIN topp t ON t.project_ref = p.project_ref
+LEFT JOIN maps mp ON mp.project_ref = p.project_ref
+ORDER BY p.project_ref COLLATE "C"
+"""
+
+_MAP_ELIGIBILITY_COUNTS_SQL = _MAP_ELIGIBILITY_COUNTS_TEMPLATE.format(
+    mappable_where=MAPPABLE_ENTRY_WHERE_SQL
+)
 
 
 class PostgresRow:
@@ -399,6 +459,30 @@ class PostgresBackend:
                 entry_id,
             )
 
+    # -- Map eligibility counts (nightly map maintenance, Loop 1) --
+
+    async def map_eligibility_counts(self) -> list[MapEligibilityCounts]:
+        """Per-project mappable-entry counts (one full-scan statement, no binds).
+
+        Backend-internal, so this bypasses the ``?`` translator entirely.
+        The DISTINCT in ``ing`` is load-bearing: without it an entry listed
+        in two active ``ingested_files`` rows multiplies its mappable row
+        in the LEFT JOIN and inflates BOTH ``mappable`` and ``ingested``.
+        """
+        async with self._conn() as conn:
+            rows = await conn.fetch(_MAP_ELIGIBILITY_COUNTS_SQL)
+        return [
+            MapEligibilityCounts(
+                str(r["project_ref"]),
+                int(r["mappable"]),
+                int(r["ingested"]),
+                int(r["top_prefix_count"]),
+                str(r["top_prefix"]),
+                int(r["maps"]),
+            )
+            for r in rows
+        ]
+
     # -- Sequence --
 
     async def next_sequence_value(self) -> int:
@@ -658,6 +742,28 @@ class PostgresBackend:
             "CREATE INDEX IF NOT EXISTS idx_embed_queue_due "
             "ON embedding_retry_queue(status, next_attempt_at)"
         )
+
+        # Map eligibility override (human verdicts over the computed predicate).
+        #
+        # Deliberately NO COLLATE "C" pin and no migration helper, unlike
+        # embedding_retry_queue.next_attempt_at above: nothing in this
+        # feature orders or range-compares any column of this table — the
+        # PK is project_ref, every lookup is PK equality, and the callers
+        # sort in Python. Postgres default collations are deterministic,
+        # so PK equality is byte-equality (empirically confirmed: `comfyui`
+        # and `ComfyUI` both exist as distinct project_ref values in the
+        # live data DB and GROUP BY keeps them separate). Keeping this DDL
+        # byte-identical to the SQLite one in kb_core.db.schema is what
+        # makes the shared-shape parity guard strongest.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS map_eligibility_override (
+                project_ref TEXT PRIMARY KEY,
+                eligible INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                set_by TEXT,
+                set_at TEXT NOT NULL
+            )
+        """)
 
         # Deployment config
         await conn.execute("""
