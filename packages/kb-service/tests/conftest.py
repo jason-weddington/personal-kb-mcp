@@ -13,6 +13,14 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from kb_core.cluster_ledger import (
+    CLUSTER_MARGINAL_MATCH_CEILING,
+    CLUSTER_MATCH_JACCARD,
+    CLUSTER_NEAR_MISS_FLOOR,
+    REOPEN_GROWTH_FACTOR,
+    ClusterLedgerMatchResult,
+    ClusterLedgerRow,
+)
 from kb_core.ingest.ingester import FileResult
 from kb_core.map_eligibility import (
     MapEligibilityOverride,
@@ -287,6 +295,16 @@ class FakeKnowledgeBase:
         self.clear_map_eligibility_override_calls: list[str] = []
         self.clear_map_eligibility_override_result: bool = True
 
+        # cluster/decline ledger (HTTP half; kb-core 246891c facade surface).
+        # Canned returns only — the routes delegate ALL matching to
+        # kb.match_clusters, so the fake never touches self.db.
+        self.cluster_ledger_match_result: ClusterLedgerMatchResult | None = None
+        self.match_clusters_calls: list[tuple[str, list[list[str]]]] = []
+        self.record_cluster_calls: list[tuple[str, list[str], str]] = []
+        self.record_cluster_result: ClusterLedgerRow | None = None
+        self.decline_cluster_calls: list[dict[str, Any]] = []
+        self.decline_cluster_result: ClusterLedgerRow | None = None
+
         # injectable errors (write surface)
         self._update_raises: ValueError | None = None
         self._deactivate_raises: ValueError | None = None
@@ -472,6 +490,50 @@ class FakeKnowledgeBase:
         """Record the call and return the configured clear result."""
         self.clear_map_eligibility_override_calls.append(project_ref)
         return self.clear_map_eligibility_override_result
+
+    # ── cluster/decline ledger ───────────────────────────────────────────────
+
+    async def match_clusters(
+        self, project_ref: str, candidates: list[list[str]]
+    ) -> ClusterLedgerMatchResult:
+        """Record the batch and return the canned result.
+
+        With no canned result set, a zero-row batch result is built from
+        kb-core's own pinned constants (the route echoes them, so the fake
+        must too).
+        """
+        self.match_clusters_calls.append((project_ref, [list(c) for c in candidates]))
+        if self.cluster_ledger_match_result is not None:
+            return self.cluster_ledger_match_result
+        return ClusterLedgerMatchResult(
+            project_ref=project_ref,
+            jaccard_threshold=CLUSTER_MATCH_JACCARD,
+            near_miss_floor=CLUSTER_NEAR_MISS_FLOOR,
+            marginal_match_ceiling=CLUSTER_MARGINAL_MATCH_CEILING,
+            reopen_growth_factor=REOPEN_GROWTH_FACTOR,
+            rows_considered=0,
+            verdicts=(),
+        )
+
+    async def record_cluster(
+        self, project_ref: str, member_entry_ids: list[str], label: str
+    ) -> ClusterLedgerRow:
+        """Record the call and return the canned row (a proposed row by default)."""
+        self.record_cluster_calls.append((project_ref, list(member_entry_ids), label))
+        if self.record_cluster_result is not None:
+            return self.record_cluster_result
+        return make_cluster_ledger_row()
+
+    async def decline_cluster(
+        self, cluster_key: str, *, reason: str, declined_by: str | None = None
+    ) -> ClusterLedgerRow | None:
+        """Record the call and return the canned declined row (declined by default)."""
+        self.decline_cluster_calls.append(
+            {"cluster_key": cluster_key, "reason": reason, "declined_by": declined_by}
+        )
+        if self.decline_cluster_result is not None:
+            return self.decline_cluster_result
+        return make_cluster_ledger_row(status="declined", declined_member_count=2)
 
     # ── write surface (P2) ───────────────────────────────────────────────────
 
@@ -804,6 +866,38 @@ def make_search_result() -> SearchResult:
         effective_confidence=0.9,
         staleness_warning=None,
         match_source="hybrid",
+    )
+
+
+def make_cluster_ledger_row(
+    cluster_key: str = "0123456789abcdef",
+    *,
+    project_ref: str = "proj",
+    member_entry_ids: tuple[str, ...] = ("kb-00001", "kb-00002"),
+    last_label: str = "",
+    status: str = "proposed",
+    sightings: int = 1,
+    first_seen_at: str = "2026-03-01T12:00:00+00:00",
+    last_seen_at: str = "2026-03-01T12:00:00+00:00",
+    declined_member_count: int | None = None,
+    declined_reason: str | None = None,
+    declined_by: str | None = None,
+    declined_at: str | None = None,
+) -> ClusterLedgerRow:
+    """Build one canned ``ClusterLedgerRow`` for the ledger fakes."""
+    return ClusterLedgerRow(
+        cluster_key=cluster_key,
+        project_ref=project_ref,
+        member_entry_ids=member_entry_ids,
+        last_label=last_label,
+        status=status,  # type: ignore[arg-type]
+        sightings=sightings,
+        first_seen_at=first_seen_at,
+        last_seen_at=last_seen_at,
+        declined_member_count=declined_member_count,
+        declined_reason=declined_reason,
+        declined_by=declined_by,
+        declined_at=declined_at,
     )
 
 

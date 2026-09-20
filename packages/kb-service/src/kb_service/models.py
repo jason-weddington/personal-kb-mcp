@@ -993,3 +993,107 @@ class MapLoopInputResponse(BaseModel):
     maps: list[MapLoopMap]
     pockets: list[MapLoopPocket]
     pockets_omitted_reason: PocketsOmittedReason | None = None
+
+
+# --- Cluster/decline ledger (nightly loop's only durable state, server half) ---
+
+
+class ClusterLedgerMatchCandidate(BaseModel):
+    """One batch candidate: a proposed cluster's member-id list.
+
+    The list must be non-empty — kb-core raises ``ValueError`` on an empty
+    member set, and a 500 is never the honest answer to bad input. There is
+    deliberately NO similarity/threshold field here: the overlap constant
+    lives in kb-core and nowhere else.
+    """
+
+    member_entry_ids: list[str] = Field(..., min_length=1)
+
+
+class ClusterLedgerMatchRequest(BaseModel):
+    """Request body for ``POST /api/kb/cluster-ledger/match``.
+
+    ``candidates`` is a BATCH — a project yields N pockets and N round
+    trips at 3am is waste. ``index`` in the response maps results back to
+    positions in this array.
+    """
+
+    project_ref: str = Field(..., min_length=1)
+    candidates: list[ClusterLedgerMatchCandidate] = []
+
+    @field_validator("project_ref")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        """Reject a blank value and return the stripped form."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+
+class ClusterLedgerMatchItem(BaseModel):
+    """One batch candidate's verdict, positionally aligned by ``index``.
+
+    ``ledger_id`` is kb-core's ``cluster_key`` (the row's identity token)
+    and is null exactly when ``matched`` is false. ``status`` is the
+    matched row's ledger status ("proposed" | "declined"); an unmatched
+    candidate carries "none" — the pinned contract makes ``status`` a
+    plain string, so the no-match case needs a member, and "none" is the
+    value of record. ``jaccard`` is the facade's own unrounded float (it
+    is the max overlap over ALL rows, which MAY exceed the overlap with
+    the matched row when a lower-scoring declined row was preferred —
+    see kb-core ``_best_match``). ``reopen_eligible`` is the
+    member-set-doubling escape verdict computed server-side against the
+    stored member set: a decline is permanent with exactly one escape.
+    """
+
+    index: int
+    matched: bool
+    ledger_id: str | None
+    status: str
+    jaccard: float | None
+    reopen_eligible: bool
+
+
+class ClusterLedgerMatchResponse(BaseModel):
+    """Response for ``POST /api/kb/cluster-ledger/match``.
+
+    Exactly ``{"results": [...]}`` — one item per request candidate, in
+    request order. An empty batch returns ``{"results": []}`` and 200.
+    """
+
+    results: list[ClusterLedgerMatchItem]
+
+
+class ClusterLedgerDeclineRequest(BaseModel):
+    """Request body for ``POST /api/kb/cluster-ledger/decline``.
+
+    ``reason`` is non-empty after stripping — the reason IS the audit
+    trail, and an empty one makes the ledger row useless. There is no
+    ``cluster_key`` field: identity is member-set overlap and the key is a
+    server-side birth hash, so the caller submits the member set and the
+    server resolves the row.
+    """
+
+    project_ref: str = Field(..., min_length=1)
+    member_entry_ids: list[str] = Field(..., min_length=1)
+    reason: str = Field(..., min_length=1)
+
+    @field_validator("project_ref", "reason")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        """Reject a blank value and return the stripped form."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+
+class ClusterLedgerDeclineResponse(BaseModel):
+    """Response for ``POST /api/kb/cluster-ledger/decline`` (201).
+
+    ``ledger_id`` is the declined row's ``cluster_key`` — the id a later
+    ``clear_cluster`` (admin surface) or audit lookup needs.
+    """
+
+    ledger_id: str
