@@ -687,6 +687,20 @@ async def test_summarize_without_llm_returns_formatted_fallback(
 ) -> None:
     """:meth:`summarize` falls back to formatted raw entries when no LLM is configured."""
     kb, _ = kb_with_embedder
+    # FORCE the no-LLM condition instead of relying on the ambient ABSENCE of a
+    # provider credential. Previously this test asserted the fallback path while
+    # doing nothing to cause it: with ANTHROPIC_API_KEY set in the environment --
+    # true on any developer box, and on any dispatch host, since the agent needs
+    # it -- `create_sqlite` builds a real synthesis provider, `summarize` takes
+    # the real path, and the test both fails and makes a live, billed API call.
+    # That silently violated this suite's hermetic contract (no network), and it
+    # was invisible because the failure only reproduces WITH credentials, which
+    # is backwards from the usual and so nobody hit it in CI.
+    for attr in ("_query_llm", "_synthesis_llm"):
+        provider = getattr(kb, attr, None)
+        if provider is not None:
+            await provider.close()
+        setattr(kb, attr, None)
     await kb.store(
         short_title="summarize target",
         long_title="Summarize target",
