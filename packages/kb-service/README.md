@@ -40,6 +40,19 @@ and team KBs are two deployments of identical code pointed at different DBs.
 frontend, and restarts. Runbooks: dev server **kb-01746**, production cutover
 **kb-01765**, per-machine hook/listener setup **kb-01784**.
 
+## Deploy preflight guard
+
+`./deploy.sh` runs `scripts/deploy-preflight.sh` before it touches anything, and every host-touching step (ssh, git pull, frontend build, `systemctl restart kb-service`) sits behind it — the script can also be run on its own to check the deploy window without deploying.
+It queries `agent-gtd list-runs --status pending,running` for in-flight dispatch runs (reporting count, run ids and item titles) and enumerates `/run/user/$UID/cc-socks/*.sock` for live peer Claude sessions, excluding this session's own socket when identifiable.
+The prompt came out of the harness-design session of 2026-09-19: the rule "do not bounce kb-service while work is in flight" was operator knowledge living in steering docs, and the agent triggering a deploy at 2am will be a different session with none of that context.
+
+kb-service serves the personal-kb hooks that fire on SessionStart, UserPromptSubmit and Stop for every session on this machine, including every dispatch run, so bouncing it mid-flight degrades map injection and whisper telemetry for anything crossing the window.
+Hook timeouts are capped at 3s and hooks fail soft, so this is degradation, not breakage — the guard refuses with that stated plainly rather than with a generic warning.
+When either check is non-zero or unanswerable (CLI missing or unauthenticated, socket directory unreadable — reported as UNKNOWN, because an unknown is not a safe answer), the preflight exits non-zero and `deploy.sh` aborts before pulling, building or restarting.
+
+To override the guard deliberately, pass `--ack` (or export `KB_DEPLOY_PREFLIGHT_ACK=1`) after notifying the listed peers or deciding to accept the degradation, and the acknowledgement is echoed into the deploy output so the log records that a human or agent bypassed the guard knowingly.
+The override is deliberately loud for the same reason the guard exists: a silent bypass is just operator memory again, one context failure away from being nobody's knowledge.
+
 ## Installing somnus on the KB hosts
 
 `somnus`, the nightly map-maintenance loop binary (see
