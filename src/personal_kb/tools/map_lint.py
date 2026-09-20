@@ -15,17 +15,47 @@ The discriminator (design §7.3): would a reader *act on the value directly*
 pointer)? Counts-of-parts ("three stages", "12 nodes") are pointers in
 disguise and are allowed; kb-XXXXX references are the desired content and are
 never flagged.
+
+The body-size guideline is a compositional budget, not a flat cap.
+It is a fixed base allowance for the orientation prose plus a per-pointer
+allowance for each distinct kb- pointer (`map_body_budget`).
+The old flat ~1500-char cap did not scale with pointer count, so enforcing it
+would have stripped per-pointer glosses out of exactly the maps that earned the
+most pointers.
+Those glosses are craft the nightly map-maintenance loop is explicitly
+forbidden from regenerating.
+Pointers are counted format-agnostically as distinct ``kb-[0-9]{4,5}`` ids,
+never by parsing a gloss layout.
+The corpus's maps use incompatible gloss conventions (kb-01724 uses inline
+bulleted gloss lines; kb-03257 uses a bare id list plus separate prose
+paragraphs), so any layout-specific parser works on one map and breaks on the
+other.
+The literals are validated against the live corpus: both kb-01724 (2319 chars /
+11 pointers) and kb-03257 (2540 chars / 20 pointers) pass at their current
+sizes, and a thin 1-pointer body now trips a smaller budget than the old cap.
 """
 
 import re
 
-MAP_BODY_ADVISORY_CHARS = 1500
+# Compositional body budget (see module docstring for why it is not flat):
+# a base allowance for the orientation prose plus a per-pointer allowance for
+# each gloss. Literals validated against the live corpus — kb-01724 (2319
+# chars / 11 pointers, 82% of its 2825 budget) and kb-03257 (2540 chars / 20
+# pointers, 58% of its 4400 budget) both pass, while a thin 1-pointer body
+# gets a smaller budget than the old flat ~1500 cap.
+MAP_BODY_BASE_CHARS = 900
+MAP_BODY_PER_POINTER_CHARS = 175
 
 _PREFIX = "Map lint (advisory): "
 
 # kb-XXXXX references are pointers (the desired content) — strip them before
 # any other heuristic so their digits never read as a retrievable numeral.
 _KB_REF_RE = re.compile(r"kb-\d{5}")
+
+# Pointer ids for the body-size budget, counted format-agnostically: distinct
+# ids matching kb-[0-9]{4,5} wherever they appear in the body, without parsing
+# any particular gloss layout (the corpus's best maps use incompatible ones).
+_POINTER_ID_RE = re.compile(r"kb-[0-9]{4,5}")
 
 _URL_RE = re.compile(r"https?://\S+")
 # ENV_CAPS env-var tokens: all-caps with at least one underscore, e.g. KB_DB_PATH
@@ -43,6 +73,25 @@ _INT_RE = re.compile(r"\b\d+\b")
 # A numeral immediately followed (optionally across one space) by a plural
 # noun is a count-of-parts — a pointer-in-disguise, not a retrievable value.
 _COUNT_TAIL_RE = re.compile(r"\s*[A-Za-z]+s\b")
+
+
+def count_map_pointers(text: str) -> int:
+    """Count distinct kb- pointer ids in the body, format-agnostically.
+
+    Pure function. Distinct ids matching ``kb-[0-9]{4,5}`` — deliberately NOT
+    a parse of any gloss layout, since the corpus's maps gloss their pointers
+    in incompatible ways (inline bulleted lists vs. prose paragraphs).
+    """
+    return len(set(_POINTER_ID_RE.findall(text)))
+
+
+def map_body_budget(pointer_count: int) -> int:
+    """Compositional body budget: prose base plus one allowance per pointer.
+
+    A map with more pointers earns more room for their glosses; a thin map
+    gets less room than the old flat cap allowed.
+    """
+    return MAP_BODY_BASE_CHARS + MAP_BODY_PER_POINTER_CHARS * pointer_count
 
 
 def _has_config_numeral(text: str) -> bool:
@@ -110,10 +159,15 @@ def lint_map_body(text: str) -> list[str]:
             "not a count of parts."
         )
 
-    if len(text) > MAP_BODY_ADVISORY_CHARS:
+    pointer_count = count_map_pointers(text)
+    budget = map_body_budget(pointer_count)
+    if len(text) > budget:
+        pointers_noun = "pointer" if pointer_count == 1 else "pointers"
         warnings.append(
-            _PREFIX + f"body is {len(text)} chars, exceeding the advisory ~1500 "
-            "char guideline — a map should orient, not contain."
+            _PREFIX + f"body is {len(text)} chars, exceeding the advisory budget of {budget} "
+            f"chars for {pointer_count} {pointers_noun} "
+            f"({MAP_BODY_BASE_CHARS} base + {MAP_BODY_PER_POINTER_CHARS} per pointer) "
+            "— cut orientation prose, not pointer glosses."
         )
 
     return warnings

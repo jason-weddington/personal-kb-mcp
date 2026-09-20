@@ -264,7 +264,7 @@ Tags, project refs, and person/tool hints **do not** count — those are categor
 
 ### What a map should *not* contain (fact-free discipline)
 
-A map is for **structure and relationships**, not retrievable values. `kb_store` runs a deterministic, advisory-only lint on every map body and flags content that looks like a fact — URLs, file paths, `ENV_VAR`-style tokens, dotted code identifiers (`module.func`), quoted literals, and config-like numerals (decimals, ≥4-digit integers, numerals adjacent to `=` or `:`). It also flags bodies longer than ~1500 characters with the note that a map should *orient*, not *contain*.
+A map is for **structure and relationships**, not retrievable values. `kb_store` runs a deterministic, advisory-only lint on every map body and flags content that looks like a fact — URLs, file paths, `ENV_VAR`-style tokens, dotted code identifiers (`module.func`), quoted literals, and config-like numerals (decimals, ≥4-digit integers, numerals adjacent to `=` or `:`). It also flags bodies longer than a compositional advisory budget (a fixed base allowance plus a per-pointer allowance for each distinct `kb-` reference, so well-pointed maps get more room for their glosses) with the note that an author should *cut orientation prose, not pointer glosses*.
 
 The lint never blocks a store — every store succeeds and every warning starts with `Map lint (advisory):`. The signal is purely informational, pointing you at content that probably belongs in a `factual_reference` the map links to instead.
 
