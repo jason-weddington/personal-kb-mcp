@@ -765,6 +765,37 @@ class PostgresBackend:
             )
         """)
 
+        # Cluster/decline ledger (nightly-loop proposed clusters + human declines).
+        #
+        # Deliberately NO COLLATE "C" pin and no secondary index, mirroring
+        # the SQLite DDL in kb_core.db.schema byte-for-byte: nothing in this
+        # feature orders or range-compares any column of this table — every
+        # lookup is cluster_key PK equality or project_ref equality, and the
+        # callers sort in Python. A btree's internal ordering depends on
+        # collation, but an equality probe under any deterministic default
+        # collation is byte-equality — the same argument made above for
+        # map_eligibility_override, and which the live data DB confirms
+        # (`comfyui` and `ComfyUI` coexist as distinct project_ref values).
+        # No index on project_ref: a few hundred rows (25 eligible projects
+        # x 10-20 clusters each) makes a sequential scan per read free; add
+        # one when the table passes ~10,000 rows.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS map_cluster_ledger (
+                cluster_key TEXT PRIMARY KEY,
+                project_ref TEXT NOT NULL,
+                member_entry_ids TEXT NOT NULL,
+                last_label TEXT NOT NULL,
+                status TEXT NOT NULL,
+                sightings INTEGER NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                declined_member_count INTEGER,
+                declined_reason TEXT,
+                declined_by TEXT,
+                declined_at TEXT
+            )
+        """)
+
         # Deployment config
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS deployment_config (

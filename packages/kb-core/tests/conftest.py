@@ -222,7 +222,8 @@ async def pg_kb(pg_temp_db: str) -> AsyncIterator[PostgresBackend]:
     await backend.execute(
         "TRUNCATE graph_edges, graph_nodes, knowledge_entries, knowledge_vec,"
         " entry_versions, ingested_files, search_events, agent_feedback,"
-        " audit_events, embedding_retry_queue, map_eligibility_override"
+        " audit_events, embedding_retry_queue, map_eligibility_override,"
+        " map_cluster_ledger"
         " RESTART IDENTITY CASCADE"
     )
     try:

@@ -132,6 +132,9 @@ async def apply_schema(db: Database) -> None:
     # Map eligibility override table (human verdicts over the computed predicate)
     await apply_map_eligibility_override_schema(db)
 
+    # Cluster/decline ledger (nightly-loop proposed clusters + human declines)
+    await apply_map_cluster_ledger_schema(db)
+
     # Deployment config table
     await apply_deployment_config_schema(db)
 
@@ -295,6 +298,54 @@ async def apply_map_eligibility_override_schema(db: Database) -> None:
     valid on both backends.
     """
     await db.executescript(MAP_ELIGIBILITY_OVERRIDE_SCHEMA_SQL)
+    await db.commit()
+
+
+MAP_CLUSTER_LEDGER_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS map_cluster_ledger (
+    cluster_key TEXT PRIMARY KEY,
+    project_ref TEXT NOT NULL,
+    member_entry_ids TEXT NOT NULL,
+    last_label TEXT NOT NULL,
+    status TEXT NOT NULL,
+    sightings INTEGER NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    declined_member_count INTEGER,
+    declined_reason TEXT,
+    declined_by TEXT,
+    declined_at TEXT
+);
+"""
+
+
+async def apply_map_cluster_ledger_schema(db: Database) -> None:
+    r"""Create map_cluster_ledger table (nightly-loop cluster/decline ledger).
+
+    NO INDEX on ``project_ref`` even though the read path filters on it:
+    25 eligible projects x roughly 10-20 clusters each is a few hundred
+    rows total, growing only as genuinely new clusters appear, so a
+    sequential scan per read is free — and ``EXPECTED_INDEX_COUNT = 1``
+    (the PK index only) keeps the two backends' DDL in step. Add the
+    index when the table passes ~10,000 rows.
+
+    NO ``COLLATE "C"`` on any column, unlike
+    ``embedding_retry_queue.next_attempt_at``: nothing in this feature
+    orders or range-compares any column — every lookup is ``cluster_key``
+    PK equality or ``project_ref`` equality, and both ``list_clusters``
+    and ``match_clusters`` sort in Python. A btree's internal ordering
+    depends on collation, but an equality probe under any deterministic
+    default collation is byte-equality — the same argument the Postgres
+    backend makes for ``map_eligibility_override``, and which the live
+    data DB confirms (``comfyui`` and ``ComfyUI`` coexist as distinct
+    ``project_ref`` values).
+
+    The table name carries the ``map_`` prefix (grouping it beside
+    ``map_eligibility_override`` in a ``\dt``) while the module, the
+    facade methods and the HTTP route prefix deliberately do not —
+    that asymmetry is deliberate, so nobody "fixes" it.
+    """
+    await db.executescript(MAP_CLUSTER_LEDGER_SCHEMA_SQL)
     await db.commit()
 
 

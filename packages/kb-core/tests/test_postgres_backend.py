@@ -69,6 +69,24 @@ from kb_core.embedding_retry import (
     resolve,
 )
 from kb_core.store.knowledge_store import KnowledgeStore
+from map_cluster_ledger_shape import (
+    EXPECTED_COLUMNS as MCL_EXPECTED_COLUMNS,
+)
+from map_cluster_ledger_shape import (
+    EXPECTED_INDEX_COUNT as MCL_EXPECTED_INDEX_COUNT,
+)
+from map_cluster_ledger_shape import (
+    EXPECTED_INTEGER_COLUMNS as MCL_EXPECTED_INTEGER_COLUMNS,
+)
+from map_cluster_ledger_shape import (
+    EXPECTED_NULLABLE_COLUMNS as MCL_EXPECTED_NULLABLE_COLUMNS,
+)
+from map_cluster_ledger_shape import (
+    EXPECTED_PRIMARY_KEY as MCL_EXPECTED_PRIMARY_KEY,
+)
+from map_cluster_ledger_shape import (
+    EXPECTED_TEXT_COLUMNS as MCL_EXPECTED_TEXT_COLUMNS,
+)
 from map_eligibility_counts_fixture import (
     EXPECTED_COUNTS,
     SEED_ENTRIES,
@@ -671,6 +689,74 @@ async def test_map_eligibility_override_matches_expected_shape_on_postgres(
     )
     indexdefs = [row["indexname"] for row in await idx_cursor.fetchall()]
     assert len(indexdefs) == ME_EXPECTED_INDEX_COUNT
+
+
+async def test_map_cluster_ledger_matches_expected_shape_on_postgres(
+    pg_kb: PostgresBackend,
+) -> None:
+    """Introspect map_cluster_ledger on live Postgres and check its shape.
+
+    Checks, via ``information_schema.columns``, ``information_schema.
+    key_column_usage`` and ``pg_indexes``:
+
+    * the exact column-name set (``MCL_EXPECTED_COLUMNS``);
+    * ``sightings`` and ``declined_member_count`` are integer types and
+      every other column is a text type;
+    * ``cluster_key`` is the primary key;
+    * the four ``declined_*`` columns are the only nullable columns;
+    * exactly one index exists — the PK index (no secondary index on
+      ``project_ref``: the table reaches a few hundred rows and the
+      measured retune trigger for adding one is ~10,000 rows).
+
+    No collation assertion: nothing in this feature orders or range-compares
+    any column of this table, so no column carries a ``COLLATE "C"`` pin
+    (unlike embedding_retry_queue.next_attempt_at).
+
+    The ``MCL_`` aliases are a NAME COLLISION guard, not style: the import
+    block above already imports ``EXPECTED_NULLABLE_COLUMNS`` from
+    ``map_eligibility_override_shape`` UNALIASED and the map_eligibility
+    parity test asserts against that bare name — a second unaliased import
+    would shadow it and quietly re-point a currently-green assertion at
+    this table's nullable set.
+    """
+    cursor = await pg_kb.execute(
+        "SELECT column_name, data_type, is_nullable FROM information_schema.columns"
+        " WHERE table_schema = current_schema() AND table_name = 'map_cluster_ledger'"
+    )
+    columns = await cursor.fetchall()
+
+    actual_column_names = {row["column_name"] for row in columns}
+    assert actual_column_names == MCL_EXPECTED_COLUMNS
+
+    actual_integer_columns = {
+        row["column_name"] for row in columns if row["data_type"] == "integer"
+    }
+    actual_text_columns = {row["column_name"] for row in columns if row["data_type"] == "text"}
+    assert actual_integer_columns == MCL_EXPECTED_INTEGER_COLUMNS
+    assert actual_text_columns == MCL_EXPECTED_TEXT_COLUMNS
+
+    assert {
+        row["column_name"] for row in columns if row["is_nullable"] == "YES"
+    } == MCL_EXPECTED_NULLABLE_COLUMNS
+
+    pk_cursor = await pg_kb.execute(
+        "SELECT kcu.column_name FROM information_schema.table_constraints tc"
+        " JOIN information_schema.key_column_usage kcu"
+        "   ON tc.constraint_name = kcu.constraint_name"
+        "   AND tc.table_schema = kcu.table_schema"
+        " WHERE tc.table_schema = current_schema()"
+        "   AND tc.table_name = 'map_cluster_ledger'"
+        "   AND tc.constraint_type = 'PRIMARY KEY'"
+    )
+    pk_rows = await pk_cursor.fetchall()
+    assert [row["column_name"] for row in pk_rows] == [MCL_EXPECTED_PRIMARY_KEY]
+
+    idx_cursor = await pg_kb.execute(
+        "SELECT indexname FROM pg_indexes"
+        " WHERE schemaname = current_schema() AND tablename = 'map_cluster_ledger'"
+    )
+    indexdefs = [row["indexname"] for row in await idx_cursor.fetchall()]
+    assert len(indexdefs) == MCL_EXPECTED_INDEX_COUNT
 
 
 async def test_map_eligibility_counts_on_postgres(pg_kb: PostgresBackend) -> None:

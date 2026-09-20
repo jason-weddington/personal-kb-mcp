@@ -76,10 +76,11 @@ from kb_core.search.hybrid import hybrid_search
 from kb_core.store.knowledge_store import KnowledgeStore
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from datetime import timedelta
     from types import TracebackType
 
+    from kb_core.cluster_ledger import ClusterLedgerMatchResult, ClusterLedgerRow
     from kb_core.config import (
         DatabaseConfig,
         EmbeddingConfig,
@@ -1279,6 +1280,71 @@ class KnowledgeBase:
         from kb_core.map_eligibility import clear_override
 
         return await clear_override(self._db, project_ref)
+
+    async def cluster_ledger(self, project_ref: str) -> list[ClusterLedgerRow]:
+        """List the cluster/decline ledger rows for ``project_ref``.
+
+        Sorted by ``cluster_key`` ascending (Python-side, so the ordering
+        is backend-independent).
+        """
+        from kb_core.cluster_ledger import list_clusters
+
+        return await list_clusters(self._db, project_ref)
+
+    async def match_clusters(
+        self, project_ref: str, candidates: Sequence[Sequence[str]]
+    ) -> ClusterLedgerMatchResult:
+        """Match a batch of candidate clusters against one project's ledger rows.
+
+        One ledger read for the whole batch; verdict order matches
+        candidate order. The four pinned thresholds travel on the result
+        so a consumer can read what was in force.
+        """
+        from kb_core.cluster_ledger import match_clusters
+
+        return await match_clusters(self._db, project_ref, candidates)
+
+    async def record_cluster(
+        self, project_ref: str, member_entry_ids: Sequence[str], label: str
+    ) -> ClusterLedgerRow:
+        """Record one sighting of a candidate cluster and return the observed row.
+
+        The facade supplies ``now`` itself, exactly as
+        ``set_map_eligibility_override`` does.
+        """
+        from kb_core.cluster_ledger import record_cluster
+
+        return await record_cluster(
+            self._db, project_ref, member_entry_ids, label, now=datetime.now(UTC)
+        )
+
+    async def decline_cluster(
+        self, cluster_key: str, *, reason: str, declined_by: str | None = None
+    ) -> ClusterLedgerRow | None:
+        """Decline one ledger row — the human's verdict. ``None`` on an unknown key.
+
+        ``declined_by`` is passed through VERBATIM with no
+        ``self._config.attribution.contributor`` fallback: that config
+        value is process-wide while this is a per-request human decision,
+        and the hosted service constructs its ``app.state.kb`` with a bare
+        ``Attribution()`` whose contributor resolves to NULL anyway. The
+        HTTP caller owns threading the real identity in.
+        """
+        from kb_core.cluster_ledger import decline_cluster
+
+        return await decline_cluster(
+            self._db,
+            cluster_key,
+            reason=reason,
+            declined_by=declined_by,
+            now=datetime.now(UTC),
+        )
+
+    async def clear_cluster(self, cluster_key: str) -> bool:
+        """Delete one ledger row. Returns ``True`` iff a row was actually deleted."""
+        from kb_core.cluster_ledger import clear_cluster
+
+        return await clear_cluster(self._db, cluster_key)
 
     @property
     def embedding_worker_running(self) -> bool:
