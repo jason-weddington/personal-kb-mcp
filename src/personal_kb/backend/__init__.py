@@ -24,6 +24,11 @@ from personal_kb.backend.http import BackendHttpError, HttpBackend
 from personal_kb.backend.protocol import Backend
 
 
+def _assert_http_backend_conforms(backend: HttpBackend) -> Backend:
+    """mypy-only guard: fails `mypy src` the moment HttpBackend drifts from Backend."""
+    return backend
+
+
 def create_backend(kb: KnowledgeBase | None = None) -> HttpBackend:
     """Return an :class:`HttpBackend` based on environment variables.
 

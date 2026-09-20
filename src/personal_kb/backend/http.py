@@ -594,3 +594,41 @@ class HttpBackend:
         """GET /api/kb/teams.  Returns ``(name, entry_count)`` pairs."""
         data = await self._get("/api/kb/teams")
         return [(item["name"], item["entry_count"]) for item in data.get("items", [])]
+
+    # -- Map eligibility ---------------------------------------------------
+    #
+    # Verdict dicts cross this layer UNPARSED — no _parse_entry-style
+    # reconstruction, no kb_core.map_eligibility import, no TypedDict.
+
+    async def map_eligibility(self) -> list[dict[str, Any]]:
+        """GET /api/kb/map-eligibility.  Returns the ``projects`` verdict list."""
+        data = await self._get("/api/kb/map-eligibility")
+        return cast("list[dict[str, Any]]", data["projects"])
+
+    async def set_map_eligibility_override(
+        self,
+        project_ref: str,
+        *,
+        eligible: bool,
+        reason: str,
+    ) -> dict[str, Any]:
+        """POST /api/kb/map-eligibility/override.  Returns ``{changed, verdict}``."""
+        data = await self._post(
+            "/api/kb/map-eligibility/override",
+            {"project_ref": project_ref, "eligible": eligible, "reason": reason},
+        )
+        return {"changed": bool(data["changed"]), "verdict": data["verdict"]}
+
+    async def clear_map_eligibility_override(self, project_ref: str) -> bool:
+        """POST /api/kb/map-eligibility/override/clear.  Returns the ``changed`` flag.
+
+        The clear is a POST with the ``project_ref`` in the JSON body, so no
+        project_ref is ever interpolated into a URL path.  Because neither
+        write endpoint ever 404s for an absent row, a 404 reaching the caller
+        can only mean the endpoint does not exist.
+        """
+        data = await self._post(
+            "/api/kb/map-eligibility/override/clear",
+            {"project_ref": project_ref},
+        )
+        return bool(data["changed"])

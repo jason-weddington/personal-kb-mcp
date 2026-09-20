@@ -313,6 +313,37 @@ write-back tools (update entries, ingest URLs, upload files), and project filter
 
 ---
 
+### `kb_map_eligibility`
+
+**Purpose**: Review per-project map eligibility — the full table (one row per project_ref) a human or agent reads before deciding which projects deserve a mental map. Shows computed verdicts, human overrides and evidence flags (`too_thin`, `ingest_corpus`, `journal`) per project.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `project_ref` | `str \| None` | Optional — narrow the report to one project_ref. Omit for the full review table. |
+
+**Returns**: Rendered review table: a header of aggregate counts, one line per project with its verdict, evidence counts and flags, an indented line for any human override in force, and a footer explaining the thresholds and the override tool.
+
+---
+
+### `kb_map_eligibility_override`
+
+**Purpose**: Set or clear a human map-eligibility override for one project_ref. The override beats the computed verdict in both directions until cleared; `reason` is stored permanently as the audit trail. The nightly map-maintenance loop reads this table and never writes it.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `project_ref` | `str` | The project_ref whose verdict you are overriding |
+| `eligible` | `bool \| None` | Force the verdict: True = map this project, False = do not. Required unless clear=True |
+| `reason` | `str \| None` | Why. Required unless clear=True. Stored permanently; the service caps it at 2000 characters |
+| `clear` | `bool` | True removes the override so the project reverts to the computed verdict |
+
+**Returns**: Confirmation line with the effective verdict, `decided_by` and the stored reason (set path) or the revert/no-op outcome (clear path).
+
+---
+
 ### `kb_maintain` *(KB_MANAGER=TRUE required)*
 
 **Purpose**: Database maintenance and telemetry. 14 actions available.

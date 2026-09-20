@@ -28,6 +28,10 @@ from personal_kb.tools.kb_list import (
     register_kb_list_teams,
 )
 from personal_kb.tools.kb_maintain import register_kb_maintain
+from personal_kb.tools.kb_map_eligibility import (
+    register_kb_map_eligibility,
+    register_kb_map_eligibility_override,
+)
 from personal_kb.tools.kb_preflight import register_kb_preflight
 from personal_kb.tools.kb_search import register_kb_search
 from personal_kb.tools.kb_store import register_kb_store
@@ -253,6 +257,8 @@ def create_server() -> FastMCP:
     register_kb_feedback(mcp, prefix)
     register_kb_preflight(mcp, prefix)
     register_kb_explore(mcp, prefix)
+    register_kb_map_eligibility(mcp, prefix)
+    register_kb_map_eligibility_override(mcp, prefix)
 
     if is_manager_mode():
         register_kb_maintain(mcp, prefix)

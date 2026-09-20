@@ -225,6 +225,25 @@ async def test_create_server_team_tool_names():
         assert "kb_search" not in tool_names
 
 
+async def test_create_server_registers_map_eligibility_tools_without_manager_mode():
+    """The map-eligibility tools register unconditionally, outside the manager gate."""
+    import os
+
+    for role, prefix in (("", "kb_"), ("personal", "personal_kb_"), ("team", "team_kb_")):
+        env = {"KB_INSTANCE_ROLE": role} if role else {}
+        with patch.dict("os.environ", env, clear=False):
+            os.environ.pop("KB_MANAGER", None)
+            if not role:
+                os.environ.pop("KB_INSTANCE_ROLE", None)
+            mcp = create_server()
+            tools = await mcp.list_tools()
+            tool_names = {t.name for t in tools}
+            assert f"{prefix}map_eligibility" in tool_names, role
+            assert f"{prefix}map_eligibility_override" in tool_names, role
+            # Pin AC12's intent: the manager gate still works around these tools.
+            assert f"{prefix}maintain" not in tool_names, role
+
+
 # --- Lifespan: HttpBackend-over-loopback ----------------------------------------
 #
 # The maps_index rebuild + LISTEN/NOTIFY wiring previously lived in the

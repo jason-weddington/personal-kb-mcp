@@ -62,6 +62,7 @@ src/personal_kb/
 │   ├── kb_feedback.py
 │   ├── kb_maintain.py
 │   ├── kb_list.py           # kb_list_projects, kb_list_contributors, kb_list_teams
+│   ├── kb_map_eligibility.py  # kb_map_eligibility, kb_map_eligibility_override
 │   ├── kb_bulk_update.py
 │   ├── kb_preflight.py
 │   ├── formatters.py        # Compact output formatting for MCP responses

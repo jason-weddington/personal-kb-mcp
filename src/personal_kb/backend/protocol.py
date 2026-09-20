@@ -1,10 +1,10 @@
 """Backend Protocol — abstract interface over the KB engine.
 
-All 16 MCP tools obtain their data exclusively through this Protocol so
+All 18 MCP tools obtain their data exclusively through this Protocol so
 the same tool code runs against the remote KB service (via HttpBackend).
 
 The Protocol is intentionally narrow: it only enumerates the operations the
-16 tools actually need, nothing more.
+18 tools actually need, nothing more.
 """
 
 from __future__ import annotations
@@ -268,4 +268,40 @@ class Backend(Protocol):
 
     async def list_teams(self) -> list[tuple[str, int]]:
         """Return ``(team, entry_count)`` pairs, count desc."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Map eligibility
+    # ------------------------------------------------------------------
+
+    async def map_eligibility(self) -> list[dict[str, Any]]:
+        """``GET /api/kb/map-eligibility``.
+
+        Returns the ``projects`` list from the ``{"projects": [...]}``
+        envelope — one verdict dict per project, passed through unparsed.
+        """
+        ...
+
+    async def set_map_eligibility_override(
+        self,
+        project_ref: str,
+        *,
+        eligible: bool,
+        reason: str,
+    ) -> dict[str, Any]:
+        """``POST /api/kb/map-eligibility/override``.
+
+        Returns the service's full two-key response envelope
+        ``{"changed": bool, "verdict": <verdict> | None}`` with the nested
+        verdict passed through untouched.
+        """
+        ...
+
+    async def clear_map_eligibility_override(self, project_ref: str) -> bool:
+        """``POST /api/kb/map-eligibility/override/clear`` (a POST, not a DELETE).
+
+        Returns the response's ``changed`` flag as a bool. Because neither
+        write endpoint ever 404s for an absent row, a 404 reaching the caller
+        can only mean the endpoint does not exist.
+        """
         ...

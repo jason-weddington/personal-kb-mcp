@@ -720,3 +720,591 @@ async def test_kb_bulk_update_http_mode_backend_error():
     )
     assert "Error" in result
     assert "admin" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# kb_map_eligibility / kb_map_eligibility_override — HTTP-mode
+# ---------------------------------------------------------------------------
+
+# Two-project fixture with BOTH rows fully pinned.  The full-render test below
+# asserts exact full-line equality on splitlines(), so any drift in the render
+# format or in these literals fails loudly.
+
+_ROW_A: dict[str, Any] = {
+    "evidence": {
+        "project_ref": "cleanr",
+        "mappable": 10,
+        "ingested": 5,
+        "hand_authored": 5,
+        "maps": 0,
+        "top_prefix": "cleanr",
+        "top_prefix_share": 0.1,
+        "is_ingest_corpus": False,
+        "is_too_thin": False,
+        "is_journal": False,
+        "computed_eligible": True,
+    },
+    "override": None,
+    "effective_eligible": True,
+    "decided_by": "computed",
+    "orphaned": False,
+}
+
+_ROW_B: dict[str, Any] = {
+    "evidence": {
+        "project_ref": "dispatch-performance-log",
+        "mappable": 624,
+        "ingested": 0,
+        "hand_authored": 624,
+        "maps": 0,
+        "top_prefix": "Run",
+        "top_prefix_share": 0.9792,
+        "is_ingest_corpus": False,
+        "is_too_thin": False,
+        "is_journal": True,
+        "computed_eligible": False,
+    },
+    "override": None,
+    "effective_eligible": False,
+    "decided_by": "computed",
+    "orphaned": False,
+}
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_full_render_exact_lines():
+    """The full render is asserted as FULL-LINE equality on splitlines()."""
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"projects": [_ROW_A, _ROW_B]})
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(ctx=ctx)
+    lines = out.splitlines()
+    assert len(lines) == 6
+    assert lines[0] == (
+        "Map eligibility — 2 projects | eligible 1 (computed 1, override 0) "
+        "| ineligible 1 | eligible & unmapped 1 | evidence flags: too_thin 0, "
+        "ingest_corpus 0, journal 1 | override rows 0"
+    )
+    assert lines[1] == ""
+    assert lines[2] == (
+        "cleanr | ELIGIBLE (computed) | mappable 10 = hand 5 + ingested 5 "
+        "| maps 0 | top 'cleanr' 10.0% | flags: none"
+    )
+    assert lines[3] == (
+        "dispatch-performance-log | INELIGIBLE (computed) "
+        "| mappable 624 = hand 624 + ingested 0 | maps 0 | top 'Run' 97.9% "
+        "| flags: journal"
+    )
+    assert lines[4] == ""
+    assert lines[5] == (
+        "Thresholds: too_thin when hand_authored < 5; journal when mappable >= 20 "
+        "and top prefix share >= 60%. To change a verdict: "
+        'kb_map_eligibility_override(project_ref=..., eligible=..., reason="...").'
+    )
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_team_prefix_cross_reference():
+    """The team-prefixed footer cross-references team_kb_map_eligibility_override."""
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"projects": [_ROW_A]})
+
+    fn = _register(register_kb_map_eligibility, prefix="team_kb_")
+    ctx = _make_ctx(handler)
+    out = await fn(ctx=ctx)
+    assert "team_kb_map_eligibility_override(" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_project_ref_filter():
+    """project_ref filters client-side to exactly one row."""
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"projects": [_ROW_A, _ROW_B]})
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(project_ref="dispatch-performance-log", ctx=ctx)
+    assert "cleanr" not in out
+    assert "dispatch-performance-log" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_unknown_project_ref():
+    """An unknown project_ref points at kb_list_projects."""
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"projects": [_ROW_A, _ROW_B]})
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(project_ref="nope", ctx=ctx)
+    assert "No map-eligibility row" in out
+    assert "kb_list_projects" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_row_rendered():
+    """An override row renders its verdict, reason and set_by."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        row = {
+            **_ROW_A,
+            "override": {
+                "project_ref": "cleanr",
+                "eligible": False,
+                "reason": "dated session journal",
+                "set_by": "jason@example.com",
+                "set_at": "2026-09-19T12:00:00+00:00",
+            },
+            "effective_eligible": False,
+            "decided_by": "override",
+        }
+        return httpx.Response(200, json={"projects": [row]})
+
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(ctx=ctx)
+    assert "override: ineligible" in out
+    assert "computed said eligible" in out
+    assert "set_by jason@example.com" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_missing_set_by_is_loud(caplog):
+    """A null set_by renders the MISSING wording and logs a WARNING."""
+    import logging
+
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        row = {
+            **_ROW_A,
+            "override": {
+                "project_ref": "cleanr",
+                "eligible": False,
+                "reason": "dated session journal",
+                "set_by": None,
+                "set_at": "2026-09-19T12:00:00+00:00",
+            },
+            "effective_eligible": False,
+            "decided_by": "override",
+        }
+        return httpx.Response(200, json={"projects": [row]})
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    with caplog.at_level(logging.WARNING):
+        out = await fn(ctx=ctx)
+    assert "MISSING — service recorded no identity" in out
+    assert "map-eligibility" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_orphaned_row_rendered():
+    """An orphaned row appends the ORPHANED warning."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        row = {
+            **_ROW_A,
+            "evidence": {**_ROW_A["evidence"], "mappable": 0},
+            "effective_eligible": False,
+            "orphaned": True,
+        }
+        return httpx.Response(200, json={"projects": [row]})
+
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(ctx=ctx)
+    assert "ORPHANED" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_empty_projects():
+    """An empty projects list renders the empty-corpus message."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"projects": []})
+
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(ctx=ctx)
+    assert "No project_refs returned" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_row_missing_maps_field_is_loud(caplog):
+    """A verdict row missing an evidence field renders the payload error."""
+    import logging
+
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        row = {**_ROW_A, "evidence": {k: v for k, v in _ROW_A["evidence"].items() if k != "maps"}}
+        return httpx.Response(200, json={"projects": [row]})
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    with caplog.at_level(logging.WARNING):
+        out = await fn(ctx=ctx)
+    assert "unexpected map-eligibility payload" in out
+    assert "'maps'" in out
+    assert "map-eligibility" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_row_missing_evidence_key_is_loud():
+    """A row with no evidence key at all trips the filter's strict subscript."""
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        row = {k: v for k, v in _ROW_A.items() if k != "evidence"}
+        return httpx.Response(200, json={"projects": [row]})
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(project_ref="x", ctx=ctx)
+    assert "unexpected map-eligibility payload" in out
+    assert "'evidence'" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_missing_projects_key_is_loud():
+    """A 200 with no projects key renders the payload error naming 'projects'."""
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(ctx=ctx)
+    assert "unexpected map-eligibility payload" in out
+    assert "'projects'" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_404_version_skew(caplog):
+    """A 404 renders the version-skew message and logs a WARNING."""
+    import logging
+
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    with caplog.at_level(logging.WARNING):
+        out = await fn(ctx=ctx)
+    assert "has no map-eligibility endpoint (404)" in out
+    assert "map-eligibility" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_403_admin():
+    """A 403 renders the admin-privileges error."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"detail": "Admin only"})
+
+    from personal_kb.tools.kb_map_eligibility import register_kb_map_eligibility
+
+    fn = _register(register_kb_map_eligibility)
+    ctx = _make_ctx(handler)
+    out = await fn(ctx=ctx)
+    assert "admin privileges required (403)" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_set_success():
+    """A set POST sends exactly three keys, once, and renders the stored verdict."""
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        verdict = {
+            **_ROW_B,
+            "override": {
+                "project_ref": "dispatch-performance-log",
+                "eligible": False,
+                "reason": "dated session journal",
+                "set_by": "jason@example.com",
+                "set_at": "2026-09-19T12:00:00+00:00",
+            },
+            "effective_eligible": False,
+            "decided_by": "override",
+        }
+        return httpx.Response(200, json={"changed": True, "verdict": verdict})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+    out = await fn(
+        project_ref="dispatch-performance-log",
+        eligible=False,
+        reason="dated session journal",
+        ctx=ctx,
+    )
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/api/kb/map-eligibility/override"
+    assert set(json.loads(requests[0].content)) == {"project_ref", "eligible", "reason"}
+    assert "Override set" in out
+    assert "INELIGIBLE" in out
+    assert "(override)" in out
+    assert "dated session journal" in out
+    assert "has no mappable entries" not in out
+    assert "changed" not in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_set_orphaned():
+    """An orphaned write appends the spelling warning without a follow-up GET."""
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        verdict = {
+            **_ROW_B,
+            "orphaned": True,
+            "effective_eligible": False,
+        }
+        return httpx.Response(200, json={"changed": True, "verdict": verdict})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+    out = await fn(project_ref="agent-gtd-dev", eligible=False, reason="r", ctx=ctx)
+    assert len(requests) == 1
+    assert "has no mappable entries" in out
+    assert "list_projects" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_set_missing_set_by(caplog):
+    """A set response with a null set_by warns about audit-trail attribution."""
+    import logging
+
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        verdict = {
+            **_ROW_B,
+            "override": {
+                "project_ref": "dispatch-performance-log",
+                "eligible": False,
+                "reason": "dated session journal",
+                "set_by": None,
+                "set_at": "2026-09-19T12:00:00+00:00",
+            },
+            "effective_eligible": False,
+            "decided_by": "override",
+        }
+        return httpx.Response(200, json={"changed": True, "verdict": verdict})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+    with caplog.at_level(logging.WARNING):
+        out = await fn(project_ref="dispatch-performance-log", eligible=False, reason="r", ctx=ctx)
+    assert "no set_by" in out
+    assert "map-eligibility" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_clear_success():
+    """clear=True POSTs to /override/clear and renders the revert message."""
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        return httpx.Response(200, json={"changed": True, "verdict": None})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+    out = await fn(project_ref="harness-design", clear=True, ctx=ctx)
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/api/kb/map-eligibility/override/clear"
+    assert json.loads(requests[0].content) == {"project_ref": "harness-design"}
+    assert "reverts to the computed verdict" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_clear_noop():
+    """A no-op clear (changed=false) renders 'nothing to clear'."""
+
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"changed": False, "verdict": None})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+    out = await fn(project_ref="harness-design", clear=True, ctx=ctx)
+    assert "nothing to clear" in out
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_validation_errors_no_request():
+    """The five client-side validation errors return exact strings and send nothing."""
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        return httpx.Response(200, json={"changed": True, "verdict": None})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+
+    bad_ref = (
+        "Error: project_ref must be non-empty and contain only letters, digits, '_', '.' or '-'."
+    )
+    assert await fn(project_ref="", eligible=True, reason="r", ctx=ctx) == bad_ref
+    assert await fn(project_ref="a/b c", eligible=True, reason="r", ctx=ctx) == bad_ref
+
+    assert await fn(project_ref="p", clear=True, eligible=True, ctx=ctx) == (
+        "Error: clear=True takes only project_ref — omit eligible and reason."
+    )
+    assert await fn(project_ref="p", ctx=ctx) == (
+        "Error: eligible is required (True or False) unless clear=True."
+    )
+    assert await fn(project_ref="p", eligible=True, reason="   ", ctx=ctx) == (
+        "Error: reason is required — the override is a human verdict and the reason "
+        "is its audit trail."
+    )
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_reason_too_long_no_request():
+    """A reason over the service's 2000-char cap is rejected client-side."""
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        return httpx.Response(200, json={"changed": True, "verdict": None})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+    out = await fn(project_ref="p", eligible=True, reason="x" * 2001, ctx=ctx)
+    assert "Error" in out
+    assert "2000" in out
+    assert requests == []
+
+
+def test_map_eligibility_description_content():
+    """The read tool description carries every contracted field and predicate."""
+    from personal_kb.tools.kb_map_eligibility import _eligibility_description
+
+    d = _eligibility_description("kb_")
+    for name in (
+        "project_ref",
+        "mappable",
+        "ingested",
+        "hand_authored",
+        "maps",
+        "top_prefix",
+        "top_prefix_share",
+        "is_ingest_corpus",
+        "is_too_thin",
+        "is_journal",
+        "computed_eligible",
+    ):
+        assert name in d
+    assert "is_too_thin when hand_authored < 5" in d
+    assert "mappable >= 20" in d
+    assert "60%" in d
+    assert "kb_map_eligibility_override" in d
+    assert "team_kb_map_eligibility_override" in _eligibility_description("team_kb_")
+
+
+def test_map_eligibility_override_description_content():
+    """The write tool description carries the worked examples and the loop warning."""
+    from personal_kb.tools.kb_map_eligibility import _override_description
+
+    d = _override_description("kb_")
+    assert "harness-design" in d
+    assert "threat-intel" in d
+    assert "clear=True" in d
+    assert "never writes it" in d
+    assert "team_kb_map_eligibility" in _override_description("team_kb_")
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_null_verdict_invariant_breach(caplog):
+    """A set response with verdict=null renders the invariant-breach message."""
+    import logging
+
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        return httpx.Response(200, json={"changed": True, "verdict": None})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+    with caplog.at_level(logging.WARNING):
+        out = await fn(project_ref="p", eligible=True, reason="r", ctx=ctx)
+    assert "no resolved verdict" in out
+    assert "invariant breach" in out
+    assert "map-eligibility" in caplog.text
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_override_verdict_missing_orphaned_is_loud():
+    """A verdict dict missing 'orphaned' trips the write tool's KeyError chain."""
+    from personal_kb.tools.kb_map_eligibility import (
+        register_kb_map_eligibility_override,
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        verdict = {k: v for k, v in _ROW_B.items() if k != "orphaned"}
+        return httpx.Response(200, json={"changed": True, "verdict": verdict})
+
+    fn = _register(register_kb_map_eligibility_override)
+    ctx = _make_ctx(handler)
+    out = await fn(project_ref="p", eligible=True, reason="r", ctx=ctx)
+    assert "unexpected map-eligibility payload" in out
+    assert "'orphaned'" in out

@@ -1349,3 +1349,169 @@ async def test_get_with_timeout_parameter():
     )
     # No error — long-timeout path was exercised
     assert isinstance(result, tuple)
+
+
+# ---------------------------------------------------------------------------
+# map eligibility
+# ---------------------------------------------------------------------------
+
+# Mirror of the owner item's kb-core dataclasses.asdict() contract and of the
+# API item's MapEligibilityVerdictModel — diff this literal against those.
+_VERDICT_JSON: dict[str, Any] = {
+    "evidence": {
+        "project_ref": "harness-design",
+        "mappable": 71,
+        "ingested": 0,
+        "hand_authored": 71,
+        "maps": 0,
+        "top_prefix": "Session",
+        "top_prefix_share": 0.9792,
+        "is_ingest_corpus": False,
+        "is_too_thin": False,
+        "is_journal": True,
+        "computed_eligible": False,
+    },
+    "override": {
+        "project_ref": "harness-design",
+        "eligible": True,
+        "reason": "kept as a dated session journal on purpose",
+        "set_by": "jason@example.com",
+        "set_at": "2026-09-19T12:00:00+00:00",
+    },
+    "effective_eligible": True,
+    "decided_by": "override",
+    "orphaned": False,
+}
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_returns_projects_verbatim():
+    """GET /api/kb/map-eligibility returns the projects list untouched."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "GET"
+        assert req.url.path == "/api/kb/map-eligibility"
+        return httpx.Response(200, json={"projects": [_VERDICT_JSON]})
+
+    backend = _make_backend(handler)
+    result = await backend.map_eligibility()
+    assert result == [_VERDICT_JSON]
+    assert result[0]["evidence"]["top_prefix_share"] == 0.9792
+
+
+@pytest.mark.asyncio
+async def test_map_eligibility_wrong_envelope_key_is_loud():
+    """A wrong top-level envelope key raises KeyError naming 'projects'."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": [_VERDICT_JSON]})
+
+    backend = _make_backend(handler)
+    with pytest.raises(KeyError) as exc_info:
+        await backend.map_eligibility()
+    assert "projects" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_set_map_eligibility_override_sends_exact_body():
+    """POST /api/kb/map-eligibility/override sends exactly the three body keys."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path == "/api/kb/map-eligibility/override"
+        body = json.loads(req.content)
+        assert set(body) == {"project_ref", "eligible", "reason"}
+        assert body["eligible"] is False
+        return httpx.Response(200, json={"changed": True, "verdict": _VERDICT_JSON})
+
+    backend = _make_backend(handler)
+    await backend.set_map_eligibility_override("harness-design", eligible=False, reason="too thin")
+
+
+@pytest.mark.asyncio
+async def test_set_map_eligibility_override_returns_changed_and_verdict():
+    """The two-key envelope is returned intact, including a null verdict."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"changed": True, "verdict": _VERDICT_JSON})
+
+    backend = _make_backend(handler)
+    result = await backend.set_map_eligibility_override("harness-design", eligible=True, reason="r")
+    assert result == {"changed": True, "verdict": _VERDICT_JSON}
+
+
+@pytest.mark.asyncio
+async def test_set_map_eligibility_override_null_verdict_passes_through():
+    """A null verdict is returned as None rather than raising."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"changed": True, "verdict": None})
+
+    backend = _make_backend(handler)
+    result = await backend.set_map_eligibility_override("harness-design", eligible=True, reason="r")
+    assert result == {"changed": True, "verdict": None}
+
+
+@pytest.mark.asyncio
+async def test_set_map_eligibility_override_missing_envelope_is_loud():
+    """Missing 'changed' or 'verdict' envelope keys raise KeyError naming them."""
+
+    def empty_handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    backend = _make_backend(empty_handler)
+    with pytest.raises(KeyError) as exc_info:
+        await backend.set_map_eligibility_override("harness-design", eligible=True, reason="r")
+    assert "changed" in str(exc_info.value)
+
+    def no_verdict_handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"changed": True})
+
+    backend = _make_backend(no_verdict_handler)
+    with pytest.raises(KeyError) as exc_info:
+        await backend.set_map_eligibility_override("harness-design", eligible=True, reason="r")
+    assert "verdict" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_clear_map_eligibility_override_posts_to_clear_path():
+    """The clear is a POST to /override/clear with one body key, not a DELETE."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path == "/api/kb/map-eligibility/override/clear"
+        assert json.loads(req.content) == {"project_ref": "harness-design"}
+        return httpx.Response(200, json={"changed": True, "verdict": _VERDICT_JSON})
+
+    backend = _make_backend(handler)
+    assert await backend.clear_map_eligibility_override("harness-design") is True
+
+
+@pytest.mark.asyncio
+async def test_clear_map_eligibility_override_returns_changed_flag():
+    """The clear returns the changed flag both ways; a null verdict does not raise."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"changed": True, "verdict": _VERDICT_JSON})
+
+    backend = _make_backend(handler)
+    assert await backend.clear_map_eligibility_override("harness-design") is True
+
+    def noop_handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"changed": False, "verdict": None})
+
+    backend = _make_backend(noop_handler)
+    assert await backend.clear_map_eligibility_override("harness-design") is False
+
+
+@pytest.mark.asyncio
+async def test_clear_map_eligibility_override_missing_changed_key_is_loud():
+    """A missing 'changed' envelope key raises KeyError naming 'changed'."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    backend = _make_backend(handler)
+    with pytest.raises(KeyError) as exc_info:
+        await backend.clear_map_eligibility_override("harness-design")
+    assert "changed" in str(exc_info.value)

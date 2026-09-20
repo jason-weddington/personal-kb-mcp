@@ -241,6 +241,14 @@ Administrative operations (only available when `KB_MANAGER=TRUE`):
 - `list_contributors` — Contributor/team stats for active entries
 - `list_audit` — Recent mutation events (create/update/deactivate/reactivate) with optional entry_id/date filters
 
+### `kb_map_eligibility`
+
+Review per-project map eligibility across the whole KB: one line per project_ref with its effective verdict (computed or human override), mappable/hand-authored/ingested counts, existing mental-map count, top title prefix and evidence flags (`too_thin`, `ingest_corpus`, `journal`), plus a header of aggregate counts. Pass `project_ref` to narrow to a single project. This is the table to read before deciding which projects deserve a mental map — the review target is a project that is eligible AND has `maps == 0`.
+
+### `kb_map_eligibility_override`
+
+Set or clear a human map-eligibility override for one project_ref: `eligible=True/False` with a permanent `reason` forces the verdict in either direction until `clear=True` reverts it to the computed verdict. The nightly map-maintenance loop reads this table and never writes it — this tool is the human/agent-review path only.
+
 ## Mental maps — orientation nodes for your KB
 
 A **mental map** (entry type `mental_map`) is the directory tier of your knowledge base. It is the only entry type that does not carry retrievable knowledge itself — instead, it points to *where* knowledge lives. Think of it as a small, curated index for a subsystem: "the ingestion flow lives across these five entries; auth lives across those three." Agents read a map to orient themselves, then `kb_get` the detail entries the map points to.
