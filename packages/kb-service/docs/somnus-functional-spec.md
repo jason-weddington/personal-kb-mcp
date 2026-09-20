@@ -52,7 +52,11 @@ This is why the map is **born lint-clean by construction**: every token class th
 
 `POST /api/kb/map-lint`. Shell out as `/bin/sh -c 'curl -sf -X POST ...'`; **the HTTP status is the verdict** — 422 on a failing body, 200 on a clean one, deliberately not a 200 carrying `valid:false`, which `curl -f` would read as green.
 
-Register that tool under the literal name **`run_checks`**. The engine keys several heuristics off that exact string. Record it as a pinned workaround with an expiry, not as the design: the dependency is on a hardcoded match arm, and it should migrate to a declared per-tool property when one exists.
+**Today: register that tool under the literal name `run_checks`**, because the engine writes `last_gate_green` only from that branch. Treat it as a pinned workaround with an expiry, not as design — an HTTP map-lint is not `run_checks` in any sense its author would pick, and the dependency is on a hardcoded match arm.
+
+The replacement is already scoped as harness-design `49b4445e`: the consumer **declares which registered tool is the gate**, defaulting to `run_checks`, with everything downstream keyed off the declaration — the same defaulted-seam shape as the change observer. Migrate to the declaration when it lands and drop the magic name.
+
+Note *why* the fix is a declaration rather than a looser match, because it constrains what to ask for: `last_gate_green` is deliberately written by that one branch only. A design that sniffed other tools for gate-like behaviour was explicitly rejected, since it would let an agent arm its own finish-recovery by running anything that exits zero.
 
 **The gate is mandatory, not deferrable.** With `checks = None` and a non-git working directory — the configuration this loop otherwise lands in — leg 2 and leg 3 both go inert and a `finish(done)` is accepted on the model's word alone.
 
@@ -92,7 +96,9 @@ Never `deactivate` a map (on the HTTP path that path deletes the map's outbound 
 - Both `x86_64` and `aarch64` must build; the publisher ships both at one token or fails loudly.
 - A `--project <ref>` flag for a single-project run, which is how the falsifying experiment runs.
 - `max_nudges` from a **named constant set to 0**, not a literal. With the gate registered as `run_checks`, `last_gate_green` does get set; what stays permanently false is `tree_dirty`, so the staleness predicate is always true and the nudge would arm on the first green gate. Disable it — but behind a flag, because the underlying `last_gate_green` behaviour is filed as a defect and the nudge becomes live for tool sets like this one if that lands.
-- A **cost accumulator with a hard per-night ceiling**, summing `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` (the first is the uncached remainder only). talos deferred token and cost caps because its production lane is prepaid open weights; that reason does not transfer to a metered Sonnet loop.
+- **The cost ceiling is NOT this crate's job — it is a harness budget.** `BudgetLimits` in the run record already carries `tokens` and `cost_micros` beside the `wall_clock_secs` that was armed on 2026-09-20; the engine's construction site hardcodes both to 0 (unbounded) and nothing arms them. Arming them is tracked as harness-design `00b5b825`. The right home is the harness, not here: the engine already receives per-turn `Usage` from every backend and already accumulates it, so a consumer-side accumulator re-derives what the engine knows one layer further from the data and has to wrap the loop to terminate it. **Do not pin a consumption expression in this spec** — `Usage::input_tokens` in that library is the *uncached remainder*, not the full prompt, so Anthropic's wire-shape sum is not identity through its type. The harness item owns choosing and documenting the expression. What somnus must do is *set* a per-night limit and surface the termination, not compute the total.
+
+  Worth keeping distinct from a thing Jason already killed: an arbitrary per-turn **output** ceiling truncates a generation mid-flight and makes output bind before context does. A cumulative **run** budget terminates cleanly between turns, exactly as the wall-clock budget does, and truncates nothing. The two collapse into "token caps are bad" very easily.
 - No compaction. Per-unit context is ~11k tokens against a 200k window; the highest fill ever observed on real work in that corpus is 80.1%.
 - **Assert at startup that the working directory is NOT a git repo.** `finish(done)` rejects `TreeUnchanged`, and an HTTP-only agent changes no files — so a stray `.git` turns the fail-open into a fail-closed and every run burns its full budget.
 
