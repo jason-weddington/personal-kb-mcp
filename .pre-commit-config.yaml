@@ -1,9 +1,19 @@
+# Every hook here CHECKS; none of them FIX. See kb-03099.
+#
+# A fixer hook mutates files and exits non-zero on the first commit attempt.
+# Claude Code absorbs that (its commit-retry loop is the trigger), but the talos
+# dispatch worker commits ONCE, so a fixer that rewrites the tree at commit time
+# destroys a completed, gate-green unit of work and the run returns `failed`
+# before pushing. Keep every hook check-only: this repo is dispatched to both
+# harnesses, and it is part of the personal-kb-web-service WORKSPACE, so a
+# dispatch there clones it too.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
+      # trailing-whitespace and end-of-file-fixer are deliberately ABSENT:
+      # pre-commit-hooks ships no check-only variant, so the local
+      # whitespace-check hook below replaces them.
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
@@ -17,12 +27,20 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.2
     hooks:
+      # No --fix: ruff defaults to check-only.
       - id: ruff
-        args: [--fix]
+      # --check makes ruff-format report instead of rewriting.
       - id: ruff-format
+        args: [--check]
 
   - repo: local
     hooks:
+      - id: whitespace-check
+        name: whitespace (check only, no fix)
+        entry: scripts/check-whitespace.sh
+        language: script
+        types: [text]
+
       - id: conventional-commit
         name: Conventional Commit (main only)
         entry: "bash -c 'branch=$(git rev-parse --abbrev-ref HEAD); [ \"$branch\" != \"main\" ] && exit 0; head -1 \"$1\" | grep -qE \"^(feat|fix|chore|docs|refactor|test|ci|style|perf|build|revert)(\\(.+\\))?!?: .+\" || { echo \"Commit message on main must be a conventional commit\"; exit 1; }' --"
