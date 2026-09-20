@@ -1,0 +1,878 @@
+"""Hermetic tests for GET /api/kb/map-loop-input (map_loop_routes.py).
+
+No live Postgres, no Ollama, no network, and no change to ``conftest.py``:
+every case here is testable with the existing fakes. All three statements
+MUST be registered in ``fake_kb.db.rows_for`` before the request —
+``FakeKbDb.execute`` checks ``rows_for`` first and otherwise falls through to
+a ``graph_edges`` branch, then a ``knowledge_vec`` branch, then a
+``mental_map`` branch, and ALL THREE of this route's statements contain at
+least one of those substrings (the entries statement contains both
+``graph_edges`` via the anti-join and ``mental_map`` via the mappable
+predicate; the pair statement contains ``knowledge_vec``; the map-bodies
+statement contains ``mental_map``), so an unregistered statement silently
+returns the wrong arity and breaks the unpack. The three needles are
+deliberately disjoint.
+"""
+
+import logging
+import re
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+from kb_core.map_eligibility import MapEligibilityOverride
+
+import kb_service.routes.map_loop_routes as map_loop_routes
+from kb_service.auth import get_current_user
+from kb_service.main import app
+from tests.conftest import (
+    FakeKbDb,
+    FakeKnowledgeBase,
+    fake_user,
+    make_map_eligibility_verdict,
+)
+
+MARKER = "map-loop-input"
+LOGGER = "kb_service.routes.map_loop_routes"
+
+ENTRIES_NEEDLE = "substr("
+BODIES_NEEDLE = "knowledge_details, contributor"
+PAIRS_NEEDLE = "<=>"
+
+PROJ = "proj"
+URL = "/api/kb/map-loop-input"
+
+# The AC-13 worked fixture, verbatim: ten in-band pairs plus the (2,5)=0.45
+# pair sitting in the observation band below POCKET_MIN_SIMILARITY.
+WORKED_PAIR_ROWS: list[tuple[Any, ...]] = [
+    ("kb-00001", "kb-00002", 0.90),
+    ("kb-00001", "kb-00003", 0.88),
+    ("kb-00002", "kb-00003", 0.86),
+    ("kb-00004", "kb-00005", 0.92),
+    ("kb-00004", "kb-00006", 0.91),
+    ("kb-00004", "kb-00007", 0.90),
+    ("kb-00005", "kb-00006", 0.89),
+    ("kb-00005", "kb-00007", 0.88),
+    ("kb-00006", "kb-00007", 0.87),
+    ("kb-00003", "kb-00004", 0.58),
+    ("kb-00002", "kb-00005", 0.45),
+]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _marker_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Return every captured record whose message carries the route marker."""
+    return [r for r in caplog.records if MARKER in r.getMessage()]
+
+
+def _entry_row(
+    entry_id: str,
+    *,
+    tags: Any = "net",
+    excerpt: str = "body",
+    details_length: int = 4000,
+    unpointed: int = 1,
+    short_title: str = "T1",
+) -> tuple[Any, ...]:
+    """One entries-statement row in AC-9's pinned SELECT order."""
+    return (
+        entry_id,
+        short_title,
+        f"{entry_id} long",
+        "factual_reference",
+        tags,
+        excerpt,
+        details_length,
+        unpointed,
+    )
+
+
+def _eligible_verdict(ref: str = PROJ) -> Any:
+    """A verdict whose computed evidence is eligible (no override needed)."""
+    return make_map_eligibility_verdict(
+        ref, mappable=50, ingested=0, top_prefix_count=5, top_prefix="Run"
+    )
+
+
+def _wire(
+    fake_kb: FakeKnowledgeBase,
+    *,
+    verdicts: list[Any],
+    entry_rows: list[tuple[Any, ...]] | None = None,
+    body_rows: list[tuple[Any, ...]] | None = None,
+    pair_rows: list[tuple[Any, ...]] | None = None,
+    maps: dict[str, list[dict[str, Any]]] | None = None,
+) -> None:
+    """Point the route's dependencies at the fakes and register all three
+    statements' row sets (insertion-order first-match-wins, disjoint needles).
+    """
+    app.dependency_overrides[get_current_user] = fake_user
+    fake_kb.map_eligibility_verdicts = verdicts
+    fake_kb.maps_projects = maps or {}
+    fake_kb.db.rows_for[ENTRIES_NEEDLE] = entry_rows or []
+    fake_kb.db.rows_for[BODIES_NEEDLE] = body_rows or []
+    fake_kb.db.rows_for[PAIRS_NEEDLE] = pair_rows or []
+
+
+# ---------------------------------------------------------------------------
+# Auth (kb-01745: HTTPBearer auto_error=False -> 401, not 403)
+# ---------------------------------------------------------------------------
+
+
+def test_map_loop_input_requires_auth_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No Authorization header -> 401, NOT 403 (plain non-admin route)."""
+    monkeypatch.delenv("KB_AUTH_MODE", raising=False)
+    assert client.get(URL, params={"project_ref": PROJ}).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Admission gate: 404 / 409, and NO route-issued SQL on either branch
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_project_ref_404_and_zero_sql(
+    client: TestClient, caplog: pytest.LogCaptureFixture, fake_kb: FakeKnowledgeBase
+) -> None:
+    """A ref with no verdict -> 404 and the route issued NO SQL at all."""
+    _wire(fake_kb, verdicts=[_eligible_verdict()])
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        resp = client.get(URL, params={"project_ref": "ghost"})
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "project_ref not found"}
+    assert fake_kb.db.calls == []
+    records = _marker_records(caplog)
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    assert "outcome=not_found" in records[0].getMessage()
+
+
+def test_ineligible_ref_409_and_zero_sql(
+    client: TestClient, caplog: pytest.LogCaptureFixture, fake_kb: FakeKnowledgeBase
+) -> None:
+    """A computed-ineligible verdict (journal shape) -> 409, no SQL issued."""
+    verdict = make_map_eligibility_verdict(
+        "journal-proj", mappable=624, ingested=0, top_prefix_count=611, top_prefix="Run"
+    )
+    assert verdict.evidence.is_journal is True
+    assert verdict.effective_eligible is False
+    _wire(fake_kb, verdicts=[verdict])
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        resp = client.get(URL, params={"project_ref": "journal-proj"})
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "project_ref not map-eligible"}
+    assert fake_kb.db.calls == []
+    records = _marker_records(caplog)
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    msg = records[0].getMessage()
+    assert "outcome=ineligible" in msg
+    assert "decided_by=computed" in msg
+    assert "computed_eligible=False" in msg
+    assert "mappable=624" in msg
+    assert "hand_authored=624" in msg
+    assert "is_journal=True" in msg
+
+
+def test_human_override_forces_ineligible_ref_eligible(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """An override with eligible=True on an ineligible ref is honoured."""
+    override = MapEligibilityOverride(
+        "journal-proj", True, "human verdict", "jason", "2026-09-20T12:00:00+00:00"
+    )
+    verdict = make_map_eligibility_verdict(
+        "journal-proj",
+        mappable=624,
+        ingested=0,
+        top_prefix_count=611,
+        top_prefix="Run",
+        override=override,
+    )
+    assert verdict.effective_eligible is True
+    _wire(
+        fake_kb,
+        verdicts=[verdict],
+        entry_rows=[_entry_row("kb-00001"), _entry_row("kb-00002")],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": "journal-proj"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pockets_omitted_reason"] is None
+
+
+def test_orphaned_override_forced_eligible_is_200_not_error(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Zero mappable entries + eligible override -> 200, empty halves, too-few."""
+    override = MapEligibilityOverride(
+        PROJ, True, "r", None, "2026-09-20T12:00:00+00:00"
+    )
+    verdict = make_map_eligibility_verdict(
+        PROJ,
+        mappable=0,
+        ingested=0,
+        top_prefix_count=0,
+        top_prefix="",
+        maps=1,
+        override=override,
+        orphaned=True,
+    )
+    assert verdict.effective_eligible is True
+    _wire(
+        fake_kb,
+        verdicts=[verdict],
+        body_rows=[("map-1", "Lives in proj.", "jason", None)],
+        maps={
+            PROJ: [
+                {
+                    "id": "map-1",
+                    "short_title": "M",
+                    "long_title": "M long",
+                    "pointers": [],
+                }
+            ]
+        },
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["entries"] == []
+    assert body["maps"] != []
+    assert body["pockets"] == []
+    assert body["pockets_omitted_reason"] == "too-few-unpointed-entries"
+    assert len(fake_kb.db.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# AC-13: the worked fixture — the correctness proof for the pocket builder
+# ---------------------------------------------------------------------------
+
+
+def _wire_worked_fixture(fake_kb: FakeKnowledgeBase) -> None:
+    """Seven unpointed entries kb-00001..kb-00007 plus the stubbed pair rows."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[
+            _entry_row(f"kb-{i:05d}", tags="net dns", excerpt=f"excerpt-{i}")
+            for i in range(1, 8)
+        ],
+        pair_rows=WORKED_PAIR_ROWS,
+    )
+
+
+def test_worked_fixture_exactly_two_pockets(
+    client: TestClient, caplog: pytest.LogCaptureFixture, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Mutual-top-K separates the two subject areas; the 0.58 bridge is not
+    mutual (kb-00003 is only kb-00004's 4th-best neighbour) and the 0.45 pair
+    is sub-threshold — neither appears in any pocket."""
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        _wire_worked_fixture(fake_kb)
+        resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pockets_omitted_reason"] is None
+    assert body["excerpt_chars"] == map_loop_routes.LOOP_INPUT_EXCERPT_CHARS
+    pockets = body["pockets"]
+    assert len(pockets) == 2
+
+    first = pockets[0]
+    assert first["member_entry_ids"] == [
+        "kb-00004",
+        "kb-00005",
+        "kb-00006",
+        "kb-00007",
+    ]
+    assert first["mean_similarity"] == pytest.approx(5.37 / 6)
+    assert first["min_similarity"] == pytest.approx(0.87)
+    assert first["max_similarity"] == pytest.approx(0.92)
+    assert len(first["edges"]) == 6
+
+    second = pockets[1]
+    assert second["member_entry_ids"] == ["kb-00001", "kb-00002", "kb-00003"]
+    assert second["mean_similarity"] == pytest.approx(2.64 / 3)
+    assert second["min_similarity"] == pytest.approx(0.86)
+    assert second["max_similarity"] == pytest.approx(0.90)
+    assert len(second["edges"]) == 3
+
+    # The bridge: 0.58 clears POCKET_MIN_SIMILARITY but is NOT mutual, and
+    # that non-mutuality is exactly what keeps the two subject areas apart.
+    for pocket in pockets:
+        for edge in pocket["edges"]:
+            assert {edge["a"], edge["b"]} != {"kb-00003", "kb-00004"}
+
+    # The (2,5)=0.45 pair is below POCKET_MIN_SIMILARITY: no pocket, no
+    # neighbour list, and it IS counted in the log's below-threshold counter.
+    for pocket in pockets:
+        for edge in pocket["edges"]:
+            assert {edge["a"], edge["b"]} != {"kb-00002", "kb-00005"}
+    infos = [r for r in _marker_records(caplog) if r.levelno == logging.INFO]
+    assert len(infos) == 1
+    msg = infos[0].getMessage()
+    assert "pairs_below_threshold=1" in msg
+    assert "max_similarity_below_threshold=0.4500" in msg
+
+    # Bind parameters: statement 1 carries exactly (project_ref,); statement 3
+    # carries exactly the unpointed id list, and its SQL has one ? per id.
+    assert fake_kb.db.calls[0][1] == (PROJ,)
+    assert fake_kb.db.calls[1][1] == (PROJ,)
+    pair_sql, pair_params = fake_kb.db.calls[2]
+    assert pair_params == tuple(f"kb-{i:05d}" for i in range(1, 8))
+    assert pair_sql.count("?") == 7
+
+
+def test_pocket_object_field_names_exact(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """AC-6: the pocket key set is the contract of record, no label field."""
+    _wire_worked_fixture(fake_kb)
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body.keys()) == {
+        "project_ref",
+        "excerpt_chars",
+        "entries",
+        "maps",
+        "pockets",
+        "pockets_omitted_reason",
+    }
+    assert set(body["pockets"][0].keys()) == {
+        "member_entry_ids",
+        "mean_similarity",
+        "min_similarity",
+        "max_similarity",
+        "edges",
+    }
+    assert set(body["pockets"][0]["edges"][0].keys()) == {"a", "b", "similarity"}
+
+
+# ---------------------------------------------------------------------------
+# Deterministic ordering (prompt-prefix stability)
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_ordering_byte_identical_repeat(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Two successive calls with the same stubs serialize BYTE-identically."""
+    maps = {
+        PROJ: [
+            {
+                "id": "map-2",
+                "short_title": "M2",
+                "long_title": "M2 long",
+                "pointers": ["kb-00009"],
+            },
+            {
+                "id": "map-1",
+                "short_title": "M1",
+                "long_title": "M1 long",
+                "pointers": [],
+            },
+        ]
+    }
+    rows = [
+        _entry_row("kb-00002", tags="a b"),
+        _entry_row("kb-00001", tags="a"),
+        _entry_row("kb-00003", tags=""),
+    ]
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=rows,
+        body_rows=[("map-2", "two", None, None)],
+        pair_rows=[
+            ("kb-00001", "kb-00002", 0.90),
+            ("kb-00001", "kb-00003", 0.88),
+            ("kb-00002", "kb-00003", 0.86),
+        ],
+        maps=maps,
+    )
+    resp1 = client.get(URL, params={"project_ref": PROJ})
+    resp2 = client.get(URL, params={"project_ref": PROJ})
+    assert resp1.status_code == 200
+    # BYTE-level comparison: response.json() dict equality is insensitive to
+    # key order and would pass a response whose serialization order moved.
+    assert resp1.content == resp2.content
+
+    body = resp1.json()
+    assert [e["id"] for e in body["entries"]] == [
+        "kb-00001",
+        "kb-00002",
+        "kb-00003",
+    ]
+    assert [m["id"] for m in body["maps"]] == ["map-1", "map-2"]
+    pockets = body["pockets"]
+    assert [p["member_entry_ids"] for p in pockets] == [
+        ["kb-00001", "kb-00002", "kb-00003"],
+    ]
+    assert [(e["a"], e["b"]) for e in pockets[0]["edges"]] == [
+        ("kb-00001", "kb-00002"),
+        ("kb-00001", "kb-00003"),
+        ("kb-00002", "kb-00003"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# pockets_omitted_reason — all four values
+# ---------------------------------------------------------------------------
+
+
+def test_too_few_unpointed_entries_skips_pairs(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Fewer than POCKET_MIN_SIZE unpointed entries -> no pair statement."""
+    _wire(fake_kb, verdicts=[_eligible_verdict()], entry_rows=[_entry_row("kb-00001")])
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pockets"] == []
+    assert body["pockets_omitted_reason"] == "too-few-unpointed-entries"
+    assert len(fake_kb.db.calls) == 2
+    assert all(PAIRS_NEEDLE not in sql for sql, _ in fake_kb.db.calls)
+
+
+def test_unpointed_set_too_large_skips_pairs(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """More than POCKET_MAX_UNPOINTED unpointed entries -> no pair statement."""
+    rows = [_entry_row(f"kb-{i:05d}") for i in range(1, 302)]
+    _wire(fake_kb, verdicts=[_eligible_verdict()], entry_rows=rows)
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["entries"]) == 301
+    assert body["pockets"] == []
+    assert body["pockets_omitted_reason"] == "unpointed-set-too-large"
+    assert len(fake_kb.db.calls) == 2
+    assert all(PAIRS_NEEDLE not in sql for sql, _ in fake_kb.db.calls)
+
+
+def test_non_postgres_backend_skips_pairs(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fake_kb: FakeKnowledgeBase,
+) -> None:
+    """SQLite data DB -> entries/maps still returned, pockets skipped with a
+    WARNING naming KB_DATABASE_URL."""
+    monkeypatch.setattr(map_loop_routes, "SQLiteBackend", FakeKbDb)
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001"), _entry_row("kb-00002")],
+        pair_rows=[("kb-00001", "kb-00002", 0.9)],
+    )
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pockets_omitted_reason"] == "non-postgres-backend"
+    assert body["pockets"] == []
+    assert body["entries"]
+    assert all(PAIRS_NEEDLE not in sql for sql, _ in fake_kb.db.calls)
+    assert len(fake_kb.db.calls) == 2
+    warnings = [r for r in _marker_records(caplog) if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "KB_DATABASE_URL" in warnings[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Field derivations (AC-21)
+# ---------------------------------------------------------------------------
+
+
+def test_tags_excerpt_details_length_derivations(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """tags splits on whitespace (never json.loads); excerpt/dlength pass."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[
+            _entry_row("kb-00001", tags="", excerpt="abcde", details_length=5),
+            _entry_row("kb-00002", tags="   ", excerpt="x" * 600, details_length=4000),
+            _entry_row("kb-00003", tags="a  b"),
+            _entry_row("kb-00004", tags=None),
+        ],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    by_id = {e["id"]: e for e in resp.json()["entries"]}
+    assert by_id["kb-00001"]["tags"] == []
+    assert by_id["kb-00002"]["tags"] == []
+    assert by_id["kb-00003"]["tags"] == ["a", "b"]
+    assert by_id["kb-00004"]["tags"] == []
+
+    assert by_id["kb-00001"]["excerpt"] == "abcde"
+    assert by_id["kb-00001"]["details_length"] == 5
+    assert by_id["kb-00002"]["excerpt"] == "x" * 600
+    assert not by_id["kb-00002"]["excerpt"].endswith("…")
+    assert by_id["kb-00002"]["details_length"] == 4000
+    assert by_id["kb-00001"]["entry_type"] == "factual_reference"
+    assert by_id["kb-00001"]["unpointed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Maps half (AC-19)
+# ---------------------------------------------------------------------------
+
+
+def test_map_body_round_trips_verbatim_and_missing_body_is_empty(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """body round-trips knowledge_details verbatim (no truncation); a map
+    present in one result and not the other yields body="" / pointers=[]"""
+    full_body = "Lives in proj.\n\nDetail entries:\n- kb-00001 gloss\n" * 40
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001"), _entry_row("kb-00002")],
+        body_rows=[("map-1", full_body, "kb-machine", "kb-machine")],
+        pair_rows=[],
+        maps={
+            PROJ: [
+                {
+                    "id": "map-1",
+                    "short_title": "M1",
+                    "long_title": "M1 long",
+                    "pointers": ["kb-00001", "kb-00002"],
+                },
+                {
+                    "id": "map-2",
+                    "short_title": "M2",
+                    "long_title": "M2 long",
+                    "pointers": [],
+                },
+            ]
+        },
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    maps = {m["id"]: m for m in resp.json()["maps"]}
+    assert maps["map-1"]["body"] == full_body
+    assert maps["map-1"]["contributor"] == "kb-machine"
+    assert maps["map-1"]["updated_by"] == "kb-machine"
+    assert maps["map-2"]["body"] == ""
+    assert maps["map-2"]["contributor"] is None
+    assert maps["map-2"]["updated_by"] is None
+
+
+def test_map_pointer_naming_id_absent_from_entries_survives(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """maps[].pointers MAY name ids absent from entries; they survive."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001")],
+        body_rows=[("map-1", "pointing", None, None)],
+        maps={
+            PROJ: [
+                {
+                    "id": "map-1",
+                    "short_title": "M",
+                    "long_title": "M long",
+                    "pointers": ["kb-99999", "kb-00001"],
+                }
+            ]
+        },
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    assert resp.json()["maps"][0]["pointers"] == ["kb-99999", "kb-00001"]
+
+
+# ---------------------------------------------------------------------------
+# Runtime audits (AC-20)
+# ---------------------------------------------------------------------------
+
+
+def test_edge_regex_divergence_warning(
+    client: TestClient, caplog: pytest.LogCaptureFixture, fake_kb: FakeKnowledgeBase
+) -> None:
+    """A map pointing at an entry statement 1 called unpointed -> ONE warning."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001"), _entry_row("kb-00002")],
+        body_rows=[("map-1", "pointing at kb-00001", None, None)],
+        pair_rows=[],
+        maps={
+            PROJ: [
+                {
+                    "id": "map-1",
+                    "short_title": "M",
+                    "long_title": "M long",
+                    "pointers": ["kb-00001"],
+                }
+            ]
+        },
+    )
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    warnings = [r for r in _marker_records(caplog) if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "edge_regex_divergence=kb-00001" in msg
+    assert f"project_ref={PROJ}" in msg
+    assert "count=1" in msg
+
+
+def test_pocket_member_not_unpointed_pocket_dropped(
+    client: TestClient, caplog: pytest.LogCaptureFixture, fake_kb: FakeKnowledgeBase
+) -> None:
+    """A pair row naming an id absent from entries -> pocket dropped, warned."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001"), _entry_row("kb-00002")],
+        pair_rows=[("kb-00001", "kb-99999", 0.99), ("kb-00001", "kb-00002", 0.90)],
+    )
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pockets"] == []
+    warnings = [r for r in _marker_records(caplog) if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "pocket_member_not_unpointed=kb-99999" in warnings[0].getMessage()
+
+
+def test_slow_pair_query_warning(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fake_kb: FakeKnowledgeBase,
+) -> None:
+    """pair_query_ms > 5000 -> one WARNING with the ms and the unpointed count."""
+
+    class _FakeClock:
+        """Advances 6000 'seconds' per perf_counter call."""
+
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def perf_counter(self) -> float:
+            self.now += 6000.0
+            return self.now
+
+    monkeypatch.setattr(map_loop_routes, "time", _FakeClock())
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001"), _entry_row("kb-00002")],
+        pair_rows=[("kb-00001", "kb-00002", 0.9)],
+    )
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    warnings = [r for r in _marker_records(caplog) if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "pair_query_ms=6000000" in msg
+    assert "unpointed_count=2" in msg
+
+
+# ---------------------------------------------------------------------------
+# Read-only invariants (AC-18) + reachability
+# ---------------------------------------------------------------------------
+
+
+def test_reachable_through_real_app_returns_200(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """The route is registered on the real app object — 200, not router-404."""
+    _wire(fake_kb, verdicts=[_eligible_verdict()], entry_rows=[_entry_row("kb-00001")])
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+
+
+def test_read_only_mechanically_asserted(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """No commits, no write SQL, at most three statements (two when omitted)."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001"), _entry_row("kb-00002")],
+        body_rows=[("map-1", "body", None, None)],
+        pair_rows=[("kb-00001", "kb-00002", 0.9)],
+        maps={
+            PROJ: [
+                {
+                    "id": "map-1",
+                    "short_title": "M",
+                    "long_title": "M long",
+                    "pointers": [],
+                }
+            ]
+        },
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    assert fake_kb.db.committed == 0
+    for sql, _params in fake_kb.db.calls:
+        # Word-boundary match: the map-bodies statement legitimately names the
+        # updated_by COLUMN, which a naive case-insensitive substring check
+        # would misread as a write statement.
+        assert re.search(r"\b(INSERT|UPDATE|DELETE)\b", sql, re.IGNORECASE) is None
+    assert len(fake_kb.db.calls) <= 3
+    assert len(fake_kb.db.calls) == 3
+
+
+def test_read_only_invariants_in_docstring_source() -> None:
+    """Source greps: no decay-anchor touch, no per-entry getter, ONE anti-join.
+
+    The full edge clause (not the bare quoted word) so prose in the module
+    docstring cannot break the count.
+    """
+    src = Path(map_loop_routes.__file__).read_text(encoding="utf-8")
+    assert "touch_accessed" not in src
+    assert "kb.get(" not in src
+    assert src.count("edge_type = 'references'") == 1
+
+
+def test_skip_case_issues_exactly_two_statements(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """When pockets_omitted_reason is non-null the statement count is 2."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001", unpointed=0)],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    assert resp.json()["pockets_omitted_reason"] == "too-few-unpointed-entries"
+    assert len(fake_kb.db.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Telemetry (AC-25)
+# ---------------------------------------------------------------------------
+
+
+def test_successful_call_emits_one_info_telemetry_line(
+    client: TestClient, caplog: pytest.LogCaptureFixture, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Exactly ONE INFO marker record carrying every AC-25 key."""
+    _wire_worked_fixture(fake_kb)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    infos = [r for r in _marker_records(caplog) if r.levelno == logging.INFO]
+    assert len(infos) == 1
+    msg = infos[0].getMessage()
+    keys = [
+        "project_ref=",
+        "entries=",
+        "unpointed=",
+        "pockets=",
+        "pairs_returned=",
+        "pairs_below_threshold=",
+        "max_similarity_below_threshold=",
+        "pairs_mutual=",
+        "components_total=",
+        "components_below_min_size=",
+        "pockets_truncated=",
+        "pairs_truncated=",
+        "entries_query_ms=",
+        "pair_query_ms=",
+        "total_ms=",
+        "payload_bytes=",
+        "payload_digest=",
+        "pockets_omitted_reason=",
+        "min_similarity=",
+        "observation_floor=",
+        "top_k=",
+        "min_size=",
+        "max_count=",
+        "max_unpointed=",
+        "max_pairs=",
+    ]
+    for key in keys:
+        assert key in msg, key
+    assert "entries_query_ms=" in msg
+    assert f"project_ref={PROJ}" in msg
+    assert "entries=7" in msg
+    assert "unpointed=7" in msg
+    assert "pockets=2" in msg
+    assert "pairs_returned=11" in msg
+    assert "pairs_mutual=9" in msg
+    assert "components_total=2" in msg
+    assert "components_below_min_size=0" in msg
+    assert "pockets_truncated=0" in msg
+    assert "pockets_omitted_reason=none" in msg
+    assert "observation_floor=0.4000" in msg
+    assert "min_similarity=0.5500" in msg
+    assert "top_k=3" in msg
+    assert "min_size=2" in msg
+    assert "max_count=10" in msg
+    assert "max_unpointed=300" in msg
+    assert "max_pairs=20000" in msg
+    # payload_digest is the first 12 hex chars of sha256 over the model dump.
+    assert f"payload_digest={_expected_digest(resp)}" in msg
+    assert f"payload_bytes={len(resp.content)}" in msg
+
+
+def _expected_digest(resp: Any) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(
+        json.dumps(resp.json(), separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:12]
+
+
+# ---------------------------------------------------------------------------
+# Pocket-builder unit tests (AC-12 order of operations, truncation)
+# ---------------------------------------------------------------------------
+
+
+def test_build_pockets_truncates_to_max_count() -> None:
+    """More than POCKET_MAX_COUNT pockets -> keep the top, count the overflow."""
+    pairs = [(f"kb-{i:05d}", f"kb-{i + 100:05d}", 0.9) for i in range(1, 12)]
+    pockets, stats = map_loop_routes._build_pockets(pairs)
+    assert len(pockets) == map_loop_routes.POCKET_MAX_COUNT
+    assert stats.pockets_truncated == 1
+    # Highest-mean tie is broken by member_entry_ids[0] ascending.
+    assert pockets[0].member_entry_ids == ["kb-00001", "kb-00101"]
+
+
+def test_build_pockets_single_member_component_below_min_size() -> None:
+    """A degenerate self-pair forms a 1-member component: below min size."""
+    pockets, stats = map_loop_routes._build_pockets([("kb-00001", "kb-00001", 0.9)])
+    assert pockets == []
+    assert stats.components_total == 1
+    assert stats.components_below_min_size == 1
+    assert stats.pairs_mutual == 1
+
+
+def test_build_pockets_sub_threshold_pair_never_influences_topk() -> None:
+    """The threshold filter runs FIRST: a sub-threshold pair is invisible."""
+    pairs = [
+        ("kb-00001", "kb-00002", 0.90),
+        ("kb-00002", "kb-00003", 0.54),
+        ("kb-00002", "kb-00004", 0.54),
+        ("kb-00002", "kb-00005", 0.54),
+    ]
+    pockets, stats = map_loop_routes._build_pockets(pairs)
+    # 0.54 < 0.55: dropped before neighbour lists are built, so kb-00002's
+    # top-3 is just kb-00001 and the mutual edge (1,2) forms one pocket.
+    assert len(pockets) == 1
+    assert pockets[0].member_entry_ids == ["kb-00001", "kb-00002"]
+    assert stats.pairs_below_threshold == 3
+    assert stats.max_similarity_below_threshold == pytest.approx(0.54)

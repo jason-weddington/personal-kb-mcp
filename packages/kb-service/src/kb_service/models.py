@@ -886,3 +886,110 @@ class PointerCandidatesResponse(BaseModel):
 
     has_owning_map: bool
     candidates: list[PointerCandidate]
+
+
+# --- Map loop input (nightly loop pre-fetch, server half) ---
+
+
+PocketsOmittedReason = Literal[
+    "too-few-unpointed-entries",
+    "unpointed-set-too-large",
+    "non-postgres-backend",
+]
+
+
+class MapLoopEntry(BaseModel):
+    """One mappable entry as the loop's prompt prefix sees it.
+
+    ``excerpt`` is the RAW first ``excerpt_chars`` characters of
+    ``knowledge_details`` — no ellipsis appended, no whitespace stripping,
+    no word-boundary adjustment. ``details_length`` is the FULL stored
+    length, which is how a consumer detects truncation
+    (``details_length > excerpt_chars``). ``entry_type`` is passed through
+    as the raw stored string. ``unpointed`` is the SQL anti-join's verdict:
+    no ACTIVE mental_map's pointer set currently includes this entry.
+    """
+
+    id: str
+    short_title: str
+    long_title: str
+    entry_type: str
+    tags: list[str]
+    excerpt: str
+    details_length: int
+    unpointed: bool
+
+
+class MapLoopMap(BaseModel):
+    """One existing active map, with the fields the loop's MATERIALIZER needs.
+
+    Deliberately NOT a reuse of ``MapRef``: ``body``, ``contributor`` and
+    ``updated_by`` are load-bearing. ``body`` is the FULL
+    ``knowledge_details``, never excerpted, and it is for the MATERIALIZER,
+    not for the prompt — Rung 1 injects titles/tags/pointers and withholds
+    the body, because withholding it is what makes "the model cannot rewrite
+    prose" structural rather than a prompt rule (there is no rewrite_body
+    and no write_map). Every automated write must be a read-modify-write
+    carrying the full body — we diff the body we wrote against the body we
+    read and reject anything but an append — and ``strike_gap`` needs the
+    existing "Not yet documented:" text, which lives only in the body.
+    ``contributor``/``updated_by`` are what make the authorship tier rule
+    (a machine-authored map is the loop's to edit; a human-authored map is
+    append-only, permanently) enforceable. The route deliberately does NOT
+    compute a machine_authored boolean: the machine principal is service
+    config (read from the SERVICE DB) while this payload comes from the
+    DATA DB, so somnus derives the tier itself from these two fields
+    against its own identity.
+    """
+
+    id: str
+    short_title: str
+    long_title: str
+    pointers: list[str] = []
+    body: str
+    contributor: str | None = None
+    updated_by: str | None = None
+
+
+class MapLoopPocketEdge(BaseModel):
+    """One mutual edge inside a pocket, with its raw pgvector similarity."""
+
+    a: str
+    b: str
+    similarity: float
+
+
+class MapLoopPocket(BaseModel):
+    """One unpointed dense pocket: a candidate member set plus its evidence.
+
+    ``member_entry_ids`` matches the sibling cluster shape's key so no name
+    translation happens anywhere in the wave. A pocket object deliberately
+    carries NO label, name, title or topic field — naming is the model's
+    job and geometry provably cannot do it. ``mean``/``min``/``max``
+    similarity are computed over the pocket's MUTUAL EDGES only, never over
+    all member pairs. Every similarity crosses the wire unrounded.
+    """
+
+    member_entry_ids: list[str]
+    mean_similarity: float
+    min_similarity: float
+    max_similarity: float
+    edges: list[MapLoopPocketEdge]
+
+
+class MapLoopInputResponse(BaseModel):
+    """Response for ``GET /api/kb/map-loop-input?project_ref=<ref>``.
+
+    ``pockets_omitted_reason`` distinguishes "no pockets found" from
+    "pockets not computed": ``None`` means the pair statement ran and
+    ``pockets`` is the computed result (possibly ``[]`` when no mutual
+    component reached the minimum size); the three literal values each mean
+    the pair statement was skipped and ``pockets`` is empty.
+    """
+
+    project_ref: str
+    excerpt_chars: int
+    entries: list[MapLoopEntry]
+    maps: list[MapLoopMap]
+    pockets: list[MapLoopPocket]
+    pockets_omitted_reason: PocketsOmittedReason | None = None
