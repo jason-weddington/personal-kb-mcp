@@ -50,6 +50,24 @@ The model returns clusters as `{label, member_entry_ids[], owning_map_id | null}
 
 **Overlap between clusters is expected and correct, not a defect to resolve.** The graph already carries 17 detail entries with two owning maps and 4 with three or four.
 
+## Rung 1b — which cluster gets the night's one map
+
+**The per-night cap is one new map per project, and nothing decided which cluster got it. That is the most consequential unspecified thing in this design and it was found by reviewing a real run.** The cap is enforced as a 409 at the write, and rung 2 is one inference per cluster, so the map that lands is whichever `create_map` is submitted first — i.e. **array order**. On the first photoqueue run the array's index 0 was `PhotoQueue Core Backend, Frontend & Deployment`, a sixteen-entry three-noun label the review judged the single most misdirecting node in the output. The project has no other map to contradict it, and the write API refuses to deactivate a `mental_map`, so that would have been a permanent misdirecting node chosen by iteration order.
+
+Note the asymmetry this corrects, because it is embarrassing in a useful way: **Rung 0b specifies which projects get worked down to the tiebreak, with a written argument about starvation — while the far more consequential within-project choice was left to chance.** Ordering discipline was applied to the cheap decision and not the expensive one.
+
+**The split follows the cascade: the model ranks, code admits.**
+
+**Rung 1 emits clusters in merit order, most map-worthy first**, and states in one line why the first is first. Ranking is genuine judgement over content that no rule can compute — it is exactly the sparse high-judgement call the good model is there for.
+
+**Code then applies three mechanical admission rules and takes the first survivor.** Each needs no entry reading, and all three would have rejected a bad cluster on the first real run for free:
+
+- **Minimum size 3.** Measured against the 27 live hand-authored maps: min 1, median 5, max 20, with 8 of 27 at one or two pointers. Humans did go to 1 — but as deliberate set-completing choices made with knowledge of the whole map set, which a machine writing one map a night does not have. The floor sits above the human minimum because the errors are asymmetric: a bad map is permanent and only a human can retract it, while a missed small cluster costs a note that `propose_gap` records. A cluster below the floor emits `propose_gap`, never `no_change` — the observation is worth keeping even when the cluster is too thin to map.
+- **Native majority.** A cluster may become a map only if most of its members belong to exactly one cluster. On the first run this alone deletes `Flickr API Quirks & Reference`, whose three members were two borrowed from another cluster plus one that belonged elsewhere — a phantom, killed mechanically without reading anything.
+- **Label shape.** A label joining multiple nouns with an ampersand, a slash or a comma list is a failed cluster: the model named the union instead of re-splitting. This flags the three worst clusters of the first run with no entry reading at all.
+
+**These are the first gate in this design that can return "don't build it."** The registered map-purity lint cannot: it rejects paths, `ENV_VAR`s, dotted identifiers and quoted literals — precisely the defects Rung 3's code-composed body already makes impossible. It is a structural gate doing structural work, and nothing in the pipeline could detect three-subjects-in-one-label, a phantom cluster or a singleton. A gate that only rejects what cannot happen is not protecting anything.
+
 ## Rung 2 — ops (one inference per cluster)
 
 The model emits ops from a **closed vocabulary** and nothing else:
@@ -63,6 +81,8 @@ The model emits ops from a **closed vocabulary** and nothing else:
 There is no `rewrite_body` and no `write_map`. That is the enforcement mechanism, borrowed from talos's own design: there is no `set_verified` tool, so the agent cannot type `Verified` into the record. Here the agent cannot type a map body.
 
 ## Rung 3 — code composes the body
+
+**`Lives in` has no source, and that is a gap in this spec rather than a bug in the crate.** The first real run refused to compose every map with `no 'Lives in' value is available`, which is the correct behaviour and the cascade working as designed: code declines to fabricate a value nobody gave it, and inventing a plausible directory would have been the worst outcome available. The canonical form requires the line, this spec said code composes it, and nothing was ever specified to supply it — the KB holds no `project_ref` → directory mapping and `/api/kb/map-loop-input` returns none. **Resolving this is mine and it blocks every map write.** The options are to add a mapping the loop-input endpoint serves, to derive it from paths already cited in the project's entries, or to make the line optional when unknown; until one is chosen, rung 3 refuses and should keep refusing.
 
 The canonical map form has four parts and **code emits three of them**: a coarse `Lives in <package/dir>` line, the `Detail entries:` pointer list, and the prose `Not yet documented:` line. The model writes only the 2–3 sentences of orientation prose and the per-pointer glosses.
 
