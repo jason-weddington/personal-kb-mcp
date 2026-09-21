@@ -995,6 +995,41 @@ class MapLoopInputResponse(BaseModel):
     pockets_omitted_reason: PocketsOmittedReason | None = None
 
 
+# --- Map worklist (nightly loop's ranked eligible-project enumeration) ---
+
+
+class MapWorklistProject(BaseModel):
+    """One ranked worklist row: a project somnus's ``nightly`` may work.
+
+    ``mappable`` is the eligibility verdict's own count of mappable entries,
+    ``map_count`` and ``latest_map_written_at`` come from
+    ``kb_core.map_caps.map_write_summary`` — a project with no active maps is
+    ABSENT from that summary, so the route left-joins in Python and renders
+    ``map_count=0`` with a null timestamp rather than dropping the row: a
+    never-mapped project is the loop's FIRST priority, not a missing one.
+    ``latest_map_written_at`` serialises as an ISO-8601 string and is null
+    exactly when ``map_count`` is 0.
+    """
+
+    project_ref: str
+    mappable: int
+    map_count: int
+    latest_map_written_at: datetime | None
+
+
+class MapWorklistResponse(BaseModel):
+    """Response for ``GET /api/kb/map-worklist``.
+
+    Exactly ``{"projects": [...]}`` — every ELIGIBLE project, ranked, with NO
+    limit and NO truncation: the three-projects-per-night cap is somnus's
+    worklist policy, and a server-side limit would silently hide projects
+    from any other reader of this list. Empty (no eligible projects) is a
+    legitimate quiet night and renders ``{"projects": []}``, never a 404.
+    """
+
+    projects: list[MapWorklistProject]
+
+
 # --- Cluster/decline ledger (nightly loop's only durable state, server half) ---
 
 

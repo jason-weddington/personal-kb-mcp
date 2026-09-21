@@ -876,3 +876,210 @@ def test_build_pockets_sub_threshold_pair_never_influences_topk() -> None:
     assert pockets[0].member_entry_ids == ["kb-00001", "kb-00002"]
     assert stats.pairs_below_threshold == 3
     assert stats.max_similarity_below_threshold == pytest.approx(0.54)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/kb/map-worklist (Rung 0b of docs/somnus-functional-spec.md)
+# ---------------------------------------------------------------------------
+
+WORKLIST_URL = "/api/kb/map-worklist"
+# The one statement kb_core.map_caps.map_write_summary issues; disjoint from
+# the three loop-input needles above.
+SUMMARY_NEEDLE = "GROUP BY project_ref"
+
+
+def _summary_row(project_ref: str, map_count: int, latest: str) -> dict[str, Any]:
+    """One map_write_summary row, in kb-core's own column-name-indexed shape.
+
+    The real ``map_write_summary`` reads rows by COLUMN NAME
+    (``row["project_ref"]``), so the fake DB hands it mappings, not tuples.
+    """
+    return {
+        "project_ref": project_ref,
+        "map_count": map_count,
+        "latest_map_written_at": latest,
+    }
+
+
+def _ineligible_verdict(ref: str) -> Any:
+    """A computed-ineligible verdict (journal shape), for the drop filter."""
+    verdict = make_map_eligibility_verdict(
+        ref, mappable=624, ingested=0, top_prefix_count=611, top_prefix="Run"
+    )
+    assert verdict.effective_eligible is False
+    return verdict
+
+
+def _wire_worklist(
+    fake_kb: FakeKnowledgeBase,
+    *,
+    verdicts: list[Any],
+    summary_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    """Point the worklist's dependencies at the fakes, non-admin user."""
+    app.dependency_overrides[get_current_user] = fake_user
+    fake_kb.map_eligibility_verdicts = verdicts
+    fake_kb.db.rows_for[SUMMARY_NEEDLE] = summary_rows or []
+
+
+def test_worklist_ordering_never_mapped_then_oldest_write(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Ranked: never-mapped first, then oldest latest_map_written_at first.
+
+    Do NOT "improve" this into most-unpointed-first — it starves. A project
+    whose unpointed tail sits entirely in declined clusters would top that
+    list every night forever, accomplish nothing each time, and block every
+    other project from ever being picked; declining a cluster does not make
+    its members pointed, so the decline ledger cannot rescue it. Staleness
+    ordering is starvation-free by construction: a project worked last
+    night sinks to the bottom whether or not the night accomplished
+    anything.
+
+    The never-mapped ref is alphabetically LAST on purpose, so any
+    ordering that ignores the never-mapped-first rule (or ranks on ref
+    alone) fails here, not just in theory.
+    """
+    _wire_worklist(
+        fake_kb,
+        verdicts=[
+            _eligible_verdict("mid-recent"),
+            _eligible_verdict("zeta-never"),
+            _eligible_verdict("alpha-old"),
+        ],
+        summary_rows=[
+            _summary_row("mid-recent", 1, "2026-09-20T03:00:00+00:00"),
+            _summary_row("alpha-old", 3, "2024-03-01T00:00:00+00:00"),
+        ],
+    )
+    resp = client.get(WORKLIST_URL)
+    assert resp.status_code == 200
+    assert [p["project_ref"] for p in resp.json()["projects"]] == [
+        "zeta-never",
+        "alpha-old",
+        "mid-recent",
+    ]
+
+
+def test_worklist_tiebreak_project_ref_ascending(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Identical latest_map_written_at -> project_ref ascending, so two runs
+    against identical state pick the same three."""
+    _wire_worklist(
+        fake_kb,
+        verdicts=[_eligible_verdict("b-second"), _eligible_verdict("a-first")],
+        summary_rows=[
+            _summary_row("b-second", 4, "2025-06-01T00:00:00+00:00"),
+            _summary_row("a-first", 2, "2025-06-01T00:00:00+00:00"),
+        ],
+    )
+    resp = client.get(WORKLIST_URL)
+    assert resp.status_code == 200
+    assert [p["project_ref"] for p in resp.json()["projects"]] == [
+        "a-first",
+        "b-second",
+    ]
+
+
+def test_worklist_non_admin_non_machine_user_gets_200(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Any authenticated user — the worklist is deliberately NOT admin-gated.
+
+    ``map-eligibility`` is ``require_admin`` and the machine principal is
+    deliberately non-admin, so an admin gate here would make the endpoint
+    unreachable by exactly the one caller it exists for.
+    """
+    assert fake_user().is_admin is False
+    # The gate pin, not a prose grep: the route module never imports or
+    # wires require_admin, so no endpoint here can regress into admin-only.
+    src = Path(map_loop_routes.__file__).read_text(encoding="utf-8")
+    assert "Depends(require_admin)" not in src
+    assert "import require_admin" not in src
+    _wire_worklist(
+        fake_kb,
+        verdicts=[_eligible_verdict(PROJ)],
+        summary_rows=[_summary_row(PROJ, 1, "2026-09-20T03:00:00+00:00")],
+    )
+    resp = client.get(WORKLIST_URL)
+    assert resp.status_code == 200
+    assert resp.json()["projects"][0]["project_ref"] == PROJ
+
+
+def test_worklist_no_eligible_projects_is_200_empty(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """No eligible projects is a legitimate quiet night: 200, {projects: []}.
+
+    Never a 404 — somnus's exit-code contract maps an empty worklist to 0.
+    """
+    _wire_worklist(fake_kb, verdicts=[], summary_rows=[])
+    resp = client.get(WORKLIST_URL)
+    assert resp.status_code == 200
+    assert resp.json() == {"projects": []}
+
+
+def test_worklist_never_mapped_project_renders_zero_and_null(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """A project with no active maps is ABSENT from map_write_summary, so the
+    join is a left-join over the verdicts: map_count 0, null timestamp."""
+    _wire_worklist(fake_kb, verdicts=[_eligible_verdict(PROJ)], summary_rows=[])
+    resp = client.get(WORKLIST_URL)
+    assert resp.status_code == 200
+    projects = resp.json()["projects"]
+    assert len(projects) == 1
+    row = projects[0]
+    assert set(row.keys()) == {
+        "project_ref",
+        "mappable",
+        "map_count",
+        "latest_map_written_at",
+    }
+    assert row["project_ref"] == PROJ
+    assert row["mappable"] == 50
+    assert row["map_count"] == 0
+    assert row["latest_map_written_at"] is None
+
+
+def test_worklist_ineligible_project_absent(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Only eligible verdicts appear; the override table is respected by
+    dropping every verdict whose effective_eligible is False."""
+    override = MapEligibilityOverride(
+        "forced-in", True, "human verdict", "jason", "2026-09-20T12:00:00+00:00"
+    )
+    forced_in = make_map_eligibility_verdict(
+        "journal-proj",
+        mappable=624,
+        ingested=0,
+        top_prefix_count=611,
+        top_prefix="Run",
+        override=override,
+    )
+    assert forced_in.effective_eligible is True
+    _wire_worklist(
+        fake_kb,
+        verdicts=[
+            forced_in,
+            _ineligible_verdict("computed-out"),
+            _eligible_verdict(PROJ),
+        ],
+        summary_rows=[
+            _summary_row("journal-proj", 1, "2026-09-20T03:00:00+00:00"),
+            _summary_row("computed-out", 5, "2020-01-01T00:00:00+00:00"),
+        ],
+    )
+    resp = client.get(WORKLIST_URL)
+    assert resp.status_code == 200
+    refs = [p["project_ref"] for p in resp.json()["projects"]]
+    assert "computed-out" not in refs
+    assert set(refs) == {"journal-proj", PROJ}
+    # The forced-in journal project renders with its summary row; the
+    # never-mapped eligible project renders with map_count 0 / null.
+    by_ref = {p["project_ref"]: p for p in resp.json()["projects"]}
+    assert by_ref["journal-proj"]["map_count"] == 1
+    assert by_ref[PROJ]["map_count"] == 0
+    assert by_ref[PROJ]["latest_map_written_at"] is None

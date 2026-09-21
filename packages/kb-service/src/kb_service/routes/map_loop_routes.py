@@ -1,6 +1,7 @@
-"""Loop-input endpoint: ``GET /api/kb/map-loop-input?project_ref=<ref>``.
+"""Nightly map-maintenance loop endpoints (Rung 0b/1 of the design docs).
 
-Everything the nightly map-maintenance loop needs for ONE project, in ONE
+``GET /api/kb/map-loop-input?project_ref=<ref>`` — everything the nightly
+map-maintenance loop needs for ONE project, in ONE
 authed read-only call: the project's mappable entries (titles, tags, a bounded
 excerpt, the unpointed flag), its existing active maps with their FULL bodies
 and authorship fields, and the unpointed dense pockets as candidate
@@ -61,6 +62,26 @@ boolean: the machine principal is service config (``kb_service.attribution``
 reads an app_config key from the SERVICE DB) while this route touches only
 the DATA DB. Somnus derives the authorship tier itself from
 ``contributor``/``updated_by`` against its own identity.
+
+THE WORKLIST. This module's second endpoint, ``GET /api/kb/map-worklist``,
+is Rung 0b of docs/somnus-functional-spec.md: the ranked, non-admin
+enumeration of map-eligible projects that somnus's ``nightly`` subcommand
+picks its three projects a night from, taking the first three WITHOUT
+re-sorting. It exists because ``GET /api/kb/map-eligibility`` returns every
+verdict but is ``require_admin`` and the machine principal is deliberately
+non-admin — the enumeration the loop is built on did not exist for the one
+caller that needs it. Auth is ``get_current_user`` (ANY authenticated user),
+the eligibility predicate is kb-core's own (``map_eligibility()`` plus a
+drop of every verdict whose ``effective_eligible`` is False, so the override
+table is respected exactly as everywhere else — never reimplemented here),
+and the per-project map-write facts come from
+``kb_core.map_caps.map_write_summary``. The RANKING lives in this route, not
+in somnus: it needs each project's map-write history, which the server holds
+and the loop does not, and a copy of the ordering rule in the Rust binary
+would be one more thing that can drift from this one. The endpoint takes NO
+query parameters, no limit, no truncation — the three-projects-per-night
+cap is somnus's worklist policy, and a server-side limit would silently
+hide projects from any other reader of this list.
 """
 
 import hashlib
@@ -71,6 +92,7 @@ from typing import Annotated, Any, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, Request
 from kb_core.db.backend import MAPPABLE_ENTRY_WHERE_SQL
 from kb_core.db.sqlite_backend import SQLiteBackend
+from kb_core.map_caps import map_write_summary
 
 from kb_service.auth import get_current_user
 from kb_service.models import (
@@ -79,6 +101,8 @@ from kb_service.models import (
     MapLoopMap,
     MapLoopPocket,
     MapLoopPocketEdge,
+    MapWorklistProject,
+    MapWorklistResponse,
     PocketsOmittedReason,
     User,
 )
@@ -87,6 +111,9 @@ logger = logging.getLogger(__name__)
 
 # Greppable log marker — mirrors MAP_ELIGIBILITY_ROUTE_MARKER.
 MAP_LOOP_INPUT_MARKER = "map-loop-input"
+
+# Greppable log marker for the worklist endpoint, same convention.
+MAP_WORKLIST_MARKER = "map-worklist"
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
@@ -565,3 +592,95 @@ async def map_loop_input(
         )
     )
     return payload
+
+
+@router.get("/map-worklist", response_model=MapWorklistResponse)
+async def map_worklist(
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+) -> MapWorklistResponse:
+    """Return the RANKED worklist of map-eligible projects (Rung 0b).
+
+    Every eligible project, left-joined against its map-write summary and
+    ranked for somnus's ``nightly`` to read head-first. No limit, no
+    truncation, no query parameters: the three-projects-per-night cap is
+    somnus's worklist policy, and a server-side limit would silently hide
+    projects from any other reader of this list. Empty is a legitimate
+    quiet night and renders ``{"projects": []}`` — never a 404.
+
+    Args:
+        request: FastAPI request (provides ``app.state.kb``).
+        user: Authenticated user (JWT or API key via Bearer header) — ANY
+            authenticated user, deliberately NOT admin: the machine principal
+            somnus runs as is non-admin by design, and ``map-eligibility``
+            being admin-only is exactly why this endpoint exists.
+
+    Returns:
+        ``MapWorklistResponse``: only the verdicts whose
+        ``effective_eligible`` is true, so the override table is honoured
+        exactly as everywhere else; each row's ``mappable`` is the
+        verdict's own evidence count and its ``map_count`` /
+        ``latest_map_written_at`` come from kb-core's summary, which omits
+        never-mapped projects — hence the left-join in Python: the eligible
+        verdicts drive the iteration, never the summary rows.
+    """
+    kb = request.app.state.kb
+    verdicts = await kb.map_eligibility()
+
+    summary_by_ref = {row.project_ref: row for row in await map_write_summary(kb.db)}
+    projects: list[MapWorklistProject] = []
+    for verdict in verdicts:
+        # Truthiness rather than `is False`: this is an eligibility GATE, and
+        # the two spellings differ in the direction that matters. `is False`
+        # admits anything that is not the literal False — so the day
+        # `effective_eligible` becomes `bool | None`, every unresolved verdict
+        # silently becomes eligible and the loop starts working projects the
+        # human excluded. It is `bool` today; the point is that the gate should
+        # not fail open if that ever loosens.
+        if not verdict.effective_eligible:
+            continue
+        project_ref = verdict.evidence.project_ref
+        summary = summary_by_ref.get(project_ref)
+        projects.append(
+            MapWorklistProject(
+                project_ref=project_ref,
+                mappable=verdict.evidence.mappable,
+                map_count=0 if summary is None else summary.map_count,
+                latest_map_written_at=(
+                    None if summary is None else summary.latest_map_written_at
+                ),
+            )
+        )
+
+    # One explicit sort key with three components: (1) never-mapped first —
+    # map_count == 0 sorts ahead of every mapped project; (2) oldest
+    # latest_map_written_at first; (3) project_ref ascending, so two runs
+    # against identical state pick the same three. A never-mapped row's null
+    # timestamp needs no sentinel: component (1) has already separated the
+    # never-mapped rows from the mapped ones, so component (2) only ever
+    # compares null against null (equal — tuple comparison falls through to
+    # the ref) or one aware datetime against another. NOT
+    # most-unpointed-first, which starves: a project whose unpointed tail
+    # sits entirely in declined clusters would top that list forever and
+    # block every other project, and staleness-first is starvation-free by
+    # construction.
+    projects.sort(
+        key=lambda project: (
+            project.map_count != 0,
+            project.latest_map_written_at,
+            project.project_ref,
+        )
+    )
+
+    never_mapped = sum(1 for project in projects if project.map_count == 0)
+    logger.info(
+        " ".join(
+            [
+                MAP_WORKLIST_MARKER,
+                f"verdicts={len(verdicts)}",
+                f"eligible={len(projects)}",
+                f"never_mapped={never_mapped}",
+            ]
+        )
+    )
+    return MapWorklistResponse(projects=projects)
