@@ -5,13 +5,12 @@ The contract of record is docs/somnus-functional-spec.md, "The write path".
 Everything is driven through the FakeKnowledgeBase and a stateful fake
 app_config pool: no live Postgres, no Ollama, no network.
 
-The per-night cap counts are monkeypatched at the route module's import seam
-(``map_op_routes.count_maps_created_since``) rather than run against the fake kb
-DB, because the kb-core function needs a real cursor with ``fetchone``.
-
-The hermetic FakeKbDb only implements ``fetchall``.
-
-Making it faithful here would break the "fakes return canned data" convention.
+There is no per-night creation cap to test: it existed only to bound
+irreversible damage, and maps became deletable by the loop that wrote them
+(Jason, 2026-09-21). ``test_create_map_has_no_per_night_cap`` asserts its
+absence POSITIVELY, by writing fourteen maps for one project in one night — a
+test that merely stopped exercising a limit would pass just as well with the
+limit still in place and the fixture no longer reaching it.
 """
 
 import logging
@@ -24,7 +23,6 @@ from kb_core.map_lint import count_map_pointers, map_body_budget
 from kb_core.models.entry import EntryType, KnowledgeEntry
 
 import kb_service.attribution as attribution_module
-import kb_service.routes.map_op_routes as map_op_routes
 from kb_service.auth import get_current_user
 from kb_service.main import app
 from kb_service.models import User
@@ -105,37 +103,6 @@ def _wire(
     app.dependency_overrides[get_current_user] = user or fake_machine_user
     config = {"machine_principal_email": MACHINE_EMAIL} if machine_configured else {}
     return _seed_app_config(monkeypatch, config)
-
-
-def _caps(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    per_project: int = 0,
-    per_kb: int = 0,
-) -> list[dict[str, Any]]:
-    """Replace the kb-core cap counter with a recording fake."""
-
-    calls: list[dict[str, Any]] = []
-
-    async def _fake(
-        db: Any,
-        *,
-        contributor: str,
-        since: datetime,
-        project_ref: str | None = None,
-    ) -> int:
-        calls.append(
-            {
-                "db": db,
-                "contributor": contributor,
-                "since": since,
-                "project_ref": project_ref,
-            }
-        )
-        return per_project if project_ref is not None else per_kb
-
-    monkeypatch.setattr(map_op_routes, "count_maps_created_since", _fake)
-    return calls
 
 
 def _entry(
@@ -313,7 +280,6 @@ def test_create_map_201(
     """create_map stores a mental_map and returns the uniform envelope."""
 
     _wire(monkeypatch)
-    calls = _caps(monkeypatch)
     resp = client.post(URL, json=_create())
     assert resp.status_code == 201
     pointer_count = count_map_pointers(ADDED_BODY)
@@ -330,14 +296,29 @@ def test_create_map_201(
     assert kwargs["project_ref"] == PROJ
     assert kwargs["contributor"] == MACHINE_EMAIL
     assert fake_kb.update_calls == []
-    # Both cap queries ran, scoped then unscoped, since UTC midnight.
-    assert len(calls) == 2
-    assert calls[0]["project_ref"] == PROJ
-    assert calls[0]["contributor"] == MACHINE_EMAIL
-    assert calls[1]["project_ref"] is None
-    midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    assert calls[0]["since"] == midnight
-    assert calls[0]["since"].tzinfo is not None
+
+
+def test_create_map_has_no_per_night_cap(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_kb: FakeKnowledgeBase,
+) -> None:
+    """Many maps in one night for one project all succeed — there is no cap.
+
+    The cap existed only to bound irreversible damage, and maps became
+    deletable by the loop that wrote them (Jason, 2026-09-21). A project with
+    fourteen valid subject areas needs fourteen maps, and rung 2 has already
+    paid for an inference per cluster, so capping discards work already bought.
+
+    Asserted positively rather than by the absence of a rejection: a test that
+    merely stops exercising a limit passes just as well when the limit is still
+    there and the fixture stopped reaching it.
+    """
+    _wire(monkeypatch)
+    for i in range(14):
+        resp = client.post(URL, json=_create())
+        assert resp.status_code == 201, f"map {i} was rejected: {resp.text}"
+    assert len(fake_kb.store_calls) == 14
 
 
 def test_add_pointer_200(
@@ -348,7 +329,6 @@ def test_add_pointer_200(
     """add_pointer appends exactly one pointer and updates via the facade."""
 
     _wire(monkeypatch)
-    calls = _caps(monkeypatch)
     _wire_map(fake_kb)
     _seed_targets(fake_kb)
     resp = client.post(URL, json=_add(base_version=1))
@@ -367,8 +347,6 @@ def test_add_pointer_200(
     assert "add_pointer" in kwargs["change_reason"]
     assert TARGET_ID in kwargs["change_reason"]
     assert fake_kb.store_calls == []
-    # The caps are a create_map-only check.
-    assert calls == []
 
 
 def test_strike_gap_200(
@@ -834,38 +812,6 @@ def test_non_map_entry_type_404(
 # ---------------------------------------------------------------------------
 
 
-def test_project_cap_reached_409(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-    fake_kb: FakeKnowledgeBase,
-) -> None:
-    """One new map per project_ref per night; the second is 409."""
-
-    _wire(monkeypatch)
-    _caps(monkeypatch, per_project=1)
-    resp = client.post(URL, json=_create())
-    assert resp.status_code == 409
-    assert "per_project_ref" in resp.json()["detail"]
-    assert "per_kb" not in resp.json()["detail"]
-    assert fake_kb.store_calls == []
-
-
-def test_kb_cap_reached_409(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-    fake_kb: FakeKnowledgeBase,
-) -> None:
-    """Three new maps per KB per night; the fourth is 409."""
-
-    _wire(monkeypatch)
-    _caps(monkeypatch, per_project=0, per_kb=3)
-    resp = client.post(URL, json=_create())
-    assert resp.status_code == 409
-    assert "per_kb" in resp.json()["detail"]
-    assert "per_project_ref" not in resp.json()["detail"]
-    assert fake_kb.store_calls == []
-
-
 # ---------------------------------------------------------------------------
 # The operator-readable trail
 # ---------------------------------------------------------------------------
@@ -880,7 +826,6 @@ def test_one_structured_log_line_per_handled_op(
     """A successful op leaves one INFO line: op, project_ref, map_id, outcome."""
 
     _wire(monkeypatch)
-    _caps(monkeypatch)
     with caplog.at_level(logging.INFO, logger=LOGGER):
         resp = client.post(URL, json=_create())
     assert resp.status_code == 201

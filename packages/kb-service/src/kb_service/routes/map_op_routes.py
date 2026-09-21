@@ -30,9 +30,7 @@ That invariant is non-negotiable precisely because a live Postgres offers no rev
 
 A body that silently drops half a map's pointers is a valid store there.
 
-The same goes for the per-night caps.
-
-Both were prompt instructions until this endpoint made them machine-checked.
+Additive-only was a prompt instruction until this endpoint made it machine-checked.
 
 Machine principal ONLY: 403 for everyone else.
 
@@ -44,7 +42,7 @@ Status semantics, flat and terminal, matching the ledger and loop-input endpoint
 
 403 not the machine principal · 404 unknown ``map_id``.
 
-409 invariant violation, stale ``base_version``, or cap exceeded.
+409 invariant violation or stale ``base_version``.
 
 422 lint findings, or an op outside the closed vocabulary.
 
@@ -60,11 +58,9 @@ Writes go through the same kb-core seam as ``/store``.
 """
 
 import logging
-from datetime import UTC, datetime
 from typing import Annotated, Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from kb_core.map_caps import count_maps_created_since
 from kb_core.map_lint import count_map_pointers, map_body_budget, map_pointer_ids
 from kb_core.models.entry import EntryType, KnowledgeEntry
 
@@ -90,15 +86,6 @@ logger = logging.getLogger(__name__)
 MAP_OP_ROUTE_MARKER = "map-op-route"
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
-
-# The design's per-night structural caps, per docs/somnus-functional-spec.md.
-# One new map per project, three per KB.
-# They convert a clustering mistake into a one-map event, not a corpus-wide one.
-# Enforced on create_map only, counted since UTC midnight.
-# UTC and not host-local: three Pis in one fleet must agree where a night ends.
-# Not a rolling 24-hour window: a post-midnight retry inherits yesterday's count.
-MAPS_PER_PROJECT_PER_NIGHT = 1
-MAPS_PER_KB_PER_NIGHT = 3
 
 
 def _log(
@@ -154,12 +141,6 @@ def _reject(
         detail=detail,
     )
     raise HTTPException(status_code=status_code, detail=detail)
-
-
-def _utc_midnight() -> datetime:
-    """Return the start of today in UTC (aware), truncating the clock."""
-    now = datetime.now(UTC)
-    return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _envelope(body: str, entry: KnowledgeEntry) -> MapOpResponse:
@@ -281,39 +262,25 @@ async def _create_map(
     op = "create_map"
     _check_orphan_mental_map(EntryType.MENTAL_MAP, op_req.body, None)
     await _check_machine_principal_map_lint(EntryType.MENTAL_MAP, op_req.body, user)
-    midnight = _utc_midnight()
-    per_project = await count_maps_created_since(
-        kb.db,
-        contributor=contributor,
-        since=midnight,
-        project_ref=op_req.project_ref,
-    )
-    if per_project >= MAPS_PER_PROJECT_PER_NIGHT:
-        _reject(
-            op,
-            "cap_per_project_ref",
-            409,
-            f"per_project_ref map creation cap reached: {per_project} new"
-            f" mental_map entries already created by {contributor} in"
-            f" project_ref {op_req.project_ref!r} since UTC midnight"
-            f" (limit {MAPS_PER_PROJECT_PER_NIGHT})",
-            project_ref=op_req.project_ref,
-        )
-    per_kb = await count_maps_created_since(
-        kb.db,
-        contributor=contributor,
-        since=midnight,
-    )
-    if per_kb >= MAPS_PER_KB_PER_NIGHT:
-        _reject(
-            op,
-            "cap_per_kb",
-            409,
-            f"per_kb map creation cap reached: {per_kb} new mental_map"
-            f" entries already created by {contributor} since UTC midnight"
-            f" (limit {MAPS_PER_KB_PER_NIGHT})",
-            project_ref=op_req.project_ref,
-        )
+    # NO PER-NIGHT CREATION CAP, and its removal is a decision rather than an
+    # omission (Jason, 2026-09-21). The cap existed solely to bound IRREVERSIBLE
+    # damage — the design's words were that it "converts a clustering mistake
+    # into a one-map event rather than a corpus-wide one" — and that reasoning
+    # died when maps became deletable by the loop that wrote them. What remains
+    # of the bound is the admission rules (minimum cluster size, native
+    # majority, label shape), which reject bad clusters outright, and the
+    # per-run token budget, which bounds spend.
+    #
+    # It was also actively counterproductive: rung 2 runs one inference per
+    # cluster, so a capped run PAID to decide ops for every cluster and then
+    # discarded all but one. A project with fourteen valid subject areas needs
+    # fourteen maps, and taking fourteen nights to write them is fourteen nights
+    # of agents orienting badly in it.
+    #
+    # `count_maps_created_since` stays in kb-core: nothing calls it for
+    # enforcement now, but it is the natural primitive for the telemetry that
+    # replaces the cap as the thing watching this loop.
+    #
     # The kwargs mirror kb_write_routes.store's create path for a mental_map
     # carrying only the map-op fields.
     # Same entry_type, same confidence level, same attribution, same enrich default.
