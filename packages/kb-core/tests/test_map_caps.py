@@ -21,18 +21,34 @@ A ``factual_reference`` counting would cap on the wrong table.
 A foreign contributor counting would cap someone else's maps.
 
 An exclusive boundary would silently re-count the first map of the previous night.
+
+The same corpus and the same style also cover ``map_caps.map_write_summary``.
+
+That query answers a different question — which project was written to, and when last.
+
+Its tests therefore live at the bottom of this file, on the same seeded KB.
+
+Its sharp edge is the column it reads: the latest write is MAX(updated_at), never MAX(created_at).
 """
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
 
 from kb_core import create_sqlite
-from kb_core.map_caps import count_maps_created_since
-from map_caps_fixture import CONTRIBUTOR, EXPECTED_COUNTS, SEED_ENTRIES, SINCE
+from kb_core.map_caps import MapWriteSummary, count_maps_created_since, map_write_summary
+from map_caps_fixture import (
+    CONTRIBUTOR,
+    EXPECTED_COUNTS,
+    EXPECTED_SUMMARY,
+    LATEST_MAP_WRITE,
+    P_BETA_LATEST_WRITE,
+    SEED_ENTRIES,
+    SINCE,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -147,9 +163,10 @@ async def test_entry_by_a_different_contributor_is_not_counted(
 ) -> None:
     """kb-90005 is the human's map at the same instant — it is not in somnus's count."""
     assert await count_maps_created_since(seeded_kb.db, contributor=CONTRIBUTOR, since=SINCE) == 3
-    # The human's own map counts only for the human, and the contributor
+    # The human's own maps count only for the human, and the contributor
     # match is exact — not a prefix or substring match.
-    assert await count_maps_created_since(seeded_kb.db, contributor="jason", since=SINCE) == 1
+    # Two rows are the human's: kb-90005 (p-beta) and kb-90008 (empty ref).
+    assert await count_maps_created_since(seeded_kb.db, contributor="jason", since=SINCE) == 2
     assert await count_maps_created_since(seeded_kb.db, contributor="somn", since=SINCE) == 0
 
 
@@ -188,3 +205,128 @@ async def test_naive_since_is_rejected(seeded_kb: KnowledgeBase) -> None:
         await count_maps_created_since(
             seeded_kb.db, contributor=CONTRIBUTOR, since=SINCE.replace(tzinfo=None)
         )
+
+
+# ---------------------------------------------------------------------------
+# map_write_summary — the per-project facts the somnus worklist ranking eats.
+# The ranking itself (never-mapped first, then oldest write first) is the
+# consumer's; these tests pin the FACTS, in the same one-behaviour-per-test
+# style as the caps count above.
+# ---------------------------------------------------------------------------
+
+
+def _by_project(summary: list[MapWriteSummary], project_ref: str) -> MapWriteSummary:
+    """Return the one summary row for ``project_ref`` — exactly one, or fail loudly."""
+    matches = [row for row in summary if row.project_ref == project_ref]
+    assert len(matches) == 1, f"expected exactly one row for {project_ref!r}, got {matches}"
+    return matches[0]
+
+
+async def test_empty_store_returns_empty_list(empty_kb: KnowledgeBase) -> None:
+    assert await map_write_summary(empty_kb.db) == []
+
+
+async def test_matches_expected_summary_on_sqlite(seeded_kb: KnowledgeBase) -> None:
+    """The SQLite summary query returns the shared EXPECTED_SUMMARY exactly."""
+    summary = await map_write_summary(seeded_kb.db)
+    assert summary == list(EXPECTED_SUMMARY)
+    # The parse-back contract: every instant is an AWARE datetime, not the
+    # TEXT the column stores.
+    for row in summary:
+        assert row.latest_map_written_at.tzinfo is not None
+
+
+async def test_rows_are_ordered_by_project_ref_ascending(seeded_kb: KnowledgeBase) -> None:
+    refs = [row.project_ref for row in await map_write_summary(seeded_kb.db)]
+    assert refs == sorted(refs)
+    assert refs == ["p-alpha", "p-beta"]
+
+
+async def test_project_with_two_active_maps_counts_two(seeded_kb: KnowledgeBase) -> None:
+    """p-alpha holds kb-90001 and kb-90002 — two ACTIVE maps, so map_count is 2."""
+    assert _by_project(await map_write_summary(seeded_kb.db), "p-alpha").map_count == 2
+
+
+async def test_project_whose_only_map_is_deactivated_is_absent(
+    seeded_kb: KnowledgeBase,
+) -> None:
+    """p-gamma's only map (kb-90006) is deactivated, so the project has no row at all."""
+    summary = await map_write_summary(seeded_kb.db)
+    assert all(row.project_ref != "p-gamma" for row in summary)
+
+
+async def test_latest_write_follows_updated_at_not_created_at(seeded_kb: KnowledgeBase) -> None:
+    """kb-90002 was created FIRST but written LAST — the summary follows the write.
+
+    kb-90001 is p-alpha's most recently CREATED map (SINCE), so a query keyed
+    on created_at would report SINCE here and send the loop straight back to
+    the project it just finished.
+    """
+    latest = _by_project(await map_write_summary(seeded_kb.db), "p-alpha").latest_map_written_at
+    assert latest == LATEST_MAP_WRITE
+    assert latest != SINCE
+
+
+async def test_factual_reference_contributes_neither_field(seeded_kb: KnowledgeBase) -> None:
+    """kb-90004 is p-beta's newest write, but it is a factual_reference."""
+    row = _by_project(await map_write_summary(seeded_kb.db), "p-beta")
+    assert row.map_count == 2  # kb-90003 and kb-90005 — kb-90004 is not a map
+    assert row.latest_map_written_at == P_BETA_LATEST_WRITE  # not LATER_THAN_ANY_MAP
+
+
+async def test_null_and_empty_project_refs_are_excluded(seeded_kb: KnowledgeBase) -> None:
+    """kb-90007 (NULL ref) and kb-90008 (empty ref) belong to no rankable project."""
+    refs = {row.project_ref for row in await map_write_summary(seeded_kb.db)}
+    assert refs == {"p-alpha", "p-beta"}
+
+
+async def test_maps_by_a_different_contributor_are_counted(seeded_kb: KnowledgeBase) -> None:
+    """kb-90005 is the human's map; the summary measures the project, not the principal.
+
+    The caps count excludes it (see ``test_entry_by_a_different_contributor_is_not_counted``);
+    this query includes it, because a map written by anyone still makes the
+    project's maps fresh.
+    """
+    assert _by_project(await map_write_summary(seeded_kb.db), "p-beta").map_count == 2
+
+
+async def test_naive_stored_timestamp_comes_back_aware(empty_kb: KnowledgeBase) -> None:
+    """A map whose updated_at was stored WITHOUT an offset still yields an aware instant.
+
+    Not a hypothetical: the live personal KB holds one map project whose
+    updated_at reads ``2026-06-15T10:15:16`` with no suffix, alongside 26 maps
+    that all carry ``+00:00``. ``db/queries.py`` renders the field with
+    ``.isoformat()``, so any instant that reached the store naive is written
+    naive.
+
+    Returning it naive would make the result list UNSORTABLE — comparing a
+    naive and an aware ``datetime`` raises TypeError — so the worklist ranking
+    that consumes this function would crash on production data while every
+    fixture-backed test passed. Found by running the generated SQL against the
+    live Postgres, not by reading the code.
+    """
+    await empty_kb.db.execute(
+        _ENTRY_INSERT_SQL,
+        (
+            "kb-90100",
+            "p-naive",
+            "naive",
+            "naive timestamp map",
+            "points at kb-00001",
+            "mental_map",
+            CONTRIBUTOR,
+            "2026-06-15T10:15:16",
+            "2026-06-15T10:15:16",
+            1,
+        ),
+    )
+    await empty_kb.db.commit()
+
+    rows = await map_write_summary(empty_kb.db)
+
+    assert len(rows) == 1
+    assert rows[0].latest_map_written_at.tzinfo is not None
+    assert rows[0].latest_map_written_at == datetime(2026, 6, 15, 10, 15, 16, tzinfo=UTC)
+    # The property that actually matters: every element is mutually comparable,
+    # which is what the consumer's sort needs.
+    assert rows[0].latest_map_written_at < datetime.now(UTC)

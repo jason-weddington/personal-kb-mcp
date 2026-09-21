@@ -68,13 +68,16 @@ from kb_core.embedding_retry import (
     queue_stats,
     resolve,
 )
-from kb_core.map_caps import count_maps_created_since
+from kb_core.map_caps import count_maps_created_since, map_write_summary
 from kb_core.store.knowledge_store import KnowledgeStore
 from map_caps_fixture import (
     CONTRIBUTOR as MAP_CAPS_CONTRIBUTOR,
 )
 from map_caps_fixture import (
     EXPECTED_COUNTS as MAP_CAPS_EXPECTED_COUNTS,
+)
+from map_caps_fixture import (
+    EXPECTED_SUMMARY as MAP_CAPS_EXPECTED_SUMMARY,
 )
 from map_caps_fixture import (
     SEED_ENTRIES as MAP_CAPS_SEED_ENTRIES,
@@ -858,3 +861,39 @@ async def test_count_maps_created_since_on_postgres(pg_kb: PostgresBackend) -> N
     row = await cursor.fetchone()
     assert row is not None
     assert row["created_at"] == MAP_CAPS_SINCE.astimezone(UTC).isoformat()
+
+
+async def test_map_write_summary_on_postgres(pg_kb: PostgresBackend) -> None:
+    """The Postgres leg of the summary returns the SAME rows as SQLite.
+
+    Seeds the shared ``MAP_CAPS_SEED_ENTRIES`` corpus and asserts
+    ``MAP_CAPS_EXPECTED_SUMMARY`` — the same tuple the SQLite suite asserts.
+
+    One expectation for both dialects, so a dialect drift fails somewhere.
+
+    The MAX(``updated_at``) term carries ``COLLATE "C"`` here, exactly as the
+    ``created_at >= ?`` comparison above does: the column is TEXT, so the
+    aggregate is an ordering operation over strings, and glibc's default
+    collation does not order the ``+00:00`` suffixes byte-wise.
+
+    kb-90002 — created first, written last — is the row a collation bug would
+    mispick: under a collation that reorders the ISO shapes, p-alpha's
+    ``latest_map_written_at`` comes back as a different instant entirely.
+    """
+
+    for row in MAP_CAPS_SEED_ENTRIES:
+        await pg_kb.execute(
+            "INSERT INTO knowledge_entries"
+            " (id, project_ref, short_title, long_title, knowledge_details, entry_type,"
+            " contributor, created_at, updated_at, is_active)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row,
+        )
+
+    summary = await map_write_summary(pg_kb)
+
+    assert summary == list(MAP_CAPS_EXPECTED_SUMMARY)
+    # Parse-back parity too: the Postgres leg returns aware datetimes, not
+    # the TEXT strings the column stores.
+    for row in summary:
+        assert row.latest_map_written_at.tzinfo is not None
