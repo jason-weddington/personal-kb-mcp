@@ -82,7 +82,30 @@ There is no `rewrite_body` and no `write_map`. That is the enforcement mechanism
 
 ## Rung 3 — code composes the body
 
-**`Lives in` has no source, and that is a gap in this spec rather than a bug in the crate.** The first real run refused to compose every map with `no 'Lives in' value is available`, which is the correct behaviour and the cascade working as designed: code declines to fabricate a value nobody gave it, and inventing a plausible directory would have been the worst outcome available. The canonical form requires the line, this spec said code composes it, and nothing was ever specified to supply it — the KB holds no `project_ref` → directory mapping and `/api/kb/map-loop-input` returns none. **Resolving this is mine and it blocks every map write.** The options are to add a mapping the loop-input endpoint serves, to derive it from paths already cited in the project's entries, or to make the line optional when unknown; until one is chosen, rung 3 refuses and should keep refusing.
+**`Lives in` had no source, and that was a gap in this spec rather than a bug in the crate.** The first real run refused to compose every map with `no 'Lives in' value is available` — the correct behaviour and the cascade working as designed: code declined to fabricate a value nobody gave it, and inventing a plausible directory would have produced a map that looked right, passed the lint, got written, and could never be withdrawn. The refusal cost one run and cost the KB nothing.
+
+**The resolution: `directory_tokens` per ENTRY on loop-input, aggregated by code after rung 1.**
+
+Per-cluster was the first proposal and it is **structurally impossible**: loop-input is fetched once per project and rung 1 invents the clusters *afterwards*, so at the moment the server assembles the payload no cluster exists to key anything by. Serving it per entry is the only shape that fits, and it is better anyway — the aggregation rule then lives next to the cluster membership that determines it, and changing the rule costs no server change.
+
+Each entry carries `directory_tokens: [{"token": "packages/kb-core", "hits": 7}, …]`, ranked by `hits` descending then `token` ascending for determinism. An empty list is allowed and meaningful.
+
+**Counts, not a single modal token, and the reason is the one the refusal already taught us.** A bare mode silently re-introduces the guess: three members citing three different directories have a mode, an arbitrary one, and code would compose a confident `Lives in` line out of a 1-1-1 tie. With counts the consumer can require a real plurality and refuse when there is none — and that refusal is a *signal that rung 1 carved badly*, which flattening to a mode would throw away. **The server owns extraction; the loop owns the plurality rule and its threshold.** (Credit: the counts argument is the harness-design session's.)
+
+**The token shape is dictated by the purity lint, and it was verified by running the lint rather than by reading its regexes.** `Lives in <token>` must itself be lint-clean, so extraction may only emit tokens of this shape:
+
+| candidate | verdict |
+|---|---|
+| `packages/kb-core`, `src/kb_service` | clean — two segments, no dot, no leading slash |
+| `app` | clean — one bare segment |
+| `packages/kb-core and src/kb_service` | clean — two tokens joined by prose |
+| `src/kb_service/routes`, `frontend/src/pages` | **rejected** `path` — three segments |
+| `lightroom-plugin/PhotoQueue.lrdevplugin` | **rejected** `dotted_identifier` — a dot in a segment |
+| `/srv/talos`, `~/git/personal_kb` | **rejected** `path` — leading slash or tilde |
+
+So normalisation is: strip a leading `~/` or `/`; take the **first two** path segments; if either contains a `.`, keep only the first segment; if the first segment contains a `.`, drop the candidate entirely. `hits` counts the original path-like substrings that normalised to that token. Extraction reads the entry's **full** `knowledge_details` — the 600-character excerpt would miss most paths.
+
+**The binding acceptance criterion is that extraction is tested against the lint itself**, by composing `Lives in <token>` for every emitted token and asserting `lint_map_body` returns no findings. Not by asserting the regexes agree — by running them. Two tokens joined with ` and ` are also lint-clean, which gives the loop a genuine two-directory option instead of an all-or-nothing refusal.
 
 The canonical map form has four parts and **code emits three of them**: a coarse `Lives in <package/dir>` line, the `Detail entries:` pointer list, and the prose `Not yet documented:` line. The model writes only the 2–3 sentences of orientation prose and the per-pointer glosses.
 
