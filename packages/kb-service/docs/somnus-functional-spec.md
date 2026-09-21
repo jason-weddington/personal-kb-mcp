@@ -20,7 +20,9 @@ Code narrows to a bounded set, the model picks within it, code materialises the 
 
 Each verdict carries `evidence` (`project_ref`, `mappable`, `ingested`, `hand_authored`, `maps`, `top_prefix`, `top_prefix_share`, `is_ingest_corpus`, `is_too_thin`, `is_journal`, `computed_eligible`), plus `override`, `effective_eligible`, `decided_by`, `orphaned`.
 
-**Work only on `effective_eligible == true`.** As of 2026-09-20 that is 25 of 47 project_refs. The loop **reads overrides and must never write one** — that row is the human's verdict, and a loop that can force its own eligibility has no gate.
+**Work only on `effective_eligible == true`.** That was 25 of 47 project_refs when the predicate was first measured and it is **24** as returned by the live endpoint on 2026-09-21. **Both numbers are snapshots of a moving population and neither is a fact about the system** — the predicate is a function of entry counts and title shapes, so a project crosses in or out whenever its corpus grows. Do not assert a count anywhere; read the endpoint. A test or a prompt that pins "25 eligible projects" is wrong on a timescale of days.
+
+The drift direction is asymmetric and worth knowing: adding entries can only ever push a project OUT (by carrying it over `mappable >= 20` with a `top_prefix_share >= 0.60` journal shape), never in, because `hand_authored >= 5` is monotone under addition. A project leaves the worklist by becoming a journal. `dispatch-performance-log` is the clearest example — 648 entries, 634 of them titled `Run: …`, a 97.8% prefix share — and it is correctly excluded, which is the predicate working rather than failing. The loop **reads overrides and must never write one** — that row is the human's verdict, and a loop that can force its own eligibility has no gate.
 
 ## Rung 0b — the worklist (`GET /api/kb/map-worklist`)
 
