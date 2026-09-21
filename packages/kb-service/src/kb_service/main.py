@@ -35,6 +35,7 @@ from kb_service.routes.listener_routes import router as listener_router
 from kb_service.routes.map_eligibility_routes import router as map_eligibility_router
 from kb_service.routes.map_lint_routes import router as map_lint_router
 from kb_service.routes.map_loop_routes import router as map_loop_router
+from kb_service.routes.map_op_routes import router as map_op_router
 from kb_service.routes.maps_routes import router as maps_router
 from kb_service.routes.nudge_routes import router as nudge_router
 from kb_service.routes.query_routes import router as query_router
@@ -205,6 +206,7 @@ app.include_router(map_eligibility_router)
 app.include_router(map_lint_router)
 app.include_router(nudge_router)
 app.include_router(map_loop_router)
+app.include_router(map_op_router)
 
 
 @app.get("/api/health")

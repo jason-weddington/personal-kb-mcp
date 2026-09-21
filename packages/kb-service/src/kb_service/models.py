@@ -1,7 +1,7 @@
 """Pydantic models for the KB service: auth, admin, invites, search, and query."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from kb_core.models.entry import KnowledgeEntry
 from kb_core.models.search import SearchResult
@@ -1097,3 +1097,100 @@ class ClusterLedgerDeclineResponse(BaseModel):
     """
 
     ledger_id: str
+
+
+# --- Map-op (the nightly loop's map write path, machine principal only) ---
+
+
+class MapOpCreateMapRequest(BaseModel):
+    """``create_map`` — store a brand-new mental_map for one subject area.
+
+    ``body`` is the WHOLE composed map body, exactly as somnus's Rung 3 rendered it.
+
+    The server never parses it; it only counts and compares the ``kb-`` refs inside.
+    """
+
+    op: Literal["create_map"]
+    project_ref: str = Field(..., min_length=1)
+    short_title: str = Field(..., min_length=1)
+    long_title: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+
+
+class MapOpAddPointerRequest(BaseModel):
+    """``add_pointer`` — append exactly one pointer to an existing map.
+
+    ``added_entry_id`` is the single id the loop claims to have added.
+
+    The server verifies that claim against the two ref sets; it is never trusted.
+
+    ``base_version`` is the optional cheap guard against a run racing the timer.
+
+    Supplied, it must equal the stored entry's ``version`` or the op is a 409.
+    """
+
+    op: Literal["add_pointer"]
+    map_id: str = Field(..., min_length=1)
+    added_entry_id: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+    base_version: int | None = None
+
+
+class MapOpStrikeGapRequest(BaseModel):
+    """``strike_gap`` — remove one already-recorded gap from a map's body.
+
+    ``closing_entry_id`` is the entry that closed the gap.
+
+    It must already be a pointer of the stored map: the spec requires citing it,
+    and the entry that closed a gap is by definition already pointed at.
+    """
+
+    op: Literal["strike_gap"]
+    map_id: str = Field(..., min_length=1)
+    gap_text: str = Field(..., min_length=1)
+    closing_entry_id: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+    base_version: int | None = None
+
+
+class MapOpProposeGapRequest(BaseModel):
+    """``propose_gap`` — record a new gap in a map's body.
+
+    Deliberately terminal for the loop: a proposed gap is ``blocked`` evidence.
+
+    Nothing on this path can fix the missing authoring run upstream.
+    """
+
+    op: Literal["propose_gap"]
+    map_id: str = Field(..., min_length=1)
+    gap_text: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+    base_version: int | None = None
+
+
+# The closed op vocabulary of POST /api/kb/map-op, discriminated on ``op``.
+# ``no_change`` is deliberately NOT a member, because it never reaches HTTP.
+# A request carrying it fails Pydantic validation with 422, never a silent no-op.
+# There is no ``rewrite_body`` and no ``write_map``.
+MapOpRequest = Annotated[
+    MapOpCreateMapRequest
+    | MapOpAddPointerRequest
+    | MapOpStrikeGapRequest
+    | MapOpProposeGapRequest,
+    Field(discriminator="op"),
+]
+
+
+class MapOpResponse(BaseModel):
+    """The one uniform success envelope for all four ops.
+
+    ``pointer_count`` and ``budget`` are kb-core's own functions over the
+    SUBMITTED body, so the loop gets back the numbers the lint already uses.
+
+    ``version`` is the stored entry's version after the write.
+    """
+
+    map_id: str
+    version: int
+    pointer_count: int
+    budget: int

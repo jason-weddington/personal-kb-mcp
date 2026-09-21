@@ -92,8 +92,14 @@ async def is_machine_principal(user: User) -> bool:
     designated yet) this returns False for EVERY user, including admins;
     there is no fallback identity that could accidentally promote someone.
 
-    Not enforced anywhere yet — this is a plain accessor other modules can
-    call once a later item wires it into route behaviour.
+    Enforced at two call sites today, both machine-principal-only behaviours.
+    The map-lint write gate in ``routes/map_write_guards.py`` keys on it and
+    rejects with 422 any LINT-FAILING ``mental_map`` body the machine principal
+    submits, on every ``/api/kb/store`` and ``/api/kb/store_batch`` write —
+    a clean body still stores, and for every other user the lint stays
+    advisory. And ``routes/map_op_routes.py`` gates ``POST /api/kb/map-op``
+    on it with a 403, so only the configured machine principal can persist a
+    map op at all.
     """
     configured_raw = await get_setting(MACHINE_PRINCIPAL_EMAIL_KEY)
     configured = _normalize(configured_raw)
