@@ -130,6 +130,20 @@ The canonical map form has four parts and **code emits three of them**: a coarse
 
 This is why the map is **born lint-clean by construction**: every token class the purity lint rejects (file paths, `ENV_VAR` tokens, dotted identifiers, quoted literals, slash-joined paths) can only appear in the three code-composed parts. It also fixes the length budget — the budget is compositional (`900 + 175 × pointer_count`, validated against all 27 live maps), so it scales with pointer count instead of punishing the best-covered maps.
 
+## The gap line — required, allowed to be empty
+
+**Measured after nine runs: `Not yet documented` appeared in ZERO of the 19 maps the loop wrote, and it was unreachable by construction rather than merely unused.** `propose_gap` only ever functioned as a decline signal — materialize skipped it and the pipeline recorded it in the ledger — so no code path could emit a gap line into a body. The four-part canonical form was a three-part form with a section nothing could produce.
+
+**Decision: build it. `create_map` gains `gaps: [str]`, REQUIRED and allowed to be empty.**
+
+Not optional, and the distinction is the single most durable lesson of those nine runs. An optional-but-expected field gets omitted — that is exactly how pointers were lost. The model was never being disobedient: its tool signature said the op was complete, so it was, and three prompt iterations lost against that signature. An optional `gaps` array reproduces the failure precisely, because a map with no gaps is perfectly valid and a model that omits the field is never wrong. **A required field that may be empty converts an omission into a decision** — either "here are the seams I see undocumented" or an explicit empty list meaning "none". That is the one shape that has worked every time in this design. (Recommendation and reasoning: the harness-design session.)
+
+**Why it earns the work: the gap line is the only part of this loop that speaks to a HUMAN rather than to an agent.** Every other part tells an agent where to look. The gap line tells Jason where to write next, which is the flywheel half of the whole design — without it the loop can only ever describe knowledge that already exists, never point at knowledge that should. It is also what makes a well-covered map distinguishable from one with four undocumented seams; today they render identically.
+
+Gap text is prose inside the body, so the purity lint already governs it — no separate rule. `propose_gap` over HTTP keeps its existing meaning for adding a gap to a map that already exists.
+
+**Recorded so nobody re-invests in it by mistake: `Lives in` fired in 1 of 19 maps.** The extraction, the plurality rule, the two-directory case and the lint-verified token shape are all working as designed; reference clusters simply document somebody else's code and name no directory of ours. Omitting the line rather than refusing the map is the only reason those 18 maps exist. If anyone proposes extending that path, 1-in-19 is the number to put in front of them first.
+
 ## The write path — `POST /api/kb/map-op`
 
 **One endpoint, machine-principal only, and every op is verified by a set comparison over `kb-XXXXX` refs — never by parsing the map grammar.** This is the contract the run body was blocked on; it was the one seam we specified in neither direction, because loop-input, the cluster ledger and the lint were each obviously read-or-gate and this one is the only genuine write.
