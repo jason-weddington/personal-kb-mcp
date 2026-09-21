@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from kb_core.map_eligibility import MapEligibilityOverride
+from kb_core.map_lint import lint_map_body
 
 import kb_service.routes.map_loop_routes as map_loop_routes
 from kb_service.auth import get_current_user
@@ -78,8 +79,15 @@ def _entry_row(
     details_length: int = 4000,
     unpointed: int = 1,
     short_title: str = "T1",
+    details: str | None = None,
 ) -> tuple[Any, ...]:
-    """One entries-statement row in AC-9's pinned SELECT order."""
+    """One entries-statement row in the pinned SELECT order.
+
+    Column 9 is the entry's FULL knowledge_details — the source the
+    directory_tokens half extracts from — stubbed independently of the
+    excerpt/details_length columns so a test can pin that extraction reads
+    past the 600-char excerpt.
+    """
     return (
         entry_id,
         short_title,
@@ -89,6 +97,7 @@ def _entry_row(
         excerpt,
         details_length,
         unpointed,
+        details,
     )
 
 
@@ -876,6 +885,255 @@ def test_build_pockets_sub_threshold_pair_never_influences_topk() -> None:
     assert pockets[0].member_entry_ids == ["kb-00001", "kb-00002"]
     assert stats.pairs_below_threshold == 3
     assert stats.max_similarity_below_threshold == pytest.approx(0.54)
+
+
+# ---------------------------------------------------------------------------
+# directory_tokens — Rung 3's per-ENTRY "Lives in" source (somnus spec)
+# ---------------------------------------------------------------------------
+
+# The real-world SHAPES, not clean fixtures. The dropped literals are what an
+# unanchored extractor actually mined out of the 122 photoqueue entry bodies;
+# the kept literals are the anchored candidate shapes that must survive.
+DROPPED_LITERALS = [
+    "creating/updating",
+    "task/write",
+    "publish/export",
+    "opportunistic/deferred",
+    "faved/commented",
+    "sectionsForTopOfDialog/sectionsForBottomOfDialog",
+    "and/or",
+    "1800-2400/hr",
+]
+
+KEPT_LITERALS = [
+    "src/photoqueue/api/foo.py",
+    "api/discovery/handler.py",
+    "tests/test_thing.py",
+    "~/git/personal_kb/packages/kb-core/x.py",
+    "/srv/talos/bin/y",
+]
+
+
+def _dir_tokens(entry: dict[str, Any]) -> list[tuple[str, int]]:
+    """Flatten one entry's directory_tokens to (token, hits) pairs."""
+    return [(t["token"], t["hits"]) for t in entry["directory_tokens"]]
+
+
+def test_directory_tokens_key_set_and_shape(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Each token row is exactly {"token": ..., "hits": ...}."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[
+            _entry_row("kb-00001", details="See src/photoqueue/api/foo.py for it.")
+        ],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    entry = resp.json()["entries"][0]
+    assert set(entry["directory_tokens"][0].keys()) == {"token", "hits"}
+    assert _dir_tokens(entry) == [("src/photoqueue", 1)]
+
+
+def test_directory_tokens_aggregate_rank_and_tiebreak(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """hits aggregate every candidate normalising to one token; rank is hits
+    descending, tie-broken by token ascending."""
+    details = (
+        "Handlers live in src/photoqueue/api/foo.py and src/photoqueue/ui/bar.py,"
+        " plus `src/photoqueue` itself, api/discovery/handler.py,"
+        " api/queues/mod.rs and api/queues/list.py, and tests/test_thing.py."
+    )
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001", details=details)],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    entry = resp.json()["entries"][0]
+    assert _dir_tokens(entry) == [
+        ("src/photoqueue", 3),
+        ("api/queues", 2),
+        ("api/discovery", 1),
+        ("tests", 1),
+    ]
+
+
+def test_directory_tokens_empty_case_is_allowed_and_meaningful(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Orientation prose with no anchored path, and a null details column, both
+    render directory_tokens: [] — never an error, never a fabricated token."""
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[
+            _entry_row("kb-00001", details="Plain orientation prose, no paths."),
+            _entry_row("kb-00002", details=None),
+        ],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    for entry in resp.json()["entries"]:
+        assert entry["directory_tokens"] == []
+
+
+def test_directory_tokens_dropped_real_corpus_prose_false_positives(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """The mined-out-of-photoqueue prose slash-constructions emit NOTHING.
+
+    A bare two-word slash pair in running prose is not a path; the extractor
+    must refuse every member of the class, not just the literal 'and/or'.
+    The backticked 1800-2400/hr is anchored yet still dropped — a
+    digits-and-dashes segment is not a directory, ever.
+    """
+    paragraph = (
+        "Per-run knobs: creating/updating tasks, task/write splitting,"
+        " publish/export ordering, opportunistic/deferred flushing,"
+        " faved/commented sync, and/or batching,"
+        " sectionsForTopOfDialog/sectionsForBottomOfDialog wiring,"
+        " throughput 1800-2400/hr, plus `1800-2400/hr` backticked."
+    )
+    # The reportable AC, pinned directly: a prose paragraph containing
+    # creating/updating and publish/export produces an EMPTY token list.
+    assert (
+        map_loop_routes._directory_tokens(
+            "We trade off creating/updating and publish/export on every run."
+        )
+        == []
+    )
+    for literal in DROPPED_LITERALS:
+        assert map_loop_routes._directory_tokens(literal) == []
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001", details=paragraph)],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    assert resp.json()["entries"][0]["directory_tokens"] == []
+
+
+def test_directory_tokens_cover_every_verified_lint_table_row(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Every row of the spec's verified token-shape table, as extracted tokens.
+
+    Three-segment rows normalise to two segments, dotted second segments keep
+    only the first, leading roots strip, and every emitted token composes a
+    lint-clean 'Lives in' line — including the table's two-token join row.
+    """
+    details = (
+        "Table rows: `packages/kb-core`, `src/kb_service`,"
+        " `src/kb_service/routes`, `frontend/src/pages`,"
+        " `lightroom-plugin/PhotoQueue.lrdevplugin`, app/main.py,"
+        " /srv/talos, ~/git/personal_kb."
+    )
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001", details=details)],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    entry = resp.json()["entries"][0]
+    assert _dir_tokens(entry) == [
+        ("src/kb_service", 2),
+        ("app", 1),
+        ("frontend/src", 1),
+        ("git/personal_kb", 1),
+        ("lightroom-plugin", 1),
+        ("packages/kb-core", 1),
+        ("srv/talos", 1),
+    ]
+    for token, _hits in _dir_tokens(entry):
+        assert lint_map_body(f"Lives in {token}.") == []
+    # The table's joined row: two tokens joined by ' and ' stay lint-clean.
+    assert lint_map_body("Lives in packages/kb-core and src/kb_service.") == []
+
+
+def test_directory_tokens_lint_round_trip_over_real_world_shapes(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """The strengthened binding AC: the lint round-trip runs over a corpus
+    containing the real-world shapes — every dropped literal emits nothing,
+    every kept literal emits exactly one token, and 'Lives in <token>' for
+    every emitted token has ZERO lint findings."""
+    for literal in DROPPED_LITERALS:
+        assert map_loop_routes._directory_tokens(literal) == []
+    emitted: list[str] = []
+    for literal in KEPT_LITERALS:
+        tokens = map_loop_routes._directory_tokens(literal)
+        assert len(tokens) == 1
+        emitted.append(tokens[0].token)
+    for token in emitted:
+        assert lint_map_body(f"Lives in {token}.") == []
+
+    details = (
+        "Kept: "
+        + ", ".join(KEPT_LITERALS)
+        + ". Dropped prose: creating/updating, task/write, publish/export,"
+        " opportunistic/deferred, faved/commented,"
+        " sectionsForTopOfDialog/sectionsForBottomOfDialog, and/or,"
+        " 1800-2400/hr."
+    )
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[_entry_row("kb-00001", details=details)],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    entry = resp.json()["entries"][0]
+    assert _dir_tokens(entry) == [
+        ("api/discovery", 1),
+        ("git/personal_kb", 1),
+        ("src/photoqueue", 1),
+        ("srv/talos", 1),
+        ("tests", 1),
+    ]
+    for token, _hits in _dir_tokens(entry):
+        assert lint_map_body(f"Lives in {token}.") == []
+
+
+def test_directory_tokens_read_full_details_not_the_excerpt(
+    client: TestClient, fake_kb: FakeKnowledgeBase
+) -> None:
+    """Extraction reads the FULL knowledge_details — a path past char 600, far
+    outside the excerpt, is still mined (the excerpt would miss most paths)."""
+    details = "filler orientation sentence. " * 40 + "src/photoqueue/api/foo.py"
+    assert len(details) > 600
+    assert "src/photoqueue" not in details[:600]
+    _wire(
+        fake_kb,
+        verdicts=[_eligible_verdict()],
+        entry_rows=[
+            _entry_row(
+                "kb-00001",
+                excerpt="x" * 600,
+                details_length=len(details),
+                details=details,
+            )
+        ],
+        pair_rows=[],
+    )
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    entry = resp.json()["entries"][0]
+    assert entry["excerpt"] == "x" * 600
+    assert entry["details_length"] == len(details)
+    assert _dir_tokens(entry) == [("src/photoqueue", 1)]
 
 
 # ---------------------------------------------------------------------------

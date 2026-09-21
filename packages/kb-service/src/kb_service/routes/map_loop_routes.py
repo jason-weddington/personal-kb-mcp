@@ -11,6 +11,10 @@ synthetic tool-call/result events, so its field names are the contract of
 record for docs/somnus-functional-spec.md and must not be renamed or
 re-nested.
 
+Entries also carry ``directory_tokens`` — Rung 3's per-ENTRY ``Lives in`` source.
+
+The server owns extraction; the loop owns the plurality rule (spec, Rung 3).
+
 This route is deliberately read-only: no telemetry rows, no graph mutations,
 no entry updates, no decay-anchor touch, and no per-entry round trips —
 everything comes from the three statements below plus ``kb.maps_for_project``.
@@ -86,7 +90,9 @@ hide projects from any other reader of this list.
 
 import hashlib
 import logging
+import re
 import time
+from collections import Counter
 from typing import Annotated, Any, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -96,6 +102,7 @@ from kb_core.map_caps import map_write_summary
 
 from kb_service.auth import get_current_user
 from kb_service.models import (
+    MapLoopDirectoryToken,
     MapLoopEntry,
     MapLoopInputResponse,
     MapLoopMap,
@@ -181,7 +188,9 @@ _UNPOINTED_NOT_EXISTS_SQL = (
 # so this is not an injection vector. The excerpt length is interpolated as
 # an int LITERAL, deliberately, so the statement has exactly one ? and no
 # param-order hazard (the Postgres ?->$N translator counts placeholders in
-# strict textual order and does nothing else).
+# strict textual order and does nothing else). The full knowledge_details is
+# selected as the NINTH column: directory_tokens extraction reads the FULL
+# text, so the excerpt and its length cross separately from the source text.
 _ENTRIES_SQL = f"""WITH mappable AS (
     SELECT id, short_title, long_title, entry_type, tags, knowledge_details
     FROM knowledge_entries
@@ -191,7 +200,8 @@ SELECT m.id, m.short_title, m.long_title, m.entry_type, m.tags,
        substr(m.knowledge_details, 1, {LOOP_INPUT_EXCERPT_CHARS}) AS excerpt,
        length(m.knowledge_details) AS details_length,
        CASE WHEN EXISTS ({_UNPOINTED_NOT_EXISTS_SQL.format(target="m.id")})
-            THEN 0 ELSE 1 END AS unpointed
+            THEN 0 ELSE 1 END AS unpointed,
+       m.knowledge_details AS full_details
 FROM mappable m
 """  # noqa: S608
 
@@ -337,6 +347,126 @@ def _build_pockets(
     return pockets, stats
 
 
+# ── Rung 3's "Lives in" source: coarse directory tokens per ENTRY ──────────
+#
+# docs/somnus-functional-spec.md (Rung 3) pins the wire contract: each entry
+# carries directory_tokens: [{"token": ..., "hits": ...}], ranked by hits
+# descending then token ascending, extracted from the entry's FULL
+# knowledge_details — the 600-char excerpt would miss most paths. The token
+# SHAPE is dictated by the purity lint and was verified by RUNNING it: one or
+# two segments, no dot, no leading slash or tilde, so "Lives in <token>" is
+# clean by construction. The binding acceptance criterion is the round-trip:
+# compose the line for every emitted token and assert lint_map_body returns
+# no findings — not by agreeing with the regexes, but by running them.
+#
+# ANCHORING — the stated rule, and the reason it exists. A candidate is only
+# a path if the text ANCHORS it as one, and it must satisfy at least one of:
+#   (a) a leading "/" or "~/" in the original matched text;
+#   (b) a segment bearing a file extension (src/photoqueue/api/foo.py,
+#       tests/test_x.py);
+#   (c) the candidate appears inside backticks.
+# A bare two-word slash pair in running prose is NOT a path.
+#
+# Why: measured on the real corpus, not fixtures. Run over the actual 122
+# photoqueue entry bodies, an unanchored extractor mined English prose
+# slash-constructions as directories — creating/updating, task/write,
+# publish/export, opportunistic/deferred, faved/commented,
+# sectionsForTopOfDialog/sectionsForBottomOfDialog (two Lua function names
+# either side of a slash), and the rate 1800-2400/hr. The "and/or" false
+# positive had been special-cased as one literal string and the general class
+# was missed. The consequence: for photoqueue's best first cluster the ten
+# members' top tokens were five DIFFERENT junk tokens with one member each, so
+# the plurality rule refused for the right reason applied to garbage — and a
+# cluster that happens to reach a plurality on a junk token would compose a
+# lint-clean "Lives in creating/updating" line that is completely wrong. That
+# is the fabricated-plausible-value failure re-entering through the back
+# door, which the compose refusal exists to prevent.
+#
+# 1800-2400/hr is an EXPLICIT dropped case as well as an unanchored one: a
+# digits-and-dashes segment is not a directory, and it is the only lint-dirty
+# token (config_numeral: the bare 4-digit 1800) the real corpus produced.
+
+# URLs are removed before scanning: a URL is a retrievable value, not a home,
+# and its host's dot would otherwise be normalised away into a phantom token.
+_DIR_URL_SPAN_RE = re.compile(r"https?://\S+")
+# Backtick spans are anchor (c): the author marked the span as a literal.
+_DIR_BACKTICK_RE = re.compile(r"`[^`]+`")
+# An optional leading "~/" or "/", then two or more slash-joined segments of
+# path-safe characters. Segments must START alphanumeric; the charset (dots,
+# dashes, underscores) is deliberately wide so a match never ends mid-segment
+# and the normalisation below — not the candidate regex — owns every verdict.
+_DIR_CANDIDATE_RE = re.compile(
+    r"(?:~/|/)?[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+"
+)
+# A segment bearing a file extension: an alphanumeric start, anything
+# path-safe, then a dot and a letter-led suffix (x.py, mod.rs,
+# PhotoQueue.lrdevplugin). "2.1" is NOT one — the suffix must start alnum.
+_DIR_FILE_EXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z][A-Za-z0-9]*$")
+# Digits and dashes only (1800-2400): never a directory name, whatever anchors
+# the candidate it sits in.
+_DIR_DIGITS_DASHES_RE = re.compile(r"^[0-9-]+$")
+
+
+def _directory_tokens(details: str) -> list[MapLoopDirectoryToken]:
+    """Mine one entry's coarse directory tokens from its FULL details.
+
+    Reads the FULL ``knowledge_details``, never the excerpt.
+
+    Returns tokens ranked by ``hits`` descending then ``token`` ascending, so
+    two runs against the same entry serialise identically.
+
+    Never fabricates: no anchored path means ``[]``, which is allowed and
+    meaningful — a cluster whose members name no directory refuses, exactly
+    as a cluster whose members name five different junk directories refuses.
+    """
+    counts: Counter[str] = Counter()
+
+    def scan(chunk: str, backticked: bool) -> None:
+        for match in _DIR_CANDIDATE_RE.finditer(chunk):
+            # A sentence-ending full stop is part of no segment: strip it
+            # before splitting, or "src/photoqueue." would narrow to "src".
+            text = match.group().rstrip(".")
+            body = text[2:] if text.startswith("~/") else text.removeprefix("/")
+            segments = body.split("/")
+            if len(segments) < 2:
+                continue
+            # The anchoring rule — at least one of (a), (b), (c), or junk.
+            anchored = (
+                backticked
+                or text.startswith(("/", "~/"))
+                or any(_DIR_FILE_EXT_RE.fullmatch(segment) for segment in segments)
+            )
+            if not anchored:
+                continue
+            # The explicit dropped case: a digits-and-dashes segment is not a
+            # directory (1800-2400/hr must never be emitted, backticked or not).
+            if _DIR_DIGITS_DASHES_RE.fullmatch(segments[0]):
+                continue
+            # The spec's normalisation, in its stated order: a dot in the first
+            # segment drops the candidate entirely; a dot in the second keeps
+            # only the first segment; otherwise the token is the first two.
+            if "." in segments[0]:
+                continue
+            if "." in segments[1]:
+                token = segments[0]
+            else:
+                token = f"{segments[0]}/{segments[1]}"
+            counts[token] += 1
+
+    # Backtick spans are scanned as anchored chunks; the prose between them
+    # is scanned unanchored, so anchor (c) applies only inside the span.
+    text = _DIR_URL_SPAN_RE.sub(" ", details)
+    pos = 0
+    for span in _DIR_BACKTICK_RE.finditer(text):
+        scan(text[pos : span.start()], backticked=False)
+        scan(span.group()[1:-1], backticked=True)
+        pos = span.end()
+    scan(text[pos:], backticked=False)
+
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [MapLoopDirectoryToken(token=t, hits=h) for t, h in ranked]
+
+
 def _optional_str(value: Any) -> str | None:
     """Pass a nullable text column through as ``str | None``."""
     return None if value is None else str(value)
@@ -423,6 +553,10 @@ async def map_loop_input(
                 excerpt=str(row[5] or ""),
                 details_length=int(row[6] or 0),
                 unpointed=bool(row[7]),
+                # Row 9 is the entry's FULL knowledge_details — the source
+                # the directory_tokens half mines; never the excerpt, which
+                # would miss most paths in a long entry.
+                directory_tokens=_directory_tokens(str(row[8] or "")),
             )
         )
     # Deterministic order: the payload becomes a prompt prefix, and an

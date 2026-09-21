@@ -898,6 +898,26 @@ PocketsOmittedReason = Literal[
 ]
 
 
+class MapLoopDirectoryToken(BaseModel):
+    """One coarse directory token mined from an entry's FULL details.
+
+    ``token`` is the lint-safe shape the spec's Rung 3 verified against the purity lint.
+
+    One or two segments, no dot, no leading slash or tilde, so each line stays clean.
+
+    ``hits`` counts the original path-like substrings that normalised to the token.
+
+    Counts, not a single modal token: a bare mode re-introduces the guess.
+
+    The compose refusal existed to prevent exactly that guess.
+
+    The counts let the consumer demand a real plurality and refuse otherwise.
+    """
+
+    token: str
+    hits: int
+
+
 class MapLoopEntry(BaseModel):
     """One mappable entry as the loop's prompt prefix sees it.
 
@@ -908,6 +928,18 @@ class MapLoopEntry(BaseModel):
     (``details_length > excerpt_chars``). ``entry_type`` is passed through
     as the raw stored string. ``unpointed`` is the SQL anti-join's verdict:
     no ACTIVE mental_map's pointer set currently includes this entry.
+
+    ``directory_tokens`` is Rung 3's per-ENTRY ``Lives in`` source.
+
+    Extraction reads the FULL ``knowledge_details``; the excerpt would miss most paths.
+
+    Per entry, never per cluster — rung 1 invents the clusters after the fetch.
+
+    No cluster exists to key anything by at assembly time.
+
+    Ranked by ``hits`` descending then ``token`` ascending; empty is allowed.
+
+    The loop aggregates across a cluster's members and owns the plurality refusal.
     """
 
     id: str
@@ -918,6 +950,7 @@ class MapLoopEntry(BaseModel):
     excerpt: str
     details_length: int
     unpointed: bool
+    directory_tokens: list[MapLoopDirectoryToken] = []
 
 
 class MapLoopMap(BaseModel):
