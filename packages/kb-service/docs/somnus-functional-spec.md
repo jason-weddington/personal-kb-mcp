@@ -82,6 +82,21 @@ The model emits ops from a **closed vocabulary** and nothing else:
 
 There is no `rewrite_body` and no `write_map`. That is the enforcement mechanism, borrowed from talos's own design: there is no `set_verified` tool, so the agent cannot type `Verified` into the record. Here the agent cannot type a map body.
 
+### How a NEW map gets its pointers — `add_pointer` is local before it is HTTP
+
+**This seam was unspecified and it is why the first three runs wrote nothing.** One `create_map` refused with *"the create_map op set lists no pointers"*, and the other nine clusters degraded into `propose_gap` — recorded as permanent ledger declines for nine legitimate subject areas, which had to be deleted by hand. The op vocabulary listed `create_map(cluster_id, title, orientation_prose)` with no pointer list, and `add_pointer(map_id, …)` needs a `map_id` that does not exist until the map is created. Chicken and egg.
+
+**The existing human path settles it, and it should have been consulted first: there is no incremental pointer API for agents at all.** An agent creates a map with a single `kb_store(entry_type="mental_map", …)` whose `knowledge_details` already contains the `Detail entries: kb-XXXX, kb-YYYY` line. Pointers are born with the body. `_check_orphan_mental_map` enforces exactly that — at least one `kb-` ref in the details (or a hint) at creation time. Nothing anywhere adds a pointer to a map one at a time.
+
+So the loop works the same way:
+
+- **An op set for a cluster with no owning map is one `create_map` plus one `add_pointer` per member it wants to point at.** Those `add_pointer` ops are **local contributions to the pending map**, addressed by the run-local fresh-map id somnus already mints from the cluster INDEX. They are never HTTP calls. Their payload is the pair the model alone can supply: which entry, and its gloss.
+- **Rung 3 composes ONE body** from the `create_map`'s orientation prose plus every local `add_pointer`'s gloss, and submits **one** `POST /api/kb/map-op` with `op: create_map` carrying that body. One cluster, one HTTP write.
+- **`add_pointer` over HTTP is only ever for a map that already exists** — a later night adding a newly-written detail entry to last night's map. That is the case the additive-only and exactly-one-pointer invariants were built for, and they are unchanged.
+- **`propose_gap` requires an existing `map_id` and therefore cannot apply to an unmapped cluster.** A cluster with no owning map either mints one or is refused by admission; "there is a subject area here but nothing to map" is not a reachable state for a cluster that passed a minimum-size floor of 3. Emitting `propose_gap` for an unmapped cluster is a rung-2 error, not a disposition, and it must not be recorded as a decline — a decline is a human's verdict, and nine of them appeared here without a human ever seeing a map.
+
+**The general lesson, which is the third instance this week:** the defect was not inside either half. Each side's rules were internally coherent and neither could see that no rule said where a new map's pointers come from. Before inventing a mechanism for the loop, check whether the human path already has one — it did, and it was one `grep` away.
+
 ## Rung 3 — code composes the body
 
 **`Lives in` had no source, and that was a gap in this spec rather than a bug in the crate.** The first real run refused to compose every map with `no 'Lives in' value is available` — the correct behaviour and the cascade working as designed: code declined to fabricate a value nobody gave it, and inventing a plausible directory would have produced a map that looked right, passed the lint, got written, and could never be withdrawn. The refusal cost one run and cost the KB nothing.
