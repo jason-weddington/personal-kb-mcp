@@ -11,10 +11,11 @@ Hermetic by construction: the lint is a pure regex function, so this route
 performs no KB I/O at all.
 """
 
+import json
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from kb_core.map_lint import lint_map_body
 from pydantic import BaseModel, Field
@@ -47,12 +48,64 @@ class MapLintValidateResponse(BaseModel):
     findings: list[MapLintFindingModel]
 
 
+async def _read_candidate_body(request: Request) -> str:
+    """Return the candidate map body from either request shape.
+
+    TWO ACCEPTED SHAPES, and the raw one is what the gate actually uses:
+
+    * ``application/json`` — ``{"body": "<map body>"}``, the original shape,
+      kept because the dry-run debugging path and every existing test use it.
+    * anything else (``text/plain``, or no content type) — the request body IS
+      the map body, verbatim.
+
+    The raw shape exists because of a real failure, not for generality. somnus
+    composes a map body to a file and gates it by shelling out to
+    ``curl --data-binary @<path>``; on 2026-09-21 that produced six straight
+    422s, because the file held the body as prose while this endpoint demanded
+    a JSON object. Requiring JSON there means something must escape a
+    multi-paragraph, quote-bearing, newline-bearing document into a JSON
+    string inside a shell command — which is precisely where quoting bugs
+    live, and the gate is the one component whose failure silently withholds
+    every map. Accepting the bytes removes the escaping step rather than
+    asking the caller to get it right.
+
+    A JSON object that is missing ``body`` or has it as a non-string is a 422
+    from this function, not a silent fallback to treating the raw JSON text as
+    a map body — a malformed request must not lint as though it were prose and
+    pass.
+    """
+    raw = await request.body()
+    text = raw.decode("utf-8", errors="replace")
+    content_type = request.headers.get("content-type", "")
+    if "application/json" not in content_type.lower():
+        return text
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"content-type is JSON but body is not: {exc}"
+        ) from exc
+    candidate = parsed.get("body") if isinstance(parsed, dict) else None
+    if not isinstance(candidate, str):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "JSON requests must be an object with a string 'body' field;"
+                " to send the map body verbatim, omit the JSON content type"
+            ),
+        )
+    return candidate
+
+
 @router.post("/map-lint", response_model=MapLintValidateResponse)
 async def validate_map_body(
-    body: MapLintValidateRequest,
+    request: Request,
     _user: Annotated[User, Depends(get_current_user)],
 ) -> JSONResponse:
     """Dry-run validation of a candidate mental_map body. Writes NOTHING.
+
+    Accepts the body as ``{"body": "…"}`` JSON or as a raw ``text/plain``
+    document — see :func:`_read_candidate_body` for why the raw shape exists.
 
     A failing body returns HTTP 422, NOT a 200 carrying ``valid: false`` —
     and the reason is the gate contract, not taste: the somnus nightly loop
@@ -73,7 +126,8 @@ async def validate_map_body(
     (``kb_core.map_lint.count_map_pointers``) — a caller-supplied count could
     lie the budget into passing.
     """
-    findings = lint_map_body(body.body)
+    candidate = await _read_candidate_body(request)
+    findings = lint_map_body(candidate)
     rendered = [
         MapLintFindingModel(code=f.code.value, message=f.message) for f in findings
     ]

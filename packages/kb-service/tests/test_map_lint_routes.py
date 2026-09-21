@@ -513,3 +513,64 @@ def test_over_budget_machine_principal_map_write_422(
     response = client.post("/api/kb/store", json=_map_store_payload(body))
     assert response.status_code == 422
     assert MapLintCode.OVER_BUDGET.value in response.json()["detail"]
+
+
+def test_raw_text_body_is_accepted_as_the_map_body(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate's real shape: raw prose, not a JSON object.
+
+    somnus writes a composed body to a file and gates it with
+    ``curl --data-binary @<path>``. On 2026-09-21 that returned 422 six times
+    in one run — the file held the body verbatim while this endpoint demanded
+    ``{"body": ...}`` — so every composed map was withheld with no map ever
+    written. Reproduces the wire shape rather than the unit call.
+    """
+    _override_user(fake_machine_user)
+    _seed_app_config(monkeypatch, {"machine_principal_email": MACHINE_EMAIL})
+    body = (
+        "This map orients an agent in one subject area without holding facts.\n\n"
+        "Detail entries (kb_get for specifics): kb-00513, kb-03186.\n\n"
+        "Not yet documented: the publish bookkeeping path.\n"
+    )
+    resp = client.post(
+        "/api/kb/map-lint", content=body, headers={"Content-Type": "text/plain"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"valid": True, "findings": []}
+
+
+def test_raw_text_body_that_fails_the_lint_is_still_422(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dirty raw body is 422 for LINT reasons, not parse reasons.
+
+    The two 422s are indistinguishable to ``curl -sf``, so the raw path must
+    still reject a dirty body — accepting raw bytes must not have widened the
+    gate, only changed how the body arrives.
+    """
+    _override_user(fake_machine_user)
+    _seed_app_config(monkeypatch, {"machine_principal_email": MACHINE_EMAIL})
+    resp = client.post(
+        "/api/kb/map-lint",
+        content="Lives in /srv/talos and see kb-00513.",
+        headers={"Content-Type": "text/plain"},
+    )
+    assert resp.status_code == 422
+    assert [f["code"] for f in resp.json()["findings"]] == ["path"]
+
+
+def test_json_shape_missing_body_field_is_422_not_linted_as_prose(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed JSON request must not fall back to linting its own text.
+
+    Falling back would let ``{"bdy": "..."}`` lint the JSON source as a map
+    body and very likely PASS, which is the fail-open direction: a typo'd
+    field name would read as a green gate.
+    """
+    _override_user(fake_machine_user)
+    _seed_app_config(monkeypatch, {"machine_principal_email": MACHINE_EMAIL})
+    resp = client.post("/api/kb/map-lint", json={"bdy": "kb-00513 typo'd field"})
+    assert resp.status_code == 422
+    assert "string 'body' field" in resp.json()["detail"]
