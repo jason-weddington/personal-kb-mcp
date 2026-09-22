@@ -91,6 +91,7 @@ if TYPE_CHECKING:
     from kb_core.graph.enricher import GraphEnricher
     from kb_core.ingest.ingester import FileIngester, FileResult, IngestResult
     from kb_core.llm.provider import LLMProvider
+    from kb_core.map_delete import DeletedMapRecord
     from kb_core.map_eligibility import MapEligibilityOverride, MapEligibilityVerdict
     from kb_core.models.search import SearchQuery, SearchResult
     from kb_core.search.embedder_protocol import Embedder
@@ -1345,6 +1346,23 @@ class KnowledgeBase:
         from kb_core.cluster_ledger import clear_cluster
 
         return await clear_cluster(self._db, cluster_key)
+
+    async def delete_map(self, entry_id: str) -> DeletedMapRecord:
+        """Hard-delete one ``mental_map`` with its edges and version rows.
+
+        The self-healing primitive the nightly loop was missing: a bad map is
+        DELETED, not deactivated, and its outbound and inbound edges go with
+        it in one transaction. Anything that is not a ``mental_map`` raises
+        ``ValueError`` — a knowledge entry is deactivated so its content can
+        be recovered, and this path must never be the way around that.
+
+        Returns the :class:`DeletedMapRecord` the caller needs to log the map
+        back into existence, including the referrer ids whose BODIES may
+        still name this map and need repair.
+        """
+        from kb_core.map_delete import delete_map
+
+        return await delete_map(self._db, entry_id)
 
     @property
     def embedding_worker_running(self) -> bool:

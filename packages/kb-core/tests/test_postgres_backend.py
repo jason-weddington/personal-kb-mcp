@@ -69,6 +69,7 @@ from kb_core.embedding_retry import (
     resolve,
 )
 from kb_core.map_caps import count_maps_created_since, map_write_summary
+from kb_core.map_delete import delete_map
 from kb_core.store.knowledge_store import KnowledgeStore
 from map_caps_fixture import (
     CONTRIBUTOR as MAP_CAPS_CONTRIBUTOR,
@@ -102,6 +103,21 @@ from map_cluster_ledger_shape import (
 )
 from map_cluster_ledger_shape import (
     EXPECTED_TEXT_COLUMNS as MCL_EXPECTED_TEXT_COLUMNS,
+)
+from map_delete_fixture import (
+    EXPECTED_MAP_AUDIT_EVENT_TYPES,
+    EXPECTED_RECORD,
+    EXPECTED_SURVIVING_EDGES,
+    EXPECTED_SURVIVING_ENTRY_IDS,
+    EXPECTED_SURVIVING_VERSIONS,
+    FACTUAL_ID,
+    MAP_ID,
+    audit_event_types_for,
+    edge_rows,
+    entry_ids,
+    node_ids,
+    seed_corpus,
+    version_rows,
 )
 from map_eligibility_counts_fixture import (
     EXPECTED_COUNTS,
@@ -897,3 +913,46 @@ async def test_map_write_summary_on_postgres(pg_kb: PostgresBackend) -> None:
     # the TEXT strings the column stores.
     for row in summary:
         assert row.latest_map_written_at.tzinfo is not None
+
+
+async def test_delete_map_on_postgres(pg_kb: PostgresBackend) -> None:
+    """The Postgres leg of the hard delete returns the SAME record, leaving the SAME rows.
+
+    Seeds the shared ``map_delete_fixture`` corpus — the one the SQLite suite seeds.
+
+    Asserts the SAME ``EXPECTED_RECORD`` and the SAME leftover rows.
+
+    One expectation for both dialects, so a drift fails on whichever side runs.
+
+    The statements this module issues are all equality matching.
+
+    No ``COLLATE "C"`` term appears on either leg.
+
+    What this leg adds that SQLite cannot: Postgres enforces the ``REFERENCES`` clauses.
+
+    They sit on ``graph_edges.source``, ``graph_edges.target`` and ``entry_versions.entry_id``.
+
+    A deletion order that satisfies SQLite's FK-less default would raise here.
+
+    The edge-before-node and version-before-entry ordering are exercised only on this leg.
+    """
+
+    await seed_corpus(pg_kb)
+
+    record = await delete_map(pg_kb, MAP_ID)
+
+    assert record == EXPECTED_RECORD
+
+    # The same rows the SQLite suite asserts are left behind.
+    assert await entry_ids(pg_kb) == list(EXPECTED_SURVIVING_ENTRY_IDS)
+    assert await edge_rows(pg_kb) == list(EXPECTED_SURVIVING_EDGES)
+    assert await version_rows(pg_kb) == list(EXPECTED_SURVIVING_VERSIONS)
+    assert await audit_event_types_for(pg_kb, MAP_ID) == list(EXPECTED_MAP_AUDIT_EVENT_TYPES)
+    # The entry's graph_nodes row went with the map; every survivor's stayed.
+    assert await node_ids(pg_kb) == list(EXPECTED_SURVIVING_ENTRY_IDS)
+
+    # The refusals are dialect-independent but cost nothing to pin here.
+    with pytest.raises(ValueError, match="factual_reference"):
+        await delete_map(pg_kb, FACTUAL_ID)
+    with pytest.raises(ValueError, match="kb-99999"):
+        await delete_map(pg_kb, "kb-99999")
