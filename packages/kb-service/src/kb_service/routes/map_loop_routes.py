@@ -752,7 +752,7 @@ async def map_worklist(
     Returns:
         ``MapWorklistResponse``: only the verdicts whose
         ``effective_eligible`` is true, so the override table is honoured
-        exactly as everywhere else; each row's ``mappable`` is the
+        exactly as everywhere else; each row's ``mappable_entries`` is the
         verdict's own evidence count and its ``map_count`` /
         ``latest_map_written_at`` come from kb-core's summary, which omits
         never-mapped projects — hence the left-join in Python: the eligible
@@ -778,7 +778,7 @@ async def map_worklist(
         projects.append(
             MapWorklistProject(
                 project_ref=project_ref,
-                mappable=verdict.evidence.mappable,
+                mappable_entries=verdict.evidence.mappable,
                 map_count=0 if summary is None else summary.map_count,
                 latest_map_written_at=(
                     None if summary is None else summary.latest_map_written_at

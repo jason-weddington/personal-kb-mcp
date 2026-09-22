@@ -1034,7 +1034,11 @@ class MapLoopInputResponse(BaseModel):
 class MapWorklistProject(BaseModel):
     """One ranked worklist row: a project somnus's ``nightly`` may work.
 
-    ``mappable`` is the eligibility verdict's own count of mappable entries,
+    ``mappable_entries`` is the eligibility verdict's own COUNT of mappable
+    entries — named in full because the bare word ``mappable`` reads as a
+    predicate and was in fact deserialised as a boolean by the first consumer
+    that met it, aborting a run before any work started. The type was correct
+    and documented; the NAME invited the wrong reading, so the name changed.
     ``map_count`` and ``latest_map_written_at`` come from
     ``kb_core.map_caps.map_write_summary`` — a project with no active maps is
     ABSENT from that summary, so the route left-joins in Python and renders
@@ -1045,7 +1049,7 @@ class MapWorklistProject(BaseModel):
     """
 
     project_ref: str
-    mappable: int
+    mappable_entries: int
     map_count: int
     latest_map_written_at: datetime | None
 

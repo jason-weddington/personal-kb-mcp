@@ -1291,12 +1291,12 @@ def test_worklist_never_mapped_project_renders_zero_and_null(
     row = projects[0]
     assert set(row.keys()) == {
         "project_ref",
-        "mappable",
+        "mappable_entries",
         "map_count",
         "latest_map_written_at",
     }
     assert row["project_ref"] == PROJ
-    assert row["mappable"] == 50
+    assert row["mappable_entries"] == 50
     assert row["map_count"] == 0
     assert row["latest_map_written_at"] is None
 
