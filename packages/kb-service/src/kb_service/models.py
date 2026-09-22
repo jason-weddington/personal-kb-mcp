@@ -1266,3 +1266,44 @@ class MapOpResponse(BaseModel):
     version: int
     pointer_count: int
     budget: int
+
+
+# --- Map delete (the loop's one removal path, machine principal only) ---
+
+
+class MapDeleteRequest(BaseModel):
+    """``DELETE /api/kb/maps/{map_id}`` — the required, caller-supplied reason.
+
+    A deletion with no recorded reason is untraceable rot-removal,
+    indistinguishable in the audit trail from a bug, so the reason is required.
+    It may arrive in the body or as the ``reason`` query parameter, but it must
+    be present and non-blank either way.
+    ``min_length=1`` rejects the empty string at validation time (422); a
+    whitespace-only reason is rejected by the route, which strips first.
+    """
+
+    reason: str = Field(..., min_length=1)
+
+
+class MapDeleteResponse(BaseModel):
+    """The full ``kb_core.map_delete.DeletedMapRecord`` rendered as JSON.
+
+    Deletion is the loop's only irreversible operation, and the response is
+    part of how the map stays reconstructable: ``knowledge_details`` is the
+    FULL body, never a summary.
+    ``inbound_referrer_ids`` is not an error and never blocks the delete — it
+    is the list of maps whose BODIES may still name this map's id as text,
+    reported so the caller can repair those referring bodies.
+    ``outbound_edges_deleted`` / ``inbound_edges_deleted`` are edge ROW
+    counts, not distinct-neighbour counts.
+    """
+
+    map_id: str
+    project_ref: str | None
+    short_title: str
+    long_title: str
+    knowledge_details: str
+    pointer_ids: list[str]
+    outbound_edges_deleted: int
+    inbound_edges_deleted: int
+    inbound_referrer_ids: list[str]

@@ -111,10 +111,14 @@ def _map_value_error(exc: ValueError) -> HTTPException:
 
 
 _MAP_DEACTIVATE_BLOCKED = (
-    "mental_map entries cannot be deactivated via this endpoint. Deactivating a "
-    "map strips its outbound graph edges (see the scoped delete in this file), "
-    "which would silently orphan every detail entry the map pointed to from the "
-    "listener's detail -> owning-map reverse lookup."
+    "mental_map entries cannot be deactivated. A mental_map holds no facts to "
+    "recover, so a bad one is deleted outright — edges and all — by the "
+    "machine principal via DELETE /api/kb/maps/{map_id}, which removes the "
+    "row, both edge directions and the version rows in one transaction. "
+    "Deactivating a map is refused because a soft delete would strip its "
+    "outbound graph edges and orphan every detail entry the map pointed to "
+    "from the listener's detail -> owning-map reverse lookup; the edges go "
+    "with a proper delete, never with a deactivation."
 )
 
 
@@ -324,6 +328,8 @@ async def deactivate(
     """Deactivate a knowledge base entry and clean up its outbound graph edges.
 
     mental_map entries are rejected with 422 — see ``_MAP_DEACTIVATE_BLOCKED``.
+    A bad map is deleted by the machine principal via
+    ``DELETE /api/kb/maps/{map_id}`` instead, never deactivated.
     """
     kb = request.app.state.kb
     existing = await kb.get(entry_id)

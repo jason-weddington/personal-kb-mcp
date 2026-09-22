@@ -32,6 +32,7 @@ from kb_service.routes.kb_read_routes import router as kb_read_router
 from kb_service.routes.kb_routes import router as kb_router
 from kb_service.routes.kb_write_routes import router as kb_write_router
 from kb_service.routes.listener_routes import router as listener_router
+from kb_service.routes.map_delete_routes import router as map_delete_router
 from kb_service.routes.map_eligibility_routes import router as map_eligibility_router
 from kb_service.routes.map_lint_routes import router as map_lint_router
 from kb_service.routes.map_loop_routes import router as map_loop_router
@@ -207,6 +208,7 @@ app.include_router(map_lint_router)
 app.include_router(nudge_router)
 app.include_router(map_loop_router)
 app.include_router(map_op_router)
+app.include_router(map_delete_router)
 
 
 @app.get("/api/health")

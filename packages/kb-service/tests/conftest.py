@@ -22,6 +22,7 @@ from kb_core.cluster_ledger import (
     ClusterLedgerRow,
 )
 from kb_core.ingest.ingester import FileResult
+from kb_core.map_delete import DeletedMapRecord
 from kb_core.map_eligibility import (
     MapEligibilityOverride,
     MapEligibilityVerdict,
@@ -311,6 +312,22 @@ class FakeKnowledgeBase:
         self._reactivate_raises: ValueError | None = None
         self._bulk_update_raises: ValueError | None = None
 
+        # map delete (kb_core.map_delete via the facade): canned record only,
+        # so the route under test keeps owning the audit INSERT.
+        self.delete_map_calls: list[str] = []
+        self.delete_map_record: DeletedMapRecord = DeletedMapRecord(
+            entry_id="kb-00001",
+            project_ref=None,
+            short_title="Fake map",
+            long_title="A fake mental map",
+            knowledge_details="Fake map body.\n\nDetail entries:\n- kb-00001 one\n",
+            pointer_ids=["kb-00001"],
+            outbound_edges_deleted=1,
+            inbound_edges_deleted=0,
+            inbound_referrer_ids=[],
+        )
+        self._delete_map_raises: ValueError | None = None
+
         # sub-objects expected by read/meta + write endpoints
         self.db = FakeKbDb(self)
         self.graph = FakeGraph()
@@ -569,6 +586,19 @@ class FakeKnowledgeBase:
         if self._reactivate_raises is not None:
             raise self._reactivate_raises
         return make_entry()
+
+    async def delete_map(self, entry_id: str) -> DeletedMapRecord:
+        """Record the call and return the canned record, or raise the injected error.
+
+        The real facade method hard-deletes one mental_map and returns the
+        full ``DeletedMapRecord``; the fake never touches ``self.db`` so the
+        route's own audit INSERT is the only row the tests see recorded.
+        """
+
+        self.delete_map_calls.append(entry_id)
+        if self._delete_map_raises is not None:
+            raise self._delete_map_raises
+        return self.delete_map_record
 
     async def bulk_update(
         self,
