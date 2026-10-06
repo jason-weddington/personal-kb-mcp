@@ -7,8 +7,8 @@ members = [
     "kb-core",
     "personal-kb",
     "personal-kb-hook",
+    "personal-kb-web-service",
 ]
-overrides = [{ name = "kb-core", editable = "packages/kb-core" }]
 
 [[package]]
 name = "aiofile"
@@ -1208,6 +1208,29 @@ dependencies = [
     { name = "sqlite-vec" },
 ]
 
+[package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
+]
+aws = [
+    { name = "aws-sdk-bedrock-runtime" },
+    { name = "smithy-json" },
+]
+iam = [
+    { name = "boto3" },
+]
+ingest = [
+    { name = "pymupdf" },
+    { name = "trafilatura" },
+]
+postgres = [
+    { name = "asyncpg" },
+]
+safety = [
+    { name = "detect-secrets" },
+    { name = "scrubadub" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.21" },
@@ -1649,6 +1672,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "kb-core" },
+    { name = "personal-kb-web-service" },
     { name = "pydantic" },
     { name = "pymupdf" },
     { name = "scrubadub" },
@@ -1664,16 +1688,13 @@ aws = [
 iam = [
     { name = "boto3" },
 ]
-local = [
-    { name = "personal-kb-web-service" },
-]
 postgres = [
     { name = "asyncpg" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "kb-core" },
+    { name = "kb-core", extra = ["anthropic", "aws", "iam", "ingest", "postgres", "safety"] },
     { name = "mypy" },
     { name = "personal-kb", extra = ["aws", "iam", "postgres"] },
     { name = "personal-kb-hook" },
@@ -1697,7 +1718,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=2.0" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "kb-core", editable = "packages/kb-core" },
-    { name = "personal-kb-web-service", marker = "extra == 'local'", git = "ssh://git@git-host/home/git/repos/personal-kb-web-service?rev=main" },
+    { name = "personal-kb-web-service", editable = "packages/kb-service" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pymupdf", specifier = ">=1.25" },
     { name = "scrubadub", specifier = ">=2.0" },
@@ -1729,19 +1750,55 @@ source = { editable = "packages/personal-kb-hook" }
 
 [[package]]
 name = "personal-kb-web-service"
-version = "0.1.0"
-source = { git = "ssh://git@git-host/home/git/repos/personal-kb-web-service?rev=main#5bb9f363661e2da1b9f0542596279aeacac307a2" }
+version = "1.0.0"
+source = { editable = "packages/kb-service" }
 dependencies = [
     { name = "asyncpg" },
     { name = "bcrypt" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "kb-core" },
+    { name = "kb-core", extra = ["anthropic", "ingest", "postgres", "safety"] },
     { name = "pydantic" },
     { name = "pyjwt" },
     { name = "python-multipart" },
     { name = "truststore" },
     { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "python-semantic-release" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "asyncpg", specifier = ">=0.30" },
+    { name = "bcrypt", specifier = ">=4.0" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "kb-core", extras = ["postgres", "ingest", "anthropic", "safety"], editable = "packages/kb-core" },
+    { name = "pydantic", specifier = ">=2.10" },
+    { name = "pyjwt", specifier = ">=2.9" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "truststore", specifier = ">=0.10" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.14" },
+    { name = "pre-commit", specifier = ">=4" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.25" },
+    { name = "pytest-cov", specifier = ">=6" },
+    { name = "python-semantic-release", specifier = ">=9" },
+    { name = "ruff", specifier = ">=0.9" },
 ]
 
 [[package]]

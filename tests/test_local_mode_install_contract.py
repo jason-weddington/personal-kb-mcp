@@ -261,38 +261,33 @@ def _normalize_dist_name(spec: str) -> str:
     return cut.strip().lower()
 
 
-def test_pyproject_local_extra_pulls_in_web_service() -> None:
-    """``[project.optional-dependencies.local]`` lists ``personal-kb-web-service``.
+def test_pyproject_base_dependencies_pull_in_web_service() -> None:
+    """``personal-kb-web-service`` is a BASE dependency, not behind an extra.
 
-    This is the second half of kb-01789: without this dep the
-    ``kb-service`` console script does not land on PATH for the venv
-    ``uvx`` builds for ``personal-kb[local]``, and ``ensure_daemon``
-    raises ``RuntimeError: kb-service not on PATH`` on the first MCP
-    lifespan.
+    Work users install with a plain ``uvx --from git+...`` (no extras), so
+    the ``kb-service`` console script the daemon spawn invokes must land on
+    PATH from the base install, or local mode fails with ``kb-service not on
+    PATH``. The ``[local]`` extra survives only as an empty back-compat alias
+    so existing ``personal-kb[local]`` specs keep resolving.
     """
     pyproject = _load_pyproject()
     project = pyproject.get("project", {})
     assert isinstance(project, dict), "[project] table is missing or malformed"
+    deps = project.get("dependencies", [])
+    assert isinstance(deps, list), "[project].dependencies is malformed"
+    dist_names = {_normalize_dist_name(d) for d in deps}
+    assert _WEB_SERVICE_DIST in dist_names, (
+        f"[project].dependencies must include {_WEB_SERVICE_DIST!r} (the package "
+        "that ships the `kb-service` console script). Found: "
+        f"{sorted(dist_names)}."
+    )
     optional = project.get("optional-dependencies", {})
     assert isinstance(optional, dict), (
         "[project.optional-dependencies] is malformed (expected a table)"
     )
     assert "local" in optional, (
-        "[project.optional-dependencies.local] is missing — the documented "
-        "`uvx --from '...[local]' personal-kb` install will fail PEP 508 "
-        "parsing (`Extra 'local' is not defined`)."
-    )
-    local_deps = optional["local"]
-    assert isinstance(local_deps, list) and local_deps, (
-        "[project.optional-dependencies.local] is empty — the [local] extra "
-        "must pull in personal-kb-web-service so the `kb-service` console "
-        "script lands on PATH for the documented install."
-    )
-    dist_names = {_normalize_dist_name(d) for d in local_deps}
-    assert _WEB_SERVICE_DIST in dist_names, (
-        f"[project.optional-dependencies.local] must include {_WEB_SERVICE_DIST!r} "
-        "(the package that ships the `kb-service` console script the MCP daemon "
-        f"spawn invokes). Found: {sorted(dist_names)}."
+        "[project.optional-dependencies.local] must stay defined (empty) so "
+        "existing `personal-kb[local]` specs still parse."
     )
 
 

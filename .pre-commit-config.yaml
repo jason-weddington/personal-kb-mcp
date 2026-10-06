@@ -5,8 +5,7 @@
 # dispatch worker commits ONCE, so a fixer that rewrites the tree at commit time
 # destroys a completed, gate-green unit of work and the run returns `failed`
 # before pushing. Keep every hook check-only: this repo is dispatched to both
-# harnesses, and it is part of the personal-kb-web-service WORKSPACE, so a
-# dispatch there clones it too.
+# harnesses, and packages/kb-service (the former personal-kb-web-service repo) lives here too.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -63,6 +62,45 @@ repos:
         types: [python]
         args: [src/]
         pass_filenames: false
+
+      # --- packages/kb-service (merged from personal-kb-web-service) ---
+      - id: kb-service-mypy
+        name: mypy (kb-service)
+        entry: bash -c 'cd packages/kb-service && uv run --frozen --project ../.. mypy src/'
+        language: system
+        types: [python]
+        files: '^packages/kb-service/'
+        pass_filenames: false
+
+      - id: kb-service-coverage
+        name: coverage (kb-service)
+        entry: bash -c 'cd packages/kb-service && uv run --frozen --project ../.. pytest -q --cov --cov-report=term-missing > /tmp/pre-push-kb-service-coverage.txt 2>&1; rc=$?; tail -6 /tmp/pre-push-kb-service-coverage.txt; exit $rc'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: kb-service-eslint
+        name: eslint (kb-service frontend)
+        entry: npm --prefix packages/kb-service/frontend run lint
+        language: system
+        pass_filenames: false
+        files: '^packages/kb-service/frontend/.*\.(ts|tsx)$'
+
+      - id: kb-service-tsc
+        name: tsc (kb-service frontend)
+        entry: bash -c "cd packages/kb-service/frontend && npx tsc -b --noEmit"
+        language: system
+        pass_filenames: false
+        files: '^packages/kb-service/frontend/.*\.(ts|tsx)$'
+
+      - id: kb-service-vitest
+        name: vitest (kb-service frontend)
+        entry: npm --prefix packages/kb-service/frontend run test
+        language: system
+        pass_filenames: false
+        files: '^packages/kb-service/frontend/.*\.(ts|tsx)$'
+        stages: [pre-push]
 
       - id: coverage
         name: coverage
