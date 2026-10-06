@@ -22,15 +22,7 @@ this file only summarizes:
 - **kb-01745** — lesson: FastAPI `HTTPBearer` returns 401 (not 403) on missing
   creds in 0.136 — watch for stale exact-status assertions copied from agent_gtd.
 
-Build status: **P1–P5 done, P6 dev done, listener shipped** — full backend +
-SPA, thin MCP client (HttpBackend + 16 tool shims in the `personal_kb` repo),
-and the anticipatory listener: `POST /api/kb/listener` (rules A+B over
-`operated_via` hints + unanimous-3 Sonnet; kill switch `KB_LISTENER_ENABLED`,
-default OFF) with whisper-next-turn injection in `personal-kb-hook`. Eval
-harness + datasets in `evals/listener/`. Dev deploy: systemd user unit
-`kb-service` on `kb-host-1`; `./deploy.sh` pulls main there, rebuilds the
-frontend, restarts the unit. Runbooks: as-built/cutover **kb-01765**, listener
-design **kb-01725**, per-machine hook setup **kb-01784**. Plan in kb-01742.
+Build status: **P1–P5 done, P6 dev done, listener shipped** — full backend + SPA, thin MCP client (HttpBackend + 16 tool shims in the `personal_kb` repo), and the anticipatory listener: `POST /api/kb/listener` (rules A+B over `operated_via` hints + unanimous-3 Sonnet; kill switch `KB_LISTENER_ENABLED`, default OFF) with whisper-next-turn injection in `personal-kb-hook`. Eval harness + datasets in `evals/listener/`. Deploy: systemd system unit `kb-service` on the three Pis; `KB_DEPLOY_HOST=<host> ./deploy.sh` pipes `scripts/host-deploy.sh` over ssh, which deploys from `~/git/personal_kb` (WorkingDirectory `packages/kb-service`, venv at the workspace root) and migrates a pre-merge `~/git/personal-kb-web-service` host automatically — see README "Pi deployment". Runbooks: as-built/cutover **kb-01765**, listener design **kb-01725**, per-machine hook setup **kb-01784**. Plan in kb-01742.
 A self-healing embedding retry queue + background worker re-embeds entries that previously failed to vectorize, gated by `KB_EMBED_WORKER_ENABLED` (default TRUE) and inspectable via `GET /api/kb/embedding-queue`. Three more knobs tune the worker (`kb_service/config.py`: `KB_EMBED_WORKER_BATCH_SIZE` default 16, `KB_EMBED_WORKER_POLL_SECONDS` default 60.0, `KB_EMBED_WORKER_TIMEOUT` default 180.0) — these are **defaults-only**, deliberately NOT plumbed through `scripts/provision.sh` (only `KB_EMBED_WORKER_ENABLED` is). If a host needs a non-default value, set it directly in that host's `/etc/kb-service/env` and `sudo systemctl restart kb-service`.
 
 ## Commands

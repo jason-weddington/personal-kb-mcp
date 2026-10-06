@@ -33,12 +33,17 @@ One **stack** = one KB: a Postgres data DB (kb-core owns it, `KB_DATABASE_URL`)
 plus a service DB for auth/app-config (`KB_SERVICE_DATABASE_URL`). The personal
 and team KBs are two deployments of identical code pointed at different DBs.
 
-## Dev deployment
+## Pi deployment
 
-`kb-host-1` runs the full stack under the `kb-service` systemd user unit at
-`http://kb-host-1:8000`; `./deploy.sh` pulls main there, rebuilds the
-frontend, and restarts. Runbooks: dev server **kb-01746**, production cutover
-**kb-01765**, per-machine hook/listener setup **kb-01784**.
+Three Pis run the hosted service as the `kb-service` systemd system unit: `kb-host-1` (personal KB), `kb-host-2` (team KB) and `kb-host-3` (user2's KB). Each is fronted by Caddy and also answers plain HTTP on `:8000`. Deploy from a dev machine with `KB_DEPLOY_HOST=<host> ./deploy.sh`; provision a new host with `KB_MODE=hosted scripts/provision.sh`, and `KB_MODE=upgrade scripts/provision.sh` is the code-only equivalent of `deploy.sh`. Runbooks: dev server **kb-01746**, production cutover **kb-01765**, per-machine hook/listener setup **kb-01784** (their host-path details predate the layout below).
+
+Since the 2026-10-06 repo merge the service lives in the `personal_kb` monorepo, and a host is laid out like this: the checkout is `~/git/personal_kb` (repo `git@$KB_GIT_HOST:repos/personal_kb`); the venv is at the workspace root, `~/git/personal_kb/.venv`, installed with only what the service needs (`uv sync --frozen --package personal-kb-web-service --extra postgres --no-dev`); the unit's `WorkingDirectory` is `~/git/personal_kb/packages/kb-service`, so relative paths such as `frontend/dist` and `.env` resolve as before, and `ExecStart` is `~/git/personal_kb/.venv/bin/uvicorn kb_service.main:app`. The SPA is still built on the host into `packages/kb-service/frontend/dist`, which is gitignored and wins over the packaged static UI. Secrets stay in `/etc/kb-service/env`.
+
+All host-side work is `scripts/host-deploy.sh`, which `deploy.sh` and `provision.sh` pipe over ssh (`ssh host 'bash -s deploy' < scripts/host-deploy.sh`), so both share one implementation. Its subcommands are `deploy` (pull, sync, build, restart, health-check 200 on `127.0.0.1:8000`), `prepare` (the same minus the restart, used by hosted provisioning before it writes the env file) and `install-unit` (writes a fresh unit for the new layout).
+
+**Old-layout migration.** A host that still has the pre-merge `~/git/personal-kb-web-service` checkout is migrated in place the first time `deploy.sh` or `provision.sh` (hosted or upgrade) runs against it, with no extra flags. The script stops kb-service, then `pg_dump`s the data DB (`KB_DATABASE_URL`) and the service DB (`KB_SERVICE_DATABASE_URL`) to `~/backups/<db>-<timestamp>.sql`, reading the DSNs from the unit's `EnvironmentFile` and the old `.env`. The password is passed in `PGPASSWORD`, never on argv, and no DSN is printed. If `pg_dump` is not installed the backup is skipped with a loud message; if it fails, the migration aborts and the old service is restarted untouched (`KB_MIGRATE_SKIP_BACKUP=1` proceeds without a backup). It then clones `personal_kb`, copies the old checkout's `.env` into the new WorkingDirectory (an existing different file is kept as `.env.bak-<timestamp>`), saves the old unit to `~/backups/kb-service.service.pre-merge-<timestamp>`, rewrites the unit's paths, runs `daemon-reload`, and renames the old checkout to `~/git/personal-kb-web-service.pre-merge-<date>`. It is never deleted. The rest of the run is a normal deploy. Re-running on a migrated host is a plain deploy with no migration steps and no new backup. Postgres data is never modified.
+
+To roll back a migration, copy the saved unit back over `/etc/systemd/system/kb-service.service`, rename the `.pre-merge-<date>` checkout back to `~/git/personal-kb-web-service`, then `sudo systemctl daemon-reload && sudo systemctl restart kb-service`.
 
 ## Deploy preflight guard
 
