@@ -1,7 +1,9 @@
 """Personal KB web service — FastAPI application."""
 
+import importlib.metadata
 import logging
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -207,8 +209,16 @@ app.include_router(map_delete_router)
 
 @app.get("/api/health")
 async def health() -> dict[str, str]:
-    """Health check endpoint."""
-    return {"status": "ok"}
+    """Health check endpoint.
+
+    ``version`` and ``install_id`` (``sys.prefix`` of the serving process) let a
+    local client detect a daemon left over from a different install.
+    """
+    try:
+        version = importlib.metadata.version("personal-kb-web-service")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return {"status": "ok", "version": version, "install_id": sys.prefix}
 
 
 mount_frontend(app, FRONTEND_DIST)

@@ -1,13 +1,15 @@
 """Admin-only routes: invite management and user management."""
 
+import asyncio
 import os
 import secrets
+import signal
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from kb_service.auth import require_admin
+from kb_service.auth import _auth_mode, require_admin
 from kb_service.database import get_db
 from kb_service.models import (
     CreateInviteRequest,
@@ -199,3 +201,28 @@ async def delete_user(
     await db.execute("DELETE FROM api_keys WHERE user_id = $1", user_id)
     await db.execute("DELETE FROM users WHERE id = $1", user_id)
     return Response(status_code=204)
+
+
+_LOOPBACK_CLIENTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _request_shutdown() -> None:
+    """Ask the serving uvicorn process to exit gracefully (SIGTERM to self)."""
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+@router.post("/shutdown", status_code=202)
+async def shutdown(request: Request) -> dict[str, str]:
+    """Gracefully stop this daemon (local no-auth mode + loopback caller only).
+
+    Fail-closed: 404 unless ``KB_AUTH_MODE=none`` and 403 unless the caller is
+    on loopback, so a hosted deployment can never be shut down remotely.
+    """
+    if _auth_mode() != "none":
+        raise HTTPException(status_code=404, detail="Not found")
+    host = request.client.host if request.client else ""
+    if host not in _LOOPBACK_CLIENTS:
+        raise HTTPException(status_code=403, detail="Loopback only")
+    # Delay slightly so the 202 response is flushed before the signal lands.
+    asyncio.get_running_loop().call_later(0.2, _request_shutdown)
+    return {"status": "shutting_down"}

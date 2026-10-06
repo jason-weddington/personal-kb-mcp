@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -57,6 +58,9 @@ if TYPE_CHECKING:
 def state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect the daemon's pidfile + logfile under tmp_path."""
     monkeypatch.setenv("PERSONAL_KB_DAEMON_STATE_DIR", str(tmp_path))
+    # Existing tests model a healthy daemon from THIS install.
+    monkeypatch.setattr(daemon, "_fetch_install_id", AsyncMock(return_value=sys.prefix))
+    monkeypatch.setattr(daemon, "_replaced_once", False)
     return tmp_path
 
 
@@ -437,3 +441,108 @@ async def test_lifespan_remote_url_without_key_raises(monkeypatch: pytest.Monkey
         async with lifespan(mcp):
             pass  # pragma: no cover
     ensure_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Install-id handshake
+# ---------------------------------------------------------------------------
+
+
+def _handshake_fakes(
+    monkeypatch: pytest.MonkeyPatch, daemon_ids: list[str | None], events: list[str]
+) -> None:
+    """Fake a healthy daemon with the given successive install ids."""
+    ids = iter(daemon_ids)
+    monkeypatch.setattr(daemon, "_check_health", AsyncMock(return_value=True))
+    monkeypatch.setattr(daemon, "_fetch_install_id", AsyncMock(side_effect=lambda *_a: next(ids)))
+
+    async def _shutdown(_url: str) -> bool:
+        events.append("shutdown")
+        return True
+
+    async def _wait(_port: int) -> bool:
+        events.append("wait_port_free")
+        return True
+
+    def _spawn(_port: int, _log: Path) -> int:
+        events.append("spawn")
+        return 4242
+
+    monkeypatch.setattr(daemon, "_request_shutdown", _shutdown)
+    monkeypatch.setattr(daemon, "_wait_port_free", _wait)
+    monkeypatch.setattr(daemon, "_spawn_daemon", _spawn)
+    monkeypatch.setattr(daemon, "_poll_until_healthy", AsyncMock(return_value=True))
+
+
+async def test_matching_install_id_reuses_daemon(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    _handshake_fakes(monkeypatch, [sys.prefix], events)
+    await daemon.ensure_daemon("http://127.0.0.1:8765")
+    assert events == []
+
+
+@pytest.mark.parametrize("old_id", ["/some/old/venv", None])
+async def test_mismatched_or_missing_install_id_replaces(
+    state_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    old_id: str | None,
+) -> None:
+    events: list[str] = []
+    _handshake_fakes(monkeypatch, [old_id], events)
+    with caplog.at_level("WARNING"):
+        await daemon.ensure_daemon("http://127.0.0.1:8765")
+    assert events == ["shutdown", "wait_port_free", "spawn"]
+    assert any("Replacing kb-daemon" in r.message for r in caplog.records)
+
+
+async def test_replace_at_most_once_per_process(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    events: list[str] = []
+    _handshake_fakes(monkeypatch, ["/old", "/other"], events)
+    await daemon.ensure_daemon("http://127.0.0.1:8765")
+    assert events == ["shutdown", "wait_port_free", "spawn"]
+    events.clear()
+    with caplog.at_level("WARNING"):
+        await daemon.ensure_daemon("http://127.0.0.1:8765")
+    assert events == []
+    assert any("already replaced once" in r.message for r in caplog.records)
+
+
+async def test_sigterm_fallback_only_for_kb_service_pid(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(daemon.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    pidfile = state_dir / "kb-daemon.pid"
+    pidfile.write_text("999\n")
+
+    monkeypatch.setattr(daemon, "_pid_is_kb_service", lambda _pid: False)
+    assert daemon._sigterm_pidfile_daemon(pidfile) is False
+    assert killed == []
+
+    monkeypatch.setattr(daemon, "_pid_is_kb_service", lambda _pid: True)
+    assert daemon._sigterm_pidfile_daemon(pidfile) is True
+    assert killed == [(999, daemon.signal.SIGTERM)]
+
+
+def test_pid_is_kb_service_reads_cmdline(tmp_path: Path) -> None:
+    # Our own pytest process is not a kb-service; a nonexistent pid is False.
+    assert daemon._pid_is_kb_service(os.getpid()) is False
+    assert daemon._pid_is_kb_service(2**22 + 12345) is False
+
+
+async def test_shutdown_failure_falls_back_to_sigterm_then_spawns(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    _handshake_fakes(monkeypatch, ["/old"], events)
+    monkeypatch.setattr(daemon, "_request_shutdown", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        daemon, "_sigterm_pidfile_daemon", lambda _p: events.append("sigterm") or True
+    )
+    await daemon.ensure_daemon("http://127.0.0.1:8765")
+    assert events == ["sigterm", "wait_port_free", "spawn"]

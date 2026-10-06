@@ -15,7 +15,7 @@ def test_health(client: TestClient) -> None:
     """GET /api/health returns 200 with the ok status body."""
     resp = client.get("/api/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.json()["status"] == "ok"
 
 
 def test_search_requires_auth(client: TestClient) -> None:

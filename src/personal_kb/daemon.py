@@ -3,7 +3,12 @@
 The MCP server's lifespan invokes :func:`ensure_daemon` before opening an
 HTTP backend over a loopback URL. The flow:
 
-1. ``GET <base>/api/health`` — if 200 with ``{"status": "ok"}``, return.
+1. ``GET <base>/api/health`` — if 200 with ``{"status": "ok"}`` and an
+   ``install_id`` equal to this client's ``sys.prefix``, return. A daemon from
+   a different install (or a pre-handshake one with no ``install_id``) is
+   replaced — at most once per process — via ``POST /api/admin/shutdown``,
+   falling back to SIGTERM of the pidfile pid (only if its cmdline contains
+   ``kb-service``), then waiting for the port to free and spawning anew.
 2. Otherwise acquire the O_EXCL pidfile lock at
    ``~/.local/share/personal_kb/kb-daemon.pid``. The winner spawns the
    daemon detached (``start_new_session=True``, stdout+stderr redirected to
@@ -25,7 +30,10 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
+import socket
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -118,25 +126,114 @@ def parse_port(base_url: str) -> int:
     return parsed.port
 
 
+# A client replaces a mismatched daemon at most once per process lifetime so
+# two clients from different installs can never ping-pong-kill each other.
+_replaced_once = False
+
+# Budget for the old daemon to release its port after a shutdown request.
+_PORT_FREE_TIMEOUT = 10.0
+
+
+async def _fetch_health(base_url: str) -> dict[str, object] | None:
+    """Return the ``/api/health`` body iff it is 200 + ``status=ok``, else None."""
+    url = base_url.rstrip("/") + "/api/health"
+    try:
+        async with httpx.AsyncClient(timeout=_HEALTH_HTTP_TIMEOUT) as client:
+            resp = await client.get(url)
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if isinstance(body, dict) and body.get("status") == "ok":
+        return body
+    return None
+
+
 async def _check_health(base_url: str) -> bool:
     """Return True iff ``GET <base>/api/health`` returns 200 + ``status=ok``.
 
     Connection-refused / timeout / non-2xx are all "unhealthy" — the caller
     proceeds to the spawn path.
     """
-    url = base_url.rstrip("/") + "/api/health"
+    return await _fetch_health(base_url) is not None
+
+
+async def _fetch_install_id(base_url: str) -> str | None:
+    """Return the daemon's reported ``install_id`` (None if absent/unhealthy)."""
+    body = await _fetch_health(base_url)
+    if body is None:
+        return None
+    value = body.get("install_id")
+    return value if isinstance(value, str) and value else None
+
+
+async def _request_shutdown(base_url: str) -> bool:
+    """POST the loopback-only shutdown endpoint. Return True iff accepted."""
+    url = base_url.rstrip("/") + "/api/admin/shutdown"
     try:
         async with httpx.AsyncClient(timeout=_HEALTH_HTTP_TIMEOUT) as client:
-            resp = await client.get(url)
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
+            resp = await client.post(url)
+    except httpx.RequestError:
         return False
-    if resp.status_code != 200:
+    return 200 <= resp.status_code < 300
+
+
+def _pid_is_kb_service(pid: int) -> bool:
+    """Return True iff ``/proc/<pid>/cmdline`` mentions ``kb-service``."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return b"kb-service" in raw
+
+
+def _sigterm_pidfile_daemon(pidfile: Path) -> bool:
+    """SIGTERM the pidfile pid, but only if it is really a kb-service process."""
+    pid = _read_pidfile(pidfile)
+    if pid is None or not _pid_is_kb_service(pid):
         return False
     try:
-        body = resp.json()
-    except ValueError:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
         return False
-    return isinstance(body, dict) and body.get("status") == "ok"
+    return True
+
+
+def _port_is_free(port: int) -> bool:
+    """Return True iff nothing accepts connections on loopback *port*."""
+    for host in ("127.0.0.1", "::1"):
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            if sock.connect_ex((host, port)) == 0:
+                return False
+    return True
+
+
+async def _wait_port_free(port: int) -> bool:
+    """Poll until *port* is free or the budget runs out."""
+    attempts = int(_PORT_FREE_TIMEOUT / _HEALTH_POLL_INTERVAL)
+    for _ in range(attempts):
+        if _port_is_free(port):
+            return True
+        await asyncio.sleep(_HEALTH_POLL_INTERVAL)
+    return _port_is_free(port)
+
+
+async def _replace_daemon(base_url: str, port: int, pidfile: Path) -> bool:
+    """Stop the running daemon. Return True iff its port was freed."""
+    if not await _request_shutdown(base_url) and not _sigterm_pidfile_daemon(pidfile):
+        return False
+    if not await _wait_port_free(port):
+        return False
+    # The old daemon's pidfile would block the spawn lock.
+    with contextlib.suppress(FileNotFoundError):
+        pidfile.unlink()
+    return True
 
 
 def _read_pidfile(path: Path) -> int | None:
@@ -299,12 +396,35 @@ async def ensure_daemon(base_url: str) -> None:
             message includes the daemon log path so the user can inspect
             the spawn failure.
     """
-    if await _check_health(base_url):
-        logger.debug("kb-daemon already healthy at %s — no spawn", base_url)
-        return
-
+    global _replaced_once
     port = parse_port(base_url)
     pidfile = _pidfile_path()
+
+    if await _check_health(base_url):
+        daemon_id = await _fetch_install_id(base_url)
+        if daemon_id == sys.prefix:
+            logger.debug("kb-daemon already healthy at %s — no spawn", base_url)
+            return
+        if _replaced_once:
+            logger.warning(
+                "kb-daemon at %s is from another install (%s, ours %s) but was already "
+                "replaced once; using it as-is",
+                base_url,
+                daemon_id,
+                sys.prefix,
+            )
+            return
+        _replaced_once = True
+        logger.warning(
+            "Replacing kb-daemon at %s: daemon install_id=%s, this client install_id=%s",
+            base_url,
+            daemon_id,
+            sys.prefix,
+        )
+        if not await _replace_daemon(base_url, port, pidfile):
+            logger.warning("Could not stop the old kb-daemon at %s; using it as-is", base_url)
+            return
+
     logfile = _logfile_path()
 
     # Up to two attempts: the second runs only if a stale pidfile blocked
