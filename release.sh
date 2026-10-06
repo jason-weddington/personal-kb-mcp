@@ -21,6 +21,20 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
+# 1. (gate) Work-user upgrade smoke test. GitHub is production: ~60 people
+#    uvx personal-kb from it against a local SQLite KB with no config. This
+#    installs the build they run today, seeds a KB, upgrades to THIS commit
+#    with the identical environment, and checks reads, row counts, writes,
+#    the web UI and rollback. A failure here means the release would break
+#    them, so it blocks the release. Skip only deliberately:
+#    SKIP_UPGRADE_SMOKE=1 ./release.sh
+if [ "${SKIP_UPGRADE_SMOKE:-}" = "1" ]; then
+  echo "WARNING: SKIP_UPGRADE_SMOKE=1, so the work-user upgrade smoke test was NOT run." >&2
+else
+  uv run python scripts/smoke_work_user_upgrade.py \
+    --new-spec "personal-kb @ git+file://$PWD@$(git rev-parse HEAD)"
+fi
+
 # 1a. Build the packaged web UI and refuse to release if it is stale relative to
 #     the frontend source. The fresh build is stashed in a temp dir and removed
 #     from the tree so semantic-release sees a clean repo; step 2a restores it
