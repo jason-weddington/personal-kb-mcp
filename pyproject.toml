@@ -46,6 +46,9 @@ aws = [
 ]
 postgres = [
     "asyncpg>=0.29",
+    "kb-core[postgres]",
+    # Hosted Pis: the kb-service service-auth DB is Postgres too.
+    "personal-kb-web-service[postgres]",
 ]
 iam = [
     "boto3>=1.28",

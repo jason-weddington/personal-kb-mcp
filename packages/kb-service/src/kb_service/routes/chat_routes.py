@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Annotated, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
@@ -46,6 +45,19 @@ from kb_service.models import (
 from kb_service.sse import sse_event
 
 logger = logging.getLogger(__name__)
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    """Return True if *exc* is asyncpg's UniqueViolationError.
+
+    asyncpg is an optional (``postgres`` extra) dependency, so it is imported
+    lazily here rather than at module load.
+    """
+    try:
+        import asyncpg
+    except ImportError:  # pragma: no cover - asyncpg absent: cannot be asyncpg's
+        return False
+    return isinstance(exc, asyncpg.UniqueViolationError)
 
 
 async def _block_in_no_auth_mode() -> None:
@@ -257,7 +269,9 @@ async def create_chat_endpoint(
             body.mode,
         )
         await chat_history.save_messages_bulk(body.chat_id, messages)
-    except asyncpg.UniqueViolationError:
+    except Exception as exc:
+        if not _is_unique_violation(exc):
+            raise
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Chat ID already exists",

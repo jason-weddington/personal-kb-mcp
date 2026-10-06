@@ -76,7 +76,8 @@ frontend/            # Vite + React 19 + MUI 7 SPA
 src/kb_service/
   main.py            # FastAPI app + lifespan + mount_frontend(app, FRONTEND_DIST)
   auth.py            # JWT + API-key auth, password hashing, invite registration
-  database.py        # service-auth asyncpg pool + schema (4 tables)
+  database.py        # service-auth DB: asyncpg pool, or SQLite service.db in no-auth mode
+  db_sqlite.py       # SQLite DbPool (local mode: unset KB_SERVICE_DATABASE_URL)
   db_types.py        # DbPool Protocol
   models.py          # Pydantic models (auth/admin/invite + Search request/response)
   config.py          # kb-core engine-config adapters (env -> dataclasses)

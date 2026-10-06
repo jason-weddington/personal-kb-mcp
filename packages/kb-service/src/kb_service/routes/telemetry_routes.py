@@ -30,7 +30,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from kb_service.auth import get_current_user
-from kb_service.database import get_db
+from kb_service.database import get_db, is_sqlite_pool
 from kb_service.models import (
     User,
     WhisperTelemetryFlushRequest,
@@ -69,6 +69,21 @@ _UPSERT_SQL = (
     " EXCLUDED.emitted_ts::timestamptz)::text"
 )
 
+# SQLite twin of _UPSERT_SQL for the local (no-auth) service DB. Identical
+# except for the re-emission comparison: SQLite has no ``::timestamptz`` cast
+# or GREATEST(), so the ISO-8601 strings are compared via ``julianday()``
+# (which normalises timezone offsets) and the later string is kept verbatim.
+_UPSERT_SQL_SQLITE = (
+    _UPSERT_SQL.split(" emit_count = ", 1)[0]
+    + " emit_count = whisper_telemetry.emit_count + CASE"
+    " WHEN julianday(EXCLUDED.emitted_ts)"
+    " > julianday(whisper_telemetry.last_emitted_ts) THEN 1 ELSE 0 END,"
+    " last_emitted_ts = CASE"
+    " WHEN julianday(EXCLUDED.emitted_ts)"
+    " > julianday(whisper_telemetry.last_emitted_ts)"
+    " THEN EXCLUDED.emitted_ts ELSE whisper_telemetry.last_emitted_ts END"
+)
+
 
 @router.post("/telemetry/whispers", response_model=WhisperTelemetryFlushResponse)
 async def flush_whisper_telemetry(
@@ -87,13 +102,14 @@ async def flush_whisper_telemetry(
     flushed_at = datetime.now(UTC).isoformat()
 
     pool = await get_db()
+    upsert_sql = _UPSERT_SQL_SQLITE if is_sqlite_pool(pool) else _UPSERT_SQL
     async with pool.acquire() as conn:
         for row in body.rows:
             trigger_context = dict(row.trigger_context)
             if row.pointers is not None:
                 trigger_context["pointers"] = row.pointers
             await conn.execute(
-                _UPSERT_SQL,
+                upsert_sql,
                 row.session_id,
                 row.host,
                 row.surface,

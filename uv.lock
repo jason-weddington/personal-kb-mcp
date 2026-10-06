@@ -1690,6 +1690,8 @@ iam = [
 ]
 postgres = [
     { name = "asyncpg" },
+    { name = "kb-core", extra = ["postgres"] },
+    { name = "personal-kb-web-service", extra = ["postgres"] },
 ]
 
 [package.dev-dependencies]
@@ -1718,7 +1720,9 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=2.0" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "kb-core", editable = "packages/kb-core" },
+    { name = "kb-core", extras = ["postgres"], marker = "extra == 'postgres'", editable = "packages/kb-core" },
     { name = "personal-kb-web-service", editable = "packages/kb-service" },
+    { name = "personal-kb-web-service", extras = ["postgres"], marker = "extra == 'postgres'", editable = "packages/kb-service" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pymupdf", specifier = ">=1.25" },
     { name = "scrubadub", specifier = ">=2.0" },
@@ -1753,7 +1757,7 @@ name = "personal-kb-web-service"
 version = "1.0.0"
 source = { editable = "packages/kb-service" }
 dependencies = [
-    { name = "asyncpg" },
+    { name = "aiosqlite" },
     { name = "bcrypt" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -1763,6 +1767,11 @@ dependencies = [
     { name = "python-multipart" },
     { name = "truststore" },
     { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+postgres = [
+    { name = "asyncpg" },
 ]
 
 [package.dev-dependencies]
@@ -1778,7 +1787,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncpg", specifier = ">=0.30" },
+    { name = "aiosqlite", specifier = ">=0.21" },
+    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.30" },
     { name = "bcrypt", specifier = ">=4.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
@@ -1789,6 +1799,7 @@ requires-dist = [
     { name = "truststore", specifier = ">=0.10" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
+provides-extras = ["postgres"]
 
 [package.metadata.requires-dev]
 dev = [

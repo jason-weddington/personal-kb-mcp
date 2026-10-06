@@ -13,7 +13,6 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from kb_core import Attribution, EmbeddingRetryConfig, create_postgres, create_sqlite
 
-from kb_service.auth import _auth_mode
 from kb_service.config import (
     build_agentic_config,
     build_embedding_config,
@@ -144,7 +143,8 @@ async def _open_kb() -> "KnowledgeBase":
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage application lifecycle.
 
-    Opens the service-auth tables (KB_SERVICE_DATABASE_URL) and a single
+    Opens the service-auth tables (KB_SERVICE_DATABASE_URL, or a local SQLite
+    ``service.db`` in no-auth mode — see ``kb_service.database``) and a single
     kb-core ``KnowledgeBase`` singleton (KB_DATABASE_URL or default SQLite),
     storing the latter on ``app.state.kb``. The Ollama embedder is opened
     ONCE here (it is not per-request safe).
@@ -157,12 +157,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     them. A failure constructing ``app.state.kb`` itself (before the
     ``try``) still fails app startup outright, same as before.
     """
-    # In no-auth (local) mode the service/auth pool is disabled, so skip
-    # init_db()/close_db() — they would otherwise raise RuntimeError when
-    # KB_SERVICE_DATABASE_URL is unset. The kb-core data DB (below) still opens.
-    no_auth = _auth_mode() == "none"
-    if not no_auth:
-        await init_db()
+    await init_db()
 
     app.state.kb = await _open_kb()
     try:
@@ -171,8 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         await app.state.kb.stop_embedding_worker()
         await app.state.kb.close()
-        if not no_auth:
-            await close_db()
+        await close_db()
 
 
 app = FastAPI(title="Personal KB Web Service", version="0.1.0", lifespan=lifespan)

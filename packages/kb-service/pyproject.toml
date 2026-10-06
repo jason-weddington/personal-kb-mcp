@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Hosted HTTP API wrapping the kb-core engine behind authentication."
 requires-python = ">=3.13"
 dependencies = [
-    "asyncpg>=0.30",
+    "aiosqlite>=0.21",
     "bcrypt>=4.0",
     "fastapi>=0.115",
     "httpx>=0.28",
@@ -15,6 +15,11 @@ dependencies = [
     "truststore>=0.10",
     "uvicorn[standard]>=0.34",
 ]
+
+[project.optional-dependencies]
+# Hosted mode: the service-auth DB is Postgres (KB_SERVICE_DATABASE_URL).
+# Local no-auth mode uses a SQLite service.db and does not need asyncpg.
+postgres = ["asyncpg>=0.30"]
 
 [project.scripts]
 kb-service = "kb_service.cli:main"
@@ -97,7 +102,7 @@ omit = [
 
 [tool.coverage.report]
 precision = 1
-fail_under = 89.4
+fail_under = 90.9
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]

@@ -1,14 +1,25 @@
-"""Async service-auth database (PostgreSQL connection pool).
+"""Async service-auth database (PostgreSQL pool, or local SQLite).
 
 This pool backs the service's OWN tables (users, api_keys, invites,
-password_resets) and is opened from ``KB_SERVICE_DATABASE_URL``. It is
-DISTINCT from the kb-core data pool (opened from ``KB_DATABASE_URL`` via
-``create_postgres``) — two separate asyncpg pools to two separate databases.
+password_resets, app_config, telemetry, ...). It is DISTINCT from the kb-core
+data DB (``KB_DATABASE_URL`` / ``KB_DB_PATH``).
+
+* ``KB_SERVICE_DATABASE_URL`` set -> an asyncpg pool to that Postgres DSN
+  (hosted mode; unchanged).
+* ``KB_SERVICE_DATABASE_URL`` unset AND ``KB_AUTH_MODE=none`` -> a local
+  SQLite file, ``service.db`` next to the data DB (directory of
+  ``KB_DB_PATH``, default ``~/.local/share/personal_kb/``).
+* ``KB_SERVICE_DATABASE_URL`` unset in any other auth mode -> RuntimeError.
+  A hosted deployment that lost its env var must fail loudly rather than
+  silently start against an empty, userless SQLite auth DB.
 """
 
 import os
+import re
+from pathlib import Path
 from typing import Any
 
+from kb_service.db_sqlite import SqlitePool
 from kb_service.db_types import DbPool
 
 _pool: DbPool | None = None
@@ -226,32 +237,98 @@ _SCHEMA_STATEMENTS: list[str] = [
 ]
 
 
+# Mirrors kb_service.main._DEFAULT_KB_DB_PATH / personal_kb.config.get_db_path.
+_DEFAULT_KB_DB_PATH = "~/.local/share/personal_kb/knowledge.db"
+SERVICE_DB_FILENAME = "service.db"
+
+_ADD_COLUMN_RE = re.compile(
+    r"^\s*ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+) (.*)$", re.DOTALL
+)
+_PG_IDENTITY = "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY"
+_SQLITE_IDENTITY = "INTEGER PRIMARY KEY AUTOINCREMENT"
+
+
+def sqlite_service_db_path() -> Path:
+    """Return the local service-DB path: ``service.db`` beside ``KB_DB_PATH``.
+
+    ``KB_DB_PATH`` is read at call time (not import time) so tests and the
+    CLI can point it elsewhere.
+    """
+    data_path = Path(os.environ.get("KB_DB_PATH", _DEFAULT_KB_DB_PATH)).expanduser()
+    return data_path.parent / SERVICE_DB_FILENAME
+
+
+def is_sqlite_pool(pool: Any) -> bool:
+    """Return True when *pool* is the local SQLite service DB."""
+    return isinstance(pool, SqlitePool)
+
+
 async def get_db() -> DbPool:
     """Return the service-auth connection pool, creating it lazily if needed.
 
-    Opens an asyncpg pool from ``KB_SERVICE_DATABASE_URL``. This service is
-    Postgres-only — there is no SQLite fallback.
+    Opens an asyncpg pool from ``KB_SERVICE_DATABASE_URL`` when it is set.
+    When it is unset, local no-auth mode (``KB_AUTH_MODE=none``) opens the
+    SQLite file from :func:`sqlite_service_db_path`; every other auth mode
+    fails closed.
 
     Raises:
-        RuntimeError: If ``KB_SERVICE_DATABASE_URL`` is not set.
+        RuntimeError: If ``KB_SERVICE_DATABASE_URL`` is not set and
+            ``KB_AUTH_MODE`` is not ``none``.
     """
     global _pool
     if _pool is None:
+        # Local import: kb_service.auth imports this module at load time.
+        from kb_service.auth import _auth_mode
+
         dsn = os.environ.get("KB_SERVICE_DATABASE_URL")
-        if not dsn:
+        if dsn:
+            import asyncpg
+
+            _pool = await asyncpg.create_pool(dsn)
+        elif _auth_mode() == "none":
+            _pool = await SqlitePool.open(sqlite_service_db_path())
+        else:
             raise RuntimeError(
                 "KB_SERVICE_DATABASE_URL is not set; the service-auth database "
-                "is required (Postgres-only)."
+                "is required unless KB_AUTH_MODE=none (local mode)."
             )
-        import asyncpg
-
-        _pool = await asyncpg.create_pool(dsn)
     return _pool
+
+
+async def _init_sqlite(pool: SqlitePool) -> None:
+    """Apply ``_SCHEMA_STATEMENTS`` to SQLite, bridging the dialect gaps.
+
+    * ``BIGINT GENERATED ALWAYS AS IDENTITY`` -> ``INTEGER PRIMARY KEY
+      AUTOINCREMENT``.
+    * ``ADD COLUMN IF NOT EXISTS`` (unsupported in SQLite) -> checked against
+      ``PRAGMA table_info`` first, so re-running is a no-op.
+    * ``DROP/ADD CONSTRAINT`` (unsupported in SQLite) are skipped: the fresh
+      ``CREATE TABLE`` already carries the full ``reason`` CHECK, and there is
+      no pre-existing SQLite table to migrate.
+    """
+    async with pool.acquire() as conn:
+        for stmt in _SCHEMA_STATEMENTS:
+            if "DROP CONSTRAINT" in stmt or "ADD CONSTRAINT" in stmt:
+                continue
+            match = _ADD_COLUMN_RE.match(stmt)
+            if match:
+                table, column, definition = match.groups()
+                cols = await conn.fetch(f"PRAGMA table_info({table})")
+                if any(c["name"] == column for c in cols):
+                    continue
+                await conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
+                continue
+            await conn.execute(stmt.replace(_PG_IDENTITY, _SQLITE_IDENTITY))
 
 
 async def init_db() -> None:
     """Create the service-auth tables if they don't exist."""
     pool = await get_db()
+    if isinstance(pool, SqlitePool):
+        await _init_sqlite(pool)
+        return
     async with pool.acquire() as conn:
         for stmt in _SCHEMA_STATEMENTS:
             await conn.execute(stmt)
