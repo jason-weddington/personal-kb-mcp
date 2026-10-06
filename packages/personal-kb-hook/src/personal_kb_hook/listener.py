@@ -25,6 +25,8 @@ import sys
 import tempfile
 from typing import TYPE_CHECKING, Any
 
+from personal_kb_hook.defaults import resolve_url_key
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -42,19 +44,17 @@ _TEXT_HEAD_CAP: int = 4000  # keep only the first N chars of the text
 
 
 def is_listener_enabled() -> bool:
-    """Return True iff all three listener env vars are set and truthy.
+    """Return True iff the listener flag is on and a URL/key resolves.
 
     Requires ALL of:
-    * ``PERSONAL_KB_URL`` — non-empty string.
-    * ``PERSONAL_KB_API_KEY`` — non-empty string.
+    * a resolvable URL/key (unset means the local-mode defaults; a remote
+      URL still needs ``PERSONAL_KB_API_KEY``).
     * ``PERSONAL_KB_LISTENER`` — lowercased value in ``{'1', 'true'}``.
 
     Reads from the environment at call time; no module-level caching.
     """
-    url = os.environ.get("PERSONAL_KB_URL", "")
-    key = os.environ.get("PERSONAL_KB_API_KEY", "")
     flag = os.environ.get("PERSONAL_KB_LISTENER", "").lower()
-    return bool(url) and bool(key) and flag in {"1", "true"}
+    return flag in {"1", "true"} and resolve_url_key() is not None
 
 
 # ---- Transcript extraction ---------------------------------------------------

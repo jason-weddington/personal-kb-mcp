@@ -9,8 +9,7 @@ Usage::
 :func:`create_backend` reads ``PERSONAL_KB_URL`` and ``PERSONAL_KB_API_KEY``
 from :data:`os.environ` **at call time** — not at import time — so tests can
 monkeypatch the env after importing this module and still get the correct
-backend. ``PERSONAL_KB_URL`` is required; the in-process local backend has
-been removed, so an unset URL raises :class:`ValueError`.
+backend. An unset ``PERSONAL_KB_URL`` means the local daemon default.
 """
 
 from __future__ import annotations
@@ -34,11 +33,8 @@ def create_backend(kb: KnowledgeBase | None = None) -> HttpBackend:
 
     Resolution:
 
-    1. If ``PERSONAL_KB_URL`` is set (and non-empty): return
-       :class:`HttpBackend` pointing at that URL with the API key from
-       ``PERSONAL_KB_API_KEY``.
-    2. Otherwise: raise :class:`ValueError` — the in-process local backend
-       has been removed, so a URL is always required.
+    The URL comes from ``PERSONAL_KB_URL`` (unset means the local default).
+    A remote URL with no ``PERSONAL_KB_API_KEY`` raises :class:`ValueError`.
 
     Reads the env **at call time** — not at module import time — so
     monkeypatching env vars in tests works correctly. The *kb* argument is
@@ -48,13 +44,12 @@ def create_backend(kb: KnowledgeBase | None = None) -> HttpBackend:
     from personal_kb.config import get_personal_kb_api_key, get_personal_kb_url
 
     url = get_personal_kb_url()
-    if url:
-        api_key = get_personal_kb_api_key() or ""
-        return HttpBackend(base_url=url, api_key=api_key)
-
-    raise ValueError(
-        "create_backend() requires PERSONAL_KB_URL; the local in-process backend has been removed."
-    )
+    api_key = get_personal_kb_api_key()
+    if api_key is None:
+        raise ValueError(
+            f"PERSONAL_KB_API_KEY is required for the non-local PERSONAL_KB_URL {url!r}."
+        )
+    return HttpBackend(base_url=url, api_key=api_key)
 
 
 __all__ = [

@@ -170,7 +170,7 @@ def _iter_local_server_examples() -> list[tuple[int, str, dict[str, object]]]:
 #     silently disables the personal-kb-hook.
 # A regression that drops either env var is the exact failure shape
 # kb-01789 found.
-_REQUIRED_LOCAL_ENV_VARS = ("PERSONAL_KB_URL", "PERSONAL_KB_API_KEY")
+_LOCAL_DEFAULTED_ENV_VARS = ("PERSONAL_KB_URL", "PERSONAL_KB_API_KEY")
 
 
 def test_readme_has_at_least_one_local_mode_example() -> None:
@@ -188,20 +188,29 @@ def test_readme_has_at_least_one_local_mode_example() -> None:
     )
 
 
-@pytest.mark.parametrize("env_var", _REQUIRED_LOCAL_ENV_VARS)
-def test_readme_local_examples_set_required_env_var(env_var: str) -> None:
-    """Every local-mode README block sets *env_var* in its ``env`` map."""
-    failures: list[str] = []
-    for line, name, server in _iter_local_server_examples():
-        env = server.get("env")
-        if not isinstance(env, dict) or env_var not in env:
-            failures.append(f"  - line {line}: mcpServers[{name!r}] missing {env_var}")
-    assert not failures, (
-        f"README local-mode mcpServers block(s) missing required env var {env_var!r} "
-        "(the loopback URL the MCP server hits / source of the spawn port; or the "
-        "local-no-auth sentinel keeping the hook wired). This is the regression "
-        "kb-01789 caught — every [local] install needs both vars set:\n" + "\n".join(failures)
+@pytest.mark.parametrize("env_var", _LOCAL_DEFAULTED_ENV_VARS)
+def test_readme_local_examples_need_no_env_var(env_var: str) -> None:
+    """Local mode needs no configuration: examples must not set *env_var*.
+
+    An unset ``PERSONAL_KB_URL`` means the local daemon and an unset key
+    means ``local-no-auth`` on loopback, so the headline quick-start
+    blocks stay config-free.
+    """
+    failures = [
+        f"  - line {line}: mcpServers[{name!r}] sets {env_var}"
+        for line, name, server in _iter_local_server_examples()
+        if isinstance(server.get("env"), dict) and env_var in server["env"]  # type: ignore[operator]
+    ]
+    assert not failures, "README local-mode blocks should not set defaulted vars:\n" + "\n".join(
+        failures
     )
+
+
+def test_readme_says_no_configuration_needed() -> None:
+    """README headline: no config for local mode; PERSONAL_KB_URL only for a hosted KB."""
+    text = README_PATH.read_text(encoding="utf-8")
+    assert "No configuration is needed for a local KB" in text
+    assert "Set `PERSONAL_KB_URL` only to point at a hosted KB" in text
 
 
 def test_readme_local_url_points_at_loopback_with_explicit_port() -> None:

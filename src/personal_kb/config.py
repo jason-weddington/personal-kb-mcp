@@ -282,27 +282,35 @@ def get_pg_region() -> str:
     return os.environ.get("KB_PG_REGION", "us-east-1")
 
 
-def get_personal_kb_url() -> str | None:
-    """Return the personal-kb service URL from PERSONAL_KB_URL, or None.
+LOCAL_KB_URL = "http://127.0.0.1:8765"
+LOCAL_KB_API_KEY = "local-no-auth"
 
-    An empty string is treated as unset (returns None). Since the in-process
-    local backend was removed (commit 14ff626), a None return is no longer a
-    "select the local engine" signal — there is no in-process fallback, and
-    callers such as :func:`personal_kb.backend.create_backend` and the server
-    lifespan will raise when the URL is missing. Read at **call time** — not
-    at module load time — so tests can monkeypatch the env after importing
-    this module.
+
+def get_personal_kb_url() -> str:
+    """Return the personal-kb service URL: ``PERSONAL_KB_URL`` or the local default.
+
+    An unset or empty variable means local mode: :data:`LOCAL_KB_URL`, served
+    by the local kb-service daemon. Read at **call time**.
     """
-    return os.environ.get("PERSONAL_KB_URL") or None
+    return os.environ.get("PERSONAL_KB_URL") or LOCAL_KB_URL
 
 
 def get_personal_kb_api_key() -> str | None:
-    """Return the personal-kb API key from PERSONAL_KB_API_KEY, or None.
+    """Return the personal-kb API key, or None.
 
-    An empty string is treated as unset (returns None).  Read at
-    **call time**.
+    ``PERSONAL_KB_API_KEY`` wins when set. When unset/empty and the resolved
+    URL is loopback, returns :data:`LOCAL_KB_API_KEY`; a remote URL with no
+    key returns None so callers can fail closed. Read at **call time**.
     """
-    return os.environ.get("PERSONAL_KB_API_KEY") or None
+    key = os.environ.get("PERSONAL_KB_API_KEY")
+    if key:
+        return key
+    from urllib.parse import urlparse
+
+    host = (urlparse(get_personal_kb_url()).hostname or "").lower()
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return LOCAL_KB_API_KEY
+    return None
 
 
 def get_aws_profile() -> str | None:

@@ -42,6 +42,7 @@ import urllib.request
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from personal_kb_hook.defaults import resolve_url_key
 from personal_kb_hook.paths import get_whisper_log_path
 
 if TYPE_CHECKING:
@@ -236,11 +237,7 @@ def _legacy_url_key() -> tuple[str, str] | None:
     POST to this pair regardless of ``source_kb`` — cross-KB telemetry
     routing waits until team-kb gets its own endpoint.
     """
-    url = os.environ.get("PERSONAL_KB_URL", "")
-    key = os.environ.get("PERSONAL_KB_API_KEY", "")
-    if url and key:
-        return url, key
-    return None
+    return resolve_url_key()
 
 
 def flush_session(session_id: str) -> None:

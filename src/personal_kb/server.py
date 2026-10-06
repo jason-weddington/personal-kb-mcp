@@ -43,8 +43,8 @@ from personal_kb.tools.kb_summarize import register_kb_summarize
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     """Manage the backend lifecycle — HTTP-only path with optional local daemon.
 
-    Reading B (kb-01807): ``PERSONAL_KB_URL`` is ALWAYS set. The MCP server
-    opens an :class:`HttpBackend` against that URL in every mode. When the
+    An unset/empty ``PERSONAL_KB_URL`` means local mode (``LOCAL_KB_URL``).
+    The MCP server opens an :class:`HttpBackend` against that URL in every mode. When the
     URL targets a loopback host (``127.0.0.1`` / ``localhost``), the
     lifespan runs :func:`ensure_daemon` as a pre-step — spawning a
     detached, singleton ``kb-service`` daemon if ``/api/health`` is
@@ -70,17 +70,20 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     logger = logging.getLogger(__name__)
 
     kb_service_url = get_personal_kb_url()
-    if not kb_service_url:
-        msg = (
-            "PERSONAL_KB_URL is not set. "
-            "Local mode expects setup.sh to write PERSONAL_KB_URL=http://localhost:<port>; "
-            "remote mode expects the team KB URL. Set the variable and retry."
-        )
-        raise RuntimeError(msg)
+    if not os.environ.get("PERSONAL_KB_URL"):
+        logger.info("PERSONAL_KB_URL not set; using local default %s", kb_service_url)
 
     from personal_kb.backend import HttpBackend
     from personal_kb.config import get_personal_kb_api_key
     from personal_kb.daemon import ensure_daemon, is_loopback_url
+
+    api_key = get_personal_kb_api_key()
+    if api_key is None:
+        msg = (
+            f"PERSONAL_KB_API_KEY is not set but PERSONAL_KB_URL {kb_service_url!r} "
+            "is not a local URL. Set PERSONAL_KB_API_KEY for the hosted KB."
+        )
+        raise RuntimeError(msg)
 
     # Loopback URLs trigger the spawn pre-step.  Remote URLs go straight
     # to HttpBackend.open() — no daemon, no pidfile, no health poll.
@@ -91,7 +94,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         )
         await ensure_daemon(kb_service_url)
 
-    api_key = get_personal_kb_api_key() or ""
     logger.info("Opening HttpBackend at %s", kb_service_url)
     backend = HttpBackend(base_url=kb_service_url, api_key=api_key)
     await backend.open()

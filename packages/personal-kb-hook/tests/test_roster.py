@@ -215,7 +215,10 @@ def test_case08_absent_file_no_legacy_env_returns_empty(
     roster_env: dict[str, Path],
 ) -> None:
     assert not roster_env["config_file"].exists()
-    assert load_roster() == []
+    # No config and no env: local-mode defaults synthesize the personal entry.
+    assert load_roster() == [
+        KbEntry(label="personal", url="http://127.0.0.1:8765", key="local-no-auth")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +351,9 @@ def test_case14_key_set_url_empty_string_no_config_returns_empty(
     assert not roster_env["config_file"].exists()
     monkeypatch.setenv("PERSONAL_KB_URL", "")  # empty string → treated as unset
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "legacy-key")
-    assert load_roster() == []
+    assert load_roster() == [
+        KbEntry(label="personal", url="http://127.0.0.1:8765", key="legacy-key")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -379,8 +384,10 @@ def test_config_path_hyphen_dir_not_read(roster_env: dict[str, Path], tmp_path: 
         [{"label": "ok", "url": "https://ok.kb/", "key_file": str(key_ok)}],
     )
     # Correct path (underscore) is absent → legacy fallback path taken;
-    # no legacy env vars set → [].
-    assert load_roster() == []
+    # no legacy env vars set → local-mode default entry.
+    assert load_roster() == [
+        KbEntry(label="personal", url="http://127.0.0.1:8765", key="local-no-auth")
+    ]
 
 
 def test_config_path_wrong_filename_not_read(roster_env: dict[str, Path], tmp_path: Path) -> None:
@@ -391,7 +398,9 @@ def test_config_path_wrong_filename_not_read(roster_env: dict[str, Path], tmp_pa
         wrong,
         [{"label": "ok", "url": "https://ok.kb/", "key_file": str(key_ok)}],
     )
-    assert load_roster() == []
+    assert load_roster() == [
+        KbEntry(label="personal", url="http://127.0.0.1:8765", key="local-no-auth")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +433,8 @@ def test_listener_gate_unchanged_url_empty(
     monkeypatch.setenv("PERSONAL_KB_URL", "")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "k")
     monkeypatch.setenv("PERSONAL_KB_LISTENER", "1")
-    assert listener.is_listener_enabled() is False
+    # Empty URL means the local default; the opt-in flag still gates.
+    assert listener.is_listener_enabled() is True
 
 
 # ---------------------------------------------------------------------------

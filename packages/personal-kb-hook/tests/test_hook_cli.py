@@ -29,7 +29,9 @@ def hook_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     db_path.parent.mkdir(parents=True)
     monkeypatch.setenv("KB_DB_PATH", str(db_path))
     monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
-    monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
+    # Unset means the local default (127.0.0.1:8765); point at a closed port so a
+    # real daemon on the build machine can never leak into these tests.
+    monkeypatch.setenv("PERSONAL_KB_URL", "http://127.0.0.1:1")
     monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -459,7 +461,7 @@ class _ProcHandle:
 
 @pytest.mark.parametrize(
     "missing_var",
-    ["PERSONAL_KB_URL", "PERSONAL_KB_API_KEY", "PERSONAL_KB_LISTENER"],
+    ["PERSONAL_KB_API_KEY", "PERSONAL_KB_LISTENER"],
 )
 def test_stop_env_gate_off_per_var_is_noop(
     missing_var: str,
@@ -1991,3 +1993,37 @@ def test_read_prompt_text_returns_none_for_missing_empty_or_non_string(
     payload: dict[str, Any],
 ) -> None:
     assert cli.read_prompt_text(payload) is None
+
+
+def test_defaults_target_local_daemon_and_stay_silent_when_nothing_listens(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    """No URL/key in env: hook targets the local default, never spawns, exits silent."""
+    import subprocess
+    import urllib.request
+
+    from personal_kb_hook.defaults import LOCAL_KB_API_KEY, LOCAL_KB_URL, resolve_url_key
+
+    monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
+    monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
+    assert resolve_url_key() == (LOCAL_KB_URL, LOCAL_KB_API_KEY)
+    assert (LOCAL_KB_URL, LOCAL_KB_API_KEY) == ("http://127.0.0.1:8765", "local-no-auth")
+
+    seen: list[str] = []
+
+    def refuse(req: Any, *a: object, **k: object) -> Any:
+        seen.append(getattr(req, "full_url", str(req)))
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    spawned: list[object] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    (hook_env["root"] / ".kb_project").write_text("personal-kb\n", encoding="utf-8")
+    rc, out = _run(
+        monkeypatch,
+        {"hook_event_name": "SessionStart", "cwd": str(hook_env["root"]), "session_id": "d1"},
+    )
+    assert rc == 0
+    assert out == ""
+    assert spawned == []
+    assert all(u.startswith(LOCAL_KB_URL) for u in seen)

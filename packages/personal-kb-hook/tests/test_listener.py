@@ -66,8 +66,10 @@ def _write_jsonl(path: Path, records: list[Any]) -> None:
         ("https://kb.example.com", "mykey", "false", False),
         ("https://kb.example.com", "mykey", "", False),
         ("https://kb.example.com", "", "true", False),
-        ("", "mykey", "true", False),
+        ("", "mykey", "true", True),  # unset URL = local default
+        ("", "", "true", True),  # local defaults, flag on
         ("", "", "", False),
+        ("https://kb.example.com", "", "true", False),
     ],
     ids=[
         "all-set-true",
@@ -77,7 +79,9 @@ def _write_jsonl(path: Path, records: list[Any]) -> None:
         "flag-empty",
         "key-missing",
         "url-missing",
+        "local-defaults",
         "all-missing",
+        "remote-key-missing",
     ],
 )
 def test_is_listener_enabled(

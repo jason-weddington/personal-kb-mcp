@@ -43,6 +43,8 @@ import urllib.parse
 from pathlib import Path
 from typing import NamedTuple
 
+from personal_kb_hook.defaults import resolve_url_key
+
 
 class KbEntry(NamedTuple):
     """One KB in the roster: a label, a base URL, and a bearer key.
@@ -73,10 +75,9 @@ def _config_home() -> Path:
 
 def _legacy_fallback() -> list[KbEntry]:
     """Synthesize a single 'personal' entry from legacy env vars, or return ``[]``."""
-    url = os.environ.get("PERSONAL_KB_URL", "")
-    key = os.environ.get("PERSONAL_KB_API_KEY", "")
-    if url and key:
-        return [KbEntry(label=_LEGACY_LABEL, url=url, key=key)]
+    resolved = resolve_url_key()
+    if resolved:
+        return [KbEntry(label=_LEGACY_LABEL, url=resolved[0], key=resolved[1])]
     return []
 
 

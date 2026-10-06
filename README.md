@@ -56,22 +56,9 @@ In **local mode** the MCP server auto-spawns `kb-service` as a detached
 singleton daemon on `127.0.0.1:8765` the first time a session opens, and
 talks to it over loopback. Two things are required for that flow to work:
 
-1. The `[local]` extra — pulls the `personal-kb-web-service` package
-   (which provides the `kb-service` console script) into the same `uvx` /
-   `uv tool` venv as `personal-kb`. Without it, the daemon spawn raises
-   `RuntimeError: kb-service not on PATH` at MCP startup.
-2. Two env vars in your `mcpServers` block:
-   - `PERSONAL_KB_URL=http://localhost:8765` — the URL the MCP server
-     hits for `/api/health` and every tool call. The port is parsed from
-     this URL and used for the daemon spawn (`kb-service serve --port 8765`).
-   - `PERSONAL_KB_API_KEY=local-no-auth` — a fixed, non-secret sentinel.
-     The spawned daemon runs with `KB_AUTH_MODE=none` (single synthetic
-     local user) and ignores the value; the personal-kb-hook treats a
-     non-empty key as "wired" and silently disables itself on an empty
-     key, so the sentinel must be present.
+The `kb-service` console script ships with `personal-kb` (the `[local]` extra is kept for compatibility), so a plain `uvx` install has everything it needs.
 
-Every quick-start config below sets both. If you forget either var, the
-MCP server raises a clear `RuntimeError` at startup.
+**No configuration is needed for a local KB.** When `PERSONAL_KB_URL` is unset (or empty) the MCP server uses `http://127.0.0.1:8765`, sends the fixed non-secret API key `local-no-auth` (the spawned daemon runs with `KB_AUTH_MODE=none` and ignores it), and spawns the daemon on first use. The personal-kb-hook applies the same defaults but never spawns the daemon: if nothing is listening it stays silent. Set `PERSONAL_KB_URL` only to point at a hosted KB, and then `PERSONAL_KB_API_KEY` is required (a remote URL without a key is a startup error, never the sentinel). An explicit loopback URL on another port spawns the daemon on that port.
 
 ### With Anthropic (simplest)
 
@@ -85,8 +72,6 @@ Add this to your MCP client config — Claude Code (`~/.claude/mcp.json`), Claud
       "command": "uvx",
       "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git[local]", "personal-kb"],
       "env": {
-        "PERSONAL_KB_URL": "http://localhost:8765",
-        "PERSONAL_KB_API_KEY": "local-no-auth",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     }
@@ -108,8 +93,6 @@ connects to it over loopback.
       "command": "uvx",
       "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git[local]", "personal-kb"],
       "env": {
-        "PERSONAL_KB_URL": "http://localhost:8765",
-        "PERSONAL_KB_API_KEY": "local-no-auth",
         "KB_EXTRACTION_PROVIDER": "ollama",
         "KB_QUERY_PROVIDER": "ollama"
       }
@@ -135,8 +118,6 @@ ollama pull qwen3:4b               # for LLM features (graph enrichment, query p
       "command": "uvx",
       "args": ["--from", "git+https://github.com/jason-weddington/personal-kb-mcp.git[local,aws]", "personal-kb"],
       "env": {
-        "PERSONAL_KB_URL": "http://localhost:8765",
-        "PERSONAL_KB_API_KEY": "local-no-auth",
         "KB_EXTRACTION_PROVIDER": "bedrock",
         "KB_QUERY_PROVIDER": "bedrock",
         "AWS_BEARER_TOKEN_BEDROCK": "your-bearer-token",
@@ -384,8 +365,8 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | Variable | Default | Description |
 |---|---|---|
 | **Thin client (always set)** | | |
-| `PERSONAL_KB_URL` | _(required)_ | `kb-service` URL. Local mode: `http://localhost:8765` (the MCP server auto-spawns a daemon on this port). Remote mode: the team service URL. |
-| `PERSONAL_KB_API_KEY` | _(required)_ | Bearer token for `kb-service`. Local mode: the sentinel `local-no-auth` (non-empty so the hook stays wired; the daemon ignores it). Remote mode: a per-machine API key minted from the service's Settings → API Keys pane. |
+| `PERSONAL_KB_URL` | `http://127.0.0.1:8765` | `kb-service` URL. Unset or empty means local mode (the MCP server auto-spawns a daemon on this port). Set it only for a hosted KB. |
+| `PERSONAL_KB_API_KEY` | `local-no-auth` for loopback URLs; required otherwise | Bearer token for `kb-service`. Defaults to the sentinel only when the URL is loopback (the daemon ignores it). Remote mode: a per-machine API key minted from the service's Settings → API Keys pane. |
 | **Core** | | |
 | `KB_DATABASE_URL` | _(unset)_ | PostgreSQL URL — passed through to `kb-service` (the MCP server itself never opens a DB) |
 | `KB_DB_PATH` | `~/.local/share/personal_kb/knowledge.db` | SQLite database file path (ignored when `KB_DATABASE_URL` is set) |

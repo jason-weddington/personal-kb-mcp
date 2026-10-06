@@ -371,6 +371,7 @@ async def test_lifespan_remote_url_skips_ensure_daemon(
 ) -> None:
     """A non-loopback PERSONAL_KB_URL does NOT trigger the spawn pre-step."""
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "k")
 
     ensure_mock = AsyncMock(return_value=None)
     monkeypatch.setattr("personal_kb.daemon.ensure_daemon", ensure_mock)
@@ -384,13 +385,55 @@ async def test_lifespan_remote_url_skips_ensure_daemon(
         assert isinstance(ctx["backend"], HttpBackend)
 
 
-async def test_lifespan_missing_url_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset PERSONAL_KB_URL surfaces a clear configuration error."""
+async def test_lifespan_unset_url_uses_local_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset URL + key: spawn the local daemon and open HttpBackend with the sentinel."""
     monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
+    monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
+
+    ensure_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr("personal_kb.daemon.ensure_daemon", ensure_mock)
+    open_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr("personal_kb.backend.http.HttpBackend.open", open_mock)
+
+    from personal_kb.config import LOCAL_KB_API_KEY, LOCAL_KB_URL
+    from personal_kb.server import lifespan
+
+    mcp = FastMCP("test-local-default", lifespan=lifespan)
+    async with lifespan(mcp) as ctx:
+        ensure_mock.assert_awaited_once_with(LOCAL_KB_URL)
+        open_mock.assert_awaited_once()
+        assert ctx["backend"]._api_key == LOCAL_KB_API_KEY
+
+
+async def test_lifespan_empty_url_uses_local_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty PERSONAL_KB_URL behaves like unset."""
+    monkeypatch.setenv("PERSONAL_KB_URL", "")
+    monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
+
+    ensure_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr("personal_kb.daemon.ensure_daemon", ensure_mock)
+    monkeypatch.setattr("personal_kb.backend.http.HttpBackend.open", AsyncMock())
+
+    from personal_kb.config import LOCAL_KB_URL
+    from personal_kb.server import lifespan
+
+    mcp = FastMCP("test-empty-url", lifespan=lifespan)
+    async with lifespan(mcp):
+        ensure_mock.assert_awaited_once_with(LOCAL_KB_URL)
+
+
+async def test_lifespan_remote_url_without_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A remote URL with no key fails loudly, naming PERSONAL_KB_API_KEY."""
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
+
+    ensure_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr("personal_kb.daemon.ensure_daemon", ensure_mock)
 
     from personal_kb.server import lifespan
 
-    mcp = FastMCP("test-missing-url", lifespan=lifespan)
-    with pytest.raises(RuntimeError, match="PERSONAL_KB_URL is not set"):
+    mcp = FastMCP("test-remote-nokey", lifespan=lifespan)
+    with pytest.raises(RuntimeError, match="PERSONAL_KB_API_KEY"):
         async with lifespan(mcp):
-            pass  # pragma: no cover — should not reach
+            pass  # pragma: no cover
+    ensure_mock.assert_not_called()
