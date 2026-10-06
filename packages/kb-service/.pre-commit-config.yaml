@@ -1,0 +1,90 @@
+# Every hook here CHECKS; none of them FIX. See kb-03099.
+#
+# A fixer hook (ruff --fix, ruff-format, trailing-whitespace,
+# end-of-file-fixer) mutates files and exits non-zero on the first commit
+# attempt. Claude Code absorbs that — its commit-retry loop is exactly the
+# trigger — but the talos dispatch worker commits ONCE, so a fixer that
+# rewrites the tree at commit time destroys a completed, gate-green unit of
+# work and the run returns `failed` before pushing. Converting fixers to
+# their check-only variants keeps Claude Code's failed-commit trigger intact
+# (the checker still fails the commit; the agent runs the formatter itself)
+# while removing the mutation that breaks talos. Keep it that way: this repo
+# is dispatched to both harnesses.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # trailing-whitespace and end-of-file-fixer are deliberately ABSENT:
+      # pre-commit-hooks ships no check-only variant of either, so they are
+      # replaced by the local `whitespace-check` hook below.
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.3
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.7
+    hooks:
+      # No --fix: ruff defaults to check-only, which is what we want.
+      - id: ruff
+      # --check makes ruff-format report instead of rewriting.
+      - id: ruff-format
+        args: [--check]
+
+  - repo: local
+    hooks:
+      - id: whitespace-check
+        name: whitespace (check only, no fix)
+        entry: scripts/check-whitespace.sh
+        language: script
+        types: [text]
+
+      - id: mypy
+        name: mypy
+        entry: uv run --frozen mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        args: [src/]
+
+      - id: conventional-commit
+        name: Conventional Commit (main only)
+        entry: scripts/check-conventional-commit.sh
+        language: script
+        stages: [commit-msg]
+        always_run: true
+
+      - id: coverage
+        name: test coverage
+        entry: bash -c 'uv run --frozen pytest --cov --cov-report=term-missing > /tmp/pre-push-coverage.txt 2>&1; rc=$?; tail -6 /tmp/pre-push-coverage.txt; exit $rc'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: eslint
+        name: eslint
+        entry: npm --prefix frontend run lint
+        language: system
+        pass_filenames: false
+        files: '^frontend/.*\.(ts|tsx)$'
+
+      - id: tsc
+        name: tsc
+        entry: bash -c "cd frontend && npx tsc -b --noEmit"
+        language: system
+        pass_filenames: false
+        files: '^frontend/.*\.(ts|tsx)$'
+
+      - id: vitest
+        name: vitest
+        entry: npm --prefix frontend run test
+        language: system
+        pass_filenames: false
+        files: '^frontend/.*\.(ts|tsx)$'
+        stages: [pre-push]
