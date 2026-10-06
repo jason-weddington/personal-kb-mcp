@@ -50,6 +50,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+PACKAGED_STATIC = Path(__file__).resolve().parent / "static"
+STATIC_DIR_ENV = "KB_SERVICE_STATIC_DIR"
+
+
+def resolve_static_dir(
+    env_dir: str | None = None,
+    dev_dist: Path | None = None,
+    packaged: Path | None = None,
+) -> tuple[Path, str] | None:
+    """Pick the SPA directory to serve, or None if no candidate has index.html.
+
+    Order: (a) KB_SERVICE_STATIC_DIR, (b) the checkout dev build at
+    frontend/dist, (c) the UI packaged inside the wheel. Arguments default to
+    the real environment / paths; tests pass explicit ones.
+    """
+    if env_dir is None:
+        env_dir = os.environ.get(STATIC_DIR_ENV)
+    candidates: list[tuple[str, Path]] = []
+    if env_dir:
+        candidates.append((STATIC_DIR_ENV, Path(env_dir)))
+    candidates.append(("dev build", FRONTEND_DIST if dev_dist is None else dev_dist))
+    candidates.append(("packaged", PACKAGED_STATIC if packaged is None else packaged))
+    for source, path in candidates:
+        if (path / "index.html").is_file():
+            return path, source
+    return None
 
 
 def mount_frontend(app: FastAPI, dist_dir: Path) -> bool:
@@ -221,4 +247,8 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "version": version, "install_id": sys.prefix}
 
 
-mount_frontend(app, FRONTEND_DIST)
+_static = resolve_static_dir()
+if _static is not None and mount_frontend(app, _static[0]):
+    logger.info("Serving web UI from %s (%s)", _static[0], _static[1])
+else:
+    logger.info("No web UI found; serving the API only")

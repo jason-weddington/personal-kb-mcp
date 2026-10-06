@@ -9,7 +9,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from kb_service.main import mount_frontend
+from kb_service.main import (
+    PACKAGED_STATIC,
+    mount_frontend,
+    resolve_static_dir,
+)
 
 
 @pytest.fixture()
@@ -97,3 +101,56 @@ def test_path_traversal_does_not_serve_out_of_tree_file(
     response2 = client.get("/../secret.txt")
     assert response2.status_code in (200, 404)
     assert b"TOP SECRET" not in response2.content
+
+
+def _make_dist(root: Path, name: str) -> Path:
+    d = root / name
+    (d / "assets").mkdir(parents=True)
+    (d / "index.html").write_text(f"<html>{name}</html>")
+    (d / "assets" / "app.js").write_text("console.log('x')")
+    return d
+
+
+def test_resolve_prefers_env_dir(tmp_path: Path) -> None:
+    env, dev, pkg = (_make_dist(tmp_path, n) for n in ("env", "dev", "pkg"))
+    assert resolve_static_dir(str(env), dev, pkg) == (env, "KB_SERVICE_STATIC_DIR")
+
+
+def test_resolve_falls_to_dev_build(tmp_path: Path) -> None:
+    dev, pkg = (_make_dist(tmp_path, n) for n in ("dev", "pkg"))
+    assert resolve_static_dir(str(tmp_path / "missing"), dev, pkg) == (
+        dev,
+        "dev build",
+    )
+
+
+def test_resolve_falls_to_packaged(tmp_path: Path) -> None:
+    pkg = _make_dist(tmp_path, "pkg")
+    assert resolve_static_dir("", tmp_path / "nodev", pkg) == (pkg, "packaged")
+
+
+def test_resolve_none_found(tmp_path: Path) -> None:
+    assert resolve_static_dir("", tmp_path / "a", tmp_path / "b") is None
+
+
+def test_resolve_reads_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env = _make_dist(tmp_path, "env")
+    monkeypatch.setenv("KB_SERVICE_STATIC_DIR", str(env))
+    result = resolve_static_dir(None, tmp_path / "a", tmp_path / "b")
+    assert result == (env, "KB_SERVICE_STATIC_DIR")
+
+
+def test_packaged_only_app_serves_ui(tmp_path: Path) -> None:
+    pkg = _make_dist(tmp_path, "pkg")
+    resolved = resolve_static_dir("", tmp_path / "nodev", pkg)
+    assert resolved is not None
+    client = TestClient(make_app(resolved[0]))
+    root = client.get("/")
+    assert root.status_code == 200
+    assert b"pkg" in root.content
+    assert client.get("/assets/app.js").status_code == 200
+
+
+def test_real_packaged_static_has_index() -> None:
+    """The committed packaged UI must exist so installs serve it."""
+    assert (PACKAGED_STATIC / "index.html").is_file()

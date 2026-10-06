@@ -27,6 +27,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ROOT_PYPROJECT = REPO_ROOT / "pyproject.toml"
 DEFAULT_HOOK_PYPROJECT = REPO_ROOT / "packages" / "personal-kb-hook" / "pyproject.toml"
+DEFAULT_SERVICE_PYPROJECT = REPO_ROOT / "packages" / "kb-service" / "pyproject.toml"
 
 # Matches the FIRST ``version = "X.Y.Z"`` line at column 0 (i.e. the
 # ``[project]`` table's version, not e.g. ``requires-python``-adjacent
@@ -81,15 +82,22 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_HOOK_PYPROJECT,
         help="Path to packages/personal-kb-hook/pyproject.toml (target).",
     )
+    parser.add_argument(
+        "--service-pyproject",
+        type=Path,
+        default=DEFAULT_SERVICE_PYPROJECT,
+        help="Path to packages/kb-service/pyproject.toml (also stamped).",
+    )
     args = parser.parse_args(argv)
 
     new_version = read_project_version(args.root_pyproject)
-    changed = stamp_hook_version(args.hook_pyproject, new_version)
-    display = _display_path(args.hook_pyproject)
-    if changed:
-        print(f"Stamped {display} to version {new_version}")
-    else:
-        print(f"{display} already at version {new_version}; no change.")
+    for target in (args.hook_pyproject, args.service_pyproject):
+        changed = stamp_hook_version(target, new_version)
+        display = _display_path(target)
+        if changed:
+            print(f"Stamped {display} to version {new_version}")
+        else:
+            print(f"{display} already at version {new_version}; no change.")
     return 0
 
 

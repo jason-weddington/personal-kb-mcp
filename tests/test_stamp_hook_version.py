@@ -119,9 +119,21 @@ def test_main_end_to_end_with_explicit_paths(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root, hook = _write_pair(tmp_path, "2.0.0", "0.1.0")
-    rc = stamp_hook_version_mod.main(["--root-pyproject", str(root), "--hook-pyproject", str(hook)])
+    svc = tmp_path / "svc.toml"
+    svc.write_text(hook.read_text())
+    rc = stamp_hook_version_mod.main(
+        [
+            "--root-pyproject",
+            str(root),
+            "--hook-pyproject",
+            str(hook),
+            "--service-pyproject",
+            str(svc),
+        ]
+    )
     assert rc == 0
     assert 'version = "2.0.0"' in hook.read_text()
+    assert 'version = "2.0.0"' in svc.read_text()
     out = capsys.readouterr().out
     assert "2.0.0" in out
 
@@ -130,7 +142,18 @@ def test_main_is_noop_when_already_matching(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root, hook = _write_pair(tmp_path, "2.0.0", "2.0.0")
-    rc = stamp_hook_version_mod.main(["--root-pyproject", str(root), "--hook-pyproject", str(hook)])
+    svc = tmp_path / "svc.toml"
+    svc.write_text(hook.read_text())
+    rc = stamp_hook_version_mod.main(
+        [
+            "--root-pyproject",
+            str(root),
+            "--hook-pyproject",
+            str(hook),
+            "--service-pyproject",
+            str(svc),
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "no change" in out.lower()

@@ -21,6 +21,18 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
+# 1a. Build the packaged web UI and refuse to release if it is stale relative to
+#     the frontend source. The fresh build is stashed in a temp dir and removed
+#     from the tree so semantic-release sees a clean repo; step 2a restores it
+#     and folds it into the single release commit.
+static_dir=packages/kb-service/src/kb_service/static
+./scripts/build_static_ui.sh
+./scripts/check_static_ui_fresh.sh
+ui_tmp=$(mktemp -d)
+cp -R "$static_dir/." "$ui_tmp/"
+git checkout -- "$static_dir"
+git clean -fdq -- "$static_dir"
+
 # 2. Bump version + CHANGELOG + uv.lock and tag locally.
 #    --no-push:        we push explicitly to both remotes below.
 #    --no-vcs-release:  don't create a GitHub Release object (tags are enough).
@@ -44,15 +56,21 @@ uv run semantic-release version --no-push --no-vcs-release
 python3 scripts/stamp_hook_version.py
 new_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1)
 new_tag="v${new_version}"
-if ! git diff --quiet -- packages/personal-kb-hook/pyproject.toml; then
-  # The hook is a uv workspace member, so its version also appears in
-  # uv.lock — re-lock so the lockfile entry tracks the new version, then
-  # fold both files into the release commit.
-  uv lock
-  git add packages/personal-kb-hook/pyproject.toml uv.lock
+
+# Restore the freshly built UI, then re-verify it against the source.
+rm -rf "$static_dir"
+mkdir -p "$static_dir"
+cp -R "$ui_tmp/." "$static_dir/"
+rm -rf "$ui_tmp"
+./scripts/check_static_ui_fresh.sh
+
+# kb-service is a workspace member too, so its version is also in uv.lock.
+uv lock
+git add -A "$static_dir" packages/personal-kb-hook/pyproject.toml \
+  packages/kb-service/pyproject.toml uv.lock
+if ! git diff --cached --quiet; then
   # Keep the conventional `chore(release): v{version}` message, then move
-  # the annotated tag onto the new commit. The tag message mirrors what
-  # semantic-release writes by default ("v{version}").
+  # the annotated tag onto the new commit.
   git commit --amend --no-edit
   git tag -d "$new_tag"
   git tag -a "$new_tag" -m "$new_tag"
