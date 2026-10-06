@@ -18,3 +18,4 @@ htmlcov/
 .mcp.json
 .envrc
 .kiro/
+release.local.sh

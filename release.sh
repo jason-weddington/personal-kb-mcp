@@ -8,7 +8,37 @@
 # Day-to-day development squash-merges to local `main` and pushes to `origin`
 # (the home-lab VM) freely for testing. This script is the separate
 # promote-to-github step — run it only when local `main` is verified good.
+#
+# Usage: ./release.sh [--no-publish]
+#
+# Optional maintainer-local publish hook
+# --------------------------------------
+# After the release commit and tag exist locally, and BEFORE anything is
+# pushed, release.sh builds four wheels into ./dist (personal-kb, kb-core,
+# personal-kb-web-service, personal-kb-hook, all at the release version) and,
+# if an executable ./release.local.sh exists (gitignored, never committed),
+# runs it from the repo root as:
+#
+#     ./release.local.sh <version> <absolute-dist-dir>
+#
+# Exit 0 means the artifacts are published (e.g. uploaded to a private
+# package index); any other exit aborts the release. Publishing happens before
+# the push so a remote never advertises a version whose artifacts did not ship.
+# On any abort the local release tag is deleted and nothing has been pushed.
+# With no hook present the release aborts too, unless --no-publish is given,
+# which skips publishing (loudly) and pushes anyway.
 set -euo pipefail
+
+publish=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-publish) publish=0 ;;
+    *)
+      echo "Unknown argument: $arg (usage: ./release.sh [--no-publish])" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # 1. Preconditions: on main, clean working tree.
 branch=$(git rev-parse --abbrev-ref HEAD)
@@ -81,13 +111,43 @@ rm -rf "$ui_tmp"
 # kb-service is a workspace member too, so its version is also in uv.lock.
 uv lock
 git add -A "$static_dir" packages/personal-kb-hook/pyproject.toml \
-  packages/kb-service/pyproject.toml uv.lock
+  packages/kb-service/pyproject.toml packages/kb-core/pyproject.toml uv.lock
 if ! git diff --cached --quiet; then
   # Keep the conventional `chore(release): v{version}` message, then move
   # the annotated tag onto the new commit.
   git commit --amend --no-edit
   git tag -d "$new_tag"
   git tag -a "$new_tag" -m "$new_tag"
+fi
+
+# Abort the release: drop the local tag so a re-run starts clean. Nothing has
+# been pushed at this point.
+abort_release() {
+  echo "$1" >&2
+  git tag -d "$new_tag" >/dev/null 2>&1 || true
+  echo "Local tag $new_tag deleted; nothing was pushed." >&2
+  exit 1
+}
+
+# 2b. Build all four wheels and verify exactly those, at the release version.
+rm -rf dist
+uv build --all-packages -o dist
+expected_wheels="kb_core personal_kb personal_kb_hook personal_kb_web_service"
+actual_wheels=$(find dist -maxdepth 1 -name '*.whl' | wc -l | tr -d ' ')
+[ "$actual_wheels" = "4" ] || abort_release "Expected exactly 4 wheels in dist/, found $actual_wheels."
+for name in $expected_wheels; do
+  [ -f "dist/${name}-${new_version}-py3-none-any.whl" ] ||
+    abort_release "Missing wheel dist/${name}-${new_version}-py3-none-any.whl."
+done
+
+# 2c. Publish hook (see header). Runs before any push.
+if [ -x ./release.local.sh ]; then
+  ./release.local.sh "$new_version" "$PWD/dist" ||
+    abort_release "release.local.sh failed; aborting release."
+elif [ "$publish" = "1" ]; then
+  abort_release "No executable ./release.local.sh publish hook found. It is an optional maintainer-local script, invoked as: release.local.sh <version> <abs-dist-dir>; exit 0 means artifacts are published. Create it, or re-run with --no-publish to release without publishing artifacts."
+else
+  echo "!!! NO ARTIFACTS PUBLISHED: --no-publish given and no ./release.local.sh hook; pushing tags anyway. !!!" >&2
 fi
 
 # 3. Publish to BOTH remotes: home-lab origin first, then the team-facing github.

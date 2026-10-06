@@ -62,10 +62,15 @@ def register_kb_preflight(mcp: FastMCP, prefix: str = "kb_") -> None:
         backend = backend_from_lifespan(ctx.lifespan_context)
 
         try:
-            return await backend.preflight(project_ref, since)
+            result = await backend.preflight(project_ref, since)
         except Exception as exc:
             from personal_kb.backend.http import BackendHttpError, _map_error
 
             if isinstance(exc, BackendHttpError):
                 return _map_error(exc, "")
             return f"Error: {exc}"
+
+        note = ctx.lifespan_context.get("version_skew_note")
+        if note:
+            result = f"{result}\n\n{note}"
+        return result

@@ -97,9 +97,16 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     logger.info("Opening HttpBackend at %s", kb_service_url)
     backend = HttpBackend(base_url=kb_service_url, api_key=api_key)
     await backend.open()
+    skew_note: str | None = None
+    try:
+        from personal_kb.version_skew import check_version_skew
+
+        skew_note = await check_version_skew(kb_service_url)
+    except Exception:
+        logger.debug("version skew check failed", exc_info=True)
     try:
         # No 'kb' object — every backend operation goes through HTTP.
-        yield {"backend": backend}
+        yield {"backend": backend, "version_skew_note": skew_note}
     finally:
         # Close ONLY the backend.  The daemon (if we spawned one) outlives
         # this session — it serves future MCP processes too.

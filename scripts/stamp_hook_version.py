@@ -28,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ROOT_PYPROJECT = REPO_ROOT / "pyproject.toml"
 DEFAULT_HOOK_PYPROJECT = REPO_ROOT / "packages" / "personal-kb-hook" / "pyproject.toml"
 DEFAULT_SERVICE_PYPROJECT = REPO_ROOT / "packages" / "kb-service" / "pyproject.toml"
+DEFAULT_CORE_PYPROJECT = REPO_ROOT / "packages" / "kb-core" / "pyproject.toml"
 
 # Matches the FIRST ``version = "X.Y.Z"`` line at column 0 (i.e. the
 # ``[project]`` table's version, not e.g. ``requires-python``-adjacent
@@ -88,10 +89,16 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_SERVICE_PYPROJECT,
         help="Path to packages/kb-service/pyproject.toml (also stamped).",
     )
+    parser.add_argument(
+        "--core-pyproject",
+        type=Path,
+        default=DEFAULT_CORE_PYPROJECT,
+        help="Path to packages/kb-core/pyproject.toml (also stamped).",
+    )
     args = parser.parse_args(argv)
 
     new_version = read_project_version(args.root_pyproject)
-    for target in (args.hook_pyproject, args.service_pyproject):
+    for target in (args.hook_pyproject, args.service_pyproject, args.core_pyproject):
         changed = stamp_hook_version(target, new_version)
         display = _display_path(target)
         if changed:

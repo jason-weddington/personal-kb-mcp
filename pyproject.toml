@@ -9,6 +9,7 @@ dependencies = [
     "aiosqlite>=0.21",
     "sqlite-vec>=0.1.9",
     "httpx>=0.28",
+    "packaging>=23",
     "anthropic>=0.40",
     "trafilatura>=2.0",
     "detect-secrets>=1.4",

@@ -154,11 +154,13 @@ to users. It:
 
 1. Asserts you're on `main` with a clean tree.
 2. `uv run semantic-release version --no-push --no-vcs-release` — bumps version, updates `CHANGELOG.md` + `uv.lock`, and tags.
-3. Pushes `main` + tags to **both** remotes: `origin` **and** `github`.
+3. Builds `dist/` with exactly four wheels at the release version (`personal-kb`, `kb-core`, `personal-kb-web-service`, `personal-kb-hook`) and runs the optional publish hook (below). Then pushes `main` + tags to **both** remotes: `origin` **and** `github`.
 4. Runs `./deploy.sh` if one exists (none in this tree — consumers use `uvx`, which is pull-based).
 
 **Cutting a github release is the vetting checkpoint.** Confirm the work is good
 before running `./release.sh`; that is the moment users get the new code.
+
+**Optional publish hook.** An optional maintainer-local hook publishes the built artifacts before anything is pushed, so a remote never advertises a version whose artifacts did not ship. If an executable `./release.local.sh` exists (gitignored, never committed), `release.sh` runs it from the repo root, after the release commit and tag exist locally, as `./release.local.sh <version> <absolute-dist-dir>`. Exit 0 means the artifacts are published; any non-zero exit aborts the release. On any abort the local tag is deleted and nothing is pushed. With no hook present the release aborts as well, unless you pass `./release.sh --no-publish`, which prints a loud notice that no artifacts were published and continues to push.
 
 > Release machinery: `python-semantic-release` (dev dep) + `[tool.semantic_release]`
 > in `pyproject.toml`. The legacy per-commit auto-release post-commit hook was
