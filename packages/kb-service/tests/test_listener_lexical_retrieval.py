@@ -105,7 +105,7 @@ def test_lexical_word_match_hyphenated_path_token() -> None:
     """'camera-profiles-data' (one hyphen-joined token) must match the needle
     'camera-profiles' -- the load-bearing AC example."""
     haystack = _normalize_lexical(
-        "rsync the camera-profiles-data raw-pairs from a7r6 to dispatch-host-a"
+        "rsync the camera-profiles-data raw-pairs from a7r6 to dev-box-2"
     )
     needle = _normalize_lexical("camera-profiles")
     assert _lexical_word_match(haystack, needle) is True
@@ -134,7 +134,7 @@ def test_lexical_word_match_empty_needle_never_matches() -> None:
 
 async def test_project_ref_matches_hyphen_underscore_space_variants() -> None:
     for variant_text in (
-        "rsync the camera-profiles-data raw-pairs from a7r6 to dispatch-host-a",
+        "rsync the camera-profiles-data raw-pairs from a7r6 to dev-box-2",
         "check camera_profiles config before running the job",
         "look at the camera profiles archive from last night",
     ):

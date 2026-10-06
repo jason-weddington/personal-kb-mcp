@@ -1,6 +1,6 @@
 # Personal KB Web Service
 
-A hosted home-lab FastAPI service that wraps the `kb-core` engine behind an
+A hosted FastAPI service that wraps the `kb-core` engine behind an
 authed HTTP API, so the `personal-kb` MCP server can become a thin client.
 Modeled on the Agent GTD server.
 
@@ -17,13 +17,13 @@ this file only summarizes:
   for the *plan*, but its scope/topology decisions are superseded by kb-01744.
 - **kb-01727** — the `kb-core` engine extraction (the seam this service wraps:
   `from kb_core import KnowledgeBase, create_postgres`).
-- **kb-01746** — dev-server runbook (`kb-host-1`) + aarch64 validation: how to
-  run/boot the service against the real vm01 KB data DB.
+- **kb-01746** — dev-server runbook + aarch64 validation: how to
+  run/boot the service against a real KB data DB.
 - **kb-01745** — lesson: FastAPI `HTTPBearer` returns 401 (not 403) on missing
   creds in 0.136 — watch for stale exact-status assertions copied from agent_gtd.
 
-Build status: **P1–P5 done, P6 dev done, listener shipped** — full backend + SPA, thin MCP client (HttpBackend + 16 tool shims in the `personal_kb` repo), and the anticipatory listener: `POST /api/kb/listener` (rules A+B over `operated_via` hints + unanimous-3 Sonnet; kill switch `KB_LISTENER_ENABLED`, default OFF) with whisper-next-turn injection in `personal-kb-hook`. Eval harness + datasets in `evals/listener/`. Deploy: systemd system unit `kb-service` on the three Pis; `KB_DEPLOY_HOST=<host> ./deploy.sh` pipes `scripts/host-deploy.sh` over ssh, which deploys from `~/git/personal_kb` (WorkingDirectory `packages/kb-service`, venv at the workspace root) and migrates a pre-merge `~/git/personal-kb-web-service` host automatically — see README "Pi deployment". Runbooks: as-built/cutover **kb-01765**, listener design **kb-01725**, per-machine hook setup **kb-01784**. Plan in kb-01742.
-A self-healing embedding retry queue + background worker re-embeds entries that previously failed to vectorize, gated by `KB_EMBED_WORKER_ENABLED` (default TRUE) and inspectable via `GET /api/kb/embedding-queue`. Three more knobs tune the worker (`kb_service/config.py`: `KB_EMBED_WORKER_BATCH_SIZE` default 16, `KB_EMBED_WORKER_POLL_SECONDS` default 60.0, `KB_EMBED_WORKER_TIMEOUT` default 180.0) — these are **defaults-only**, deliberately NOT plumbed through `scripts/provision.sh` (only `KB_EMBED_WORKER_ENABLED` is). If a host needs a non-default value, set it directly in that host's `/etc/kb-service/env` and `sudo systemctl restart kb-service`.
+Build status: **P1–P5 done, P6 dev done, listener shipped** — full backend + SPA, thin MCP client (HttpBackend + 16 tool shims in the `personal_kb` repo), and the anticipatory listener: `POST /api/kb/listener` (rules A+B over `operated_via` hints + unanimous-3 Sonnet; kill switch `KB_LISTENER_ENABLED`, default OFF) with whisper-next-turn injection in `personal-kb-hook`. Hosted install: see README "Running the hosted service" (`uv tool install 'personal-kb-web-service[postgres]'`, env vars, `kb-service serve`, sample systemd unit); the maintainer's own deploy glue lives in a separate private ops repo. Listener design **kb-01725**. Plan in kb-01742.
+A self-healing embedding retry queue + background worker re-embeds entries that previously failed to vectorize, gated by `KB_EMBED_WORKER_ENABLED` (default TRUE) and inspectable via `GET /api/kb/embedding-queue`. Three more knobs tune the worker (`kb_service/config.py`: `KB_EMBED_WORKER_BATCH_SIZE` default 16, `KB_EMBED_WORKER_POLL_SECONDS` default 60.0, `KB_EMBED_WORKER_TIMEOUT` default 180.0) — set them directly in the service's environment (e.g. the systemd `EnvironmentFile`) and restart the service.
 
 ## Commands
 
@@ -110,5 +110,4 @@ Both talk directly to `KB_SERVICE_DATABASE_URL`.
 
 ## kb-core source
 
-`kb-core` is sourced via a **git+ssh** source in `pyproject.toml`
-(`[tool.uv.sources] kb-core = { git = "ssh://git@git-host/~/repos/personal_kb", subdirectory = "packages/kb-core", rev = "main" }`), pinned to a specific commit in `uv.lock`. To pull a new kb-core, run `uv lock --upgrade-package kb-core` (re-resolves `rev = "main"` to the current tip; a plain `uv lock` reuses the cached rev and will NOT move the pin), commit the lock bump (`chore: bump kb-core to …`), then `./deploy.sh` to each host. Deploy targets the three Pis via `KB_DEPLOY_HOST` (default `kb-host-1`=personal; `kb-host-2`=team; `kb-host-3`=user2).
+`kb-core` is a uv workspace member (`kb-core = { workspace = true }` in `[tool.uv.sources]`), so the service always builds against the in-tree `packages/kb-core`. When the service is installed from a published package, `kb-core` resolves as an ordinary dependency. Deploy and publish glue for the maintainer's own hosts lives in a separate private ops repo.

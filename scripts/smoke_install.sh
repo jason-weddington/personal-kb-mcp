@@ -30,7 +30,7 @@
 #       env -u KB_DATABASE_URL \
 #         KB_DB_PATH=/tmp/personal_kb_smoke.db \
 #         timeout 20 uvx --from \
-#           "personal-kb @ git+ssh://git@git-host/home/git/repos/personal_kb@${SHA}" \
+#           "personal-kb @ git+ssh://git@git-host.example.com/path/to/personal_kb@${SHA}" \
 #           personal-kb </dev/null 2>&1 \
 #         | tee /tmp/personal_kb_smoke.log
 #       grep -q "Starting MCP server" /tmp/personal_kb_smoke.log

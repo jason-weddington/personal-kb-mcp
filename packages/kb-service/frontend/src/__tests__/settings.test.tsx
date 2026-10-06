@@ -145,7 +145,7 @@ describe('Settings page — API Access card (create-key flow)', () => {
     expect(snippetValue).toContain('"uvx"')
     expect(snippetValue).toContain('"--from"')
     expect(snippetValue).toContain('personal-kb')
-    expect(snippetValue).not.toContain('personal-kb-mcp')
+    expect(snippetValue).toContain('"personal-kb"')
     // The dead `MCP_TOOL_PREFIX` env (read by nothing) must be gone.
     expect(snippetValue).not.toContain('MCP_TOOL_PREFIX')
     // team=null default → KB_INSTANCE_ROLE must be absent (kb_* tools).
@@ -192,7 +192,7 @@ describe('Settings page — API Access card (create-key flow)', () => {
 })
 
 describe('buildMcpSnippet — pure unit', () => {
-  const { buildMcpSnippet, MCP_CLIENT_FROM } = __testing
+  const { buildMcpSnippet, DEFAULT_MCP_CLIENT_FROM } = __testing
 
   it('uses uvx --from with the canonical entry point and git origin spec', () => {
     const snippet = JSON.parse(buildMcpSnippet('sk-123', null)) as {
@@ -206,11 +206,22 @@ describe('buildMcpSnippet — pure unit', () => {
     }
     const block = snippet.mcpServers['personal-kb']
     expect(block.command).toBe('uvx')
-    expect(block.args).toEqual(['--from', MCP_CLIENT_FROM, 'personal-kb'])
-    // The git origin matches provision.sh's KB_CLIENT_FROM base URL.
-    expect(MCP_CLIENT_FROM).toContain(
-      'git+ssh://git@git-host/home/git/repos/personal_kb@main',
+    expect(block.args).toEqual(['--from', DEFAULT_MCP_CLIENT_FROM, 'personal-kb'])
+    expect(DEFAULT_MCP_CLIENT_FROM).toBe(
+      'personal-kb @ git+https://github.com/jason-weddington/personal-kb-mcp',
     )
+  })
+
+  it('uses a server-provided install spec when given', () => {
+    const spec = 'personal-kb @ git+https://git-host.example.com/x/personal_kb@v1'
+    const snippet = JSON.parse(buildMcpSnippet('sk-1', null, spec)) as {
+      mcpServers: { 'personal-kb': { args: string[] } }
+    }
+    expect(snippet.mcpServers['personal-kb'].args).toEqual([
+      '--from',
+      spec,
+      'personal-kb',
+    ])
   })
 
   it('team=null → env has URL + API key, no KB_INSTANCE_ROLE, no MCP_TOOL_PREFIX', () => {

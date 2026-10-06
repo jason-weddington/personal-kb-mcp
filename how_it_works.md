@@ -146,7 +146,7 @@ The search bar (top-left) filters nodes by label with autocomplete. Selecting a 
 
 ### Web Server (Query-Driven Mode)
 
-The web infrastructure lives in `personal-kb-web-service/src/kb_service/`.
+The web infrastructure lives in `packages/kb-service/src/kb_service/`.
 
 **App factory** (`kb_service/main.py`): The FastAPI application is created in a lifespan handler that opens a single kb-core `KnowledgeBase` from `KB_DATABASE_URL` (the data DB), plus an asyncpg pool for the service/auth DB at `KB_SERVICE_DATABASE_URL`. The two DBs are kept distinct: kb-core owns the data schema, the service owns the auth tables (`users`, `api_keys`, `invites`, `password_resets`). The `KnowledgeBase` is stored on `app.state.kb` and shared by every request.
 
@@ -178,7 +178,7 @@ In the thin-client split, the MCP server no longer hosts the explorer locally �
 
 When a `summarize` query completes, the frontend opens a chat panel seeded with the original question and synthesized answer. Follow-up messages are sent to the chat stream endpoint, which maintains conversation state server-side.
 
-**ChatSession** (`personal-kb-web-service/src/kb_service/chat.py`): Holds the conversation as a `list[Message]` (where `Message = dict[str, str]` with `role` and `content` keys). The `seed()` method initializes the conversation with the original Q+A pair and the entry IDs from the summarize result. On each `reply()`, the session: (1) appends the user message, (2) trims history if over budget, (3) runs `hybrid_search` (via the shared `KnowledgeBase`) with `limit=5` to find entries relevant to the follow-up, (4) builds a system prompt that includes the chat system prompt plus the full `knowledge_details` of all known entries, (5) calls `llm.generate_chat(messages, system=system)`, and (6) appends the assistant response. New entry IDs discovered during retrieval are accumulated in `self.entry_ids` and reported back via the `chat_done` event so the frontend can highlight them on the graph.
+**ChatSession** (`packages/kb-service/src/kb_service/chat.py`): Holds the conversation as a `list[Message]` (where `Message = dict[str, str]` with `role` and `content` keys). The `seed()` method initializes the conversation with the original Q+A pair and the entry IDs from the summarize result. On each `reply()`, the session: (1) appends the user message, (2) trims history if over budget, (3) runs `hybrid_search` (via the shared `KnowledgeBase`) with `limit=5` to find entries relevant to the follow-up, (4) builds a system prompt that includes the chat system prompt plus the full `knowledge_details` of all known entries, (5) calls `llm.generate_chat(messages, system=system)`, and (6) appends the assistant response. New entry IDs discovered during retrieval are accumulated in `self.entry_ids` and reported back via the `chat_done` event so the frontend can highlight them on the graph.
 
 **Write tools**: When write deps are available (the per-request `Attribution` carries the user's contributor/team), the chat session gains a mini-ReAct loop with three tools: `get_entry` (fetch full entry details), `update_entry` (modify an existing entry), and `ingest_url` (fetch and ingest a URL). The LLM emits tool calls as `{"tool": "...", "args": {...}}` JSON blocks, which `_parse_tool_call()` extracts from the response. `_dispatch_tool()` executes the tool, injects the result as a user message, and re-queries the LLM for a follow-up response. `get_entry` is always available (read-only); `update_entry` and `ingest_url` require write deps.
 
@@ -190,7 +190,7 @@ When a `summarize` query completes, the frontend opens a chat panel seeded with 
 
 **LLMProvider.generate_chat()**: Part of the `LLMProvider` protocol (in `kb_core/llm/provider.py`) alongside the existing `generate()` method. Takes `messages: list[Message]` and optional `system` prompt, returns `str | None`. Each backend implements it natively: Anthropic passes messages directly to `messages.create()`, Bedrock maps to `BRMessage` objects for the Converse API, and Ollama uses `/api/chat` (not `/api/generate`). The ReAct agent loop in `kb_core/graph/agent.py` also uses `generate_chat()`.
 
-See: `personal-kb-web-service/src/kb_service/graph_export.py`, `personal-kb-web-service/src/kb_service/chat.py`, `personal-kb-web-service/src/kb_service/classifier.py`, `personal-kb-web-service/src/kb_service/sse.py`, `personal-kb-web-service/src/kb_service/routes/`, `src/personal_kb/tools/kb_explore.py`
+See: `packages/kb-service/src/kb_service/graph_export.py`, `packages/kb-service/src/kb_service/chat.py`, `packages/kb-service/src/kb_service/classifier.py`, `packages/kb-service/src/kb_service/sse.py`, `packages/kb-service/src/kb_service/routes/`, `src/personal_kb/tools/kb_explore.py`
 
 ## Project Preflight (kb_preflight)
 
@@ -323,9 +323,9 @@ See: `src/personal_kb/tools/kb_get.py` (`_pointer_rot_note`), `kb_core/graph/que
 
 `build_project_context` runs this query alongside the other preflight queries, and renders results into a **`Maps:`** section that leads the output (before Expiring / Recent / Conventions / Related). Each line follows the format `  - [<id>] <short_title> — <long_title>` — id plus both titles, no type label (redundant inside a Maps section), with U+2014 EM DASH between the two titles. When the project has no maps, the section is omitted entirely; an empty Maps block never renders.
 
-The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC` (no limit) — is reused by the hosted web service's `GET /api/kb/maps-index` route (`personal-kb-web-service/src/kb_service/routes/maps_routes.py`), which computes the per-project maps index on demand from the live DB so the on-disk JSONL the hook reads is always fresh by construction. The push half — how the hook actually pulls and caches that index — is described in the CLI Hook section below.
+The same predicate — `entry_type = 'mental_map'`, `is_active = 1`, optional team scope, `ORDER BY created_at DESC` (no limit) — is reused by the hosted web service's `GET /api/kb/maps-index` route (`packages/kb-service/src/kb_service/routes/maps_routes.py`), which computes the per-project maps index on demand from the live DB so the on-disk JSONL the hook reads is always fresh by construction. The push half — how the hook actually pulls and caches that index — is described in the CLI Hook section below.
 
-See: `kb_core/preflight.py` (`_maps_sql`, the `Maps:` block in `build_project_context`), `src/personal_kb/tools/kb_preflight.py`, `personal-kb-web-service/src/kb_service/routes/maps_routes.py`.
+See: `kb_core/preflight.py` (`_maps_sql`, the `Maps:` block in `build_project_context`), `src/personal_kb/tools/kb_preflight.py`, `packages/kb-service/src/kb_service/routes/maps_routes.py`.
 
 ## CLI Hook (personal-kb-hook)
 
@@ -352,7 +352,7 @@ The runtime package imports **only the Python standard library**. A test in the 
 
 ### Maps index — service-computed, hook-consumed
 
-The hook used to read an on-disk JSONL maps index written by the MCP server. In the thin-client split the maps index is computed by the hosted web service — `GET /api/kb/maps-index` (in `personal-kb-web-service/src/kb_service/routes/maps_routes.py`) queries the live DB on each request, using the exact predicate of `kb_core/preflight.py:_maps_sql`, and returns the same shape: one entry per project with at least one active map, sorted ascending by `project_ref`. The hook's `http_index.load_index(roster)` fans the request across every KB in the roster concurrently (using stdlib `urllib`) and returns the merged `dict[str, list[tuple[label, MapEntry]]]` keyed by project. Per-session suppression remains the hook's job (`packages/personal-kb-hook/src/personal_kb_hook/suppression.py`).
+The hook used to read an on-disk JSONL maps index written by the MCP server. In the thin-client split the maps index is computed by the hosted web service — `GET /api/kb/maps-index` (in `packages/kb-service/src/kb_service/routes/maps_routes.py`) queries the live DB on each request, using the exact predicate of `kb_core/preflight.py:_maps_sql`, and returns the same shape: one entry per project with at least one active map, sorted ascending by `project_ref`. The hook's `http_index.load_index(roster)` fans the request across every KB in the roster concurrently (using stdlib `urllib`) and returns the merged `dict[str, list[tuple[label, MapEntry]]]` keyed by project. Per-session suppression remains the hook's job (`packages/personal-kb-hook/src/personal_kb_hook/suppression.py`).
 
 ### `.kb_project` walk-up resolver
 
@@ -408,9 +408,9 @@ The anticipatory listener is the third push surface (alongside `kb_preflight` an
 
 ### Server route — `POST /api/kb/listener`
 
-The route lives at `personal-kb-web-service/src/kb_service/routes/listener_routes.py`. Its contract:
+The route lives at `packages/kb-service/src/kb_service/routes/listener_routes.py`. Its contract:
 
-- **Request body** (`ListenerRequest` in `personal-kb-web-service/src/kb_service/models.py`): `{text: str, cwd_project: str | None, operating: list[str], source_label: str | null}`.
+- **Request body** (`ListenerRequest` in `packages/kb-service/src/kb_service/models.py`): `{text: str, cwd_project: str | None, operating: list[str], source_label: str | null}`.
 - **Response body** (`ListenerResponse`): `{pointers: [{id, short_title}, ...], pointer: {id, short_title} | null, reason: str}` — `pointers` (0..2, evidence order) is the current field; `pointer` is a deprecated single-item alias (`pointers[0]` or `null`) kept because the hook's `_post_one_kb` still reads it as a fallback for pre-GTD-66ea1fe4 servers.
 
 The route's behaviour, step by step:
@@ -446,8 +446,8 @@ The end-to-end flow on a Claude Code `Stop` event:
 
 On the next `UserPromptSubmit` event, `cli.py` reads the same cache, filters `pending` against `whispered_map_ids` (so a pointer is only whispered ONCE), applies the same tie-break ordering, and groups the survivors by label before rendering — **up to two pointers per KB are whispered on ONE line** (GTD 66ea1fe4), via `render.render_whisper([...], label=..., multi_kb=...)`, in factual non-imperative form (singular/plural header, "Possibly relevant map(s) — "). The rendered lines (one per KB) are appended below the directory output as the next prompt's `additionalContext`. After successful emission, the whispered pairs are merged into `whispered_map_ids` so the next prompt's surface set never repeats.
 
-### Arbitration parity port (evals)
+### Arbitration
 
-The server-side eval harness lives in `personal-kb-web-service/evals/listener/`. To prove that a multi-KB fan-out's union of per-KB pointers, after the hook's client-side suppress-only arbitration, matches the listener's go-live precision bar, the harness needs to replay the hook's `_arbitrate` semantics on synthetic candidate sets — but `personal-kb-hook` is intentionally not a dependency of the service repo (it lives in the `personal_kb` workspace and is stdlib-only). The harness therefore carries a **parity port** of the arbitration function at `personal-kb-web-service/evals/listener/arbitration.py`, byte-for-byte semantically aligned with `packages/personal-kb-hook/src/personal_kb_hook/listener_worker.py:_arbitrate`. The parity port carries the same `_LEGACY_LABEL = "personal"` constant and the same drop-nulls → title-dedup-with-tie-break → one-per-KB-cap step order.
+The hook's client-side `_arbitrate` (`packages/personal-kb-hook/src/personal_kb_hook/listener_worker.py`) is suppress-only: it drops null pointers, de-duplicates by title with a tie-break, and caps the result at one pointer per KB. `personal-kb-hook` is intentionally not a dependency of the service (it is stdlib-only), so the service never imports it. Listener evaluation harnesses are maintained outside this repo.
 
-See: `personal-kb-web-service/src/kb_service/routes/listener_routes.py`, `personal-kb-web-service/src/kb_service/models.py` (`ListenerRequest`, `ListenerResponse`, `ListenerPointer`), `packages/personal-kb-hook/src/personal_kb_hook/listener.py`, `packages/personal-kb-hook/src/personal_kb_hook/listener_worker.py`, `packages/personal-kb-hook/src/personal_kb_hook/cli.py`, `packages/personal-kb-hook/src/personal_kb_hook/roster.py`, `personal-kb-web-service/evals/listener/arbitration.py`.
+See: `packages/kb-service/src/kb_service/routes/listener_routes.py`, `packages/kb-service/src/kb_service/models.py` (`ListenerRequest`, `ListenerResponse`, `ListenerPointer`), `packages/personal-kb-hook/src/personal_kb_hook/listener.py`, `packages/personal-kb-hook/src/personal_kb_hook/listener_worker.py`, `packages/personal-kb-hook/src/personal_kb_hook/cli.py`, `packages/personal-kb-hook/src/personal_kb_hook/roster.py`.

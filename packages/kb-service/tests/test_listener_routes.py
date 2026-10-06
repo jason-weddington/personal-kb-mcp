@@ -715,7 +715,7 @@ def _make_detail_result(entry_id: str, **kwargs: object) -> SearchResult:
         "id": entry_id,
         "short_title": f"Detail {entry_id}",
         "long_title": f"Detail {entry_id} (long)",
-        "knowledge_details": "rsync camera-profiles-data raw-pairs a7r6 dispatch-host-a",
+        "knowledge_details": "rsync camera-profiles-data raw-pairs a7r6 dev-box-2",
         "entry_type": EntryType.FACTUAL_REFERENCE,
     }
     defaults.update(kwargs)
@@ -761,7 +761,7 @@ def test_listener_primary_path_unanimous_pick_end_to_end(
     resp = client.post(
         "/api/kb/listener",
         json={
-            "text": "rsync the a7r6 raw-pairs to dispatch-host-a",
+            "text": "rsync the a7r6 raw-pairs to dev-box-2",
             "cwd_project": "grit-mile",
         },
     )

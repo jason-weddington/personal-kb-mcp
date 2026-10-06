@@ -18,7 +18,7 @@ Run from the repo root:
 
     uv run python scripts/smoke_work_user_upgrade.py
     uv run python scripts/smoke_work_user_upgrade.py \
-        --new-spec "personal-kb @ git+file:///home/user/git/personal_kb@my-branch"
+        --new-spec "personal-kb @ git+file:///path/to/personal_kb@my-branch"
 
 Exits 0 only when every check passes. The sandbox lives in a temp dir and is
 removed on success (kept with --keep or on failure, for debugging).
@@ -35,6 +35,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -49,7 +50,20 @@ from fastmcp.client.transports import StdioTransport
 # TODAY (756b5c7 until the v1.0.0 release), so after each release the gate
 # automatically tests upgrades from the newly shipped version.
 OLD_SPEC = "git+https://github.com/jason-weddington/personal-kb-mcp"
-NEW_SPEC = "personal-kb @ git+ssh://git@git-host/home/git/repos/personal_kb@main"
+
+
+def _default_new_spec() -> str:
+    """Local checkout at HEAD: ``personal-kb @ git+file://<repo root>@<sha>``."""
+    root = Path(__file__).resolve().parent.parent
+    sha = subprocess.run(  # noqa: S603
+        ["git", "-C", str(root), "rev-parse", "HEAD"],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return f"personal-kb @ git+file://{root}@{sha}"
+
+
 LOCAL_PORT = 8765  # the documented local-mode default; the new build must pick it unaided
 
 # Read calls whose output must be identical before and after the upgrade.
@@ -281,9 +295,15 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--old-spec", default=OLD_SPEC)
-    ap.add_argument("--new-spec", default=NEW_SPEC)
+    ap.add_argument(
+        "--new-spec",
+        default=None,
+        help="default: this checkout at HEAD (git+file, computed at runtime)",
+    )
     ap.add_argument("--keep", action="store_true", help="keep the sandbox dir")
     a = ap.parse_args()
+    if a.new_spec is None:
+        a.new_spec = _default_new_spec()
 
     if not _port_free(LOCAL_PORT):
         print(

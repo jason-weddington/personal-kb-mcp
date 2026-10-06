@@ -12,7 +12,7 @@
 
 - Iterate tests with `uv run pytest -m "not eval"` (see above). The pre-push hook already excludes eval; match it.
 - **Commit and push your feature branch incrementally** — after each meaningful, green step — so partial work survives a dispatch timeout instead of being lost. Don't save the single push for the very end.
-- **`sqlite-vec` should work in your sandbox — expect to self-verify.** As of 2026-06-27 the Pi dispatch host has a healthy `sqlite-vec` (≥0.1.9, native `vec0` extension loads; the old 0.1.6 aarch64 32-bit-wheel breakage was fixed by the version pin). So you are normally expected to **run the full suite, including eval tests that hit the `knowledge_vec` vector table, and verify your own change in-sandbox.** Quick probe if unsure: `uv run python -c "import sqlite_vec, sqlite3; db=sqlite3.connect(':memory:'); db.enable_load_extension(True); sqlite_vec.load(db); print(sqlite_vec.loadable_path())"`.
+- **`sqlite-vec` should work in your sandbox — expect to self-verify.** `sqlite-vec` is pinned to ≥0.1.9, where the native `vec0` extension loads on aarch64 as well as x86_64. So you are normally expected to **run the full suite, including eval tests that hit the `knowledge_vec` vector table, and verify your own change in-sandbox.** Quick probe if unsure: `uv run python -c "import sqlite_vec, sqlite3; db=sqlite3.connect(':memory:'); db.enable_load_extension(True); sqlite_vec.load(db); print(sqlite_vec.loadable_path())"`.
 - **Fallback only if the probe shows `sqlite-vec` is genuinely absent here.** If you see ~59 failures of the form `OperationalError: no such table: knowledge_vec` AND the probe above fails, that is the extension not loading in this environment — **environmental, not caused by your change** (confirm by stashing your work and seeing the same failures on the clean base). Do **not** try to fix them. Run the **targeted tests for your change** to prove correctness, then `git push --no-verify` with a comment listing exactly which failures are the environmental `knowledge_vec` ones so the reviewer can run the full gate locally. In your completion comment, state whether `sqlite-vec` loaded and whether you self-verified or are deferring eval verification — that report keeps this guidance honest across hosts.
 - **Once you've pushed your final branch and posted your completion comment, you are done — stop.** Do not keep trying to make the full in-sandbox suite pass; you'll just burn the dispatch budget to a timeout on environmental failures you can't fix.
 
@@ -127,43 +127,38 @@ Every new feature (not bug fixes) requires updating three things:
 
 ## Branch, Merge & Release Policy
 
-**The production boundary is GitHub, not `main`.** A ~60-person engineering org
-runs this server by `uvx`-ing the package straight from the `github` remote
-(`jason-weddington/personal-kb-mcp`). So **nothing reaches github except through
-a deliberate, vetted release** — `./release.sh`. The two remotes have very
-different trust levels:
+**The production boundary is the public GitHub repo, not `main`.** Users run this server by `uvx`-ing the package straight from `github.com/jason-weddington/personal-kb-mcp`, so nothing reaches that remote except through a deliberate, vetted release — `./release.sh`. The two remotes have very different trust levels:
 
 | Remote | Host | Role | Push freely? |
 |--------|------|------|--------------|
-| `origin` | `git-host` (home lab) | Testing / backup | **Yes** — merge to `main` and push liberally |
-| `github` | `github.com/jason-weddington/personal-kb-mcp` | **Production** (team `uvx`'s from it) | **No** — only via `./release.sh` |
+| `origin` | a private git host | Testing / backup | **Yes** — merge to `main` and push liberally |
+| `github` | `github.com/jason-weddington/personal-kb-mcp` | **Public** (users `uvx` from it) | **No** — only via `./release.sh` |
+
+The maintainer's own deploy and publish glue lives in a separate private ops repo, not in this tree.
 
 ### Day-to-day development (local, liberal)
 
 1. Branch: `git checkout -b feat/...` (or `fix/`, `chore/`, `docs/`).
 2. Code + commit on the branch.
-3. Test: `uv run pytest` must pass (the pre-push hook runs the full suite + coverage ≥ 80%).
+3. Test: `uv run pytest -m "not eval"` must pass (the pre-push hook runs the suite + coverage ≥ 80%).
 4. Squash-merge to `main`: `git checkout main && git merge --squash feat/... && git commit` (squash message must be a conventional commit — hook-enforced).
-5. **Push to `origin` freely**: `git push origin main`. This lands on the home-lab VM for testing. No tags, **never `github`**.
+5. **Push to `origin` freely**: `git push origin main`. No tags, **never `github`**.
 6. Clean up: `git branch -D feat/...`.
 
-Merging to `main` and pushing to `origin` no longer requires waiting for manual
-testing — `main` accumulates verified-locally work between releases, and `origin`
-is the home-lab testing target. The old "stop and wait before merging" gate has
-moved to the **release** boundary below.
+`main` accumulates verified-locally work between releases. The "stop and wait before merging" gate lives at the **release** boundary below.
 
 ### Release (deliberate, promotes to github)
 
 Run `./release.sh` only when local `main` is verified good and you intend to ship
-to the team. It:
+to users. It:
 
 1. Asserts you're on `main` with a clean tree.
 2. `uv run semantic-release version --no-push --no-vcs-release` — bumps version, updates `CHANGELOG.md` + `uv.lock`, and tags.
 3. Pushes `main` + tags to **both** remotes: `origin` **and** `github`.
-4. Runs `./deploy.sh` if one exists (none today — the team consumes via `uvx`, which is pull-based).
+4. Runs `./deploy.sh` if one exists (none in this tree — consumers use `uvx`, which is pull-based).
 
 **Cutting a github release is the vetting checkpoint.** Confirm the work is good
-before running `./release.sh`; that is the moment 60 people get the new code.
+before running `./release.sh`; that is the moment users get the new code.
 
 > Release machinery: `python-semantic-release` (dev dep) + `[tool.semantic_release]`
 > in `pyproject.toml`. The legacy per-commit auto-release post-commit hook was

@@ -50,6 +50,7 @@ export interface PasswordResetIssued {
 
 export interface Settings {
   team: string | null
+  clientInstallSpec?: string
 }
 
 export interface AdminUser {

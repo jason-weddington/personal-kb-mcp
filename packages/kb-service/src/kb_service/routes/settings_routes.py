@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 
 from kb_service.attribution import _normalize, delete_setting, get_setting, set_setting
 from kb_service.auth import get_current_user, require_admin
+from kb_service.config import get_client_install_spec
 from kb_service.models import SettingsResponse, UpdateSettingsRequest, User
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -25,7 +26,10 @@ async def get_settings(
     Returns the normalised 'team' value: absent or blank rows are returned as
     null, never as an empty string.
     """
-    return SettingsResponse(team=_normalize(await get_setting("team")))
+    return SettingsResponse(
+        team=_normalize(await get_setting("team")),
+        client_install_spec=get_client_install_spec(),
+    )
 
 
 @router.put("", response_model=SettingsResponse)
@@ -43,4 +47,7 @@ async def put_settings(
         await delete_setting("team")
     else:
         await set_setting("team", body.team.strip(), updated_by=user.id)
-    return SettingsResponse(team=_normalize(await get_setting("team")))
+    return SettingsResponse(
+        team=_normalize(await get_setting("team")),
+        client_install_spec=get_client_install_spec(),
+    )

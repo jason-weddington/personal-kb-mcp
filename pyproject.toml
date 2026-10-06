@@ -32,7 +32,7 @@ personal-kb = "personal_kb.__main__:main"
 # package at ``packages/personal-kb-hook/`` so it can be ``uv tool install``ed
 # without dragging in fastmcp/anthropic/pymupdf. Install command:
 #   uv tool install --from \
-#     "git+ssh://git@git-host/home/git/repos/personal_kb#subdirectory=packages/personal-kb-hook" \
+#     "git+ssh://git@git-host.example.com/path/to/personal_kb#subdirectory=packages/personal-kb-hook" \
 #     personal-kb-hook
 # See ``packages/personal-kb-hook/pyproject.toml`` for the script entry.
 

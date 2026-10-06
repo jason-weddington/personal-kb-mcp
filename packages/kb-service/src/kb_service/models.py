@@ -273,6 +273,7 @@ class SettingsResponse(BaseModel):
     """Response body for GET and PUT /api/settings."""
 
     team: str | None
+    client_install_spec: str
 
 
 class UpdateSettingsRequest(BaseModel):

@@ -28,7 +28,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WF_DIR="$HOME/.claude/workflows"
 KEY_FILE="$HOME/.personal_kb_hook_key"
-HOOK_SPEC="personal-kb-hook @ git+ssh://git@git-host/home/git/repos/personal_kb#subdirectory=packages/personal-kb-hook"
+# Override with PERSONAL_KB_HOOK_SPEC (e.g. a fork or a local checkout path).
+HOOK_SPEC="${PERSONAL_KB_HOOK_SPEC:-personal-kb-hook @ git+https://github.com/jason-weddington/personal-kb-mcp#subdirectory=packages/personal-kb-hook}"
 
 # LOCAL-mode daemon endpoint. The port literal is the canonical local port
 # documented by the daemon-spawn code (src/personal_kb/daemon.py, parse_port
@@ -39,7 +40,7 @@ HOOK_SPEC="personal-kb-hook @ git+ssh://git@git-host/home/git/repos/personal_kb#
 # key`; listener.py is_listener_enabled `bool(url) and bool(key)`), so a blank
 # key would silently disable the hook. The no-auth daemon ignores the value.
 LOCAL_KB_PORT="8765"
-LOCAL_KB_URL="http://localhost:${LOCAL_KB_PORT}"
+LOCAL_KB_URL="http://127.0.0.1:${LOCAL_KB_PORT}"
 LOCAL_SENTINEL_KEY="local-no-auth"
 
 echo "== workflows -> $WF_DIR =="
@@ -67,12 +68,22 @@ fi
 echo "== KB mode =="
 echo "  Local  — auto-spawned no-auth daemon on this machine (no API key)."
 echo "  Remote — hosted KB service (per-machine API key)."
-printf "  Choose mode [Local/Remote] (default: Remote): "
+# No default remote URL: an unset PERSONAL_KB_URL means local mode.
+if [ -n "${PERSONAL_KB_URL:-}" ]; then
+  DEFAULT_MODE="Remote"
+else
+  DEFAULT_MODE="Local"
+fi
+printf "  Choose mode [Local/Remote] (default: %s): " "$DEFAULT_MODE"
 read -r MODE || MODE=""
-case "${MODE:-}" in
+case "${MODE:-$DEFAULT_MODE}" in
   [Ll] | [Ll]ocal) MODE="local" ;;
   *)               MODE="remote" ;;
 esac
+if [ "$MODE" = "remote" ] && [ -z "${PERSONAL_KB_URL:-}" ]; then
+  echo "  Remote mode needs PERSONAL_KB_URL (the hosted service URL); it is unset — using local mode." >&2
+  MODE="local"
+fi
 
 if [ "$MODE" = "local" ]; then
   echo "== KB mode: local (auto-spawned no-auth daemon) =="
@@ -86,7 +97,7 @@ if [ "$MODE" = "local" ]; then
   echo "  daemon ignores the value."
   echo "  (No verify probe yet — the local daemon's runtime endpoint ships separately.)"
 else
-  KB_URL="${PERSONAL_KB_URL:-http://kb-host-1:8000}"
+  KB_URL="$PERSONAL_KB_URL"
   echo "== KB API key ($KEY_FILE) =="
   if [ -s "$KEY_FILE" ]; then
     echo "  present — leaving as-is (delete the file and re-run to replace it)."

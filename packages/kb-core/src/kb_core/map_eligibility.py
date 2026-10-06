@@ -35,7 +35,7 @@ entries and zero ingested; and exactly 1, ``dispatch-performance-log``, is
 excluded as a journal (624 mappable, top prefix ``Run`` on 611 of them,
 share 0.9792); 25 + 21 + 1 = 47. The durable structural facts:
 ``dispatch-performance-log`` is the ONLY journal — the next-highest prefix
-share among projects with ``mappable >= 20`` is ``sample-project`` at 0.1739, so
+share among projects with ``mappable >= 20`` is ``example-project`` at 0.1739, so
 the 0.60 threshold has roughly a 5x margin on both sides; ``threat-intel``
 sits exactly at the ``hand_authored = 5`` floor (45 mappable, 40 ingested);
 and ``harness-design`` (71 mappable, 0 ingested, 3 as its top prefix count)

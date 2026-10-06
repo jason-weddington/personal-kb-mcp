@@ -59,6 +59,20 @@ def _parse_provider(env_var: str, default: str) -> str:
 
 # --- env getters -----------------------------------------------------------
 
+DEFAULT_CLIENT_INSTALL_SPEC = (
+    "personal-kb @ git+https://github.com/jason-weddington/personal-kb-mcp"
+)
+
+
+def get_client_install_spec() -> str:
+    """The ``uvx --from`` spec shown in the Settings MCP snippet.
+
+    Env ``KB_SERVICE_CLIENT_INSTALL_SPEC``; defaults to the public GitHub URL.
+    """
+    return (
+        os.environ.get("KB_SERVICE_CLIENT_INSTALL_SPEC") or DEFAULT_CLIENT_INSTALL_SPEC
+    )
+
 
 def get_ollama_url() -> str:
     """Return the Ollama API URL from KB_OLLAMA_URL."""

@@ -152,8 +152,8 @@ function AccountCard() {
  * remote mode, so no extras are needed — base deps already cover
  * fastmcp + httpx.
  */
-const MCP_CLIENT_FROM =
-  'personal-kb @ git+ssh://git@git-host/home/git/repos/personal_kb@main'
+const DEFAULT_MCP_CLIENT_FROM =
+  'personal-kb @ git+https://github.com/jason-weddington/personal-kb-mcp'
 
 /**
  * Build the MCP-config JSON shown after minting an API key.
@@ -169,7 +169,11 @@ const MCP_CLIENT_FROM =
  * emitted from the Settings UI (every hosted instance is either default-kb_*
  * or team-team_kb_*).
  */
-function buildMcpSnippet(apiKey: string, team: string | null): string {
+function buildMcpSnippet(
+  apiKey: string,
+  team: string | null,
+  installSpec: string = DEFAULT_MCP_CLIENT_FROM,
+): string {
   const env: Record<string, string> = {
     PERSONAL_KB_URL: window.location.origin,
     PERSONAL_KB_API_KEY: apiKey,
@@ -182,7 +186,7 @@ function buildMcpSnippet(apiKey: string, team: string | null): string {
       mcpServers: {
         'personal-kb': {
           command: 'uvx',
-          args: ['--from', MCP_CLIENT_FROM, 'personal-kb'],
+          args: ['--from', installSpec, 'personal-kb'],
           env,
         },
       },
@@ -193,7 +197,7 @@ function buildMcpSnippet(apiKey: string, team: string | null): string {
 }
 
 // Exposed for unit tests.
-export const __testing = { buildMcpSnippet, MCP_CLIENT_FROM }
+export const __testing = { buildMcpSnippet, DEFAULT_MCP_CLIENT_FROM }
 
 function ApiAccessCard() {
   const [keys, setKeys] = useState<ApiKeyInfo[]>([])
@@ -205,6 +209,7 @@ function ApiAccessCard() {
   // Fetched once at mount; the snippet is only rendered after a key is
   // minted, so a brief loading window is invisible to the user.
   const [team, setTeam] = useState<string | null>(null)
+  const [installSpec, setInstallSpec] = useState(DEFAULT_MCP_CLIENT_FROM)
 
   // Create-key dialog
   const [createOpen, setCreateOpen] = useState(false)
@@ -246,6 +251,7 @@ function ApiAccessCard() {
       try {
         const s = await api.settings.get()
         setTeam(s.team ?? null)
+        if (s.clientInstallSpec) setInstallSpec(s.clientInstallSpec)
       } catch {
         setTeam(null)
       }
@@ -291,7 +297,7 @@ function ApiAccessCard() {
     }
   }, [deleteTarget])
 
-  const mcpSnippet = createdKey ? buildMcpSnippet(createdKey.apiKey, team) : ''
+  const mcpSnippet = createdKey ? buildMcpSnippet(createdKey.apiKey, team, installSpec) : ''
 
   return (
     <Card variant="outlined" sx={{ mb: 3 }}>
@@ -465,8 +471,9 @@ function ApiAccessCard() {
             <Typography variant="caption" color="text.secondary">
               Paste this into <code>~/.claude.json</code> under{' '}
               <code>mcpServers</code>. The thin client is pulled via{' '}
-              <code>uvx --from</code> from the home-lab git origin (SSH access
-              to <code>git-host</code> required).
+              <code>uvx --from</code> using the install spec configured on the
+              server.{installSpec.includes('git+ssh://') &&
+                ' SSH access to the git host is required.'}
             </Typography>
           </DialogContent>
           <DialogActions>

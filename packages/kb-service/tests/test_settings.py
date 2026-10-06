@@ -19,7 +19,7 @@ def test_get_settings_default_null(client: TestClient) -> None:
     app.dependency_overrides[get_current_user] = fake_user
     resp = client.get("/api/settings")
     assert resp.status_code == 200
-    assert resp.json() == {"team": None}
+    assert resp.json()["team"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -31,13 +31,13 @@ def test_put_settings_round_trip(client: TestClient) -> None:
     app.dependency_overrides[get_current_user] = fake_admin_user
     resp = client.put("/api/settings", json={"team": "docs-platform"})
     assert resp.status_code == 200
-    assert resp.json() == {"team": "docs-platform"}
+    assert resp.json()["team"] == "docs-platform"
 
     # Subsequent GET as a regular user reflects the stored value.
     app.dependency_overrides[get_current_user] = fake_user
     resp = client.get("/api/settings")
     assert resp.status_code == 200
-    assert resp.json() == {"team": "docs-platform"}
+    assert resp.json()["team"] == "docs-platform"
 
 
 # ---------------------------------------------------------------------------
@@ -52,10 +52,10 @@ def test_put_settings_clear_via_null(client: TestClient) -> None:
 
     resp = client.put("/api/settings", json={"team": None})
     assert resp.status_code == 200
-    assert resp.json() == {"team": None}
+    assert resp.json()["team"] is None
 
     app.dependency_overrides[get_current_user] = fake_user
-    assert client.get("/api/settings").json() == {"team": None}
+    assert client.get("/api/settings").json()["team"] is None
 
 
 def test_put_settings_clear_via_blank_string(client: TestClient) -> None:
@@ -64,10 +64,10 @@ def test_put_settings_clear_via_blank_string(client: TestClient) -> None:
 
     resp = client.put("/api/settings", json={"team": "  "})
     assert resp.status_code == 200
-    assert resp.json() == {"team": None}
+    assert resp.json()["team"] is None
 
     app.dependency_overrides[get_current_user] = fake_user
-    assert client.get("/api/settings").json() == {"team": None}
+    assert client.get("/api/settings").json()["team"] is None
 
 
 def test_put_settings_clear_via_empty_body(client: TestClient) -> None:
@@ -77,10 +77,10 @@ def test_put_settings_clear_via_empty_body(client: TestClient) -> None:
 
     resp = client.put("/api/settings", json={})
     assert resp.status_code == 200
-    assert resp.json() == {"team": None}
+    assert resp.json()["team"] is None
 
     app.dependency_overrides[get_current_user] = fake_user
-    assert client.get("/api/settings").json() == {"team": None}
+    assert client.get("/api/settings").json()["team"] is None
 
 
 def test_put_settings_clear_absent_row_is_noop(client: TestClient) -> None:
@@ -88,7 +88,7 @@ def test_put_settings_clear_absent_row_is_noop(client: TestClient) -> None:
     app.dependency_overrides[get_current_user] = fake_admin_user
     resp = client.put("/api/settings", json={"team": None})
     assert resp.status_code == 200
-    assert resp.json() == {"team": None}
+    assert resp.json()["team"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -184,12 +184,12 @@ def test_put_settings_trims_whitespace(client: TestClient) -> None:
     app.dependency_overrides[get_current_user] = fake_admin_user
     resp = client.put("/api/settings", json={"team": "  docs-platform  "})
     assert resp.status_code == 200
-    assert resp.json() == {"team": "docs-platform"}
+    assert resp.json()["team"] == "docs-platform"
 
     app.dependency_overrides[get_current_user] = fake_user
     resp = client.get("/api/settings")
     assert resp.status_code == 200
-    assert resp.json() == {"team": "docs-platform"}
+    assert resp.json()["team"] == "docs-platform"
 
 
 # ---------------------------------------------------------------------------
@@ -239,3 +239,29 @@ async def test_is_machine_principal_config_blank_is_false(
 
     monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
     assert await is_machine_principal(fake_user()) is False
+
+
+# ---------------------------------------------------------------------------
+# client_install_spec — MCP thin-client install spec from env
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_client_install_spec_default(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_SERVICE_CLIENT_INSTALL_SPEC", raising=False)
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.get("/api/settings")
+    assert resp.json()["client_install_spec"] == (
+        "personal-kb @ git+https://github.com/jason-weddington/personal-kb-mcp"
+    )
+
+
+def test_get_settings_client_install_spec_override(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = "personal-kb @ git+ssh://git@git-host.example.com/repos/personal_kb@main"
+    monkeypatch.setenv("KB_SERVICE_CLIENT_INSTALL_SPEC", spec)
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.get("/api/settings")
+    assert resp.json()["client_install_spec"] == spec
