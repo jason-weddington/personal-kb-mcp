@@ -68,6 +68,46 @@ def stamp_hook_version(hook_pyproject_path: Path, new_version: str) -> bool:
     return True
 
 
+# Workspace packages whose wheels are published together at one version. A
+# dependency on one of them inside ``[project]`` metadata is pinned to the
+# release version, so installing an OLD version's wheel (a rollback) pulls the
+# matching siblings instead of whatever is newest on the index.
+_INTERNAL_PACKAGES = ("kb-core", "personal-kb-web-service", "personal-kb-hook")
+_INTERNAL_DEP_RE = re.compile(
+    r'"(?P<name>' + "|".join(re.escape(n) for n in _INTERNAL_PACKAGES) + r")"
+    r"(?P<extras>\[[^\]]*\])?(?:\s*==\s*[^\"]*)?\""
+)
+
+
+def pin_internal_deps(pyproject_path: Path, new_version: str) -> bool:
+    """Pin intra-workspace deps in ``[project]`` metadata to ``==new_version``.
+
+    Only the text before the first ``[dependency-groups]`` / ``[tool.`` table
+    is touched: dev groups and tool config stay unpinned. Returns True if the
+    file changed.
+    """
+    text = pyproject_path.read_text()
+    cut = len(text)
+    for marker in ("\n[dependency-groups]", "\n[tool."):
+        idx = text.find(marker)
+        if idx != -1:
+            cut = min(cut, idx)
+    head, tail = text[:cut], text[cut:]
+    # Line-wise so the package's own ``name = "..."`` line is never touched.
+    new_head = "".join(
+        line
+        if line.lstrip().startswith("name")
+        else _INTERNAL_DEP_RE.sub(
+            lambda m: f'"{m["name"]}{m["extras"] or ""}=={new_version}"', line
+        )
+        for line in head.splitlines(keepends=True)
+    )
+    if new_head == head:
+        return False
+    pyproject_path.write_text(new_head + tail)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -105,6 +145,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Stamped {display} to version {new_version}")
         else:
             print(f"{display} already at version {new_version}; no change.")
+    for target in (args.root_pyproject, args.service_pyproject):
+        if pin_internal_deps(target, new_version):
+            print(f"Pinned internal deps in {_display_path(target)} to =={new_version}")
     return 0
 
 

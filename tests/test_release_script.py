@@ -153,6 +153,19 @@ def test_hook_failure_aborts_without_push(sandbox):
     assert _tags(sandbox) == ""
 
 
+def test_hook_published_but_deploy_incomplete_pushes_then_fails(sandbox):
+    """Exit 10: artifacts shipped (immutable), so tags are pushed, then exit 3."""
+    _hook(sandbox, 10)
+    r = _run(sandbox)
+    assert r.returncode == 3
+    calls = _calls(sandbox)
+    hook_i = next(i for i, c in enumerate(calls) if c.startswith("hook "))
+    push_is = [i for i, c in enumerate(calls) if c.startswith("git push")]
+    assert len(push_is) == 2 and all(i > hook_i for i in push_is)
+    assert f"v{NEW_VERSION}" in _tags(sandbox)
+    assert "INCOMPLETE deploy" in r.stderr
+
+
 def test_missing_hook_aborts(sandbox):
     r = _run(sandbox)
     assert r.returncode != 0

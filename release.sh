@@ -22,7 +22,9 @@
 #     ./release.local.sh <version> <absolute-dist-dir>
 #
 # Exit 0 means the artifacts are published (e.g. uploaded to a private
-# package index); any other exit aborts the release. Publishing happens before
+# package index); exit 10 means they are published but a downstream deploy
+# did not finish (the release still pushes, then exits 3); any other exit
+# aborts the release. Publishing happens before
 # the push so a remote never advertises a version whose artifacts did not ship.
 # On any abort the local release tag is deleted and nothing has been pushed.
 # With no hook present the release aborts too, unless --no-publish is given,
@@ -110,7 +112,7 @@ rm -rf "$ui_tmp"
 
 # kb-service is a workspace member too, so its version is also in uv.lock.
 uv lock
-git add -A "$static_dir" packages/personal-kb-hook/pyproject.toml \
+git add -A "$static_dir" pyproject.toml packages/personal-kb-hook/pyproject.toml \
   packages/kb-service/pyproject.toml packages/kb-core/pyproject.toml uv.lock
 if ! git diff --cached --quiet; then
   # Keep the conventional `chore(release): v{version}` message, then move
@@ -141,9 +143,23 @@ for name in $expected_wheels; do
 done
 
 # 2c. Publish hook (see header). Runs before any push.
+#     Exit codes: 0 = published (and deployed, if the hook deploys);
+#     10 = artifacts ARE published but a downstream deploy did not finish. A
+#     published version is immutable, so aborting would leave the release
+#     un-rerunnable: push the tags (the artifacts shipped), then fail loudly so
+#     the operator finishes the deploy. Any other code = nothing published:
+#     abort.
+deploy_incomplete=0
 if [ -x ./release.local.sh ]; then
-  ./release.local.sh "$new_version" "$PWD/dist" ||
-    abort_release "release.local.sh failed; aborting release."
+  set +e
+  ./release.local.sh "$new_version" "$PWD/dist"
+  hook_rc=$?
+  set -e
+  case "$hook_rc" in
+    0) ;;
+    10) deploy_incomplete=1 ;;
+    *) abort_release "release.local.sh failed (exit $hook_rc); aborting release." ;;
+  esac
 elif [ "$publish" = "1" ]; then
   abort_release "No executable ./release.local.sh publish hook found. It is an optional maintainer-local script, invoked as: release.local.sh <version> <abs-dist-dir>; exit 0 means artifacts are published. Create it, or re-run with --no-publish to release without publishing artifacts."
 else
@@ -160,3 +176,7 @@ if [ -x ./deploy.sh ]; then
 fi
 
 echo "Released $(git describe --tags --abbrev=0) to origin + github."
+if [ "$deploy_incomplete" = "1" ]; then
+  echo "!!! ${new_tag} is published and pushed, but the publish hook reported an INCOMPLETE deploy (exit 10). Finish the deploy before relying on it. !!!" >&2
+  exit 3
+fi

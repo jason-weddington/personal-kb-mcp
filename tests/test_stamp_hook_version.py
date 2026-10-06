@@ -174,3 +174,21 @@ def test_repo_root_and_hook_already_in_sync() -> None:
         f"personal-kb-hook is at {hook_version} but main repo is at "
         f"{root_version}; run scripts/stamp_hook_version.py to resync."
     )
+
+
+def test_pin_internal_deps_pins_project_deps_only(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "personal-kb-web-service"\nversion = "1.0.0"\n'
+        'dependencies = [\n    "kb-core[postgres,ingest]",\n    "fastapi>=0.1",\n]\n'
+        '[project.optional-dependencies]\nx = ["personal-kb-web-service[postgres]==0.1.0"]\n'
+        '[dependency-groups]\ndev = ["kb-core", "personal-kb-hook"]\n'
+    )
+    assert stamp_hook_version_mod.pin_internal_deps(pyproject, "2.0.0") is True
+    text = pyproject.read_text()
+    assert 'name = "personal-kb-web-service"\n' in text
+    assert '"kb-core[postgres,ingest]==2.0.0"' in text
+    assert '"personal-kb-web-service[postgres]==2.0.0"' in text
+    assert '"fastapi>=0.1"' in text
+    assert 'dev = ["kb-core", "personal-kb-hook"]' in text
+    assert stamp_hook_version_mod.pin_internal_deps(pyproject, "2.0.0") is False
