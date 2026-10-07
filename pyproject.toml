@@ -194,7 +194,7 @@ commit_parser = "conventional"
 changelog_file = "CHANGELOG.md"
 build_command = "uv lock && git add uv.lock && uv build"
 allow_zero_version = true
-major_on_zero = false
+major_on_zero = true
 commit_message = "chore(release): v{version}"
 
 [tool.semantic_release.publish]
