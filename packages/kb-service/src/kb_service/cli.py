@@ -13,6 +13,8 @@ already exist.
 
 import argparse
 import asyncio
+import logging
+import os
 import sys
 import uuid
 from collections.abc import Coroutine
@@ -147,6 +149,43 @@ async def _make_admin(email: str) -> str:
         await close_db()
 
 
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_HANDLER_MARKER = "_kb_service_handler"
+
+
+def configure_logging(level_name: str | None = None) -> None:
+    """Install one stderr handler on the root logger; INFO for kb_service/kb_core.
+
+    *level_name* defaults to ``KB_LOG_LEVEL`` (INFO when unset/blank; an unknown
+    name falls back to INFO with one WARNING). Root stays at WARNING so
+    third-party libraries remain quiet. Idempotent.
+    """
+    raw = level_name if level_name is not None else os.environ.get("KB_LOG_LEVEL")
+    raw = (raw or "").strip()
+    level = logging.INFO
+    bad: str | None = None
+    if raw:
+        resolved = logging.getLevelName(raw.upper())
+        if isinstance(resolved, int):
+            level = resolved
+        else:
+            bad = raw
+
+    root = logging.getLogger()
+    if not any(getattr(h, _HANDLER_MARKER, False) for h in root.handlers):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+        setattr(handler, _HANDLER_MARKER, True)
+        root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+    for name in ("kb_service", "kb_core"):
+        logging.getLogger(name).setLevel(level)
+    if bad is not None:
+        logging.getLogger(__name__).warning(
+            "unknown KB_LOG_LEVEL %r; falling back to INFO", bad
+        )
+
+
 def _serve(host: str, port: int) -> None:
     """Run the FastAPI app under uvicorn in the foreground.
 
@@ -157,7 +196,19 @@ def _serve(host: str, port: int) -> None:
     """
     import uvicorn
 
-    uvicorn.run("kb_service.main:app", host=host, port=port)
+    configure_logging()
+    # log_config=None keeps uvicorn from replacing our root configuration. Its
+    # "uvicorn", "uvicorn.error" and "uvicorn.access" loggers then have no
+    # handlers of their own and propagate to the root handler. They would
+    # inherit root's WARNING level, so log_level="info" sets them to INFO
+    # explicitly so startup and access lines still emit.
+    uvicorn.run(
+        "kb_service.main:app",
+        host=host,
+        port=port,
+        log_config=None,
+        log_level="info",
+    )
 
 
 def _run(coro: Coroutine[Any, Any, str]) -> None:

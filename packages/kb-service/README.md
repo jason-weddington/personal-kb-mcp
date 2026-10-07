@@ -47,6 +47,7 @@ Configure the service with environment variables (see `.env.example` for the ful
 - `KB_DATABASE_URL` — DSN of the kb-core data database.
 - `KB_SERVICE_PUBLIC_URL` — public base URL, used in invite and password-reset links.
 - `KB_OLLAMA_URL`, `KB_EMBEDDING_MODEL`, `KB_EMBEDDING_DIM` — embeddings.
+- `KB_LOG_LEVEL` — log level for the `kb_service`/`kb_core` loggers (default `INFO`; unknown values fall back to `INFO` with a warning). Third-party libraries stay at `WARNING`. Logs go to stderr (the journal under systemd).
 - `ANTHROPIC_API_KEY` (or the Bedrock/Ollama provider settings) — enrichment, planning and synthesis.
 - `KB_SERVICE_CLIENT_INSTALL_SPEC` — the `uvx --from` spec shown in the Settings page's MCP snippet; defaults to `personal-kb @ git+https://github.com/jason-weddington/personal-kb-mcp`.
 
