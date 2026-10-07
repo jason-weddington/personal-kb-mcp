@@ -84,7 +84,7 @@ def _maps_sql(team: str | None) -> tuple[str, bool]:
     sql = (
         "SELECT id, short_title, long_title, knowledge_details "
         "FROM knowledge_entries "
-        "WHERE is_active = 1 AND project_ref = ? AND superseded_by IS NULL "
+        "WHERE is_active = 1 AND project_ref = ? "
         "AND entry_type = 'mental_map' "
     )
     if team:
