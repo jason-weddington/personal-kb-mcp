@@ -956,3 +956,50 @@ async def test_delete_map_on_postgres(pg_kb: PostgresBackend) -> None:
         await delete_map(pg_kb, FACTUAL_ID)
     with pytest.raises(ValueError, match="kb-99999"):
         await delete_map(pg_kb, "kb-99999")
+
+
+async def test_get_neighbors_deterministic_order_on_postgres(pg_kb: PostgresBackend) -> None:
+    """get_neighbors orders before LIMIT: outgoing by target, then incoming by source."""
+    from kb_core.graph.queries import get_neighbors
+
+    ts = "2026-01-01T00:00:00Z"
+    for node_id in [
+        "kb-00001",
+        "kb-00002",
+        "kb-00003",
+        "kb-00008",
+        "kb-00009",
+        "tag:alpha",
+        "tag:zeta",
+    ]:
+        await pg_kb.execute(
+            "INSERT INTO graph_nodes (node_id, node_type, created_at) VALUES (?, ?, ?)",
+            (node_id, "entry", ts),
+        )
+    for source, target, edge_type in [
+        ("kb-00001", "tag:zeta", "has_tag"),
+        ("kb-00001", "kb-00009", "references"),
+        ("kb-00001", "tag:alpha", "has_tag"),
+        ("kb-00001", "kb-00003", "references"),
+        ("kb-00008", "kb-00001", "references"),
+        ("kb-00002", "kb-00001", "references"),
+    ]:
+        await pg_kb.execute(
+            "INSERT INTO graph_edges (source, target, edge_type, properties, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (source, target, edge_type, "{}", ts),
+        )
+    expected = [
+        ("kb-00003", "outgoing"),
+        ("kb-00009", "outgoing"),
+        ("tag:alpha", "outgoing"),
+        ("tag:zeta", "outgoing"),
+        ("kb-00002", "incoming"),
+        ("kb-00008", "incoming"),
+    ]
+    got = await get_neighbors(pg_kb, "kb-00001", limit=10)
+    assert [(n[0], n[2]) for n in got] == expected
+    got = await get_neighbors(pg_kb, "kb-00001", limit=3)
+    assert [(n[0], n[2]) for n in got] == expected[:3]
+    got = await get_neighbors(pg_kb, "kb-00001", edge_types=["has_tag"], limit=10)
+    assert [(n[0], n[2]) for n in got] == [("tag:alpha", "outgoing"), ("tag:zeta", "outgoing")]

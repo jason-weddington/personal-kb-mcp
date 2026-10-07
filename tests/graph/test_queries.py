@@ -382,3 +382,55 @@ async def test_get_graph_vocabulary_max_nodes(db, graph_builder):
     vocab = await get_graph_vocabulary(db, max_nodes=3)
     total = sum(len(v) for v in vocab.values())
     assert total <= 3
+
+
+async def _seed_order_edges(db) -> None:
+    ts = "2026-01-01T00:00:00Z"
+    ids = ["kb-00001", "kb-00002", "kb-00003", "kb-00008", "kb-00009", "tag:alpha", "tag:zeta"]
+    for node_id in ids:
+        await db.execute(
+            "INSERT INTO graph_nodes (node_id, node_type, created_at) VALUES (?, ?, ?)",
+            (node_id, "entry", ts),
+        )
+    edges = [
+        ("kb-00001", "tag:zeta", "has_tag"),
+        ("kb-00001", "kb-00009", "references"),
+        ("kb-00001", "tag:alpha", "has_tag"),
+        ("kb-00001", "kb-00003", "references"),
+        ("kb-00008", "kb-00001", "references"),
+        ("kb-00002", "kb-00001", "references"),
+    ]
+    for source, target, edge_type in edges:
+        await db.execute(
+            "INSERT INTO graph_edges (source, target, edge_type, properties, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (source, target, edge_type, "{}", ts),
+        )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_get_neighbors_deterministic_order(db):
+    await _seed_order_edges(db)
+    expected = [
+        ("kb-00003", "outgoing"),
+        ("kb-00009", "outgoing"),
+        ("tag:alpha", "outgoing"),
+        ("tag:zeta", "outgoing"),
+        ("kb-00002", "incoming"),
+        ("kb-00008", "incoming"),
+    ]
+    got = await get_neighbors(db, "kb-00001", limit=10)
+    assert [(n[0], n[2]) for n in got] == expected
+    got = await get_neighbors(db, "kb-00001", limit=3)
+    assert [(n[0], n[2]) for n in got] == expected[:3]
+
+
+@pytest.mark.asyncio
+async def test_get_neighbors_deterministic_order_filtered(db):
+    await _seed_order_edges(db)
+    got = await get_neighbors(db, "kb-00001", edge_types=["has_tag"], limit=10)
+    assert [(n[0], n[2]) for n in got] == [
+        ("tag:alpha", "outgoing"),
+        ("tag:zeta", "outgoing"),
+    ]

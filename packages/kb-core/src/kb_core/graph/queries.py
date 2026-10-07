@@ -24,6 +24,9 @@ async def get_neighbors(
 
     Returns list of (neighbor_id, edge_type, direction) tuples.
     direction is "outgoing" or "incoming" indicating the edge direction.
+    Neighbours are returned in a deterministic order (outgoing by target then
+    edge type, then incoming by source then edge type), so the LIMIT keeps the
+    same rows regardless of query plan.
     """
     results: list[tuple[str, str, str]] = []
 
@@ -34,7 +37,7 @@ async def get_neighbors(
             placeholders = ",".join("?" for _ in edge_types)
             query += f" AND edge_type IN ({placeholders})"
             params.extend(edge_types)
-        query += " LIMIT ?"
+        query += " ORDER BY target, edge_type LIMIT ?"
         params.append(limit)
         cursor = await db.execute(query, params)
         for row in await cursor.fetchall():
@@ -50,7 +53,7 @@ async def get_neighbors(
             placeholders = ",".join("?" for _ in edge_types)
             query += f" AND edge_type IN ({placeholders})"
             params.extend(edge_types)
-        query += " LIMIT ?"
+        query += " ORDER BY source, edge_type LIMIT ?"
         params.append(remaining)
         cursor = await db.execute(query, params)
         for row in await cursor.fetchall():
