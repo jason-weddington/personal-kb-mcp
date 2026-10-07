@@ -96,3 +96,12 @@ def get_gate_log_path(session_id: str) -> Path:
     the network); Stop batch-POSTs the file to ``/api/kb/prevention/decisions``.
     """
     return Path(f"~/.cache/personal_kb/gate-log-{session_id}.jsonl").expanduser()
+
+
+def get_tool_inventory_log_path() -> Path:
+    """Return the SessionStart tool-inventory decision log path (hook-only).
+
+    One jsonl file shared across sessions; local observability only, never
+    sent over the network.
+    """
+    return Path("~/.cache/personal_kb/tool-inventory.jsonl").expanduser()

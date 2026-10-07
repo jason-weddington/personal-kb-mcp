@@ -25,10 +25,16 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
   enabled, extracts the assistant manifest from the transcript and spawns a detached listener-worker
   subprocess. Never produces stdout; never calls :func:`http_index.load_index`.
 
+SessionStart additionally appends a tool inventory of the personal script
+directories (``KB_TOOL_DIRS``, default ``~/scripts``; see
+:mod:`personal_kb_hook.tool_inventory`) after the directory text.
+
 Tolerant by design: any error path — empty stdin, malformed JSON, an
 unsupported event, no ``.kb_project`` anywhere on the walk, no maps for the
 resolved project, the same maps already surfaced this session — results in
-``exit 0`` with NO stdout. The hook must never raise into the harness.
+``exit 0`` with NO stdout, except that on SessionStart those quiet paths
+still emit the tool inventory alone when it is non-empty. The hook must
+never raise into the harness.
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ from personal_kb_hook import (
     listener,
     prevention,
     telemetry,
+    tool_inventory,
     whisper_debug,
 )
 from personal_kb_hook.index_reader import MapKey
@@ -157,6 +164,11 @@ def main(argv: list[str] | None = None) -> None:
     # SessionStart gotcha slice: once fetched it must reach stdout exactly once
     # on EVERY exit path of the directory pipeline (incl. an unexpected error).
     slice_state: dict[str, Any] = {"text": None, "emitted": False}
+    # SessionStart tool inventory: same single-write discipline. It rides in
+    # the same output as the slice/directory (appended last), or alone on the
+    # quiet paths. ``slice_state["emitted"]`` doubles as the "stdout written"
+    # flag for every main-path emit.
+    inv_state: dict[str, Any] = {"text": None}
 
     try:
         payload = _read_payload()
@@ -313,6 +325,15 @@ def main(argv: list[str] | None = None) -> None:
                 telemetry.orphan_sweep(session_id_ss)
                 prevention.orphan_sweep(session_id_ss)
             slice_state["text"] = prevention.session_start(payload)
+            try:
+                _sid_inv = payload.get("session_id")
+                _src_inv = payload.get("source")
+                inv_state["text"] = tool_inventory.build_inventory(
+                    session_id=_sid_inv if isinstance(_sid_inv, str) else None,
+                    source=_src_inv if isinstance(_src_inv, str) else None,
+                )
+            except Exception:
+                inv_state["text"] = None
 
         # Pending whisper check — UserPromptSubmit only, independent of the
         # directory pipeline's early returns (lines below).  Wrapped in its
@@ -488,7 +509,14 @@ def main(argv: list[str] | None = None) -> None:
         def _flush_whisper() -> None:
             if slice_state["text"] is not None:
                 slice_state["emitted"] = True
-                _emit(args, event_name, slice_state["text"])
+                slice_text: str = slice_state["text"]
+                if inv_state["text"] is not None:
+                    slice_text = slice_text + "\n\n" + inv_state["text"]
+                _emit(args, event_name, slice_text)
+                return
+            if inv_state["text"] is not None and not slice_state["emitted"]:
+                slice_state["emitted"] = True
+                _emit(args, event_name, inv_state["text"])
                 return
             if whisper and whisper_emitted_pairs and whisper_cache_path is not None:
                 _emit(args, event_name, whisper)
@@ -610,6 +638,8 @@ def main(argv: list[str] | None = None) -> None:
         combined = directory + "\n" + whisper if whisper else directory
         if slice_state["text"] is not None:
             combined = slice_state["text"] + "\n" + combined
+        if event_name == "SessionStart" and inv_state["text"] is not None:
+            combined = combined + "\n\n" + inv_state["text"]
 
         slice_state["emitted"] = True
         _emit(args, event_name, combined)
@@ -679,9 +709,11 @@ def main(argv: list[str] | None = None) -> None:
 
     except Exception:
         # Intentional broad catch: the hook must NEVER raise into the harness.
-        if slice_state["text"] is not None and not slice_state["emitted"]:
-            with contextlib.suppress(Exception):
-                _emit(args, "SessionStart", slice_state["text"])
+        if not slice_state["emitted"]:
+            parts = [t for t in (slice_state["text"], inv_state["text"]) if t is not None]
+            if parts:
+                with contextlib.suppress(Exception):
+                    _emit(args, "SessionStart", "\n\n".join(parts))
         return
 
 
