@@ -1,6 +1,6 @@
 # somnus iteration 1: don't point a map at a superseded entry
 
-Status: DRAFT for Jason's review, 2026-10-07. Nothing is built. GTD: fb8a4f52 (design umbrella).
+Status: reviewed by Jason 2026-10-07 (decisions folded in below). Nothing is built. GTD: fb8a4f52 (design umbrella).
 
 ## The problem, measured
 
@@ -22,7 +22,7 @@ kb-core already models supersession explicitly. An entry's `hints.supersedes` cr
 In scope:
 
 - For every pointer somnus is about to write (`create_map` pointers and `add_pointer`), check whether a newer entry in the same project supersedes it.
-- If one does, point at the newer entry instead, or point at both with the newer one first.
+- If one does, point at the newer entry instead.
 - Record every check and verdict in the run report, so precision can be read from real nights.
 
 Out of scope, deliberately:
@@ -54,9 +54,10 @@ For each pointer about to be written:
 2. **No newer neighbours.** If `newer_neighbors` is empty, keep the pointer. No model call. Expect this to be most pointers.
 3. **Otherwise, one model call** with the candidate's full text and each newer neighbour's full text. The tool has a closed verdict and **required evidence in the signature.** This follows kb-03486: put the thing you need in the tool's shape, not in the prompt.
    - `verdict`, one of:
-     - `supersedes`: the newer entry replaces the older one entirely
-     - `amends`: the newer entry corrects or extends part of it
+     - `supersedes`: the newer entry replaces the older one
      - `independent`: same topic, no conflict
+
+   Binary on purpose (Jason, 2026-10-07). There is no `amends`: a partial correction should be an update to the existing entry (`update_entry_id` with a change reason), not a new entry plus an edge. A newer entry that only partly contradicts an older one is evidence that an agent wrote a new entry where it should have updated. The model reports it as `supersedes` when the conflict makes the old entry unsafe to follow, and the run report records it so iteration 2 can flag it for an update.
    - `superseding_id`: required unless the verdict is `independent`.
    - `old_claim` and `new_claim`: required verbatim quotes, one from each entry, showing the conflict. Required-but-empty is allowed only for `independent`, which turns an omission into an explicit decision.
 
@@ -67,7 +68,6 @@ For each pointer about to be written:
 | Verdict | Pointer change | Note on the map |
 |---|---|---|
 | explicit edge, or `supersedes` | Replace the old pointer with the superseding entry. If that entry is already a pointer, drop the old one. | none needed |
-| `amends` | Keep both, newer first. | A code-composed gloss on the old pointer: "partly superseded by kb-X". The model never writes this text. |
 | `independent` | unchanged | none |
 
 Glosses on swapped pointers are written by rung 2 as today, but for the entry actually pointed at.
@@ -87,11 +87,11 @@ These are pairs from the 2026-10-07 review where the right answer is known:
 | Older | Newer | Expected |
 |---|---|---|
 | kb-03029 | kb-03134 | supersedes (it says it retracts the numbers) |
-| kb-01318 | kb-01598 | amends at least (the token-file location) |
+| kb-01318 | kb-01598 | supersedes (the token-file location is wrong in the older entry) |
 | kb-01434 / kb-01593 | kb-01598 | supersedes (key injection retired) |
 | kb-00075 | kb-01726 | supersedes (fixed upstream) |
-| kb-01261 | kb-01262 | amends (naming scheme dropped) |
-| kb-00775 | kb-03026 | amends (owner penalty softened) |
+| kb-01261 | kb-01262 | supersedes (naming scheme dropped) |
+| kb-00775 | kb-03026 | supersedes (owner penalty softened) |
 
 Also include two negative pairs from the same projects, related but compatible, to measure false positives. The fixture test runs the real check against frozen entry text and fails on any wrong verdict.
 
@@ -107,8 +107,10 @@ The model call only fires for pointers with a newer neighbour above the floor. T
 
 Item 2 should also fix bug e2a307d7 (the rung-2 prompt lists `no_change`, but the tool set has no such tool), since it touches the same file.
 
-## Questions for Jason
+## Decisions (Jason, 2026-10-07)
 
-1. Is `amends` worth having in iteration 1, or should it be binary (supersedes or not) for the first measurement?
-2. "Newer" means `updated_at`. An old entry that was substantially rewritten counts as newer, which seems right. Metadata-only updates also bump it, which adds noise. Accept that for now?
-3. Should iteration 2 (writing a flag or `superseded_by` onto the old entry) wait for a precision number from the run reports, or is the quote-verification guard enough to go straight there?
+1. **No `amends`.** The verdict is binary. Partial corrections belong in an update to the existing entry, not a new entry plus an edge, and the graph should not grow an `amends` edge type. (None exists today; it was this draft's invention.)
+2. **"Newer" means `updated_at`,** accepting the noise from metadata-only updates for now.
+3. **Self-heal the explicit mechanism now.** At minimum, set `superseded_by` on every entry that has an incoming `supersedes` edge from an active entry (a one-off backfill for the 25 existing edges, plus the same rule enforced on every store). The asymmetry that left the column unused heals itself. Writing flags onto entries found only by somnus's model check still waits for precision numbers.
+
+Jason also asked for the fix to be structural as well as nightly: tool semantics and server-side validation that make agents record supersession when they write, instead of somnus inferring it later. Those proposals are tracked separately (see the structural-supersession item under fb8a4f52).
