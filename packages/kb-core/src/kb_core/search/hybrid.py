@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 # RRF constant — standard value from the literature
 RRF_K = 60
 
+# Log-line prefix for supersession-aware read filtering
+SUPERSESSION_READ_MARKER = "supersession-read"
+
 
 async def hybrid_search(
     db: Database,
@@ -104,9 +107,21 @@ async def hybrid_search(
     # Build results
     now = datetime.now(UTC)
     results: list[SearchResult] = []
-    for entry_id in sorted_ids[: query.limit]:
+    hidden: list[tuple[str, str]] = []
+    window = query.limit
+    i = 0
+    while i < min(window, len(sorted_ids)):
+        entry_id = sorted_ids[i]
+        i += 1
         entry = await get_entry(db, entry_id)
         if entry is None or not entry.is_active:
+            continue
+
+        # Superseded entries are hidden by default. Only these rows are
+        # backfilled: the window grows by one so limit slots aren't wasted.
+        if not query.include_superseded and entry.superseded_by is not None:
+            hidden.append((entry.id, entry.superseded_by))
+            window += 1
             continue
 
         # Defense-in-depth: re-apply metadata filters post-fusion.
@@ -163,6 +178,16 @@ async def hybrid_search(
             )
         )
 
+    if hidden:
+        result_ids = {r.entry.id for r in results}
+        logger.info(
+            "%s op=search path=fused hidden=%r superseder_in_results=%r query=%r",
+            SUPERSESSION_READ_MARKER,
+            hidden,
+            [sid in result_ids for _, sid in hidden],
+            query.query[:80],
+        )
+
     # Record search telemetry (fire-and-forget)
     event_top_score: float | None = rrf_scores[sorted_ids[0]] if sorted_ids else None
     await _record_search_event(
@@ -189,6 +214,8 @@ async def _filter_only_search(
     creation date (newest first).
     """
     sql = "SELECT id FROM knowledge_entries WHERE is_active = 1"
+    if not query.include_superseded:
+        sql += " AND superseded_by IS NULL"
     params: list[str | int] = []
 
     if query.project_ref:

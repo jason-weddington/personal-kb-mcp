@@ -763,3 +763,96 @@ async def test_search_telemetry_failure_does_not_break_search(db, store, monkeyp
     # Search should still return results despite telemetry failure
     assert len(results) >= 1
     assert results[0].entry.short_title == "Resilience test"
+
+
+# ---------------------------------------------------------------------------
+# Supersession-aware reads
+# ---------------------------------------------------------------------------
+
+_SHARED = "zebrafish quokka distinctive supersession phrase"
+
+
+async def _seed_superseded(db, old_id: str, new_id: str) -> None:
+    await db.execute(
+        "UPDATE knowledge_entries SET superseded_by = ? WHERE id = ?", (new_id, old_id)
+    )
+    await db.commit()
+
+
+async def _pair(store, project_ref=None, b_text=_SHARED):
+    a = await store.create_entry(
+        short_title="Old way",
+        long_title="Old way long",
+        knowledge_details=_SHARED,
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref=project_ref,
+    )
+    b = await store.create_entry(
+        short_title="New way",
+        long_title="New way long",
+        knowledge_details=b_text,
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        project_ref=project_ref,
+    )
+    return a, b
+
+
+async def test_fused_hides_superseded_by_default(db, store):
+    a, b = await _pair(store)
+    await _seed_superseded(db, a.id, b.id)
+    results, _ = await hybrid_search(db, None, SearchQuery(query=_SHARED))
+    ids = [r.entry.id for r in results]
+    assert b.id in ids
+    assert a.id not in ids
+
+
+async def test_fused_include_superseded(db, store):
+    a, b = await _pair(store)
+    await _seed_superseded(db, a.id, b.id)
+    results, _ = await hybrid_search(db, None, SearchQuery(query=_SHARED, include_superseded=True))
+    assert {r.entry.id for r in results} == {a.id, b.id}
+
+
+async def test_fused_limit_backfills_superseded_slot(db, store):
+    a, b = await _pair(store)
+    await _seed_superseded(db, a.id, b.id)
+    results, _ = await hybrid_search(db, None, SearchQuery(query=_SHARED, limit=1))
+    assert [r.entry.id for r in results] == [b.id]
+
+
+async def test_fused_supersession_log_superseder_in_results(db, store, caplog):
+    a, b = await _pair(store)
+    await _seed_superseded(db, a.id, b.id)
+    with caplog.at_level("INFO", logger="kb_core.search.hybrid"):
+        await hybrid_search(db, None, SearchQuery(query=_SHARED))
+    text = caplog.text
+    assert "supersession-read op=search path=fused" in text
+    assert f"hidden=[('{a.id}', '{b.id}')]" in text
+    assert "superseder_in_results=[True]" in text
+
+
+async def test_fused_supersession_log_superseder_not_in_results(db, store, caplog):
+    a, b = await _pair(store, b_text="completely unrelated gardening content")
+    await _seed_superseded(db, a.id, b.id)
+    with caplog.at_level("INFO", logger="kb_core.search.hybrid"):
+        results, _ = await hybrid_search(db, None, SearchQuery(query=_SHARED))
+    assert results == []
+    assert "superseder_in_results=[False]" in caplog.text
+
+
+async def test_fused_no_log_when_nothing_hidden(db, store, caplog):
+    await _pair(store)
+    with caplog.at_level("INFO", logger="kb_core.search.hybrid"):
+        await hybrid_search(db, None, SearchQuery(query=_SHARED))
+    assert "supersession-read" not in caplog.text
+
+
+async def test_filter_only_hides_superseded(db, store):
+    a, b = await _pair(store, project_ref="p")
+    await _seed_superseded(db, a.id, b.id)
+    results, _ = await hybrid_search(db, None, SearchQuery(project_ref="p"))
+    assert [r.entry.id for r in results] == [b.id]
+    results, _ = await hybrid_search(
+        db, None, SearchQuery(project_ref="p", include_superseded=True)
+    )
+    assert {r.entry.id for r in results} == {a.id, b.id}

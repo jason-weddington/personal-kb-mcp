@@ -68,12 +68,35 @@ def register_kb_get(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         entries_data = await backend.get_entries(ids)
 
+        found_titles = {eid: e.short_title for eid, e, _ in entries_data if e is not None}
+        missing = sorted(
+            {e.superseded_by for _, e, _ in entries_data if e is not None and e.superseded_by}
+            - set(found_titles)
+        )
+        if missing:
+            for mid, me, _ in await backend.get_entries(missing):
+                if me is not None:
+                    found_titles[mid] = me.short_title
+
         formatted: list[str] = []
         for eid, entry, rot_pairs in entries_data:
             if entry is None:
                 formatted.append(f"[{eid}] not found")
             else:
                 rendered = format_entry_full(entry)
+                sid = entry.superseded_by
+                if sid:
+                    if sid in found_titles:
+                        banner = f"SUPERSEDED by {sid} \u2014 {found_titles[sid]}"
+                    else:
+                        banner = f"SUPERSEDED by {sid}"
+                        logger.warning(
+                            "supersession-read invariant_breach op=kb_get target=%s "
+                            "superseded_by=%s superseder=not_found_or_inactive",
+                            eid,
+                            sid,
+                        )
+                    rendered = f"{banner}\n{rendered}"
                 note = _render_pointer_rot(rot_pairs)
                 if note is not None:
                     rendered = f"{rendered}\n{note}"

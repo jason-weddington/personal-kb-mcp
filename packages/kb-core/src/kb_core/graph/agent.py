@@ -22,7 +22,7 @@ from kb_core.llm.json_parser import parse_json_object
 from kb_core.llm.provider import LLMProvider
 from kb_core.models.search import SearchQuery, SearchResult
 from kb_core.search.embedder_protocol import Embedder
-from kb_core.search.hybrid import hybrid_search
+from kb_core.search.hybrid import SUPERSESSION_READ_MARKER, hybrid_search
 
 logger = logging.getLogger(__name__)
 
@@ -156,10 +156,25 @@ async def _dispatch_tool(
         node_id = args.get("node_id", "")
         limit = min(args.get("limit", 10), 20)
         neighbors = await get_neighbors(db, node_id, limit=limit)
-        if not neighbors:
-            return f"graph_neighbors({node_id!r}): no neighbors found"
-        lines = [f"graph_neighbors({node_id!r}): {len(neighbors)} neighbors"]
+        kept: list[tuple[str, str, str]] = []
+        skipped: list[tuple[str, str]] = []
         for nid, etype, direction in neighbors:
+            if nid.startswith("kb-"):
+                nentry = await get_entry(db, nid)
+                if nentry is not None and nentry.superseded_by is not None:
+                    skipped.append((nid, nentry.superseded_by))
+                    continue
+            kept.append((nid, etype, direction))
+        if skipped:
+            logger.info(
+                "%s op=agent_tool tool=graph_neighbors skipped=%r",
+                SUPERSESSION_READ_MARKER,
+                skipped,
+            )
+        if not kept:
+            return f"graph_neighbors({node_id!r}): no neighbors found"
+        lines = [f"graph_neighbors({node_id!r}): {len(kept)} neighbors"]
+        for nid, etype, direction in kept:
             lines.append(f"  {direction}: {nid} [{etype}]")
         return "\n".join(lines)
 
@@ -204,8 +219,12 @@ async def _dispatch_tool(
             return f"scope_entries({scope!r}): no entries found"
         now = datetime.now(UTC)
         lines = [f"scope_entries({scope!r}): {len(entry_ids)} entries"]
+        scope_skipped: list[tuple[str, str]] = []
         for eid in entry_ids:
             entry = await get_entry(db, eid)
+            if entry and entry.is_active and entry.superseded_by is not None:
+                scope_skipped.append((eid, entry.superseded_by))
+                continue
             if entry and entry.is_active:
                 anchor = entry.updated_at or entry.created_at or now
                 eff = compute_effective_confidence(
@@ -217,6 +236,12 @@ async def _dispatch_tool(
                 )
                 warn = staleness_warning(eff, entry.entry_type)
                 lines.append(f"  {format_entry_compact(entry, eff, warn)}")
+        if scope_skipped:
+            logger.info(
+                "%s op=agent_tool tool=scope_entries skipped=%r",
+                SUPERSESSION_READ_MARKER,
+                scope_skipped,
+            )
         return "\n".join(lines)
 
     return f"Unknown tool: {name}"
@@ -326,10 +351,19 @@ async def agentic_query(
         if isinstance(parsed, _FinalAnswer):
             turns_used += 1
             entries = []
+            superseded_picks: list[tuple[str, str]] = []
             for eid in parsed.entry_ids:
                 entry = await get_entry(db, eid)
                 if entry and entry.is_active:
                     entries.append((eid, "agent selected"))
+                    if entry.superseded_by is not None:
+                        superseded_picks.append((eid, entry.superseded_by))
+            if superseded_picks:
+                logger.info(
+                    "%s op=agent_final_pick superseded=%r",
+                    SUPERSESSION_READ_MARKER,
+                    superseded_picks,
+                )
             await _emit(
                 {
                     "type": "agent_done",
@@ -394,10 +428,20 @@ async def agentic_query(
     logger.debug("Agent exhausted %d turns, extracting best-effort", turns_used)
     all_ids = _extract_entry_ids(messages)
     entries = []
+    exhaust_skipped: list[tuple[str, str]] = []
     for eid in all_ids:
         entry = await get_entry(db, eid)
+        if entry and entry.is_active and entry.superseded_by is not None:
+            exhaust_skipped.append((eid, entry.superseded_by))
+            continue
         if entry and entry.is_active:
             entries.append((eid, "agent fallback"))
+    if exhaust_skipped:
+        logger.info(
+            "%s op=agent_exhaust skipped=%r",
+            SUPERSESSION_READ_MARKER,
+            exhaust_skipped,
+        )
 
     # Fall back to fast-path results if nothing found
     if not entries and fast_results:

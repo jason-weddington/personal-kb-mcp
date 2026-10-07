@@ -28,7 +28,7 @@ def _expiring_sql(team: str | None) -> tuple[str, bool]:
     sql = (
         "SELECT id, entry_type, short_title, expires_at "
         "FROM knowledge_entries "
-        "WHERE is_active = 1 AND project_ref = ? "
+        "WHERE is_active = 1 AND project_ref = ? AND superseded_by IS NULL "
         "AND expires_at IS NOT NULL "
         "AND expires_at > ? "
         "AND expires_at < ? "
@@ -44,7 +44,7 @@ def _recent_sql(team: str | None, *, has_since: bool) -> tuple[str, bool]:
     sql = (
         "SELECT id, entry_type, short_title "
         "FROM knowledge_entries "
-        "WHERE is_active = 1 AND project_ref = ? "
+        "WHERE is_active = 1 AND project_ref = ? AND superseded_by IS NULL "
         "AND entry_type IN ('decision', 'lesson_learned') "
     )
     if has_since:
@@ -60,7 +60,7 @@ def _conventions_sql(team: str | None) -> tuple[str, bool]:
     sql = (
         "SELECT id, entry_type, short_title "
         "FROM knowledge_entries "
-        "WHERE is_active = 1 AND project_ref = ? "
+        "WHERE is_active = 1 AND project_ref = ? AND superseded_by IS NULL "
         "AND entry_type = 'pattern_convention' "
     )
     if team:
@@ -84,7 +84,7 @@ def _maps_sql(team: str | None) -> tuple[str, bool]:
     sql = (
         "SELECT id, short_title, long_title, knowledge_details "
         "FROM knowledge_entries "
-        "WHERE is_active = 1 AND project_ref = ? "
+        "WHERE is_active = 1 AND project_ref = ? AND superseded_by IS NULL "
         "AND entry_type = 'mental_map' "
     )
     if team:
@@ -147,6 +147,7 @@ async def _graph_related(
         "WHERE e.edge_type = 'has_tag' "
         "AND e.target IN (" + placeholders + ") "
         "AND ke.is_active = 1 "
+        "AND ke.superseded_by IS NULL "
         "AND (ke.project_ref != ? OR ke.project_ref IS NULL) "
         "AND ke.entry_type IN ('decision', 'lesson_learned') "
     )

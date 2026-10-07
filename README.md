@@ -155,11 +155,11 @@ Store multiple entries in a single call (max 10). More efficient than repeated `
 
 ### `kb_search`
 
-Hybrid search combining BM25 full-text search with vector similarity (when Ollama is available). Returns compact summaries (no `knowledge_details`). Supports filtering by project, entry type, tags, contributor, and team. Results include confidence scores with staleness decay and `@contributor/team` attribution badges. Set `include_expired=True` to include entries past their TTL expiration in results (excluded by default).
+Hybrid search combining BM25 full-text search with vector similarity (when Ollama is available). Returns compact summaries (no `knowledge_details`). Supports filtering by project, entry type, tags, contributor, and team. Results include confidence scores with staleness decay and `@contributor/team` attribution badges. Set `include_expired=True` to include entries past their TTL expiration in results (excluded by default). Entries replaced by a newer entry are hidden by default; pass `include_superseded=True` to show them, marked `[SUPERSEDED by kb-X]`.
 
 ### `kb_get`
 
-Retrieve full details for one or more entries by ID. Use after `kb_search` to read the complete `knowledge_details` of interesting results.
+Retrieve full details for one or more entries by ID. Use after `kb_search` to read the complete `knowledge_details` of interesting results. Calling it on a superseded entry opens the output with `SUPERSEDED by kb-X — <title>`.
 
 ### `kb_ask`
 

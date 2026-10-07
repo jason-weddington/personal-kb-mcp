@@ -697,3 +697,29 @@ class TestMapsSection:
             assert result.index("Maps:") < result.index("kb-09001") + len("kb-09001")
         finally:
             await db.close()
+
+
+class TestPreflightSupersession:
+    async def test_superseded_entry_hidden(self) -> None:
+        from personal_kb.db.connection import create_connection
+
+        db = await create_connection(":memory:", embedding_dim=64)
+        now = datetime.now(UTC).isoformat()
+        for eid, title in (("kb-00001", "Old choice"), ("kb-00002", "New choice")):
+            await db.execute(
+                "INSERT INTO knowledge_entries "
+                "(id, project_ref, short_title, long_title, knowledge_details, "
+                "entry_type, created_at, updated_at, is_active) "
+                "VALUES (?, 'p', ?, ?, 'details', 'decision', ?, ?, 1)",
+                [eid, title, title, now, now],
+            )
+        await db.execute(
+            "UPDATE knowledge_entries SET superseded_by = 'kb-00002' WHERE id = 'kb-00001'"
+        )
+        await db.commit()
+        try:
+            result = await build_project_context(db, "p")
+        finally:
+            await db.close()
+        assert "kb-00002" in result
+        assert "kb-00001" not in result

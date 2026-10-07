@@ -214,6 +214,7 @@ class HttpBackend:
             "limit": query.limit,
             "include_stale": query.include_stale,
             "include_expired": query.include_expired,
+            "include_superseded": query.include_superseded,
         }
         if query.project_ref is not None:
             body["project_ref"] = query.project_ref

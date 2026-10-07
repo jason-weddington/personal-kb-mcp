@@ -335,3 +335,65 @@ async def test_collect_graph_hints_via_project():
     assert len(hints) == 1
     assert "kb-00002" in hints[0]
     assert "project:my-proj" in hints[0]
+
+
+# --- supersession-aware reads ---
+
+
+def test_format_search_results_marks_superseded():
+    entry = _make_entry(entry_id="kb-00001")
+    entry.superseded_by = "kb-00002"
+    out = format_search_results([_make_result(entry)])
+    assert "\n  [SUPERSEDED by kb-00002]" in out
+
+
+def test_format_search_results_non_superseded_unchanged():
+    from personal_kb.tools.formatters import format_entry_compact, format_result_list
+
+    entry = _make_entry(entry_id="kb-00001")
+    result = _make_result(entry)
+    expected = format_result_list(
+        [format_entry_compact(entry, result.effective_confidence, result.staleness_warning)]
+    )
+    assert format_search_results([result]) == expected
+
+
+def test_search_description_mentions_include_superseded():
+    from personal_kb.tools.kb_search import _search_description
+
+    assert "include_superseded" in _search_description("kb_")
+
+
+@pytest.mark.asyncio
+async def test_collect_graph_hints_direct_skips_superseded():
+    entry1 = _make_entry(entry_id="kb-00001", short_title="Origin")
+    old = _make_entry(entry_id="kb-00002", short_title="Old")
+    old.superseded_by = "kb-00003"
+    fresh = _make_entry(entry_id="kb-00003", short_title="Fresh")
+    backend = _graph_backend(
+        {"kb-00001": [("kb-00002", "related_to", "both"), ("kb-00003", "related_to", "both")]},
+        {"kb-00002": old, "kb-00003": fresh},
+    )
+    hints = await collect_graph_hints(backend, [_make_result(entry1)])
+    assert len(hints) == 1
+    assert "kb-00003" in hints[0]
+    assert "kb-00002" not in hints[0]
+
+
+@pytest.mark.asyncio
+async def test_collect_graph_hints_second_hop_skips_superseded():
+    entry1 = _make_entry(entry_id="kb-00001", short_title="Origin", tags=["python"])
+    old = _make_entry(entry_id="kb-00002", short_title="Old")
+    old.superseded_by = "kb-00003"
+    fresh = _make_entry(entry_id="kb-00003", short_title="Fresh")
+    backend = _graph_backend(
+        {
+            "kb-00001": [("tag:python", "tagged", "both")],
+            "tag:python": [("kb-00002", "tagged", "both"), ("kb-00003", "tagged", "both")],
+        },
+        {"kb-00002": old, "kb-00003": fresh},
+    )
+    hints = await collect_graph_hints(backend, [_make_result(entry1)])
+    assert len(hints) == 1
+    assert "kb-00003" in hints[0]
+    assert "kb-00002" not in hints[0]

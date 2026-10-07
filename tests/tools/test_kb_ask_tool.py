@@ -400,3 +400,43 @@ async def test_auto_search_entries_no_scope(db, store, fake_embedder):
     entry_ids = [e.id for e, _ in entries]
     assert "kb-00001" in entry_ids
     assert "kb-00002" in entry_ids
+
+
+@pytest.mark.asyncio
+async def test_auto_search_entries_expansion_skips_superseded(db, store, fake_embedder, caplog):
+    a = await store.create_entry(
+        short_title="Gardening notes",
+        long_title="Tomato gardening notes",
+        knowledge_details="Water tomatoes daily.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    b = await store.create_entry(
+        short_title="Quokka handbook",
+        long_title="Quokka zebrafish handbook",
+        knowledge_details="quokka zebrafish distinctive",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    for node in (a.id, b.id):
+        await db.execute(
+            "INSERT INTO graph_nodes (node_id, node_type, properties, created_at) "
+            "VALUES (?, 'entry', '{}', '2026-01-01T00:00:00+00:00')",
+            (node,),
+        )
+    await db.execute(
+        "INSERT INTO graph_edges(source,target,edge_type,properties,created_at) "
+        "VALUES (?, ?, 'related_to', '{}', '2026-01-01T00:00:00+00:00')",
+        (b.id, a.id),
+    )
+    await db.commit()
+
+    entries = await _auto_search_entries(db, fake_embedder, "quokka zebrafish", None, True, 10)
+    assert (a.id, f"linked from {b.id} via related_to") in [(e.id, c) for e, c in entries]
+
+    await db.execute("UPDATE knowledge_entries SET superseded_by = ? WHERE id = ?", (b.id, a.id))
+    await db.commit()
+    with caplog.at_level("INFO", logger="kb_core.query"):
+        entries = await _auto_search_entries(db, fake_embedder, "quokka zebrafish", None, True, 10)
+    ids = [e.id for e, _ in entries]
+    assert b.id in ids
+    assert a.id not in ids
+    assert "supersession-read op=ask_expand" in caplog.text

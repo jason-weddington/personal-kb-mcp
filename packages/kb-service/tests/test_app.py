@@ -335,3 +335,21 @@ async def test_lifespan_shutdown_runs_on_clean_exit(
     assert fake_kb.start_embedding_worker_calls == 1
     assert fake_kb.stop_embedding_worker_calls == 1
     assert fake_kb.close_calls == 1
+
+
+def test_search_include_superseded_defaults_false(client: TestClient) -> None:
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post("/api/kb/search", json={"query": "x"})
+    assert resp.status_code == 200
+    kb: FakeKnowledgeBase = app.state.kb
+    assert kb.search_calls[-1][0].include_superseded is False
+
+
+def test_search_include_superseded_passthrough(client: TestClient) -> None:
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post(
+        "/api/kb/search", json={"query": "x", "include_superseded": True}
+    )
+    assert resp.status_code == 200
+    kb: FakeKnowledgeBase = app.state.kb
+    assert kb.search_calls[-1][0].include_superseded is True

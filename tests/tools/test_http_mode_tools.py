@@ -1308,3 +1308,24 @@ async def test_map_eligibility_override_verdict_missing_orphaned_is_loud():
     out = await fn(project_ref="p", eligible=True, reason="r", ctx=ctx)
     assert "unexpected map-eligibility payload" in out
     assert "'orphaned'" in out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("passed,expected", [(True, True), (None, False)])
+async def test_kb_search_forwards_include_superseded(passed, expected):
+    """kb_search posts include_superseded (default False) to the service."""
+    from personal_kb.tools.kb_search import register_kb_search
+
+    bodies: list[dict[str, Any]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/api/kb/search":
+            bodies.append(json.loads(req.content))
+            return httpx.Response(200, json={"results": [], "filtered_count": 0})
+        return httpx.Response(200, json={"neighbors": []})
+
+    kb_search = _register(register_kb_search)
+    ctx = _make_ctx(handler)
+    kwargs = {} if passed is None else {"include_superseded": passed}
+    await kb_search(query="python testing", limit=5, ctx=ctx, **kwargs)
+    assert bodies[-1]["include_superseded"] is expected

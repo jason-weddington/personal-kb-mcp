@@ -1541,3 +1541,19 @@ async def test_clear_map_eligibility_override_missing_changed_key_is_loud():
     with pytest.raises(KeyError) as exc_info:
         await backend.clear_map_eligibility_override("harness-design")
     assert "changed" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [False, True])
+async def test_search_body_carries_include_superseded(flag):
+    from kb_core.models.search import SearchQuery
+
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(req.content))
+        return httpx.Response(200, json={"results": [], "filtered_count": 0})
+
+    backend = _make_backend(handler)
+    await backend.search(SearchQuery(query="x", include_superseded=flag))
+    assert captured["include_superseded"] is flag

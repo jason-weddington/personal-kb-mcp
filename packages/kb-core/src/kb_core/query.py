@@ -44,7 +44,7 @@ from kb_core.llm.provider import LLMProvider
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.search import SearchQuery
 from kb_core.search.embedder_protocol import Embedder
-from kb_core.search.hybrid import hybrid_search
+from kb_core.search.hybrid import SUPERSESSION_READ_MARKER, hybrid_search
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +170,7 @@ async def _auto_search_entries(
         entries_with_context.append((r.entry, f"search match (score: {r.score:.4f})"))
 
     # Expand via graph neighbors
+    skipped: list[tuple[str, str]] = []
     if include_graph_context and results:
         for r in results:
             neighbors = await get_neighbors(db, r.entry.id, limit=10)
@@ -179,6 +180,9 @@ async def _auto_search_entries(
                 if not neighbor_id.startswith("kb-"):
                     continue
                 entry = await get_entry(db, neighbor_id)
+                if entry and entry.is_active and entry.superseded_by is not None:
+                    skipped.append((entry.id, entry.superseded_by))
+                    continue
                 if entry and entry.is_active:
                     seen_ids.add(neighbor_id)
                     if direction == "outgoing":
@@ -190,6 +194,9 @@ async def _auto_search_entries(
                         break
             if len(entries_with_context) >= limit:
                 break
+
+    if skipped:
+        logger.info("%s op=ask_expand skipped=%r", SUPERSESSION_READ_MARKER, skipped)
 
     return entries_with_context
 

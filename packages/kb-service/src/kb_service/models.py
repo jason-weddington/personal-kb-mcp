@@ -167,6 +167,7 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
     include_stale: bool = False
     include_expired: bool = False
+    include_superseded: bool = False
 
 
 class SearchResponse(BaseModel):

@@ -45,7 +45,7 @@ async def collect_graph_hints(
                         continue
                     entries_data = await backend.get_entries([entry_id])
                     _, entry, _ = entries_data[0]
-                    if entry is not None:
+                    if entry is not None and entry.superseded_by is None:
                         seen_ids.add(entry_id)
                         hints.append(format_graph_hint(entry, via_node))
                         if len(hints) >= max_hints:
@@ -55,7 +55,7 @@ async def collect_graph_hints(
                     continue
                 entries_data = await backend.get_entries([neighbor_id])
                 _, entry, _ = entries_data[0]
-                if entry is not None:
+                if entry is not None and entry.superseded_by is None:
                     seen_ids.add(neighbor_id)
                     hints.append(format_graph_hint(entry, f"{edge_type} from {r.entry.id}"))
                     if len(hints) >= max_hints:
@@ -71,9 +71,12 @@ def format_search_results(
     filtered_count: int = 0,
 ) -> str:
     """Format search results as compact entries (no details)."""
-    entries = [
-        format_entry_compact(r.entry, r.effective_confidence, r.staleness_warning) for r in results
-    ]
+    entries: list[str] = []
+    for r in results:
+        s = format_entry_compact(r.entry, r.effective_confidence, r.staleness_warning)
+        if r.entry.superseded_by is not None:
+            s += f"\n  [SUPERSEDED by {r.entry.superseded_by}]"
+        entries.append(s)
     return format_result_list(
         entries, note=match_source_note, hints=graph_hints, filtered_count=filtered_count
     )
@@ -92,6 +95,8 @@ def _search_description(prefix: str) -> str:
         "The query parameter is optional. To list all entries for a project, "
         "omit query and pass project_ref. Filters (project_ref, entry_type, tags, "
         "contributor, team) can be combined with or without a text query.\n\n"
+        "Entries replaced by a newer entry (superseded) are hidden by default; pass "
+        "include_superseded=True to see them, marked [SUPERSEDED by kb-X].\n\n"
         "Returns compact summaries (titles + metadata, no knowledge_details). "
         f"Use {prefix}get with entry IDs to read the full content of interesting results."
     )
@@ -129,6 +134,12 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
         include_expired: Annotated[
             bool, Field(description="Include entries past their TTL expiry")
         ] = False,
+        include_superseded: Annotated[
+            bool,
+            Field(
+                description="Include entries that a newer entry has superseded (hidden by default)"
+            ),
+        ] = False,
         contributor: Annotated[str | None, Field(description="Filter by contributor name")] = None,
         team: Annotated[str | None, Field(description="Filter by team name")] = None,
         ctx: Context | None = None,
@@ -155,6 +166,7 @@ def register_kb_search(mcp: FastMCP, prefix: str = "kb_") -> None:
             limit=limit,
             include_stale=include_stale,
             include_expired=include_expired,
+            include_superseded=include_superseded,
         )
 
         # For local mode: obtain contributor for telemetry from the KB config.

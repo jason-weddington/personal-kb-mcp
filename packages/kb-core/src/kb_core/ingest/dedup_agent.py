@@ -114,7 +114,7 @@ class DedupAgent:
             return DedupResult(action="extract", reason="empty chunk")
 
         # Search KB
-        search_query = SearchQuery(query=query_text, limit=5)
+        search_query = SearchQuery(query=query_text, limit=5, include_superseded=True)
         results, _ = await hybrid_search(self._db, self._embedder, search_query)
 
         if not results:

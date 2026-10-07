@@ -210,3 +210,24 @@ class TestParseDedupResponse:
         raw = f"Here is my response:\n{inner}\nDone."
         result = _parse_dedup_response(raw)
         assert result.action == "skip"
+
+
+class TestDedupSupersededStillMatches:
+    async def test_superseded_entry_still_dedupes(self, dedup_deps):
+        """Superseded content must still be found so re-ingestion dedupes."""
+        deps = dedup_deps
+        db = deps["db"]
+        old_id = await _seed_entry(deps["store"], deps["embedder"], "Test heading content")
+        new_id = await _seed_entry(deps["store"], deps["embedder"], "unrelated zzz replacement")
+        await db.execute(
+            "UPDATE knowledge_entries SET superseded_by = ? WHERE id = ?", (new_id, old_id)
+        )
+        await db.commit()
+
+        llm = FakeLLM(
+            response=json.dumps({"verdict": "skip", "reason": "covered", "existing_titles": []})
+        )
+        agent = DedupAgent(db, deps["embedder"], llm, threshold=0.0)
+        result = await agent.check_chunk(_make_chunk(), [])
+        assert result.reason != "no existing entries found"
+        assert llm.generate_count == 1

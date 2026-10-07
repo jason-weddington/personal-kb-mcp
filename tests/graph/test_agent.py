@@ -4,6 +4,7 @@ import json
 
 import pytest
 import pytest_asyncio
+from kb_core.graph.agent import _dispatch_tool, _ToolCall
 
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.agent import _parse_response, agentic_query
@@ -382,3 +383,101 @@ async def test_toggle_off_uses_single_shot(monkeypatch):
     from personal_kb.config import is_agentic_query
 
     assert not is_agentic_query()
+
+
+# ---------------------------------------------------------------------------
+# Supersession-aware reads
+# ---------------------------------------------------------------------------
+
+
+async def _supersede(db, old_id: str, new_id: str) -> None:
+    await db.execute(
+        "UPDATE knowledge_entries SET superseded_by = ? WHERE id = ?", (new_id, old_id)
+    )
+    await db.commit()
+
+
+async def _add_edge(db, source: str, target: str, edge_type: str) -> None:
+    for node in (source, target):
+        await db.execute(
+            "INSERT OR IGNORE INTO graph_nodes (node_id, node_type, properties, created_at) "
+            "VALUES (?, ?, '{}', '2026-01-01T00:00:00+00:00')",
+            (node, "entry" if node.startswith("kb-") else "tag"),
+        )
+    await db.execute(
+        "INSERT INTO graph_edges (source, target, edge_type, properties, created_at) "
+        "VALUES (?, ?, ?, '{}', '2026-01-01T00:00:00+00:00')",
+        (source, target, edge_type),
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_graph_neighbors_omits_superseded(agent_kb, caplog):
+    db, embedder, ids = agent_kb
+    a, b = ids["aiosqlite-async"], ids["fts5-triggers"]
+    await db.execute("DELETE FROM graph_edges")
+    await _add_edge(db, b, "tag:zz", "tagged_with")
+    await _add_edge(db, b, a, "related_to")
+    await _supersede(db, a, b)
+
+    with caplog.at_level("INFO", logger="kb_core.graph.agent"):
+        out = await _dispatch_tool(_ToolCall("graph_neighbors", {"node_id": b}), db, embedder)
+    assert "1 neighbors" in out
+    assert "tag:zz" in out
+    assert a not in out
+    assert "op=agent_tool tool=graph_neighbors" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_decision_chain_still_lists_superseded(agent_kb):
+    db, embedder, ids = agent_kb
+    a, b = ids["aiosqlite-async"], ids["fts5-triggers"]
+    await db.execute("DELETE FROM graph_edges")
+    await _add_edge(db, b, a, "supersedes")
+    await _supersede(db, a, b)
+
+    out = await _dispatch_tool(_ToolCall("decision_chain", {"entry_id": b}), db, embedder)
+    assert a in out
+
+
+@pytest.mark.asyncio
+async def test_scope_entries_skips_superseded(agent_kb, caplog):
+    db, embedder, ids = agent_kb
+    a, b = ids["aiosqlite-async"], ids["fts5-triggers"]  # both in personal-kb
+    await _supersede(db, a, b)
+
+    with caplog.at_level("INFO", logger="kb_core.graph.agent"):
+        out = await _dispatch_tool(
+            _ToolCall("scope_entries", {"scope": "project:personal-kb"}), db, embedder
+        )
+    assert b in out
+    assert a not in out
+    assert "op=agent_tool tool=scope_entries" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_agent_exhaust_skips_superseded(agent_kb, caplog):
+    db, embedder, ids = agent_kb
+    a, b = ids["aiosqlite-async"], ids["fts5-triggers"]
+    await _supersede(db, a, b)
+
+    llm = ScriptedLLM(responses=[], fallback=_tool_call("hybrid_search", query="test"))
+    with caplog.at_level("INFO", logger="kb_core.graph.agent"):
+        result = await agentic_query(db, embedder, llm, f"obscure xyz123 {a} {b}", max_tool_calls=2)
+    assert (b, "agent fallback") in result.entries
+    assert all(eid != a for eid, _ in result.entries)
+    assert "op=agent_exhaust" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_agent_final_pick_keeps_superseded(agent_kb, caplog):
+    db, embedder, ids = agent_kb
+    a, b = ids["aiosqlite-async"], ids["fts5-triggers"]
+    await _supersede(db, a, b)
+
+    llm = ScriptedLLM([_done([a])])
+    with caplog.at_level("INFO", logger="kb_core.graph.agent"):
+        result = await agentic_query(db, embedder, llm, "obscure xyz123", max_tool_calls=2)
+    assert (a, "agent selected") in result.entries
+    assert "op=agent_final_pick" in caplog.text

@@ -51,6 +51,7 @@ async def search(
         limit=body.limit,
         include_stale=body.include_stale,
         include_expired=body.include_expired,
+        include_superseded=body.include_superseded,
     )
     results, filtered_count = await request.app.state.kb.search(
         search_query, contributor=user.email

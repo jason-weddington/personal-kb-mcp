@@ -301,3 +301,72 @@ async def test_mental_map_superseded_and_deactivated_renders_superseded_form():
     assert "  Pointer-rot:" in result
     assert "    [kb-00001] superseded by [kb-00002]" in result
     assert "    [kb-00001] deactivated" not in result
+
+
+# --- supersession banner ---
+
+
+def _counting_ctx(results_map: dict[str, dict[str, Any]]) -> tuple[MagicMock, list[int]]:
+    calls: list[int] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        body = json.loads(req.content)
+        results = []
+        for eid in body.get("ids", []):
+            spec = results_map.get(eid)
+            if spec is None:
+                results.append({"id": eid, "found": False, "entry": None})
+            else:
+                results.append({"id": eid, **spec})
+        return httpx.Response(200, json={"results": results})
+
+    ctx = MagicMock()
+    ctx.lifespan_context = {"backend": _make_http_backend(handler)}
+    return ctx, calls
+
+
+def _superseded_entry() -> KnowledgeEntry:
+    a = _make_entry("kb-00001", short_title="Old way")
+    a.superseded_by = "kb-00002"
+    return a
+
+
+@pytest.mark.asyncio
+async def test_get_superseded_banner_with_title_extra_lookup():
+    a = _superseded_entry()
+    b = _make_entry("kb-00002", short_title="New way")
+    ctx, calls = _counting_ctx({a.id: _found(a), b.id: _found(b)})
+    out = await _register()(entry_id=a.id, ctx=ctx)
+    assert "SUPERSEDED by kb-00002 — New way\n" + format_entry_full(a) in out
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_superseded_banner_superseder_in_request():
+    a = _superseded_entry()
+    b = _make_entry("kb-00002", short_title="New way")
+    ctx, calls = _counting_ctx({a.id: _found(a), b.id: _found(b)})
+    out = await _register()(entry_id=[a.id, b.id], ctx=ctx)
+    assert "SUPERSEDED by kb-00002 — New way\n" + format_entry_full(a) in out
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_superseded_banner_superseder_missing(caplog):
+    a = _superseded_entry()
+    ctx, _calls = _counting_ctx({a.id: _found(a)})
+    with caplog.at_level("WARNING"):
+        out = await _register()(entry_id=a.id, ctx=ctx)
+    assert "SUPERSEDED by kb-00002\n" + format_entry_full(a) in out
+    assert "—" not in out
+    assert "invariant_breach" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_get_non_superseded_single_call_unchanged():
+    e = _make_entry("kb-00001")
+    ctx, calls = _counting_ctx({e.id: _found(e)})
+    out = await _register()(entry_id=e.id, ctx=ctx)
+    assert out == format_result_list([format_entry_full(e)])
+    assert len(calls) == 1
