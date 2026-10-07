@@ -40,6 +40,14 @@ class StoreRequest(BaseModel):
             " literal 'none' all mean no supersession."
         ),
     )
+    distinct_from: list[str] | None = Field(
+        None,
+        description=(
+            "Ids of existing entries this NEW entry is deliberately distinct from;"
+            " resolves a near-duplicate 409. Recorded on the new entry as"
+            " hints.distinct_from."
+        ),
+    )
 
 
 class StoreResponse(BaseModel):
@@ -79,6 +87,14 @@ class StoreBatchEntry(BaseModel):
         description=(
             "Entry ids this entry replaces. Absent (older clients), [] and the"
             " literal 'none' all mean no supersession."
+        ),
+    )
+    distinct_from: list[str] | None = Field(
+        None,
+        description=(
+            "Ids of existing entries this NEW entry is deliberately distinct from;"
+            " resolves a near-duplicate 409. Recorded on the new entry as"
+            " hints.distinct_from."
         ),
     )
 

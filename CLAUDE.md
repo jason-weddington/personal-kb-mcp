@@ -230,6 +230,7 @@ Format: `type(optional-scope): description`
 | `KB_INGEST_CHUNK_OVERLAP` | `600` | Overlap in chars between adjacent chunks |
 | `KB_AGENTIC_INGEST` | `TRUE` | Enable KB-aware dedup during ingestion |
 | `KB_INGEST_DEDUP_THRESHOLD` | `0.06` | Hybrid search score threshold for dedup |
+| `KB_NEAR_DUPLICATE_FLOOR` | `0.88` | Cosine similarity at or above which kb_store create returns a near-duplicate 409 (same project, active non-map entries) |
 | `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for kb_ask auto strategy |
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in agentic query loop |
 | `KB_AGENTIC_SYNTHESIS` | `TRUE` | Enable agentic retrieval + coverage check for kb_summarize |

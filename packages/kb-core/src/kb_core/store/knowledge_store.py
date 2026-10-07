@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 async def _record_audit_event(
     db: Database,
     event_type: str,
-    entry_id: str,
+    entry_id: str | None,
     contributor: str | None = None,
     detail: str | None = None,
 ) -> None:

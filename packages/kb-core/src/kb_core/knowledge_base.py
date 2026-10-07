@@ -40,7 +40,9 @@ Async context manager — call sites are expected to use
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -69,11 +71,13 @@ from kb_core.graph.queries import (
     supersedes_chain,
 )
 from kb_core.models.entry import EntryType, KnowledgeEntry
+from kb_core.near_duplicates import NearDuplicateCheck
+from kb_core.near_duplicates import find_near_duplicates as _find_near_duplicates
 from kb_core.preflight import build_project_context
 from kb_core.search.embedder_protocol import BatchEmbedder
 from kb_core.search.embeddings import EmbeddingClient
 from kb_core.search.hybrid import hybrid_search
-from kb_core.store.knowledge_store import KnowledgeStore
+from kb_core.store.knowledge_store import KnowledgeStore, _record_audit_event
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -1223,6 +1227,68 @@ class KnowledgeBase:
         if self._embedder is None:
             return None
         return await self._embedder.embed(text)
+
+    async def find_near_duplicates(
+        self,
+        *,
+        short_title: str,
+        long_title: str,
+        knowledge_details: str,
+        project_ref: str,
+        floor: float,
+        limit: int = 5,
+    ) -> NearDuplicateCheck:
+        """Look for same-project entries whose vector is at/above *floor* cosine.
+
+        Fails open: ``embedder_unavailable`` when no embedding is available and
+        ``search_failed`` when the search raises. Never writes anything.
+        """
+        t0 = time.perf_counter()
+        embedding = await self.embed(
+            KnowledgeEntry.compose_embedding_text(short_title, long_title, knowledge_details)
+        )
+        embed_ms = int((time.perf_counter() - t0) * 1000)
+        if embedding is None:
+            return NearDuplicateCheck(
+                status="embedder_unavailable",
+                candidates=(),
+                top_similarity=None,
+                embed_ms=embed_ms,
+            )
+        t1 = time.perf_counter()
+        try:
+            result = await _find_near_duplicates(
+                self._db, embedding, project_ref=project_ref, floor=floor, limit=limit
+            )
+        except Exception:
+            logger.warning("near-duplicate search failed", exc_info=True)
+            return NearDuplicateCheck(
+                status="search_failed",
+                candidates=(),
+                top_similarity=None,
+                embed_ms=embed_ms,
+                search_ms=int((time.perf_counter() - t1) * 1000),
+            )
+        return dataclasses.replace(
+            result, embed_ms=embed_ms, search_ms=int((time.perf_counter() - t1) * 1000)
+        )
+
+    async def record_audit_event(
+        self,
+        event_type: str,
+        *,
+        entry_id: str | None,
+        contributor: str | None,
+        detail: str,
+    ) -> None:
+        """Best-effort audit row (delegates to the store's swallow-all helper)."""
+        await _record_audit_event(
+            self._db,
+            event_type,
+            entry_id,
+            contributor,
+            detail,
+        )
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]] | None:
         """Embed a batch of strings, or ``None`` when no embedder is configured."""

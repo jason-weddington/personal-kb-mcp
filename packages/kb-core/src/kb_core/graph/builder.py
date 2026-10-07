@@ -70,6 +70,24 @@ class GraphBuilder:
                     await self._add_edge(entry.id, target, "supersedes")
                     new_targets.add(target)
 
+            # 4b. distinct_from (from hints): declared "deliberately different".
+            for target in _as_list(hints.get("distinct_from")):
+                if not isinstance(target, str) or not _KB_ID_RE.fullmatch(target):
+                    logger.warning(
+                        "Ignoring invalid distinct_from target %r (expected kb-XXXXX)", target
+                    )
+                    continue
+                if target == entry.id:
+                    continue
+                cursor = await self._db.execute(
+                    "SELECT 1 FROM knowledge_entries WHERE id = ?", (target,)
+                )
+                if await cursor.fetchone() is None:
+                    logger.warning("Ignoring distinct_from target %s: not found", target)
+                    continue
+                await self._ensure_node(target, "entry")
+                await self._add_edge(entry.id, target, "distinct_from")
+
             # 5. (removed) superseded_by is DERIVED from supersedes edges by
             # recompute_superseded_by below; it never writes an edge itself.
 
@@ -91,6 +109,14 @@ class GraphBuilder:
                         logger.warning(
                             "supersession: ignoring related_entities supersedes edge"
                             " %s->%s; use supersedes",
+                            entry.id,
+                            target,
+                        )
+                        continue
+                    if str(edge_type) == "distinct_from":
+                        logger.warning(
+                            "distinct_from: ignoring related_entities distinct_from edge"
+                            " %s->%s; use distinct_from",
                             entry.id,
                             target,
                         )

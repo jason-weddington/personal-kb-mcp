@@ -276,3 +276,20 @@ async def test_batch_store_all_fail():
     # Backend receives an empty valid_entries list and short-circuits — handler
     # is never actually invoked over the transport.
     assert not called
+
+
+async def test_batch_409_renders_as_error_string() -> None:
+    """A near-duplicate 409 from the service renders as 'Error: ...' (not a raise)."""
+    detail = {
+        "error": "near_duplicate",
+        "message": "entry 0: Cover EVERY listed id with one of: distinct_from=[<id>]",
+        "candidates": [{"id": "kb-00001"}],
+    }
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"detail": detail})
+
+    result = await batch_store_entries([_entry_dict()], _lifespan(handler))
+    assert result.startswith("Error: ")
+    assert "kb-00001" in result
+    assert "distinct_from" in result

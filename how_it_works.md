@@ -248,6 +248,36 @@ On update, `change_reason` is required, and a missing or whitespace-only value i
 
 An entry is superseded exactly when `entry.superseded_by is not None`; reads never re-check that the superseder is active, because the write-side invariant only points at active, non-map superseders. In the fused path of `hybrid_search`, superseded rows are skipped unless `SearchQuery.include_superseded` is set, and the result window grows by one for each hidden row, so only superseded rows are backfilled and other filters still use up their slot as before. The filter-only path pushes `AND superseded_by IS NULL` into SQL, so LIMIT is never spent on hidden rows; that path is not instrumented. The flag travels as `SearchRequest.include_superseded` (default False, so older clients get hidden) and `HttpBackend.search` always sends it. Dedup ingestion opts out with `include_superseded=True` so content the KB already has still dedupes. `kb_preflight` adds `superseded_by IS NULL` to the expiring, recent, conventions and graph-related queries (not the tag or maps queries). On the client, `kb_search` appends `[SUPERSEDED by kb-X]` to superseded results and skips superseded graph hints; `kb_get` prefixes a superseded entry with `SUPERSEDED by <id> — <title>`, costing one extra `get_entries` call only when the superseder was not already in the request. `kb_ask` graph expansion, the agent's `graph_neighbors` and `scope_entries` tools, and the exhaust fallback skip superseded entries; `decision_chain` and an agent's explicit final pick are exempt (the pick is logged). Every skip is logged as `supersession-read op=<search|ask_expand|agent_tool|agent_exhaust|agent_final_pick|kb_get> ...`; any `supersession-read invariant_breach` line is a defect signal.
 
+## Near-duplicate guard
+
+The hosted service refuses to create an entry that is nearly identical to an existing one unless the request says what the relationship is. The guard lives in `kb_service/routes/near_duplicate_guard.py` (route glue, 409 payload, telemetry) and `kb_core/near_duplicates.py` (the lookup), and is exposed on the facade as `KnowledgeBase.find_near_duplicates`.
+
+It runs only on create, for both `POST /api/kb/store` and `POST /api/kb/store_batch`, after the supersedes validation. An update never runs it, and an update that carries `distinct_from` (in the field or in `hints`) is a 422. Entries within one batch are not compared with each other.
+
+The search is scoped to the new entry's own `project_ref`. The new text is embedded with `KnowledgeEntry.compose_embedding_text` (the same definition the stored vector uses), then `Database.vector_search(limit=20, project_ref=...)` returns active rows of that project with cosine distance. Eligible rows are non-`mental_map` with `superseded_by IS NULL`; similarity is `1 - distance`. Candidates are eligible rows at or above the floor, sorted by `(-similarity, id)`, truncated to 5. On SQLite the vector search over-fetches the top 200 global neighbours and then filters to the project, so a project whose rows are crowded out of that window can be missed; Postgres is exact.
+
+Exemptions: `mental_map` entries, entries with no (or blank) `project_ref`, and two fail-open cases: `embedder_unavailable` (no embedder, or the embed call returned nothing) and `search_failed` (the search raised). Expired-but-active entries still count as candidates.
+
+The floor is `KB_NEAR_DUPLICATE_FLOOR`, default 0.88, read on every request. A value above 1.0 disables the guard. A malformed value raises `ValueError` and creates return 500 until it is fixed. 0.88 was chosen from the live distribution: over 30 days, 339 non-map project-scoped creates compared with their nearest older same-project neighbour would have 409'd at 0.92 (2), 0.90 (4), 0.88 (7, 2.1%), 0.85 (15) and 0.80 (47); the median similarity of declared supersedes edges is about 0.70, so the guard catches near-duplicates and does not replace declared supersession.
+
+A conflict is a 409 whose `detail` is `{"error": "near_duplicate", "message", "project_ref", "floor", "candidates": [{id, short_title, entry_type, similarity, updated_at}]}` (plus `entry_index` for a batch, whose message starts `entry {i}: `). Only candidates not already covered by the request are listed. Every listed id must be covered by one of three escapes: `update_entry_id=<id>` (same fact: update that entry, with `change_reason`), `supersedes=[<id>]` (the new entry replaces it; older clients: `hints={"supersedes": [...]}`), or `distinct_from=[<id>]` (genuinely different facts; older clients: `hints={"distinct_from": [...]}`). Each `distinct_from` id must be a well-formed kb id of an existing, active, non-map entry (cross-project is allowed) and must not also be in `supersedes`; otherwise 422.
+
+`distinct_from` is stored on the new entry as `hints.distinct_from`, and `GraphBuilder` mirrors it as a `distinct_from` edge (the target must exist and not be the entry itself; a `distinct_from` item in `related_entities` is ignored with a warning). The hint is the source of truth; the edge mirrors it. Suppression is request-scoped: a candidate named in this request's `supersedes` or `distinct_from` is not reported. A reader should treat an edge in either direction between P and Q as "declared distinct"; this item implements no such reader. `kb_ask` / `kb_explore` traverse the edge like any other type.
+
+Every guarded create emits one log line starting `near-duplicate-guard op=` (INFO; WARNING for `embedder_unavailable` and `search_failed`) with `outcome` (`clear|resolved|conflict|exempt_mental_map|skipped_no_project|embedder_unavailable|search_failed`), floor, top similarity, raw/eligible hit counts, `embed_ms`, `search_ms`, candidates, `resolved_by`, `distinct_from_unused`, contributor, title and `text_sha` (first 12 hex digits of the sha256 of the embedding text). It also writes one `audit_events` row with `event_type='near_duplicate_checked'` and the same fields as JSON `detail`. A 409 row has `entry_id` NULL; every other row is written after the store succeeds and carries the created id (with a `near-duplicate-guard-stored` log line). The audit write is best-effort.
+
+These rows are the retune instrument. To re-derive the 409 rate at a candidate floor X, count rows where `detail.top_similarity >= X`, grouped by `detail.outcome`:
+
+```sql
+SELECT detail::json->>'outcome' AS outcome, count(*)
+FROM audit_events
+WHERE event_type = 'near_duplicate_checked'
+  AND (detail::json->>'top_similarity')::float >= :X
+GROUP BY 1;
+```
+
+Two follow-ups: missed duplicates are `clear` rows whose `entry_id` later becomes the target of a `supersedes` edge; and the escape agents chose after a 409 is found by joining `conflict` rows to later `resolved` rows with the same `text_sha`.
+
 ## Mental Maps
 
 The `mental_map` entry type is the directory tier of the KB: an orientation node whose body is *pointers and structure*, never retrievable values. The settled design lives in `docs/mental-map-prespec.md` §7; this section documents the shipped code that implements it. The push half — the `personal-kb-hook` CLI — is documented in the next section; what follows is everything in the MCP server itself that makes maps a distinct entry type.

@@ -70,6 +70,7 @@ from kb_core.embedding_retry import (
 )
 from kb_core.map_caps import count_maps_created_since, map_write_summary
 from kb_core.map_delete import delete_map
+from kb_core.near_duplicates import find_near_duplicates
 from kb_core.store.knowledge_store import KnowledgeStore
 from kb_core.supersession import reconcile_supersession
 from map_caps_fixture import (
@@ -1048,3 +1049,36 @@ async def test_supersession_reconcile_on_postgres(pg_kb: PostgresBackend) -> Non
     again = await reconcile_supersession(pg_kb)
     assert (again.edges_added, again.set_count, again.cleared_count) == (0, 0, 0)
     assert again.changed == ()
+
+
+async def test_find_near_duplicates_on_postgres(pg_kb: PostgresBackend) -> None:
+    """Postgres leg of the near-duplicate lookup: A (p, 0.95), B (p, 0.80), C (q, 0.99)."""
+    import math
+
+    ts = datetime.now(UTC).isoformat()
+    insert = (
+        "INSERT INTO knowledge_entries"
+        " (id, project_ref, short_title, long_title, knowledge_details, entry_type,"
+        " contributor, created_at, updated_at, is_active)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    dim = 1024
+    for eid, project, sim in (
+        ("kb-80001", "p", 0.95),
+        ("kb-80002", "p", 0.80),
+        ("kb-80003", "q", 0.99),
+    ):
+        await pg_kb.execute(
+            insert,
+            (eid, project, eid, eid, eid, "factual_reference", "t", ts, ts, 1),
+        )
+        vec = [0.0] * dim
+        vec[0] = sim
+        vec[1] = math.sqrt(1.0 - sim * sim)
+        await pg_kb.vector_store(eid, vec)
+    await pg_kb.commit()
+    query = [0.0] * dim
+    query[0] = 1.0
+    res = await find_near_duplicates(pg_kb, query, project_ref="p", floor=0.88)
+    assert [c.id for c in res.candidates] == ["kb-80001"]
+    assert abs(res.candidates[0].similarity - 0.95) < 1e-4

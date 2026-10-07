@@ -6,6 +6,7 @@ are monkeypatched here so the suite never touches a real database or embedder.
 parametrizable, and ``database.get_db`` is replaced with a minimal fake pool.
 """
 
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ from kb_core.map_eligibility import (
 )
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.search import SearchResult
+from kb_core.near_duplicates import NearDuplicateCheck
 from kb_core.supersession import SupersessionReconcileReport
 
 import kb_service.attribution as attribution_module
@@ -294,6 +296,12 @@ class FakeKnowledgeBase:
         self.supersedes_problems: list[str] = []
         self.check_supersedes_calls: list[tuple[list[str], str | None, EntryType]] = []
         self.reconcile_calls = 0
+        # near-duplicate guard facade
+        self.near_duplicate_check = NearDuplicateCheck(
+            status="checked", candidates=(), top_similarity=None
+        )
+        self.find_near_duplicates_calls: list[dict[str, Any]] = []
+        self.audit_events: list[tuple[str, str | None, str | None, dict[str, Any]]] = []
         self.reactivate_calls: list[tuple[str, str]] = []
         self.bulk_update_calls: list[dict[str, Any]] = []
         self.map_eligibility_verdicts: list[MapEligibilityVerdict] = []
@@ -606,6 +614,42 @@ class FakeKnowledgeBase:
             (list(target_ids), writer_id, writer_entry_type)
         )
         return list(self.supersedes_problems)
+
+    async def find_near_duplicates(
+        self,
+        *,
+        short_title: str,
+        long_title: str,
+        knowledge_details: str,
+        project_ref: str,
+        floor: float,
+        limit: int = 5,
+    ) -> NearDuplicateCheck:
+        """Record the call and return the configured ``near_duplicate_check``."""
+        self.find_near_duplicates_calls.append(
+            {
+                "short_title": short_title,
+                "long_title": long_title,
+                "knowledge_details": knowledge_details,
+                "project_ref": project_ref,
+                "floor": floor,
+                "limit": limit,
+            }
+        )
+        return self.near_duplicate_check
+
+    async def record_audit_event(
+        self,
+        event_type: str,
+        *,
+        entry_id: str | None,
+        contributor: str | None,
+        detail: str,
+    ) -> None:
+        """Record the audit row with its JSON detail decoded."""
+        self.audit_events.append(
+            (event_type, entry_id, contributor, json.loads(detail))
+        )
 
     async def reconcile_supersession(self) -> SupersessionReconcileReport:
         """Count the call and return an all-zero report."""

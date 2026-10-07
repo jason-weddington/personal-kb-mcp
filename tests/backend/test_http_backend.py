@@ -676,6 +676,20 @@ def test_raise_for_status_422_raises_with_list_detail():
     assert "field required" in exc_info.value.detail
 
 
+def test_raise_for_status_409_dict_detail_near_duplicate():
+    detail = {
+        "error": "near_duplicate",
+        "message": "Cover EVERY listed id with one of: distinct_from=[<id>]",
+        "candidates": [{"id": "kb-00001"}],
+    }
+    resp = httpx.Response(409, json={"detail": detail})
+    with pytest.raises(BackendHttpError) as exc_info:
+        _raise_for_status(resp, "http://kb.test")
+    assert exc_info.value.status == 409
+    assert "kb-00001" in exc_info.value.detail
+    assert "distinct_from" in exc_info.value.detail
+
+
 # ---------------------------------------------------------------------------
 # _parse_file_result — direct call
 # ---------------------------------------------------------------------------

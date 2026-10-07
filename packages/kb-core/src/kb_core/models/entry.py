@@ -43,7 +43,14 @@ class KnowledgeEntry(BaseModel):
     has_embedding: bool = False
     version: int = 1
 
+    @staticmethod
+    def compose_embedding_text(short_title: str, long_title: str, knowledge_details: str) -> str:
+        """The single definition of the text that is embedded for an entry."""
+        return f"{short_title} {long_title} {knowledge_details}"
+
     @property
     def embedding_text(self) -> str:
         """Text used for generating embeddings."""
-        return f"{self.short_title} {self.long_title} {self.knowledge_details}"
+        return KnowledgeEntry.compose_embedding_text(
+            self.short_title, self.long_title, self.knowledge_details
+        )

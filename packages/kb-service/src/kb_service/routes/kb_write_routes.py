@@ -52,6 +52,12 @@ from kb_service.routes.map_write_guards import (
     _check_orphan_mental_map,
     _mental_map_has_pointer,
 )
+from kb_service.routes.near_duplicate_guard import (
+    check_distinct_from,
+    collect_distinct_from,
+    enforce_near_duplicate_guard,
+    record_stored,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +141,10 @@ _CHANGE_REASON_UPDATE = (
 _CHANGE_REASON_DEACTIVATE = (
     "change_reason is required when deactivating an entry; if a newer entry "
     "replaces this one, also pass superseded_by."
+)
+_DISTINCT_FROM_UPDATE = (
+    "distinct_from applies only when creating an entry; an update has no "
+    "near-duplicate check."
 )
 _HINTS_SUPERSEDES_SHAPE = (
     "supersedes rejected: hints.supersedes must be a kb-id string or a list of "
@@ -307,6 +317,31 @@ async def store(
             problems=[],
         )
 
+        distinct_from = collect_distinct_from(body.distinct_from, body.hints)
+        distinct_problems = await check_distinct_from(
+            kb, distinct_from, supersedes=effective
+        )
+        if distinct_problems:
+            raise HTTPException(
+                status_code=422,
+                detail="distinct_from rejected: " + "; ".join(distinct_problems),
+            )
+        decision = await enforce_near_duplicate_guard(
+            kb,
+            op="store",
+            entry_index=None,
+            contributor=attr.contributor,
+            short_title=body.short_title,
+            long_title=body.long_title,
+            knowledge_details=body.knowledge_details,
+            entry_type=entry_type,
+            project_ref=body.project_ref,
+            supersedes=effective,
+            distinct_from=distinct_from,
+        )
+        if distinct_from:
+            store_hints = {**(store_hints or {}), "distinct_from": distinct_from}
+
         entry: KnowledgeEntry = await kb.store(
             short_title=body.short_title,
             long_title=body.long_title,
@@ -326,6 +361,9 @@ async def store(
         )
         if effective:
             await _warn_if_build_failed(kb, entry.id, effective)
+        await record_stored(
+            kb, decision, entry_id=entry.id, contributor=attr.contributor
+        )
         entry = await kb.get(entry.id) or entry
         return StoreResponse(action="created", entry=entry, superseded_ids=effective)
 
@@ -342,6 +380,8 @@ async def store(
             problems=[],
         )
         raise HTTPException(status_code=422, detail=_CHANGE_REASON_UPDATE)
+    if body.distinct_from or "distinct_from" in (body.hints or {}):
+        raise HTTPException(status_code=422, detail=_DISTINCT_FROM_UPDATE)
     expires_at = _parse_ttl(body.ttl)
     if body.knowledge_details:
         _check_secrets(body.knowledge_details, kb)
@@ -525,6 +565,8 @@ async def store_batch(
 
     # ── up-front batch validation ─────────────────────────────────────────
     batch_supersedes: list[list[str]] = []
+    batch_distinct_from: list[list[str]] = []
+    batch_decisions: list[Any] = []
     for i, raw in enumerate(body.entries):
         prefix = f"entry {i}: "
         if raw.ttl is not None:
@@ -556,15 +598,46 @@ async def store_batch(
         await _check_machine_principal_map_lint(
             raw.entry_type, raw.knowledge_details, user, prefix=prefix
         )
-        batch_supersedes.append(await _validate_batch_supersedes(kb, i, raw))
+        effective = await _validate_batch_supersedes(kb, i, raw)
+        batch_supersedes.append(effective)
+        distinct_from = collect_distinct_from(raw.distinct_from, raw.hints)
+        distinct_problems = await check_distinct_from(
+            kb, distinct_from, supersedes=effective
+        )
+        if distinct_problems:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{prefix}distinct_from rejected: "
+                + "; ".join(distinct_problems),
+            )
+        batch_distinct_from.append(distinct_from)
+        batch_decisions.append(
+            await enforce_near_duplicate_guard(
+                kb,
+                op="store_batch",
+                entry_index=i,
+                contributor=attr.contributor,
+                short_title=raw.short_title,
+                long_title=raw.long_title,
+                knowledge_details=raw.knowledge_details,
+                entry_type=raw.entry_type,
+                project_ref=raw.project_ref,
+                supersedes=effective,
+                distinct_from=distinct_from,
+            )
+        )
 
     # ── build facade dicts ────────────────────────────────────────────────
     entry_dicts: list[dict[str, Any]] = []
-    for raw, effective in zip(body.entries, batch_supersedes, strict=True):
+    for raw, effective, distinct in zip(
+        body.entries, batch_supersedes, batch_distinct_from, strict=True
+    ):
         expires_at = compute_expires_at(raw.ttl) if raw.ttl is not None else None
         hints = (
             {**(raw.hints or {}), "supersedes": effective} if effective else raw.hints
         )
+        if distinct:
+            hints = {**(hints or {}), "distinct_from": distinct}
         entry_dicts.append(
             {
                 "short_title": raw.short_title,
@@ -584,6 +657,13 @@ async def store_batch(
         )
 
     created: list[KnowledgeEntry] = await kb.store_batch(entry_dicts, enrich=True)
+    # The facade may skip failed entries, so only pair decisions with created
+    # entries when the counts line up (the normal case).
+    if len(created) == len(batch_decisions):
+        for decision, e in zip(batch_decisions, created, strict=True):
+            await record_stored(
+                kb, decision, entry_id=e.id, contributor=attr.contributor
+            )
 
     # Re-fetch each created entry to pick up has_embedding
     refreshed: list[KnowledgeEntry] = []

@@ -190,6 +190,17 @@ def get_ingest_dedup_threshold() -> float:
     return _parse_float("KB_INGEST_DEDUP_THRESHOLD", "0.06")
 
 
+NEAR_DUPLICATE_FLOOR_DEFAULT = 0.88
+
+
+def get_near_duplicate_floor() -> float:
+    """Return the cosine floor at/above which a create is a near-duplicate.
+
+    Read on every request (not cached). A malformed value raises ValueError.
+    """
+    return _parse_float("KB_NEAR_DUPLICATE_FLOOR", str(NEAR_DUPLICATE_FLOOR_DEFAULT))
+
+
 def is_safety_skip() -> bool:
     """Return True if KB_SKIP_SAFETY is set to TRUE."""
     return os.environ.get("KB_SKIP_SAFETY", "").upper() == "TRUE"

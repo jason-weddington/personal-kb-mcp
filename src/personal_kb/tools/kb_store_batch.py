@@ -84,7 +84,12 @@ async def batch_store_entries(
         valid_entries.append(entry_dict)
 
     # Call the backend
-    created, backend_failed = await backend.store_batch(valid_entries)
+    from personal_kb.backend.http import BackendHttpError, _map_error
+
+    try:
+        created, backend_failed = await backend.store_batch(valid_entries)
+    except BackendHttpError as e:
+        return _map_error(e, "")
 
     # Merge failures: client-side (TTL) + backend-side (per-entry DB errors in local mode)
     all_failed = client_failed + backend_failed
