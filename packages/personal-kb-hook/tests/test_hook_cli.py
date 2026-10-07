@@ -437,6 +437,9 @@ def _listener_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret")
     monkeypatch.setenv("PERSONAL_KB_LISTENER", "true")
+    # Tests may themselves run inside a headless dispatch; neutralise it.
+    monkeypatch.delenv("HEADLESS_BUILD_ENGINE", raising=False)
+    monkeypatch.delenv("KB_LISTENER_HEADLESS", raising=False)
 
 
 def _make_transcript(path: Path, text: str = "A" * 300) -> None:
@@ -663,6 +666,100 @@ def test_stop_request_tmp_body_contains_expected_fields(
 
     # Cleanup tmp file
     os.unlink(req_tmp_path)
+
+
+def _stop_body(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_env: dict[str, Path],
+    transcript_text: str,
+    extra: dict[str, Any],
+    sid: str,
+    env: dict[str, str] | None = None,
+) -> tuple[list[tuple[Any, Any]], dict[str, Any] | None]:
+    _listener_env(monkeypatch)
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, v)
+    popen_calls: list[tuple[Any, Any]] = []
+
+    def mock_popen(*args: object, **kwargs: object) -> _ProcHandle:
+        popen_calls.append((args, kwargs))
+        return _ProcHandle()
+
+    monkeypatch.setattr(subprocess, "Popen", mock_popen)
+    transcript = hook_env["root"] / "transcript.jsonl"
+    _make_transcript(transcript, transcript_text)
+    rc, _ = _run(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "cwd": str(hook_env["root"]),
+            "session_id": sid,
+            "transcript_path": str(transcript),
+            **extra,
+        },
+    )
+    assert rc == 0
+    if not popen_calls:
+        return popen_calls, None
+    path = popen_calls[0][0][0][3]
+    with open(path, encoding="utf-8") as fh:
+        body = json.load(fh)
+    os.unlink(path)
+    return popen_calls, body
+
+
+def test_stop_prefers_last_assistant_message(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    calls, body = _stop_body(
+        monkeypatch, hook_env, "T" * 300, {"last_assistant_message": "L" * 5000}, "lam-1"
+    )
+    assert len(calls) == 1 and body is not None
+    assert body["text"] == "L" * 4000
+    assert body["text_source"] == "last_assistant_message"
+
+
+def test_stop_falls_back_to_transcript_text(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    calls, body = _stop_body(monkeypatch, hook_env, "T" * 300, {}, "lam-2")
+    assert len(calls) == 1 and body is not None
+    assert body["text"] == "T" * 300
+    assert body["text_source"] == "transcript"
+
+
+def test_stop_short_last_assistant_message_no_spawn(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    calls, _ = _stop_body(
+        monkeypatch, hook_env, "T" * 300, {"last_assistant_message": "short"}, "lam-3"
+    )
+    assert calls == []
+
+
+def test_stop_headless_skips_worker_but_flushes(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    flushed: list[str] = []
+    monkeypatch.setattr(cli.telemetry, "flush_session", lambda sid: flushed.append(sid))
+    calls, _ = _stop_body(
+        monkeypatch,
+        hook_env,
+        "T" * 300,
+        {},
+        "head-1",
+        {"HEADLESS_BUILD_ENGINE": "claude-code-sonnet"},
+    )
+    assert calls == []
+    assert flushed == ["head-1"]
+
+
+def test_stop_headless_opt_in_spawns(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    env = {"HEADLESS_BUILD_ENGINE": "claude-code-sonnet", "KB_LISTENER_HEADLESS": "TRUE"}
+    calls, _ = _stop_body(monkeypatch, hook_env, "T" * 300, {}, "head-2", env)
+    assert len(calls) == 1
 
 
 def test_stop_project_ref_null_when_no_kb_project(

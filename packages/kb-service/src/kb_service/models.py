@@ -551,6 +551,9 @@ class ListenerRequest(BaseModel):
     operating: list[str] = Field(default_factory=list)
     source_label: str | None = None
     session_id: str | None = None
+    # Where the hook got ``text`` ('last_assistant_message' | 'transcript');
+    # None from old hooks.
+    text_source: str | None = None
 
 
 class ListenerPointer(BaseModel):

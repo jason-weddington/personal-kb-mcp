@@ -127,6 +127,7 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         n_after_a,
         n_after_b,
         retrieval_path,
+        text_source,
     ) = args
     return {
         "session_id": session_id,
@@ -144,6 +145,7 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         "n_after_a": n_after_a,
         "n_after_b": n_after_b,
         "retrieval_path": retrieval_path,
+        "text_source": text_source,
     }
 
 
@@ -179,6 +181,28 @@ def test_decision_kill_switch(
     assert row["n_retrieved"] == 0
     assert row["n_after_a"] == 0
     assert row["n_after_b"] == 0
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [({"text_source": "last_assistant_message"}, "last_assistant_message"), ({}, None)],
+)
+def test_decision_text_source_round_trip(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+    extra: dict[str, str],
+    expected: str | None,
+) -> None:
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "FALSE")
+    app.dependency_overrides[get_current_user] = fake_user
+
+    resp = client.post(
+        "/api/kb/listener", json={"text": "hello", "session_id": "s", **extra}
+    )
+    assert resp.status_code == 200
+    assert _decision_args(decision_pool)["text_source"] == expected
 
 
 @pytest.mark.usefixtures("_patch_decision_pool")

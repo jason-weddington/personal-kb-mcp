@@ -234,6 +234,9 @@ _SCHEMA_STATEMENTS: list[str] = [
     " ADD COLUMN IF NOT EXISTS n_after_b INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE listener_decisions"
     " ADD COLUMN IF NOT EXISTS retrieval_path TEXT NOT NULL DEFAULT ''",
+    # text_source: where the hook got the judged text
+    # ('last_assistant_message' | 'transcript'); NULL on old rows/hooks.
+    "ALTER TABLE listener_decisions ADD COLUMN IF NOT EXISTS text_source TEXT",
 ]
 
 

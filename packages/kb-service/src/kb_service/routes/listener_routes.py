@@ -88,9 +88,9 @@ _DECISION_INSERT_SQL = (
     "INSERT INTO listener_decisions ("
     "session_id, cwd_project, source_kb, decided_ts, candidates_considered,"
     " decision, reason, vote_shape, candidate_signal, candidate_ids,"
-    " whispered_ids, n_retrieved, n_after_a, n_after_b, retrieval_path"
+    " whispered_ids, n_retrieved, n_after_a, n_after_b, retrieval_path, text_source"
     ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,"
-    " $14, $15)"
+    " $14, $15, $16)"
 )
 
 # retrieval_path values (GTD 268e2af3): whether the direct-mental_map-search
@@ -599,8 +599,12 @@ async def _record_listener_decision(
     n_retrieved: int = 0,
     n_after_a: int = 0,
     n_after_b: int = 0,
+    text_source: str | None = None,
 ) -> None:
     """Best-effort insert of one ``listener_decisions`` row. Never raises.
+
+    ``text_source`` is where the hook got the judged text
+    (``last_assistant_message`` | ``transcript``); NULL for old hooks.
 
     ``decision`` is derived from ``reason`` — "whisper" iff reason ==
     "whispered", "declined" otherwise.
@@ -660,6 +664,7 @@ async def _record_listener_decision(
             n_after_a,
             n_after_b,
             retrieval_path,
+            text_source,
         )
     except Exception as exc:  # best-effort telemetry: must never raise
         logger.debug("listener decision write failed: %s", exc)
@@ -789,6 +794,7 @@ async def listener(
     if os.environ.get("KB_LISTENER_ENABLED", "FALSE").upper() != "TRUE":
         await _record_listener_decision(
             session_id=body.session_id,
+            text_source=body.text_source,
             cwd_project=body.cwd_project,
             source_kb=source_kb,
             candidates_considered=0,
@@ -854,6 +860,7 @@ async def listener(
             decision_reason = "rule-b"
         await _record_listener_decision(
             session_id=body.session_id,
+            text_source=body.text_source,
             cwd_project=body.cwd_project,
             source_kb=source_kb,
             candidates_considered=0,
@@ -870,6 +877,7 @@ async def listener(
     if kb.synthesis_llm is None:
         await _record_listener_decision(
             session_id=body.session_id,
+            text_source=body.text_source,
             cwd_project=body.cwd_project,
             source_kb=source_kb,
             candidates_considered=len(candidates),
@@ -940,6 +948,7 @@ async def listener(
         candidate_signal = signal_source.get(selected[0].id, "")
         await _record_listener_decision(
             session_id=body.session_id,
+            text_source=body.text_source,
             cwd_project=body.cwd_project,
             source_kb=source_kb,
             candidates_considered=len(candidates),
@@ -978,6 +987,7 @@ async def listener(
         decision_reason = "vote-none"
     await _record_listener_decision(
         session_id=body.session_id,
+        text_source=body.text_source,
         cwd_project=body.cwd_project,
         source_kb=source_kb,
         candidates_considered=len(candidates),

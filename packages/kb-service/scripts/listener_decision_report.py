@@ -155,6 +155,16 @@ def render_report(rows: list[dict[str, Any]], since: datetime) -> str:
     else:
         lines.append("  (no whispers in window)")
 
+    # Where the judged text came from. .get for the same reason as
+    # candidate_signal: old rows / not-yet-migrated hosts have no value.
+    source_counts: Counter[str] = Counter(
+        r.get("text_source") or "(unset)" for r in rows
+    )
+    lines.append("")
+    lines.append("Decisions by text_source:")
+    for source, count in source_counts.most_common():
+        lines.append(f"  {source:<24} {count} ({_pct(count, total)})")
+
     considered: Counter[str] = Counter()
     whispered: Counter[str] = Counter()
     for r in rows:
@@ -190,7 +200,7 @@ async def _fetch_rows(since: datetime) -> list[dict[str, Any]]:
         # retrieval_path filter below.
         "SELECT reason, decision, candidates_considered, candidate_ids,"
         " whispered_ids, n_retrieved, n_after_a, n_after_b, retrieval_path,"
-        " candidate_signal"
+        " candidate_signal, text_source"
         " FROM listener_decisions WHERE decided_ts >= $1"
         # Exclude pre-telemetry rows. ~151 legacy rows predate these columns
         # and carry defaults, so including them silently dilutes exactly the

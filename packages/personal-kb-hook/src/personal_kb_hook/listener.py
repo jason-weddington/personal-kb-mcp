@@ -57,11 +57,26 @@ def is_listener_enabled() -> bool:
     return flag in {"1", "true"} and resolve_url_key() is not None
 
 
+def normalize_text(raw: str) -> str | None:
+    """Head-cap *raw* to :data:`_TEXT_HEAD_CAP`; ``None`` if under :data:`_MIN_TEXT_LEN`."""
+    text = raw[:_TEXT_HEAD_CAP]
+    return text if len(text) >= _MIN_TEXT_LEN else None
+
+
 # ---- Transcript extraction ---------------------------------------------------
 
 
 def extract_manifest(transcript_path: str) -> tuple[str, list[str]] | None:
-    """Extract ``(text, operated)`` from the last assistant record in the file.
+    """Return ``(text, operated)`` from the transcript, or ``None`` (see scan_transcript)."""
+    scanned = scan_transcript(transcript_path)
+    if scanned is None or scanned[0] is None:
+        return None
+    text = normalize_text(scanned[0])
+    return None if text is None else (text, scanned[1])
+
+
+def scan_transcript(transcript_path: str) -> tuple[str | None, list[str]] | None:
+    """Extract ``(raw_text, operated)`` from the last assistant record in the file.
 
     Reads at most :data:`_TAIL_WINDOW` bytes from the *end* of the file.
     When the seek offset is > 0 the first (possibly truncated) line is
@@ -87,9 +102,10 @@ def extract_manifest(transcript_path: str) -> tuple[str, list[str]] | None:
         tool_use block names across all assistant records in the tail window
         via the regex ``^mcp__(.+?)__``.
 
-        Returns ``None`` when the transcript is missing / unreadable, contains
-        no assistant record with text blocks, or the resulting text is shorter
-        than :data:`_MIN_TEXT_LEN` characters.
+        ``raw_text`` is ``None`` when no assistant record has text blocks (it
+        is NOT capped here; see :func:`normalize_text`). Returns ``None`` when
+        the transcript is missing / unreadable. :func:`extract_manifest` adds
+        the cap and the :data:`_MIN_TEXT_LEN` floor.
     """
     try:
         with open(transcript_path, "rb") as fh:
@@ -157,16 +173,7 @@ def extract_manifest(transcript_path: str) -> tuple[str, list[str]] | None:
         if text_parts:
             last_text = "\n".join(text_parts)
 
-    if last_text is None:
-        return None
-
-    text = last_text[:_TEXT_HEAD_CAP]
-
-    if len(text) < _MIN_TEXT_LEN:
-        return None
-
-    operated = sorted(operated_set)
-    return text, operated
+    return last_text, sorted(operated_set)
 
 
 # ---- Cache helpers -----------------------------------------------------------

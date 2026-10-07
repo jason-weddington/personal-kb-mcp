@@ -18,7 +18,7 @@ agent sessions.
 - **Anticipatory listener** (`POST /api/kb/listener`): maps-only cross-project
   relevance engine — rule A (drop the session project's own maps), rule B
   (drop maps for systems the agent is operating, via `operated_via` hints on
-  map entries), unanimous-3 Sonnet retrieve-and-cite. The `personal-kb-hook`
+  map entries), majority-of-3 Sonnet retrieve-and-cite. The `personal-kb-hook`
   fans this call out across a **roster of KBs** (personal + team), unions the
   per-KB winners via a client-side suppress-only arbitration step, and whispers
   one pointer per KB into the next agent turn. Multi-KB whisper is gated on

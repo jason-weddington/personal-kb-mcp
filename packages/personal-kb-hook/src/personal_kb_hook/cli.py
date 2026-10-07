@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 import tempfile
@@ -184,6 +185,16 @@ def main(argv: list[str] | None = None) -> None:
             if not listener.is_listener_enabled():
                 return
 
+            # Headless dispatch runs never get another UserPromptSubmit (the
+            # only whisper delivery path), so judging would burn Sonnet votes
+            # on an undeliverable whisper. KB_LISTENER_HEADLESS=TRUE opts back in.
+            if (
+                telemetry.build_engine() is not None
+                and os.environ.get("KB_LISTENER_HEADLESS", "").upper() != "TRUE"
+            ):
+                print("personal-kb-hook: headless run, skipping listener", file=sys.stderr)
+                return
+
             transcript_path = payload.get("transcript_path")
             if not isinstance(transcript_path, str) or not transcript_path:
                 return
@@ -194,11 +205,23 @@ def main(argv: list[str] | None = None) -> None:
 
             project_ref_stop = resolve_project(cwd_str)  # null allowed
 
-            manifest = listener.extract_manifest(transcript_path)
-            if manifest is None:
+            scanned = listener.scan_transcript(transcript_path)
+            if scanned is None:
                 return
+            transcript_text, operated = scanned
 
-            text_content, operated = manifest
+            # Prefer the harness-provided final assistant text: the transcript
+            # is written asynchronously and may lag the current turn. The
+            # transcript is still the source of the ``operating`` list.
+            text_source = "transcript"
+            lam = payload.get("last_assistant_message")
+            if isinstance(lam, str) and lam:
+                text_content = listener.normalize_text(lam)
+                text_source = "last_assistant_message"
+            else:
+                text_content = listener.normalize_text(transcript_text) if transcript_text else None
+            if text_content is None:
+                return
             request_data: dict[str, Any] = {
                 "text": text_content,
                 "cwd_project": project_ref_stop,
@@ -206,6 +229,7 @@ def main(argv: list[str] | None = None) -> None:
                 "source_label": project_ref_stop,
                 "session_id": session_id_stop,
                 "hook_event_name": event_name,
+                "text_source": text_source,
             }
 
             # Write request to a NamedTemporaryFile (worker will delete it)
