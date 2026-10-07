@@ -79,6 +79,7 @@ def _res(cue_tool: str = "Bash", cue_tc: str = "git push", **kw: Any) -> dict[st
         "corrected_fact": kw.pop("corrected_fact", "push to origin"),
         "wrong_belief": kw.pop("wrong_belief", "push to github"),
         "cue": {"tool": cue_tool, "target_class": cue_tc},
+        "provenance": {"capture": "deliberate", "grounding": "asserted"},
     }
     out.update(kw)
     return out
@@ -101,7 +102,7 @@ async def test_load_resolutions_parsing_and_labels(kb: Any) -> None:
     deliberate = await _store(
         kb, **_res(provenance={"capture": "deliberate", "grounding": "asserted"})
     )
-    bare = await _store(kb, **_res())
+    bare = await _store(kb, **{k: v for k, v in _res().items() if k != "provenance"})
     other = await _store(kb, project="q", **_res())
     glob = await _store(kb, project="q", **_res(scope="global"))
 
@@ -204,11 +205,32 @@ def _resolution(i: int, tc: str = "git push") -> Resolution:
         evidence="",
         cue_tool="Bash",
         cue_target_class=tc,
-        capture=None,
-        grounding=None,
+        capture="deliberate",
+        grounding="asserted",
         observed_sessions=1,
         observed_once=False,
     )
+
+
+def test_gate_admits_only_deliberate_or_observed() -> None:
+    base = _resolution(1).__dict__
+    deliberate = Resolution(
+        **{**base, "entry_id": "kb-1", "capture": "deliberate", "grounding": "asserted"}
+    )
+    observed = Resolution(
+        **{**base, "entry_id": "kb-2", "capture": "autonomous", "grounding": "observed"}
+    )
+    seeded = Resolution(
+        **{**base, "entry_id": "kb-3", "capture": "autonomous", "grounding": "asserted"}
+    )
+    unlabelled = Resolution(
+        **{**base, "entry_id": "kb-4", "capture": None, "grounding": None}
+    )
+    allr = [deliberate, observed, seeded, unlabelled]
+    index, _ = build_gate_index(allr)
+    assert [c.resolution_id for c in index] == ["kb-1", "kb-2"]
+    items, _ = build_slice(allr, [])
+    assert {i.entry_id for i in items} == {"kb-1", "kb-2", "kb-3", "kb-4"}
 
 
 def test_caps() -> None:
@@ -229,7 +251,9 @@ def test_build_slice_dedups() -> None:
 
 
 def test_provenance_label_half() -> None:
-    r = Resolution(**{**_resolution(1).__dict__, "capture": "deliberate"})
+    r = Resolution(
+        **{**_resolution(1).__dict__, "capture": "deliberate", "grounding": None}
+    )
     assert provenance_label(r) == "deliberate/?"
 
 

@@ -282,13 +282,27 @@ def provenance_label(item: Resolution | Correction) -> str:
     return label
 
 
+def _gate_trusted(r: Resolution) -> bool:
+    """Only trusted resolutions may become a pre-action deny.
+
+    A deny is delivered as a correction, so it requires a deliberate store
+    (an agent saving it because the session asked) or observed grounding
+    (tool-output evidence). Autonomous + asserted resolutions -- e.g. LLM-drafted
+    seeds -- and resolutions without provenance reach the session-start slice
+    only, as labelled low-trust context. Fail closed: unknown means untrusted.
+    """
+    return r.capture == "deliberate" or r.grounding == "observed"
+
+
 def build_gate_index(resolutions: list[Resolution]) -> tuple[list[IndexCue], int]:
     """Admit Bash two-word-class cues to the gate index.
 
     Returns ``(index, truncated_count)``.
     """
     admitted = [
-        r for r in resolutions if r.cue_tool == "Bash" and " " in r.cue_target_class
+        r
+        for r in resolutions
+        if r.cue_tool == "Bash" and " " in r.cue_target_class and _gate_trusted(r)
     ]
     kept = admitted[:INDEX_CAP]
     index = [
