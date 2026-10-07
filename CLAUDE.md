@@ -91,6 +91,8 @@ by the cross-package round-trip test in `tests/test_maps_index_writer.py`).
 | **Search baseline** | `tests/eval/baseline.json` | Yes (CI-safe) | Raw hybrid search ranking (FTS + vector RRF) |
 | **Agent baseline** | `tests/eval/agent_baseline.json` | No (live LLM) | End-to-end agentic retrieval (search + graph + refinement) |
 
+**Replay experiment** (does the KB stop repeat mistakes? KB off vs session-start slice vs soft gate) lives in `scripts/replay/` — see `scripts/replay/README.md`. Its outputs go to a private eval repo, never this one.
+
 **Search baseline** (MRR=0.85, NDCG=0.89) — run for any change to ranking, RRF weights, decay, or score normalization:
 
 1. Branch off main
