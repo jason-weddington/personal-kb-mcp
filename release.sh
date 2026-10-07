@@ -82,6 +82,8 @@ git clean -fdq -- "$static_dir"
 # 2. Bump version + CHANGELOG + uv.lock and tag locally.
 #    --no-push:        we push explicitly to both remotes below.
 #    --no-vcs-release:  don't create a GitHub Release object (tags are enough).
+# Remember where main was, so an abort can drop the release commit too.
+pre_release_head=$(git rev-parse HEAD)
 uv run semantic-release version --no-push --no-vcs-release
 
 # 2a. Lock the standalone personal-kb-hook package to the same release version
@@ -122,12 +124,16 @@ if ! git diff --cached --quiet; then
   git tag -a "$new_tag" -m "$new_tag"
 fi
 
-# Abort the release: drop the local tag so a re-run starts clean. Nothing has
-# been pushed at this point.
+# Abort the release: drop the local tag AND the release commit, so a re-run
+# starts from the same main (a leftover chore(release) commit would otherwise
+# be stacked under a second one). The tree was asserted clean at the start, so
+# the hard reset discards only what this script created. Nothing has been
+# pushed at this point.
 abort_release() {
   echo "$1" >&2
   git tag -d "$new_tag" >/dev/null 2>&1 || true
-  echo "Local tag $new_tag deleted; nothing was pushed." >&2
+  git reset -q --hard "$pre_release_head"
+  echo "Local tag $new_tag deleted and main reset to ${pre_release_head:0:7}; nothing was pushed." >&2
   exit 1
 }
 

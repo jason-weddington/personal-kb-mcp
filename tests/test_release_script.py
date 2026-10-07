@@ -151,10 +151,24 @@ def test_hook_success_then_push(sandbox):
 
 def test_hook_failure_aborts_without_push(sandbox):
     _hook(sandbox, 7)
+    head_before = subprocess.run(
+        ["git", "-C", str(sandbox["repo"]), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
     r = _run(sandbox)
     assert r.returncode != 0
     assert not any(c.startswith("git push") for c in _calls(sandbox))
     assert _tags(sandbox) == ""
+    head_after = subprocess.run(
+        ["git", "-C", str(sandbox["repo"]), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    # The release commit is dropped too, so a re-run starts from the same main.
+    assert head_after == head_before
 
 
 def test_hook_published_but_deploy_incomplete_pushes_then_fails(sandbox):
