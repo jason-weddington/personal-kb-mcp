@@ -82,7 +82,7 @@ repos:
 
       - id: kb-service-coverage
         name: coverage (kb-service)
-        entry: bash -c 'log=$(mktemp); cd packages/kb-service && uv run --frozen --project ../.. pytest -q --cov --cov-report=term-missing > "$log" 2>&1; rc=$?; tail -6 "$log"; rm -f "$log"; exit $rc'
+        entry: scripts/run_unless_docs_only.sh bash -c 'log=$(mktemp); cd packages/kb-service && uv run --frozen --project ../.. pytest -q --cov --cov-report=term-missing > "$log" 2>&1; rc=$?; tail -6 "$log"; rm -f "$log"; exit $rc'
         language: system
         pass_filenames: false
         always_run: true
@@ -104,7 +104,7 @@ repos:
 
       - id: kb-service-vitest
         name: vitest (kb-service frontend)
-        entry: npm --prefix packages/kb-service/frontend run test
+        entry: scripts/run_unless_docs_only.sh npm --prefix packages/kb-service/frontend run test
         language: system
         pass_filenames: false
         files: '^packages/kb-service/frontend/.*\.(ts|tsx)$'
@@ -112,7 +112,7 @@ repos:
 
       - id: coverage
         name: coverage
-        entry: uv run --frozen pytest -m "not eval" --cov --cov-report=term-missing
+        entry: scripts/run_unless_docs_only.sh uv run --frozen pytest -m "not eval" --cov --cov-report=term-missing
         language: system
         pass_filenames: false
         always_run: true

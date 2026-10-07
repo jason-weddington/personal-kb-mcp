@@ -145,6 +145,8 @@ The maintainer's own deploy and publish glue lives in a separate private ops rep
 5. **Push to `origin` freely**: `git push origin main`. No tags, **never `github`** — a pre-push hook (`scripts/guard_github_push.sh`) refuses any push to `github` that does not come from `./release.sh`.
 6. Clean up: `git branch -D feat/...`.
 
+Docs-only pushes (`docs/**`, `proposals/**`, top-level `*.md`) skip the coverage and vitest pre-push gates automatically (`scripts/run_unless_docs_only.sh`), so `--no-verify` is never needed for them.
+
 `main` accumulates verified-locally work between releases. The "stop and wait before merging" gate lives at the **release** boundary below.
 
 ### Release (deliberate, promotes to github)
