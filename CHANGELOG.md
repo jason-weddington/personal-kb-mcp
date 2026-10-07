@@ -2,6 +2,74 @@
 
 <!-- version list -->
 
+## v1.1.0 (2026-10-07)
+
+### Bug Fixes
+
+- Client supersession polish (batch index remap, skew tripwire union, SUPERSEDED marker in full
+  renderer)
+  ([`441a0c9`](https://github.com/jason-weddington/personal-kb-mcp/commit/441a0c9f08dbfaebdfa72ea9127861d1840d893d))
+
+- **kb-core**: Deterministic neighbour order in get_neighbors (ORDER BY before LIMIT)
+  ([`e1443f6`](https://github.com/jason-weddington/personal-kb-mcp/commit/e1443f66019f61b8843c2d7fe9263ef16b696b19))
+
+- **preflight**: Leave the maps query unfiltered by superseded_by, as specified
+  ([`8e104bd`](https://github.com/jason-weddington/personal-kb-mcp/commit/8e104bd1a5bbd6e375cae3d9bcd368904df3a707))
+
+- **release**: Final message names the remotes actually pushed to
+  ([`37bce53`](https://github.com/jason-weddington/personal-kb-mcp/commit/37bce539eeb13eb91493add73d68cd4bb956d1e2))
+
+- **tests**: Stamp tests no longer rewrite the real kb-core pyproject
+  ([`e0b0b06`](https://github.com/jason-weddington/personal-kb-mcp/commit/e0b0b063078528f08df67b6e5f671e6151f2d756))
+
+### Documentation
+
+- **somnus**: Fold Jason's review into the supersession design (binary verdict, superseded_by
+  self-heal)
+  ([`a6a3bff`](https://github.com/jason-weddington/personal-kb-mcp/commit/a6a3bff753ff62ee00ea2c395e33013a8e3de832))
+
+- **somnus**: Iteration-1 design — don't point a map at a superseded entry
+  ([`0c83dc9`](https://github.com/jason-weddington/personal-kb-mcp/commit/0c83dc97f75fb703e9fa9e38378818db1b9ee64f))
+
+### Features
+
+- Require change_reason on chat update_entry; kb_maintain deactivate forwards superseded_by
+  ([`363411b`](https://github.com/jason-weddington/personal-kb-mcp/commit/363411b3daf448e3779ad9e81c1bb665634574c2))
+
+- **152ac98c**: Supersession-aware reads: kb_search hides superseded by default, kb_get banner,
+  kb_ask expansion skips superseded
+  ([`dbbf139`](https://github.com/jason-weddington/personal-kb-mcp/commit/dbbf139fa1c16237ea07816834e5d2339cff701c))
+
+- **kb-service**: Configure logging so INFO telemetry reaches the journal
+  ([`5406c80`](https://github.com/jason-weddington/personal-kb-mcp/commit/5406c80293e9b8703ee43e5faeef2ee69edbfe89))
+
+- **kb-service**: Near-duplicate guard on kb_store create — 409 with candidates unless
+  update/supersedes/distinct_from
+  ([`232cdeb`](https://github.com/jason-weddington/personal-kb-mcp/commit/232cdebad30681fd499b3e304f74b232c0358995))
+
+- **kb-service**: Reject superseded mental_map pointers on /store and /store_batch
+  ([`7b96fc0`](https://github.com/jason-weddington/personal-kb-mcp/commit/7b96fc0c10a54d1e2c383afd92549180cf080f0f))
+
+- **kb-service**: Supersession telemetry and batch parity
+  ([`23b5409`](https://github.com/jason-weddington/personal-kb-mcp/commit/23b5409ef5dc4370e00436a3fa2254f2aec7ade3))
+
+- **mcp-client**: Kb_store requires supersedes (ids or 'none'); distinct_from, superseded_by,
+  required change_reason
+  ([`beef77a`](https://github.com/jason-weddington/personal-kb-mcp/commit/beef77ad43d35425b4913f71eda2bd66f1ecb04f))
+
+- **supersession**: Bulk_update recompute, ingest change_reason, reconcile admin action
+  ([`aa352bd`](https://github.com/jason-weddington/personal-kb-mcp/commit/aa352bd2ec476b7c6d1f47cc3d696335cc629692))
+
+- **supersession**: Validated supersedes on store, atomic superseded_by invariant + reconcile,
+  required change_reason, map ops reject superseded pointers
+  ([`8cf6445`](https://github.com/jason-weddington/personal-kb-mcp/commit/8cf644566973cc46c899f54dbf77da70f2dbbf03))
+
+### Testing
+
+- **kb-core**: Postgres coverage for supersession write paths
+  ([`1e7c898`](https://github.com/jason-weddington/personal-kb-mcp/commit/1e7c898af080369b47d5ebe46421aafec00760c0))
+
+
 ## v1.0.0 (2026-10-06)
 
 ### Bug Fixes
