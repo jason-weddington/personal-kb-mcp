@@ -1,5 +1,6 @@
 """Shared test fixtures."""
 
+import pytest
 import pytest_asyncio
 
 from personal_kb.db.connection import create_connection
@@ -188,3 +189,16 @@ async def graph_enricher(db, fake_llm):
 async def fake_embedder(db):
     """Fake embedding client for tests."""
     return FakeEmbedder(db)
+
+
+# Production-DB URLs must never reach a test. A dispatch host or a developer
+# shell can carry a real KB_DATABASE_URL (it did: a daemon smoke test opened
+# the live KB and ran the startup reconcile, 2026-10-07). Tests that need one
+# set it explicitly with monkeypatch after this runs.
+_AMBIENT_DB_VARS = ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_production_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in _AMBIENT_DB_VARS:
+        monkeypatch.delenv(var, raising=False)

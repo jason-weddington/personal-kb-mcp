@@ -112,6 +112,11 @@ async def test_documented_local_daemon_boots_and_serves_health(
     env["KB_DB_PATH"] = str(tmp_path / "smoke.db")
     env["PERSONAL_KB_DAEMON_STATE_DIR"] = str(tmp_path)
     env["KB_AUTO_EXPLORE"] = "FALSE"  # don't drag in the explorer port
+    # The daemon honours KB_DATABASE_URL by design; the smoke must not inherit
+    # a real one, or the "local" daemon opens that Postgres (it opened the live
+    # KB once). Force SQLite explicitly rather than relying on its absence.
+    for var in ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL"):
+        env.pop(var, None)
 
     logfile = tmp_path / "kb-daemon.log"
     log_fd = os.open(logfile, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)

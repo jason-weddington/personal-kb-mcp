@@ -257,3 +257,16 @@ def pytest_terminal_summary(
         if report.when == "setup" and "postgres" in report.keywords
     )
     terminalreporter.write_line(f"postgres marker: {ran} ran, {skipped} skipped")
+
+
+# Production-DB URLs must never reach a test. A dispatch host or a developer
+# shell can carry a real KB_DATABASE_URL (it did: a daemon smoke test opened
+# the live KB and ran the startup reconcile, 2026-10-07). Tests that need one
+# set it explicitly with monkeypatch after this runs.
+_AMBIENT_DB_VARS = ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_production_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in _AMBIENT_DB_VARS:
+        monkeypatch.delenv(var, raising=False)
