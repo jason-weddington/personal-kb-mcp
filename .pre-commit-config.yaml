@@ -72,9 +72,17 @@ repos:
         files: '^packages/kb-service/'
         pass_filenames: false
 
+      - id: github-release-only
+        name: github receives release pushes only
+        entry: scripts/guard_github_push.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
       - id: kb-service-coverage
         name: coverage (kb-service)
-        entry: bash -c 'cd packages/kb-service && uv run --frozen --project ../.. pytest -q --cov --cov-report=term-missing > /tmp/pre-push-kb-service-coverage.txt 2>&1; rc=$?; tail -6 /tmp/pre-push-kb-service-coverage.txt; exit $rc'
+        entry: bash -c 'log=$(mktemp); cd packages/kb-service && uv run --frozen --project ../.. pytest -q --cov --cov-report=term-missing > "$log" 2>&1; rc=$?; tail -6 "$log"; rm -f "$log"; exit $rc'
         language: system
         pass_filenames: false
         always_run: true

@@ -142,7 +142,7 @@ The maintainer's own deploy and publish glue lives in a separate private ops rep
 2. Code + commit on the branch.
 3. Test: `uv run pytest -m "not eval"` must pass (the pre-push hook runs the suite + coverage ≥ 80%).
 4. Squash-merge to `main`: `git checkout main && git merge --squash feat/... && git commit` (squash message must be a conventional commit — hook-enforced).
-5. **Push to `origin` freely**: `git push origin main`. No tags, **never `github`**.
+5. **Push to `origin` freely**: `git push origin main`. No tags, **never `github`** — a pre-push hook (`scripts/guard_github_push.sh`) refuses any push to `github` that does not come from `./release.sh`.
 6. Clean up: `git branch -D feat/...`.
 
 `main` accumulates verified-locally work between releases. The "stop and wait before merging" gate lives at the **release** boundary below.

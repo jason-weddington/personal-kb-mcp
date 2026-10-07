@@ -175,7 +175,7 @@ fi
 # 3. Publish to BOTH remotes: home-lab origin first, then the team-facing github.
 git push origin main --tags
 if git remote get-url github >/dev/null 2>&1; then
-  git push github main --tags
+  KB_RELEASE_PUSH=1 git push github main --tags
 else
   echo "!!! No 'github' remote configured: released to origin only. Publish later with: git push github main --tags !!!" >&2
 fi
