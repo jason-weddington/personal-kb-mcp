@@ -1,5 +1,20 @@
 # Experience loop: moderator synthesis
 
+
+> **Amendment (Jason, 2026-10-07) — read this before anything below.** The KB is an agent tool. Jason never writes, reviews, confirms or curates entries; agents are his interface to the KB. Every "human-authored", "human-confirmed", "your confirmation", "your queue" or "review minutes" mechanism below is void. Read the provenance tiers as follows:
+>
+> - **Deliberate** replaces human-authored: an agent stored the entry because the session's human asked it to.
+> - **Autonomous**: a hook, somnus or another unattended capture wrote the entry.
+> - **Observed** means grounded in tool output; **asserted** means only claimed by an agent.
+>
+> Promotion and quality control are automated:
+>
+> - Recurrence in lineage-independent sessions.
+> - Re-verification, where a later agent (or somnus) re-checks the claim against the primitive and reproduces the observation.
+> - An agent-run audit: a sampled judge workflow that writes its precision estimate to the KB, with no human queue.
+>
+> "A machine entry never supersedes a human entry" becomes: **an autonomous capture may supersede a deliberate entry only with an observed contradiction**, meaning tool-output evidence carried as an event_id.
+
 ## 1. Verdict
 
 - The north star stays the same: an agent makes a mistake once and does not repeat it, on any harness or machine. All four angles now judge each piece by whether it changes what the agent does next. "Consumed" is retired as a success metric.
