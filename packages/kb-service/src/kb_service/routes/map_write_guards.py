@@ -28,7 +28,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from fastapi import HTTPException
-from kb_core.map_lint import lint_map_body
+from kb_core.map_lint import lint_map_body, map_pointer_ids
 from kb_core.models.entry import EntryType
 
 from kb_service.attribution import is_machine_principal
@@ -154,3 +154,71 @@ async def superseded_pointers(kb: Any, ids: Iterable[str]) -> list[tuple[str, st
         if entry is not None and entry.superseded_by is not None:
             pairs.append((pointer_id, entry.superseded_by))
     return pairs
+
+
+def superseded_message(pairs: list[tuple[str, str]]) -> str:
+    """Render the shared ``pointer_superseded`` rejection message."""
+    rendered = ", ".join(f"{p} (superseded by {s})" for p, s in pairs)
+    return (
+        f"map pointers name superseded entries: {rendered};"
+        " point at the superseding entry instead"
+    )
+
+
+def superseded_detail(pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    """Build the structured 409/422 detail for superseded map pointers."""
+    return {
+        "error": "pointer_superseded",
+        "message": superseded_message(pairs),
+        "pairs": [[p, s] for p, s in pairs],
+    }
+
+
+def map_write_pointer_ids(
+    knowledge_details: str, hints: dict[str, Any] | None
+) -> set[str]:
+    """Pointer ids of a map write: body refs plus ``related_entities`` hint ids."""
+    ids = set(map_pointer_ids(knowledge_details))
+    related = (hints or {}).get("related_entities")
+    if related is not None:
+        rels: list[Any] = related if isinstance(related, list) else [related]
+        for item in rels:
+            if isinstance(item, dict):
+                cands = [item.get("id"), item.get("target")]
+            else:
+                cands = [item]
+            for c in cands:
+                if isinstance(c, str):
+                    ids |= map_pointer_ids(c)
+    return ids
+
+
+async def check_superseded_map_pointers(
+    kb: Any,
+    entry_type: EntryType,
+    knowledge_details: str,
+    hints: dict[str, Any] | None,
+    *,
+    existing_ids: set[str] | None = None,
+    status_code: int = 409,
+    prefix: str = "",
+) -> None:
+    """Reject a mental_map write that points at superseded entries.
+
+    ``existing_ids`` (update path) grandfathers pointers already in the stored
+    map: only newly added pointers are checked. A non-empty *prefix* (batch)
+    prefixes a string detail.
+    """
+    if entry_type is not EntryType.MENTAL_MAP:
+        return
+    ids = map_write_pointer_ids(knowledge_details, hints)
+    if existing_ids:
+        ids -= existing_ids
+    pairs = await superseded_pointers(kb, ids)
+    if not pairs:
+        return
+    if prefix:
+        raise HTTPException(
+            status_code=status_code, detail=f"{prefix}{superseded_message(pairs)}"
+        )
+    raise HTTPException(status_code=status_code, detail=superseded_detail(pairs))

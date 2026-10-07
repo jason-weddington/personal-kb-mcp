@@ -51,6 +51,8 @@ from kb_service.routes.map_write_guards import (
     _check_machine_principal_map_lint,
     _check_orphan_mental_map,
     _mental_map_has_pointer,
+    check_superseded_map_pointers,
+    map_write_pointer_ids,
 )
 from kb_service.routes.near_duplicate_guard import (
     check_distinct_from,
@@ -273,6 +275,9 @@ async def store(
         await _check_machine_principal_map_lint(
             entry_type, body.knowledge_details, user
         )
+        await check_superseded_map_pointers(
+            kb, entry_type, body.knowledge_details, body.hints
+        )
 
         mode = _supersedes_mode(body.supersedes)
         hint_targets = _hint_supersedes(body.hints)
@@ -416,6 +421,14 @@ async def store(
     # never rejects a legitimate automated write.
     await _check_machine_principal_map_lint(
         effective_entry_type, effective_details, user
+    )
+    # D5: only NEWLY added superseded pointers are rejected (grandfathered).
+    await check_superseded_map_pointers(
+        kb,
+        effective_entry_type,
+        effective_details,
+        effective_hints,
+        existing_ids=map_write_pointer_ids(existing.knowledge_details, existing.hints),
     )
 
     # Supersedes on update: a MONOTONIC union with what the entry already
@@ -597,6 +610,14 @@ async def store_batch(
             )
         await _check_machine_principal_map_lint(
             raw.entry_type, raw.knowledge_details, user, prefix=prefix
+        )
+        await check_superseded_map_pointers(
+            kb,
+            raw.entry_type,
+            raw.knowledge_details,
+            raw.hints,
+            status_code=422,
+            prefix=prefix,
         )
         effective = await _validate_batch_supersedes(kb, i, raw)
         batch_supersedes.append(effective)

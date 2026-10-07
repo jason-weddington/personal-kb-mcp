@@ -82,6 +82,7 @@ from kb_service.models import (
 from kb_service.routes.map_write_guards import (
     _check_machine_principal_map_lint,
     _check_orphan_mental_map,
+    superseded_message,
     superseded_pointers,
 )
 
@@ -174,13 +175,11 @@ def _reject_superseded(
     logger.info(
         "%s op=%s outcome=pointer_superseded pairs=%r", MAP_OP_ROUTE_MARKER, op, pairs
     )
-    rendered = ", ".join(f"{p} (superseded by {s})" for p, s in pairs)
     _reject(
         op,
         "pointer_superseded",
         409,
-        f"map pointers name superseded entries: {rendered};"
-        " point at the superseding entry instead",
+        superseded_message(pairs),
         project_ref=project_ref,
         map_id=map_id,
     )

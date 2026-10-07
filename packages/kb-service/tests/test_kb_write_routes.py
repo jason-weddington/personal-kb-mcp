@@ -1098,3 +1098,107 @@ def test_supersession_build_failed_warning(
         in m
         for m in warnings
     )
+
+
+# ─── D5: superseded map pointers on /store and /store_batch ──────────────────
+
+
+def _seed_superseded(kb: FakeKnowledgeBase) -> None:
+    kb.entries["kb-00042"] = _entry("kb-00042", superseded_by="kb-00043")
+    kb.entries["kb-00043"] = _entry("kb-00043")
+
+
+def test_store_create_map_superseded_pointer_409(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    _seed_superseded(kb)
+    resp = client.post(
+        "/api/kb/store",
+        json={
+            **_STORE_VALID,
+            "entry_type": "mental_map",
+            "knowledge_details": "See kb-00042.",
+        },
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["error"] == "pointer_superseded"
+    assert detail["pairs"] == [["kb-00042", "kb-00043"]]
+    assert "kb-00042 (superseded by kb-00043)" in detail["message"]
+    assert not kb.store_calls
+
+
+def test_store_create_map_superseder_pointer_ok(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    _seed_superseded(kb)
+    resp = client.post(
+        "/api/kb/store",
+        json={
+            **_STORE_VALID,
+            "entry_type": "mental_map",
+            "knowledge_details": "See kb-00043.",
+        },
+    )
+    assert resp.status_code == 200
+
+
+def test_store_update_map_adding_superseded_pointer_409(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    _seed_superseded(kb)
+    kb.entries["kb-00001"] = _map_entry("kb-00001", "See kb-00043.")
+    resp = client.post(
+        "/api/kb/store",
+        json={
+            "update_entry_id": "kb-00001",
+            "change_reason": "r",
+            "knowledge_details": "See kb-00043 and kb-00042.",
+        },
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["pairs"] == [["kb-00042", "kb-00043"]]
+    assert not kb.update_calls
+
+
+def test_store_update_map_grandfathers_existing_superseded(
+    client: TestClient,
+) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    _seed_superseded(kb)
+    kb.entries["kb-00001"] = _map_entry("kb-00001", "See kb-00042.")
+    resp = client.post(
+        "/api/kb/store",
+        json={
+            "update_entry_id": "kb-00001",
+            "change_reason": "r",
+            "knowledge_details": "See kb-00042 and kb-00043.",
+        },
+    )
+    assert resp.status_code == 200
+    assert kb.update_calls
+
+
+def test_store_batch_map_superseded_pointer_422(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    _seed_superseded(kb)
+    resp = client.post(
+        "/api/kb/store_batch",
+        json={
+            "entries": [
+                _BATCH_ENTRY,
+                {
+                    **_BATCH_ENTRY,
+                    "entry_type": "mental_map",
+                    "knowledge_details": "See kb-00042.",
+                },
+            ]
+        },
+    )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail.startswith("entry 1: ")
+    assert "kb-00042 (superseded by kb-00043)" in detail
+    assert not kb.store_batch_calls
