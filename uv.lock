@@ -1199,7 +1199,7 @@ wheels = [
 
 [[package]]
 name = "kb-core"
-version = "2.0.0"
+version = "1.0.0"
 source = { editable = "packages/kb-core" }
 dependencies = [
     { name = "aiosqlite" },
@@ -1663,7 +1663,7 @@ wheels = [
 
 [[package]]
 name = "personal-kb"
-version = "0.67.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1751,7 +1751,7 @@ dev = [
 
 [[package]]
 name = "personal-kb-hook"
-version = "0.67.0"
+version = "1.0.0"
 source = { editable = "packages/personal-kb-hook" }
 
 [[package]]

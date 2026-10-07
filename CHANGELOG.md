@@ -2,6 +2,406 @@
 
 <!-- version list -->
 
+## v1.0.0 (2026-10-06)
+
+### Bug Fixes
+
+- 404 chat endpoints in no-auth mode (defense-in-depth)
+  ([`43490d9`](https://github.com/jason-weddington/personal-kb-mcp/commit/43490d9346ac743cf34a93273314444deaaf7e41))
+
+- Hide Chat in no-auth mode (gate hosted-only pages via requiresAuth)
+  ([`73aca1e`](https://github.com/jason-weddington/personal-kb-mcp/commit/73aca1e3fc4bdf2096db2ab55b038ae68240659a))
+
+- **api**: Map-lint accepts the map body as raw text, not only JSON
+  ([`c70158f`](https://github.com/jason-weddington/personal-kb-mcp/commit/c70158f8023fb6fd3a3c860903dd53b5a1493090))
+
+- **api**: Rename the worklist's mappable field to mappable_entries
+  ([`8851049`](https://github.com/jason-weddington/personal-kb-mcp/commit/8851049a641144f7131df9169e18dbf9b6a82955))
+
+- **embeddings**: Always release the worker and DB pools on shutdown
+  ([`b948cf6`](https://github.com/jason-weddington/personal-kb-mcp/commit/b948cf6ec7def0cdf9cb688be859a68d5b9bf501))
+
+- **frontend**: Generate a working MCP snippet (uvx --from git origin)
+  ([`7775508`](https://github.com/jason-weddington/personal-kb-mcp/commit/7775508905fe88449052906ddf542dc801948d7f))
+
+- **frontend**: Lift GTD's exact nav/drawer behavior
+  ([`8a00159`](https://github.com/jason-weddington/personal-kb-mcp/commit/8a001595b4896f5368ba74ea569ab01a5690e433))
+
+- **frontend**: Reorder nav to home/ask/search/chat/graph/settings
+  ([`291368c`](https://github.com/jason-weddington/personal-kb-mcp/commit/291368c823e3156bfbaf245d82ae3dfbcb113940))
+
+- **frontend**: Sort Search project dropdown case-insensitively
+  ([`c51969a`](https://github.com/jason-weddington/personal-kb-mcp/commit/c51969ad9ea682581032eb9e62364e21e9d03a9c))
+
+- **kb-core**: Make the no-LLM summarize test actually force the no-LLM path
+  ([`77ebcca`](https://github.com/jason-weddington/personal-kb-mcp/commit/77ebccaab47b536f703aa97f0edbff6432d42565))
+
+- **release**: Push tags when the publish hook shipped artifacts but deploy is incomplete; pin
+  internal deps at release
+  ([`6380545`](https://github.com/jason-weddington/personal-kb-mcp/commit/638054566cb49af0d005bb674468d7feee741fa4))
+
+- **release**: Release to origin only when no github remote is configured
+  ([`16e67d3`](https://github.com/jason-weddington/personal-kb-mcp/commit/16e67d35c9649ef6dca325b09c231ccb8870d9b7))
+
+- **write**: Orphan check on update, map deactivate guard, scoped edge delete
+  ([`d337698`](https://github.com/jason-weddington/personal-kb-mcp/commit/d337698514a8fccbc83c1e0e73805f69fbedc425))
+
+### Build System
+
+- Fold kb-service into the personal_kb workspace as a base dependency
+  ([`c756300`](https://github.com/jason-weddington/personal-kb-mcp/commit/c756300daf1b4d521ef1cbca0d9601c52b88e78e))
+
+### Chores
+
+- Add release.sh (version stamp + tag + rollout to all three Pis)
+  ([`c6f5bde`](https://github.com/jason-weddington/personal-kb-mcp/commit/c6f5bdee13aafce1f7fa6dee89e54c7ad7d9bf77))
+
+- Bump kb-core for prompt caching
+  ([`7f4b735`](https://github.com/jason-weddington/personal-kb-mcp/commit/7f4b735822fcaaa567d34c5f264e57c2f6021796))
+
+- Bump kb-core for raw relevance signals (6dfc9e3)
+  ([`fab19d0`](https://github.com/jason-weddington/personal-kb-mcp/commit/fab19d0d5ee89af3272d6b415e94031c73892e51))
+
+- Bump kb-core to 07bf27a (cluster/decline ledger)
+  ([`dee7500`](https://github.com/jason-weddington/personal-kb-mcp/commit/dee750051f85d953463270d733657d29bc5eaf7c))
+
+- Bump kb-core to Anthropic prompt-caching fix
+  ([`87bbdba`](https://github.com/jason-weddington/personal-kb-mcp/commit/87bbdba23125b403dd5cf4c589b2866f50bcc0e9))
+
+- Bump kb-core to c1af278 (mental_map hard delete)
+  ([`8ccbe4a`](https://github.com/jason-weddington/personal-kb-mcp/commit/8ccbe4a235c16de5e994845d87e69cec6c4a83e8))
+
+- Bump kb-core to enricher ERROR-level failure logging
+  ([`ede8cf5`](https://github.com/jason-weddington/personal-kb-mcp/commit/ede8cf55fdfe9499c6c850e18dbd9b83c51c75e8))
+
+- Bump kb-core to pick up the enrichment-edge fix
+  ([`ba7f322`](https://github.com/jason-weddington/personal-kb-mcp/commit/ba7f3228ccde3800c8d78432a48aae6966098208))
+
+- Bump kb-core to the delete_llm_edges jsonb-cast fix
+  ([`490bb06`](https://github.com/jason-weddington/personal-kb-mcp/commit/490bb068a960ffa17f78ac9943ae1893881978db))
+
+- Convert pre-commit fixers to checkers so talos can dispatch here
+  ([`b883d4a`](https://github.com/jason-weddington/personal-kb-mcp/commit/b883d4a0c4831e62f3e8d87f9ffe77eec89ab627))
+
+- Convert pre-commit fixers to checkers so talos can dispatch here
+  ([`3fb2551`](https://github.com/jason-weddington/personal-kb-mcp/commit/3fb2551f734bd783c1854a90fd7a9b48a09cc51a))
+
+- Deploy.sh for the Pi dev server + CLAUDE.md status update
+  ([`73adb5e`](https://github.com/jason-weddington/personal-kb-mcp/commit/73adb5efc7a8388bf39f8b649622187868625ffc))
+
+- Drop vestigial [postgres] extra from thin-client install snippets
+  ([`f16a0bc`](https://github.com/jason-weddington/personal-kb-mcp/commit/f16a0bca2ece1e4890e6cfdd31fa1b34e709c63f))
+
+- Move homelab ops scripts and private listener evals out of the public repo
+  ([`d3320a4`](https://github.com/jason-weddington/personal-kb-mcp/commit/d3320a4c6da9066edcb358c3735704413a4536ff))
+
+- Source kb-core via git+ssh for headless dispatch
+  ([`26607da`](https://github.com/jason-weddington/personal-kb-mcp/commit/26607dad64a0b54bbe8cab1e75d7f87486243f82))
+
+- **35cf0d94**: Make personal_kb generic: remove every homelab host/IP/domain/path reference from
+  the tree, rewrite operator docs for a public audience
+  ([`27c0425`](https://github.com/jason-weddington/personal-kb-mcp/commit/27c0425cd5fb7f52afff6197496977eacc915f4d))
+
+- **96013869**: Map lint: the ~1500-char budget does not scale with pointer count (per-component
+  budget instead)
+  ([`ff92b93`](https://github.com/jason-weddington/personal-kb-mcp/commit/ff92b93c8c82272298c25a19b716ec3fb6074218))
+
+- **release**: 1.0.0
+  ([`69993f1`](https://github.com/jason-weddington/personal-kb-mcp/commit/69993f125dec1f17d8de003589d61d57052b4210))
+
+- **release**: Let breaking changes bump the major version on 0.x
+  ([`94348ed`](https://github.com/jason-weddington/personal-kb-mcp/commit/94348ed9734e6e3dc02e87cba5bc3a03eb047cd4))
+
+- **somnus**: Machine-principal provisioning, systemd unit + timer, kb-core bump
+  ([`6162c35`](https://github.com/jason-weddington/personal-kb-mcp/commit/6162c3518f13c2eb9154c5089f1b36fa9fc0e324))
+
+### Documentation
+
+- Add KB-pointers section to CLAUDE.md
+  ([`b04b2a2`](https://github.com/jason-weddington/personal-kb-mcp/commit/b04b2a257019ebea03481e8d2d2edf0f277d74c6))
+
+- Build mode not answer mode — leg 3 is filesystem-scoped
+  ([`53c1660`](https://github.com/jason-weddington/personal-kb-mcp/commit/53c16603f8b64c667aee7bd795f11bdaf1be41b5))
+
+- Build status P1-P5 done + kb-01765 cutover pointer
+  ([`792ec7f`](https://github.com/jason-weddington/personal-kb-mcp/commit/792ec7f396700eaf8e55250caff446c25fd6569b))
+
+- Clarify _synthetic_user — auth-DB writes inert, data-DB writes live in no-auth
+  ([`8ed4222`](https://github.com/jason-weddington/personal-kb-mcp/commit/8ed4222e65bc8a70942f663b83f732199b79da56))
+
+- Correct kb-core source (git+ssh pinned in uv.lock, not local path)
+  ([`6fab06c`](https://github.com/jason-weddington/personal-kb-mcp/commit/6fab06c634e8e48289ba4282fd2c07b54137210f))
+
+- Initial README for the hosted KB web service
+  ([`855ceda`](https://github.com/jason-weddington/personal-kb-mcp/commit/855ceda60eeb3a8270f0ce544cd50e215305fec3))
+
+- Leg 3 is real; its error path must fail closed via a cached baseline
+  ([`5127a57`](https://github.com/jason-weddington/personal-kb-mcp/commit/5127a57af3ed4852ffa8de83ac03e06542ca118d))
+
+- Map length budget must be per pointer, not per map
+  ([`e987c01`](https://github.com/jason-weddington/personal-kb-mcp/commit/e987c0170ffc781c2874a02b3813fe9221fda3cf))
+
+- Nightly map-maintenance ("REM sleep") high-level design
+  ([`80cd7cc`](https://github.com/jason-weddington/personal-kb-mcp/commit/80cd7ccbf3d70d2d3d036fc3bfd1f146e7a6fa53))
+
+- Project-level eligibility, MCP review tools, honest cache model
+  ([`84891b8`](https://github.com/jason-weddington/personal-kb-mcp/commit/84891b8073ced444d387e37fe4317191a690cf82))
+
+- README — listener now fans out across a multi-KB roster
+  ([`6df8c3f`](https://github.com/jason-weddington/personal-kb-mcp/commit/6df8c3ff38c6265cc107e9e93a79535b2854317c))
+
+- Record the build, delivery and ownership seams for somnus
+  ([`e3b8512`](https://github.com/jason-weddington/personal-kb-mcp/commit/e3b8512159a41d70f08bb0771e3ecea505aca389))
+
+- Refresh README + CLAUDE.md — listener shipped, runbook pointers
+  ([`beae970`](https://github.com/jason-weddington/personal-kb-mcp/commit/beae97047b1a87b195530830eb986dd7547e2e03))
+
+- Revise REM sleep design — code gate, purpose-built loop, measured cost
+  ([`a14f4a5`](https://github.com/jason-weddington/personal-kb-mcp/commit/a14f4a523115316c03a3783dde3f957a5b1ca670))
+
+- Settle talos extension points against the code
+  ([`6d37567`](https://github.com/jason-weddington/personal-kb-mcp/commit/6d37567dc63e36bee5af1eb56bb320dab01218c7))
+
+- Simplify activity detection to KB entry activity alone
+  ([`740d4ab`](https://github.com/jason-weddington/personal-kb-mcp/commit/740d4ab1ee8099ca9a589298e421ea9e418d0636))
+
+- Somnus functional spec — the contract the crate is built against
+  ([`75f9d6f`](https://github.com/jason-weddington/personal-kb-mcp/commit/75f9d6f5431ef0aeac173998b298b5e4d238e049))
+
+- The gate is mandatory — without it there is no verification at all
+  ([`62bb5ba`](https://github.com/jason-weddington/personal-kb-mcp/commit/62bb5ba4c300c09a0e1eebe042e8d8d7a5ef0de6))
+
+- **somnus**: Correct the gap line's scope — it is per-map, not per-project
+  ([`31eb5ab`](https://github.com/jason-weddington/personal-kb-mcp/commit/31eb5ab480e7c35d42b882d341974583af9f75bd))
+
+- **somnus**: Cost ceiling moves to the harness; gate becomes a declaration
+  ([`0a796b5`](https://github.com/jason-weddington/personal-kb-mcp/commit/0a796b51451612ae82bad06d80e2833150022e55))
+
+- **somnus**: Drop the vestigial git-repo startup assertion
+  ([`52082b3`](https://github.com/jason-weddington/personal-kb-mcp/commit/52082b3ab0d56f74441c508836933195ae120da5))
+
+- **somnus**: Native-majority evaluation order, and the Lives in plurality rule
+  ([`502366d`](https://github.com/jason-weddington/personal-kb-mcp/commit/502366dc26884ce9defa5dc9a0143c2c9ebbbd90))
+
+- **somnus**: Pin the map-op write contract — the seam that blocked the run body
+  ([`0eb5804`](https://github.com/jason-weddington/personal-kb-mcp/commit/0eb580488ac8fd32b8fdde63fb3eda8f621596cc))
+
+- **somnus**: Pin the worklist contract — nightly could not enumerate at all
+  ([`969a119`](https://github.com/jason-weddington/personal-kb-mcp/commit/969a119e1e69e6ec311bb2a52b5ba55d6e14c20d))
+
+- **somnus**: Resolve the Lives in gap — per-entry directory_tokens with counts
+  ([`58fb416`](https://github.com/jason-weddington/personal-kb-mcp/commit/58fb416f471f7b0ce3c79777e37a1d11dfeb9048))
+
+- **somnus**: Spec the create-with-pointers seam — add_pointer is local before it is HTTP
+  ([`84845cd`](https://github.com/jason-weddington/personal-kb-mcp/commit/84845cd0cfde1cffa8f90309cc70bd0146ffe2ff))
+
+- **somnus**: Specify which cluster gets the night's map, and own the Lives in gap
+  ([`50429eb`](https://github.com/jason-weddington/personal-kb-mcp/commit/50429eb8cc6cb1711153b9482fa08d75a0038a48))
+
+- **somnus**: The cost ceiling is somnus's job after all, and Rung 0 stops pointing at the admin
+  endpoint
+  ([`1a94c40`](https://github.com/jason-weddington/personal-kb-mcp/commit/1a94c4005cccfa698146827d56a0c9dfbf851794))
+
+- **somnus**: The eligible-project count is a snapshot, not a fact
+  ([`8eb707d`](https://github.com/jason-weddington/personal-kb-mcp/commit/8eb707d2bcb1497fd732268558506e8212bda592))
+
+- **somnus**: The gap line is required and may be empty
+  ([`6302692`](https://github.com/jason-weddington/personal-kb-mcp/commit/6302692debf8e0fb93adcfe366c6c8afb5cbecb3))
+
+### Features
+
+- Default KB data DB to local SQLite when KB_DATABASE_URL unset
+  ([`9ed7162`](https://github.com/jason-weddington/personal-kb-mcp/commit/9ed7162a3d3d1632133ad1abab74301dab4d9be9))
+
+- Expose map pointer lists in maps-index (whisper chain-credit)
+  ([`638e6a6`](https://github.com/jason-weddington/personal-kb-mcp/commit/638e6a6162383d4b9560c0a3f6f0916c32921284))
+
+- Listener Gate 1 precision harness + first results (kb-01725)
+  ([`5ba728a`](https://github.com/jason-weddington/personal-kb-mcp/commit/5ba728a86fc672c5e8d510ac3a9cc27e96dedf65))
+
+- Listener Gate 2a — /api/kb/listener endpoint + operated_via hints script
+  ([`81fd00f`](https://github.com/jason-weddington/personal-kb-mcp/commit/81fd00f2a3b20536136af24e1a390f6a29938a50))
+
+- No-auth single-user local profile + GET /api/kb/runtime
+  ([`be80c3a`](https://github.com/jason-weddington/personal-kb-mcp/commit/be80c3a783bc6f8a52eb29d1aaaec14b0d63645c))
+
+- P1 service shell + auth + KnowledgeBase + /api/kb/search + quality gates
+  ([`bbf616c`](https://github.com/jason-weddington/personal-kb-mcp/commit/bbf616c6cfe014875c3a28e7d320d34a82105d76))
+
+- SPA auth-mode awareness — hide auth UI in local (no-auth) mode
+  ([`7d23d0d`](https://github.com/jason-weddington/personal-kb-mcp/commit/7d23d0d3bb546ff15079ab856e0982d2d0c7459e))
+
+- Surface a debug `reason` on the listener response
+  ([`c981101`](https://github.com/jason-weddington/personal-kb-mcp/commit/c9811018c8222ec0df599b796775722e2667163e))
+
+- Whisper-efficacy telemetry sink (POST /api/kb/telemetry/whispers)
+  ([`1fe7074`](https://github.com/jason-weddington/personal-kb-mcp/commit/1fe7074bb5914d7c75b7bfc6e7d9540663bbcf25))
+
+- **2405195b**: Daemon version handshake: replace a running kb-service daemon that isn't from this
+  client's install
+  ([`50081f2`](https://github.com/jason-weddington/personal-kb-mcp/commit/50081f22f686e341aa2205b90506f3ae438aa6d5))
+
+- **40d882db**: Release.sh: build all four wheels and call a local publish hook before pushing tags
+  (fail closed); warn when the client is newer than its server
+  ([`e56159d`](https://github.com/jason-weddington/personal-kb-mcp/commit/e56159d07ae148879a8ff76760fc6093a2fb48a2))
+
+- **6bf26bcf**: Kb-service: unset KB_SERVICE_DATABASE_URL means a local SQLite service DB (writes
+  work in local mode)
+  ([`a572fdb`](https://github.com/jason-weddington/personal-kb-mcp/commit/a572fdb096c7c5577a5caa65cb4e1651eafb175f))
+
+- **734c8656**: Local mode by default: unset PERSONAL_KB_URL means the local daemon (client + hook)
+  ([`bc3e746`](https://github.com/jason-weddington/personal-kb-mcp/commit/bc3e746471994773e73b61312ffa2f68310af168))
+
+- **74ffd29c**: Pi deploy + provision from the merged personal_kb repo, with automatic old-layout
+  migration
+  ([`7124c4b`](https://github.com/jason-weddington/personal-kb-mcp/commit/7124c4b26b9a7e7fafc1d74b6721007dd4d09d97))
+
+- **api**: Cluster-ledger match + decline endpoints
+  ([`4f4f419`](https://github.com/jason-weddington/personal-kb-mcp/commit/4f4f4194ead861a36a1f211d684cf86f6a3bd347))
+
+- **api**: DELETE /api/kb/maps/{map_id} — the loop can remove a map it wrote
+  ([`d54ddb0`](https://github.com/jason-weddington/personal-kb-mcp/commit/d54ddb085c0c4bf52484f8ffe70b771370c7447c))
+
+- **api**: Directory_tokens on map-loop-input — the Lives in source
+  ([`dfc2966`](https://github.com/jason-weddington/personal-kb-mcp/commit/dfc296613c5667ab5958008a585c9e35f4d929eb))
+
+- **api**: GET /api/kb/map-worklist — the ranked, non-admin enumeration nightly needs
+  ([`6c5569f`](https://github.com/jason-weddington/personal-kb-mcp/commit/6c5569f292ebb32ae8a4ad6abddd2b2505d0295f))
+
+- **api**: Hard map lint for the machine principal + dry-run gate endpoint
+  ([`6d4c7a8`](https://github.com/jason-weddington/personal-kb-mcp/commit/6d4c7a8bb7da5ddf95f22044bf69915f2d1140a9))
+
+- **api**: Map-eligibility review + override endpoints
+  ([`c3b9c35`](https://github.com/jason-weddington/personal-kb-mcp/commit/c3b9c3524d13954d8ff5a19b1f641bb19b0ea64d))
+
+- **api**: POST /api/kb/map-op — the machine-principal map write path for somnus
+  ([`3eba4de`](https://github.com/jason-weddington/personal-kb-mcp/commit/3eba4de674e1f40676761ed112a9fc37065cba68))
+
+- **api**: POST /api/kb/pointer-candidates for the capture-time map nudge
+  ([`11b6802`](https://github.com/jason-weddington/personal-kb-mcp/commit/11b680286f0081567384323a3ad93536891c6b62))
+
+- **api**: Project-scoped loop-input endpoint for somnus
+  ([`6997595`](https://github.com/jason-weddington/personal-kb-mcp/commit/6997595b8692365a4535e24b9132de78fe646b32))
+
+- **api**: Remove the per-night map creation caps
+  ([`e7bf725`](https://github.com/jason-weddington/personal-kb-mcp/commit/e7bf7259338c2423c10902a5eb3ecad4241acbbd))
+
+- **b2103f60**: Ship the built web UI inside kb-service, built at release
+  ([`8b41874`](https://github.com/jason-weddington/personal-kb-mcp/commit/8b418741ed0f6ce378ba87e6660620fffe711cc6))
+
+- **chat**: P3 chat routes + ChatHistory in service Postgres + per-user sessions
+  ([`4a7d8f9`](https://github.com/jason-weddington/personal-kb-mcp/commit/4a7d8f9967caef0d955216f44da3a9e457021173))
+
+- **cli**: Create-user plus machine-principal identity via app_config
+  ([`d751a53`](https://github.com/jason-weddington/personal-kb-mcp/commit/d751a534ce453603a75121c8576aea15b6a24d78))
+
+- **deploy**: Self-guarding preflight instead of operator memory
+  ([`1bdf30a`](https://github.com/jason-weddington/personal-kb-mcp/commit/1bdf30aee67919a206abb186b82c82517b35b36e))
+
+- **embeddings**: Plumb KB_OLLAMA_KEEP_ALIVE through the service
+  ([`3016c7d`](https://github.com/jason-weddington/personal-kb-mcp/commit/3016c7de7d020ec8ada824f5c238ab93d7218ce7))
+
+- **embeddings**: Run the embedding retry worker in the service lifespan
+  ([`988ce58`](https://github.com/jason-weddington/personal-kb-mcp/commit/988ce58073a4b8d642bbf21b8b56449bc8a0ef23))
+
+- **frontend**: Cmd/Ctrl+Enter submits the Ask question
+  ([`24ae276`](https://github.com/jason-weddington/personal-kb-mcp/commit/24ae276dd55e7b9ecc9d859b2a9e411b8a6bff60))
+
+- **frontend**: Entry detail in a right-side drawer (no dead-end navigation)
+  ([`cd89260`](https://github.com/jason-weddington/personal-kb-mcp/commit/cd89260f26c62e1e66561ea810cd0e6eb83eb078))
+
+- **frontend**: Extract shared ResponseCard/MarkdownBody; Ask parity with Chat
+  ([`2874213`](https://github.com/jason-weddington/personal-kb-mcp/commit/2874213b5be446a73ad98337bdc1fcbf43f6e623))
+
+- **frontend**: Merge Home + Ask — welcome/ask 2/3 + KB stats 1/3
+  ([`6fdcd5d`](https://github.com/jason-weddington/personal-kb-mcp/commit/6fdcd5d2b75b2e8132d642e08a061e9ca080cdf8))
+
+- **frontend**: One-hop neighbor links in the entry drawer
+  ([`cc2987b`](https://github.com/jason-weddington/personal-kb-mcp/commit/cc2987b9f410e95484391e7e363225dc9110669d))
+
+- **kb**: Add GET /api/kb/maps-index compute-on-request endpoint
+  ([`9355902`](https://github.com/jason-weddington/personal-kb-mcp/commit/93559023de76307fbae61031e0685db71ccc9e32))
+
+- **kb**: Add POST /api/kb/ask and POST /api/kb/summarize endpoints
+  ([`f3817d7`](https://github.com/jason-weddington/personal-kb-mcp/commit/f3817d7787a44452145a72fec5b386ad9abec84b))
+
+- **kb**: P2 ingest endpoints (text, URL, file upload)
+  ([`d3b5e46`](https://github.com/jason-weddington/personal-kb-mcp/commit/d3b5e4600664d072eb0a57c5c97983263a248d2a))
+
+- **kb**: P2 read/meta endpoints (get, graph, preflight, lists)
+  ([`69780b9`](https://github.com/jason-weddington/personal-kb-mcp/commit/69780b9dd5bd0baf53ee892b65293d17aae1f71e))
+
+- **kb**: P2 write endpoints (store, store_batch, deactivate/reactivate, bulk_update, feedback)
+  ([`417b00c`](https://github.com/jason-weddington/personal-kb-mcp/commit/417b00ce512a46786f2bb6a97a741f6f3aadcb87))
+
+- **kb-core**: Cluster/decline ledger — the nightly loop's only durable state
+  ([`07bf27a`](https://github.com/jason-weddington/personal-kb-mcp/commit/07bf27aa5819300d0b73c776bc6852adcd5dbf99))
+
+- **kb-core**: Hard-delete a mental_map with its edges and versions
+  ([`c1af278`](https://github.com/jason-weddington/personal-kb-mcp/commit/c1af2782eaa7f67f56f87d96d081d4809ab81700))
+
+- **kb-core**: Map-eligibility predicate + human override table (dual backend)
+  ([`4be04c6`](https://github.com/jason-weddington/personal-kb-mcp/commit/4be04c6256acb9d1b42e79f777937d2a6aef7667))
+
+- **kb-core**: Map_pointer_ids + count_maps_created_since for the map-op write path
+  ([`fe7c0d1`](https://github.com/jason-weddington/personal-kb-mcp/commit/fe7c0d170dcab645c10e8a775b2884e2e8c7a3e7))
+
+- **kb-core**: Map_write_summary — per-project map count and last map write
+  ([`c65597d`](https://github.com/jason-weddington/personal-kb-mcp/commit/c65597d08ae55d1065e2187d13999c43931dbb3f))
+
+- **listener**: Lexical project-name / map-title candidate signal
+  ([`0fed8f0`](https://github.com/jason-weddington/personal-kb-mcp/commit/0fed8f06f4fcb899b194a284a6391b0b9c82b572))
+
+- **listener**: Retrieve via chunky detail entries, surface the owning map
+  ([`c38c076`](https://github.com/jason-weddington/personal-kb-mcp/commit/c38c07662eecae90e6f1f4534f1c8e7e4e054eb6))
+
+- **listener**: Surface plural subject-area maps, majority-of-3 vote
+  ([`3874036`](https://github.com/jason-weddington/personal-kb-mcp/commit/38740369be060b21c08dde97caacb5e8fae0387b))
+
+- **mcp**: Map-eligibility review + override tools
+  ([`d94f0d3`](https://github.com/jason-weddington/personal-kb-mcp/commit/d94f0d33dabb280e818b72213215677a52f7ad38))
+
+- **p3**: Explorer graph + SSE query routes under auth
+  ([`c99aafc`](https://github.com/jason-weddington/personal-kb-mcp/commit/c99aafcc45146a0e8b6b62d70085cef222c10203))
+
+- **p4a**: Frontend chassis — Vite/React 19/MUI 7 scaffold with auth plumbing and FastAPI SPA
+  serving
+  ([`079f104`](https://github.com/jason-weddington/personal-kb-mcp/commit/079f104345c9eecf7eb0077d7af81ea3e8b3ccbb))
+
+- **p4b**: Settings + admin UI — API keys, MCP snippet, invites, users, password reset
+  ([`0e5f75c`](https://github.com/jason-weddington/personal-kb-mcp/commit/0e5f75c833069331e68f3d23bbbe12633e419569))
+
+- **p4c**: KB explorer UI — Search, EntryDetail, Graph, Ask, Chat pages with streaming and graph viz
+  ([`bb1ca09`](https://github.com/jason-weddington/personal-kb-mcp/commit/bb1ca0950924f92f5a6b035242d17ad46c21df7a))
+
+- **release**: Gate releases on a work-user upgrade smoke test
+  ([`cf4293e`](https://github.com/jason-weddington/personal-kb-mcp/commit/cf4293e51f102a00355b6aa7220a7467072b3238))
+
+- **scripts**: Audit + repair tool for stripped LLM-enrichment edges
+  ([`dc49f84`](https://github.com/jason-weddington/personal-kb-mcp/commit/dc49f84a30e1ce9ed88b814462bfe27a02ba81d8))
+
+- **scripts**: KB-host installer for the somnus binary
+  ([`e7db263`](https://github.com/jason-weddington/personal-kb-mcp/commit/e7db263df7ca21c8dbd9a85948ce87637a991998))
+
+- **settings**: App_config table, GET/PUT /api/settings, resolve_attribution seam
+  ([`6cc9fb5`](https://github.com/jason-weddington/personal-kb-mcp/commit/6cc9fb5c50c24090f45185db15fce16adce278ed))
+
+- **telemetry**: Count map re-emissions and record listener declines
+  ([`eb78cce`](https://github.com/jason-weddington/personal-kb-mcp/commit/eb78ccea0980eb900110cd57dc13f60b91cb5e27))
+
+- **telemetry**: Record which maps the listener considered, and why it declined
+  ([`1bd9930`](https://github.com/jason-weddington/personal-kb-mcp/commit/1bd99305eaa9dd206940af030d4cbbbc5a89b25a))
+
+### Refactoring
+
+- **kb-core**: Map-purity lint becomes the single source of truth
+  ([`ba94580`](https://github.com/jason-weddington/personal-kb-mcp/commit/ba94580bf86087982b4ea1ef9980826b99c8a91e))
+
+### Breaking Changes
+
+- Personal-kb now installs the kb-service daemon by default.
+
+
 ## v0.67.0 (2026-09-19)
 
 ### Bug Fixes
