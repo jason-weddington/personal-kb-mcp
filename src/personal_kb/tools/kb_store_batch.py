@@ -1,6 +1,7 @@
 """kb_store_batch MCP tool — create multiple knowledge entries in one call."""
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -93,6 +94,7 @@ async def batch_store_entries(
     # TTL pre-validation: entries with bad TTL go to the client-side failed list
     # and are EXCLUDED from the backend call (both modes).
     valid_entries: list[dict[str, Any]] = []
+    original_index: list[int] = []  # valid_entries position -> caller's position
     client_failed: list[tuple[int, str, str]] = []
     for i, entry_dict in enumerate(entries):
         raw_ttl = entry_dict.get("ttl")
@@ -105,6 +107,7 @@ async def batch_store_entries(
                 logger.warning("Invalid TTL for entry %d (%s): %s", i, title, exc)
                 continue
         valid_entries.append(entry_dict)
+        original_index.append(i)
 
     # Call the backend
     from personal_kb.backend.http import BackendHttpError, _map_error
@@ -112,7 +115,22 @@ async def batch_store_entries(
     try:
         created, backend_failed = await backend.store_batch(valid_entries)
     except BackendHttpError as e:
-        return _map_error(e, "")
+        mapped = _map_error(e, "")
+        return re.sub(
+            r"\bentry (\d+)\b",
+            lambda m: (
+                f"entry {original_index[int(m.group(1))]}"
+                if int(m.group(1)) < len(original_index)
+                else m.group(0)
+            ),
+            mapped,
+        )
+
+    # Backend failure indices are positions in valid_entries; restore caller's.
+    backend_failed = [
+        (original_index[idx] if 0 <= idx < len(original_index) else idx, t, err)
+        for idx, t, err in backend_failed
+    ]
 
     # Merge failures: client-side (TTL) + backend-side (per-entry DB errors in local mode)
     all_failed = client_failed + backend_failed

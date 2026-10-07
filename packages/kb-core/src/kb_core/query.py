@@ -294,6 +294,8 @@ async def _synthesize(
     for entry, context in entries:
         tags_str = " ".join(f"#{t}" for t in entry.tags) if entry.tags else ""
         block = f"[{entry.id}] {entry.short_title} {tags_str}"
+        if entry.superseded_by:
+            block += f"\n  [SUPERSEDED by {entry.superseded_by}]"
         if context:
             block += f"\n  Context: {context}"
         block += f"\n  {entry.knowledge_details}"

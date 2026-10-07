@@ -548,10 +548,16 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 return _map_error(e, "")
             return f"Error: {e}"
 
+        hint_sup = hints.get("supersedes") if isinstance(hints, dict) else None
+        expected_sup: set[str] = set(supersedes) if isinstance(supersedes, list) else set()
+        if isinstance(hint_sup, list):
+            expected_sup |= {h for h in hint_sup if isinstance(h, str)}
+        elif isinstance(hint_sup, str) and hint_sup != "none":
+            expected_sup.add(hint_sup)
         if (
             isinstance(supersedes, list)
             and supersedes
-            and (ids is None or set(ids) != set(supersedes))
+            and (ids is None or set(ids) != expected_sup)
         ):
             logger.warning(
                 "supersession-client mismatch op=create sent=%r superseded_ids=%r "

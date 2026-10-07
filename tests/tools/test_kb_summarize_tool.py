@@ -180,3 +180,21 @@ async def test_register_kb_summarize():
     mcp = FastMCP("test")
     register_kb_summarize(mcp)
     # Just verifying no exceptions during registration
+
+
+@pytest.mark.asyncio
+async def test_synthesize_prompt_marks_superseded():
+    llm = FakeLLM(response="answer")
+    old = _make_entry(entry_id="kb-00001")
+    old.superseded_by = "kb-00009"
+    await _synthesize(llm, "q?", [(old, "m"), (_make_entry(entry_id="kb-00009"), "m")])
+    assert llm.last_prompt is not None
+    assert llm.last_prompt.count("[SUPERSEDED by kb-00009]") == 1
+
+
+def test_fallback_render_marks_superseded():
+    from kb_core.query import _format_entries_fallback
+
+    old = _make_entry()
+    old.superseded_by = "kb-00009"
+    assert "[SUPERSEDED by kb-00009]" in _format_entries_fallback([(old, "m")])

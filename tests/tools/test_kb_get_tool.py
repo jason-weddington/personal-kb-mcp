@@ -338,7 +338,7 @@ async def test_get_superseded_banner_with_title_extra_lookup():
     b = _make_entry("kb-00002", short_title="New way")
     ctx, calls = _counting_ctx({a.id: _found(a), b.id: _found(b)})
     out = await _register()(entry_id=a.id, ctx=ctx)
-    assert "SUPERSEDED by kb-00002 — New way\n" + format_entry_full(a) in out
+    assert "SUPERSEDED by kb-00002 — New way\n" + format_entry_full(a, mark_superseded=False) in out
     assert len(calls) == 2
 
 
@@ -348,7 +348,7 @@ async def test_get_superseded_banner_superseder_in_request():
     b = _make_entry("kb-00002", short_title="New way")
     ctx, calls = _counting_ctx({a.id: _found(a), b.id: _found(b)})
     out = await _register()(entry_id=[a.id, b.id], ctx=ctx)
-    assert "SUPERSEDED by kb-00002 — New way\n" + format_entry_full(a) in out
+    assert "SUPERSEDED by kb-00002 — New way\n" + format_entry_full(a, mark_superseded=False) in out
     assert len(calls) == 1
 
 
@@ -358,7 +358,7 @@ async def test_get_superseded_banner_superseder_missing(caplog):
     ctx, _calls = _counting_ctx({a.id: _found(a)})
     with caplog.at_level("WARNING"):
         out = await _register()(entry_id=a.id, ctx=ctx)
-    assert "SUPERSEDED by kb-00002\n" + format_entry_full(a) in out
+    assert "SUPERSEDED by kb-00002\n" + format_entry_full(a, mark_superseded=False) in out
     assert "—" not in out
     assert "invariant_breach" in caplog.text
 

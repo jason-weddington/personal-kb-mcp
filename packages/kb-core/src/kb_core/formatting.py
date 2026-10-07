@@ -66,6 +66,7 @@ def format_entry_full(
     context: str | None = None,
     effective_confidence: float | None = None,
     stale_warning: str | None = None,
+    mark_superseded: bool = True,
 ) -> str:
     """Header + meta + optional context + knowledge_details. For kb_get and kb_ask."""
     now = datetime.now(UTC)
@@ -87,6 +88,8 @@ def format_entry_full(
     lines = [header]
     if meta:
         lines.append(f"  {meta}")
+    if mark_superseded and entry.superseded_by:
+        lines.append(f"  [SUPERSEDED by {entry.superseded_by}]")
     if entry.updated_by and entry.updated_by != entry.contributor:
         lines.append(f"  Updated by @{entry.updated_by} (v{entry.version})")
     if context:

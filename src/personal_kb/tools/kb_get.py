@@ -83,7 +83,7 @@ def register_kb_get(mcp: FastMCP, prefix: str = "kb_") -> None:
             if entry is None:
                 formatted.append(f"[{eid}] not found")
             else:
-                rendered = format_entry_full(entry)
+                rendered = format_entry_full(entry, mark_superseded=False)
                 sid = entry.superseded_by
                 if sid:
                     if sid in found_titles:

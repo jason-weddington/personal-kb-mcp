@@ -821,3 +821,51 @@ async def test_store_409_and_422_surfaced_verbatim():
     assert await kb_store(ctx=ctx, **kw) == (
         "Error: KB service returned 422: supersedes rejected: kb-99999 not found"
     )
+
+
+@pytest.mark.asyncio
+async def test_skew_warning_silent_on_server_union_of_hints(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    resp = httpx.Response(
+        200,
+        json={
+            "action": "created",
+            "entry": _entry_json(),
+            "superseded_ids": ["kb-00002", "kb-00003"],
+        },
+    )
+    kb_store = _register_and_capture()
+    ctx = _make_ctx(_recording_handler(resp, []))
+    await kb_store(
+        supersedes=["kb-00002"],
+        hints={"supersedes": ["kb-00003"]},
+        short_title="a",
+        long_title="b",
+        knowledge_details="c",
+        ctx=ctx,
+    )
+    assert not [r for r in caplog.records if "supersession-client mismatch" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_skew_warning_fires_on_real_mismatch_with_hints(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    resp = httpx.Response(
+        200,
+        json={"action": "created", "entry": _entry_json(), "superseded_ids": ["kb-00002"]},
+    )
+    kb_store = _register_and_capture()
+    ctx = _make_ctx(_recording_handler(resp, []))
+    await kb_store(
+        supersedes=["kb-00002"],
+        hints={"supersedes": ["kb-00003"]},
+        short_title="a",
+        long_title="b",
+        knowledge_details="c",
+        ctx=ctx,
+    )
+    assert [r for r in caplog.records if "supersession-client mismatch" in r.getMessage()]

@@ -440,3 +440,21 @@ async def test_auto_search_entries_expansion_skips_superseded(db, store, fake_em
     assert b.id in ids
     assert a.id not in ids
     assert "supersession-read op=ask_expand" in caplog.text
+
+
+def test_format_entries_marks_superseded():
+    """kb_ask full rendering marks superseded entries like kb_search does."""
+    old = _make_entry(entry_id="kb-00001", short_title="Old")
+    old.superseded_by = "kb-00009"
+    new = _make_entry(entry_id="kb-00009", short_title="New")
+    output = _format_entries([(old, "m"), (new, "m")], "Results")
+    assert output.count("[SUPERSEDED by kb-00009]") == 1
+
+
+def test_kb_get_banner_not_double_marked():
+    from personal_kb.tools.formatters import format_entry_full
+
+    old = _make_entry()
+    old.superseded_by = "kb-00009"
+    assert "[SUPERSEDED by kb-00009]" in format_entry_full(old)
+    assert "SUPERSEDED" not in format_entry_full(old, mark_superseded=False)

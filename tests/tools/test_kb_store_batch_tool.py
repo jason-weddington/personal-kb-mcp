@@ -16,6 +16,7 @@ sensitivity) still inject a backend so ``backend_from_lifespan`` succeeds, even
 though the MockTransport handler is never hit.
 """
 
+import json
 from typing import Any
 
 import httpx
@@ -357,3 +358,26 @@ async def test_batch_422_renders_as_error_string() -> None:
     assert result == (
         "Error: KB service returned 422: entry 0: supersedes rejected: kb-99999 not found"
     )
+
+
+async def test_batch_server_error_index_remapped_to_callers_position() -> None:
+    """A bad-TTL entry is filtered client-side; server 'entry N' maps back to caller index."""
+    detail = "entry 1: supersedes rejected: kb-99999 not found"
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        assert len(body["entries"]) == 3  # entry 1 (bad ttl) filtered out
+        return httpx.Response(422, json={"detail": detail})
+
+    entries = [_entry_dict(), _entry_dict(ttl="banana"), _entry_dict(), _entry_dict()]
+    result = await batch_store_entries(entries, _lifespan(handler))
+    # server index 1 == caller index 2 (caller index 1 was filtered)
+    assert "entry 2: supersedes rejected" in result
+    assert "entry 1:" not in result
+
+
+async def test_batch_unfiltered_index_alignment() -> None:
+    detail = "entry 1: boom"
+    handler = lambda req: httpx.Response(422, json={"detail": detail})  # noqa: E731
+    result = await batch_store_entries([_entry_dict(), _entry_dict()], _lifespan(handler))
+    assert "entry 1: boom" in result
