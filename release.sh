@@ -179,7 +179,11 @@ if [ -x ./deploy.sh ]; then
   ./deploy.sh
 fi
 
-echo "Released $(git describe --tags --abbrev=0) to origin + github."
+if git remote get-url github >/dev/null 2>&1; then
+  echo "Released ${new_tag} to origin + github."
+else
+  echo "Released ${new_tag} to origin only (no github remote)."
+fi
 if [ "$deploy_incomplete" = "1" ]; then
   echo "!!! ${new_tag} is published and pushed, but the publish hook reported an INCOMPLETE deploy (exit 10). Finish the deploy before relying on it. !!!" >&2
   exit 3
