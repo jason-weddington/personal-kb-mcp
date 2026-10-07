@@ -80,12 +80,15 @@ class Backend(Protocol):
         ttl: str | None = None,
         update_entry_id: str | None = None,
         change_reason: str | None = None,
-    ) -> tuple[Literal["created", "updated"], KnowledgeEntry]:
+        supersedes: list[str] | Literal["none"] | None = None,
+        distinct_from: list[str] | None = None,
+    ) -> tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None]:
         """Create or update an entry.
 
         When *update_entry_id* is set the entry is updated and the action
         returned is ``'updated'``; otherwise a new entry is created and the
-        action is ``'created'``.
+        action is ``'created'``.  The third element is the server-reported
+        ``superseded_ids`` (None when the server did not report the key).
         """
         ...
 

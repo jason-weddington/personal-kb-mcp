@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_BATCH = 10
 
-_REQUIRED_FIELDS = {"short_title", "long_title", "knowledge_details"}
+_REQUIRED_FIELDS = {"short_title", "long_title", "knowledge_details", "supersedes"}
 
 
 async def batch_store_entries(
@@ -42,8 +42,31 @@ async def batch_store_entries(
         if missing:
             return f"Error: entry {i} missing required fields: {', '.join(sorted(missing))}"
 
+    from personal_kb.tools.kb_store import (
+        _VALID_SENSITIVITY,
+        _log_decision,
+        _validate_distinct_from,
+        _validate_hints_supersedes_conflict,
+        _validate_supersedes,
+    )
+
+    # Validate supersedes / distinct_from (whole batch is rejected on any failure)
+    for i, entry_dict in enumerate(entries):
+        sup = entry_dict["supersedes"]
+        checks = (
+            (_validate_supersedes(sup), None),
+            (_validate_hints_supersedes_conflict(sup, entry_dict.get("hints")), "hints_conflict"),
+            (_validate_distinct_from(entry_dict.get("distinct_from")), "bad_shape"),
+        )
+        for err, rule in checks:
+            if err:
+                if rule is None:
+                    rule = "empty_list" if "ambiguous" in err else "bad_shape"
+                _log_decision("store_batch", "create", "rejected", rule, sup)
+                return f"Error: entry {i}: " + err.removeprefix("Error: ")
+        _log_decision("store_batch", "create", "accepted", "none", sup)
+
     # Validate sensitivity values
-    from personal_kb.tools.kb_store import _VALID_SENSITIVITY
 
     for i, entry_dict in enumerate(entries):
         sens = entry_dict.get("sensitivity")
@@ -182,9 +205,10 @@ def _store_batch_description(prefix: str) -> str:
         "Store multiple knowledge entries in a single call.\n\n"
         f"More efficient than calling {prefix}store repeatedly — uses a single LLM "
         "call for graph enrichment across all entries.\n\n"
-        "Each entry dict requires: short_title, long_title, knowledge_details. "
+        "Each entry dict requires: short_title, long_title, knowledge_details, "
+        'supersedes (list of kb-XXXXX ids this entry replaces, or "none"). '
         "Optional fields: entry_type (default: factual_reference), project_ref, "
-        "source_context, confidence_level (default: 0.9), tags, hints, ttl."
+        "source_context, confidence_level (default: 0.9), tags, hints, ttl, distinct_from."
     )
 
 
@@ -197,10 +221,11 @@ def register_kb_store_batch(mcp: FastMCP, prefix: str = "kb_") -> None:
             list[dict[str, object]],
             Field(
                 description=(
-                    "List of entry dicts (max 10). Each requires: "
-                    "short_title, long_title, knowledge_details. "
+                    "List of entry dicts (max 10). "
+                    "Required keys: short_title, long_title, knowledge_details, "
+                    'supersedes (list of kb-XXXXX ids or "none"). '
                     "Optional: entry_type, project_ref, source_context, "
-                    "confidence_level, tags, hints."
+                    "confidence_level, tags, hints, sensitivity, ttl, distinct_from."
                 ),
             ),
         ],

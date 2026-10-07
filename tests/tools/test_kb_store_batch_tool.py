@@ -49,6 +49,7 @@ def _entry_dict(**kwargs):
         "short_title": "Test",
         "long_title": "Test entry",
         "knowledge_details": "Some details",
+        "supersedes": "none",
     }
     defaults.update(kwargs)
     return defaults
@@ -293,3 +294,66 @@ async def test_batch_409_renders_as_error_string() -> None:
     assert result.startswith("Error: ")
     assert "kb-00001" in result
     assert "distinct_from" in result
+
+
+async def test_batch_missing_supersedes_rejected_without_request() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return httpx.Response(500)
+
+    entry = _entry_dict()
+    del entry["supersedes"]
+    result = await batch_store_entries([entry], _lifespan(handler))
+    assert result == "Error: entry 0 missing required fields: supersedes"
+    assert seen == []
+
+
+async def test_batch_invalid_supersedes_rejected_without_request() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return httpx.Response(500)
+
+    result = await batch_store_entries(
+        [_entry_dict(), _entry_dict(supersedes=[])], _lifespan(handler)
+    )
+    assert result == (
+        'Error: entry 1: supersedes=[] is ambiguous; pass "none" when this entry replaces nothing.'
+    )
+    result = await batch_store_entries(
+        [_entry_dict(hints={"supersedes": "kb-00001"})], _lifespan(handler)
+    )
+    assert result.startswith('Error: entry 0: supersedes="none" conflicts')
+    result = await batch_store_entries([_entry_dict(distinct_from="x")], _lifespan(handler))
+    assert result.startswith("Error: entry 0: distinct_from must be")
+    assert seen == []
+
+
+async def test_batch_forwards_supersedes_verbatim() -> None:
+    import json
+
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"created": [_entry_json("kb-00001")]})
+
+    await batch_store_entries(
+        [_entry_dict(), _entry_dict(supersedes=["kb-00002"])], _lifespan(handler)
+    )
+    assert [e["supersedes"] for e in seen[0]["entries"]] == ["none", ["kb-00002"]]
+
+
+async def test_batch_422_renders_as_error_string() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            422, json={"detail": "entry 0: supersedes rejected: kb-99999 not found"}
+        )
+
+    result = await batch_store_entries([_entry_dict()], _lifespan(handler))
+    assert result == (
+        "Error: KB service returned 422: entry 0: supersedes rejected: kb-99999 not found"
+    )

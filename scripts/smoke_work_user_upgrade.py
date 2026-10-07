@@ -168,10 +168,13 @@ SEED: list[tuple[str, dict[str, Any]]] = [
     ),
 ]
 
+# WRITES run on the NEW build, whose kb_store schema requires ``supersedes``.
+# SEED (above) runs on the OLD build, whose schema has no supersedes — leave it.
 WRITES: list[tuple[str, dict[str, Any]]] = [
     (
         "kb_store",
         {
+            "supersedes": "none",
             "short_title": "Post-upgrade entry",
             "long_title": "Written by the upgraded client",
             "knowledge_details": "Written through the local daemon after upgrade.",
@@ -183,6 +186,7 @@ WRITES: list[tuple[str, dict[str, Any]]] = [
     (
         "kb_store",
         {
+            "supersedes": "none",
             "update_entry_id": "kb-00002",
             "knowledge_details": "UPDATED post-upgrade.",
             "change_reason": "upgrade test",
@@ -191,7 +195,10 @@ WRITES: list[tuple[str, dict[str, Any]]] = [
     # kb-00003 is the third seed entry (a pattern_convention in SEED's
     # kb_store_batch): active and not a mental_map, so the new client's
     # deactivate (which now sends change_reason) reaches the new daemon.
-    ("kb_store", {"deactivate_entry_id": "kb-00003", "change_reason": "upgrade test"}),
+    (
+        "kb_store",
+        {"supersedes": "none", "deactivate_entry_id": "kb-00003", "change_reason": "upgrade test"},
+    ),
     (
         "kb_feedback",
         {

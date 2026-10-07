@@ -3,7 +3,7 @@
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
@@ -26,9 +26,93 @@ _KB_ID_RE = re.compile(r"kb-\d{5}")
 
 ORPHAN_MAP_ERROR = (
     "Error: A mental_map entry requires at least one outbound pointer "
-    "(a kb-XXXXX reference in knowledge_details, or a supersedes/related_entities hint). "
+    "(a kb-XXXXX reference in knowledge_details, or a related_entities hint). "
     "A map with zero pointers is an orphan note, not a map."
 )
+
+SUPERSEDES_DESCRIPTION = (
+    'Entries this one replaces: a list of kb-XXXXX ids, or the literal "none". '
+    "On create, each listed entry gets superseded_by set to the new entry. "
+    "On update, listed ids are added to the entry's supersedes set; ids are never removed. "
+    'Must be "none" when deactivate_entry_id is set.'
+)
+DISTINCT_FROM_DESCRIPTION = (
+    "kb-XXXXX ids of existing entries this new entry is deliberately distinct from. "
+    "Recorded server-side; a near-duplicate rejection for the same pair is not raised again. "
+    "Create only."
+)
+SUPERSEDED_BY_DESCRIPTION = (
+    "With deactivate_entry_id: the kb-XXXXX id of the active entry that replaces "
+    "the deactivated one; it records the supersedes edge and sets superseded_by."
+)
+
+_CHANGE_REASON_ERROR = (
+    "Error: change_reason is required when updating or deactivating an entry: "
+    "say what changed and why."
+)
+
+
+def _validate_supersedes(value: object) -> str | None:
+    """Return an error string if *value* is not a valid supersedes, None if OK."""
+    if value == "none" and isinstance(value, str):
+        return None
+    if isinstance(value, list):
+        if not value:
+            return (
+                'Error: supersedes=[] is ambiguous; pass "none" when this entry replaces nothing.'
+            )
+        if all(isinstance(v, str) and _KB_ID_RE.fullmatch(v) for v in value):
+            return None
+    return (
+        'Error: supersedes must be a list of kb-XXXXX ids or the literal "none" (got '
+        + repr(value)
+        + ")."
+    )
+
+
+def _validate_distinct_from(value: object) -> str | None:
+    """Return an error string if *value* is not a valid distinct_from, None if OK."""
+    if value is None:
+        return None
+    if isinstance(value, list) and all(
+        isinstance(v, str) and _KB_ID_RE.fullmatch(v) for v in value
+    ):
+        return None
+    return "Error: distinct_from must be a list of kb-XXXXX ids (got " + repr(value) + ")."
+
+
+def _validate_hints_supersedes_conflict(supersedes: object, hints: object) -> str | None:
+    """Reject supersedes="none" combined with a non-empty hints.supersedes."""
+    if (
+        isinstance(supersedes, str)
+        and supersedes == "none"
+        and isinstance(hints, dict)
+        and hints.get("supersedes")
+    ):
+        return (
+            'Error: supersedes="none" conflicts with hints.supersedes; list the ids in supersedes.'
+        )
+    return None
+
+
+def _log_decision(op: str, path: str, outcome: str, rule: str, value: object) -> None:
+    logger.info(
+        "supersession-client op=%s path=%s outcome=%s rule=%s value=%r",
+        op,
+        path,
+        outcome,
+        rule,
+        value,
+    )
+
+
+def _reject(path: str, rule: str, value: object, message: str, op: str = "store") -> str:
+    _log_decision(op, path, "rejected", rule, value)
+    return message
+
+
+def _supersedes_rule(message: str) -> str:
+    return "empty_list" if "ambiguous" in message else "bad_shape"
 
 
 def _validate_sensitivity(sensitivity: str | None) -> str | None:
@@ -42,7 +126,6 @@ def _validate_sensitivity(sensitivity: str | None) -> str | None:
 def _mental_map_has_pointer(
     knowledge_details: str,
     hints: dict[str, object] | None,
-    superseded_by: str | None = None,
 ) -> bool:
     """Return True if a mental_map entry has at least one outbound pointer.
 
@@ -50,9 +133,7 @@ def _mental_map_has_pointer(
     (builder.py:52-86), so a future builder change is the only place this can
     diverge. An outbound pointer exists iff ANY of:
       (a) a ``kb-XXXXX`` reference appears in knowledge_details;
-      (b) a ``supersedes`` hint contains a ``kb-XXXXX`` id;
-      (c) ``superseded_by`` is a non-empty string;
-      (d) a ``related_entities`` hint contains a dict with a non-empty
+      (b) a ``related_entities`` hint contains a dict with a non-empty
           ``id``/``target`` OR a bare non-empty string.
     Tag/project/person/tool hints do NOT count.
     """
@@ -62,16 +143,7 @@ def _mental_map_has_pointer(
 
     h = hints or {}
 
-    # (b) supersedes hint (mirrors builder.py:52-54 fullmatch)
-    for target in _as_list(h.get("supersedes")):
-        if isinstance(target, str) and _KB_ID_RE.fullmatch(target):
-            return True
-
-    # (c) superseded_by reversed edge (mirrors builder.py:63-65)
-    if isinstance(superseded_by, str) and superseded_by:
-        return True
-
-    # (d) related_entities — dict id/target OR bare non-empty str (mirrors builder.py:77-86)
+    # (b) related_entities — dict id/target OR bare non-empty str (mirrors builder.py:77-86)
     for rel in _as_list(h.get("related_entities")):
         if isinstance(rel, dict):
             ref = rel.get("id") or rel.get("target")
@@ -138,6 +210,9 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
 
     @mcp.tool(name=f"{prefix}store")
     async def kb_store(
+        supersedes: Annotated[
+            list[str] | Literal["none"], Field(description=SUPERSEDES_DESCRIPTION)
+        ],
         short_title: Annotated[str, Field(description="Brief identifier for the entry")] = "",
         long_title: Annotated[str, Field(description="Descriptive title")] = "",
         knowledge_details: Annotated[
@@ -179,7 +254,9 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         ] = None,
         hints: Annotated[
             dict[str, object] | None,
-            Field(description="Structured hints for graph building (supersedes, related_entities)"),
+            Field(
+                description="Structured hints for graph building (related_entities, person, tool)"
+            ),
         ] = None,
         update_entry_id: Annotated[
             str | None,
@@ -215,8 +292,17 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         ] = None,
         change_reason: Annotated[
             str | None,
-            Field(description="Reason for update or deactivation"),
+            Field(
+                description=(
+                    "Required when update_entry_id or deactivate_entry_id is set: "
+                    "what changed and why. Recorded in the version history."
+                )
+            ),
         ] = None,
+        distinct_from: Annotated[
+            list[str] | None, Field(description=DISTINCT_FROM_DESCRIPTION)
+        ] = None,
+        superseded_by: Annotated[str | None, Field(description=SUPERSEDED_BY_DESCRIPTION)] = None,
         ctx: Context | None = None,
     ) -> str:
         """Store or update a knowledge entry in the personal knowledge base.
@@ -249,8 +335,41 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         # --- Deactivate path ---
         if deactivate_entry_id:
+            if change_reason is None or not change_reason.strip():
+                return _reject(
+                    "deactivate", "change_reason_missing", supersedes, _CHANGE_REASON_ERROR
+                )
+            if supersedes != "none":
+                return _reject(
+                    "deactivate",
+                    "bad_shape",
+                    supersedes,
+                    "Error: supersedes does not apply to deactivate_entry_id; "
+                    'pass "none" and name the replacing entry with superseded_by.',
+                )
+            if superseded_by is not None and not (
+                isinstance(superseded_by, str) and _KB_ID_RE.fullmatch(superseded_by)
+            ):
+                return _reject(
+                    "deactivate",
+                    "bad_shape",
+                    supersedes,
+                    "Error: superseded_by must be a kb-XXXXX id (got " + repr(superseded_by) + ").",
+                )
+            if distinct_from:
+                return _reject(
+                    "deactivate",
+                    "distinct_from_misplaced",
+                    supersedes,
+                    "Error: distinct_from applies to create only.",
+                )
+            _log_decision("store", "deactivate", "accepted", "none", supersedes)
             try:
-                entry = await backend.deactivate(deactivate_entry_id, change_reason=change_reason)
+                entry = await backend.deactivate(
+                    deactivate_entry_id,
+                    change_reason=change_reason,
+                    superseded_by=superseded_by,
+                )
             except Exception as e:
                 from personal_kb.backend.http import BackendHttpError
 
@@ -260,11 +379,34 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     return _map_error(e, "")
                 return f"Error: {e}"
 
-            reason = f" ({change_reason})" if change_reason else ""
-            return f"Deactivated entry {entry.id}: {entry.short_title}{reason}"
+            by = f"; superseded by {superseded_by}" if superseded_by else ""
+            return f"Deactivated entry {entry.id}: {entry.short_title} ({change_reason}){by}"
 
         # --- Update path ---
         if update_entry_id:
+            if change_reason is None or not change_reason.strip():
+                return _reject("update", "change_reason_missing", supersedes, _CHANGE_REASON_ERROR)
+            sup_err = _validate_supersedes(supersedes)
+            if sup_err:
+                return _reject("update", _supersedes_rule(sup_err), supersedes, sup_err)
+            conflict_err = _validate_hints_supersedes_conflict(supersedes, hints)
+            if conflict_err:
+                return _reject("update", "hints_conflict", supersedes, conflict_err)
+            if superseded_by is not None:
+                return _reject(
+                    "update",
+                    "superseded_by_misplaced",
+                    supersedes,
+                    "Error: superseded_by applies to deactivate_entry_id only.",
+                )
+            if distinct_from:
+                return _reject(
+                    "update",
+                    "distinct_from_misplaced",
+                    supersedes,
+                    "Error: distinct_from applies to create only.",
+                )
+            _log_decision("store", "update", "accepted", "none", supersedes)
             # Validate sensitivity
             sens_err = _validate_sensitivity(sensitivity)
             if sens_err:
@@ -282,7 +424,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     return f"Error: {e}"
 
             try:
-                _action, entry = await backend.store(
+                _action, entry, ids = await backend.store(
                     short_title=short_title,
                     long_title=long_title,
                     knowledge_details=knowledge_details,
@@ -296,6 +438,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     ttl=ttl,
                     update_entry_id=update_entry_id,
                     change_reason=change_reason,
+                    supersedes=supersedes,
                 )
             except Exception as e:
                 from personal_kb.backend.http import BackendHttpError
@@ -306,7 +449,16 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     return _map_error(e, "")
                 return f"Error: {e}"
 
+            if ids is None and isinstance(supersedes, list) and supersedes:
+                logger.warning(
+                    "supersession-client mismatch op=update sent=%r superseded_ids=%r "
+                    "(server skew or regression)",
+                    supersedes,
+                    ids,
+                )
             result = format_store_result(entry, is_update=True, include_backend_warning=not is_http)
+            if ids:
+                result += "\nSupersedes: " + ", ".join(ids)
             # Advisory mental_map lint — gate on the re-fetched entry's type
             if entry.entry_type == EntryType.MENTAL_MAP and knowledge_details:
                 result = _prepend_map_advisories(
@@ -318,10 +470,30 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         # --- Create path ---
         if not short_title or not long_title or not knowledge_details:
-            return (
+            return _reject(
+                "create",
+                "missing_field",
+                supersedes,
                 "Error: short_title, long_title, and knowledge_details "
-                "are required when creating a new entry."
+                "are required when creating a new entry.",
             )
+        sup_err = _validate_supersedes(supersedes)
+        if sup_err:
+            return _reject("create", _supersedes_rule(sup_err), supersedes, sup_err)
+        conflict_err = _validate_hints_supersedes_conflict(supersedes, hints)
+        if conflict_err:
+            return _reject("create", "hints_conflict", supersedes, conflict_err)
+        if superseded_by is not None:
+            return _reject(
+                "create",
+                "superseded_by_misplaced",
+                supersedes,
+                "Error: superseded_by applies to deactivate_entry_id only.",
+            )
+        df_err = _validate_distinct_from(distinct_from)
+        if df_err:
+            return _reject("create", "bad_shape", supersedes, df_err)
+        _log_decision("store", "create", "accepted", "none", supersedes)
 
         # Validate sensitivity
         sens_err = _validate_sensitivity(sensitivity)
@@ -351,7 +523,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 return f"Error: {e}"
 
         try:
-            _action, entry = await backend.store(
+            _action, entry, ids = await backend.store(
                 short_title=short_title,
                 long_title=long_title,
                 knowledge_details=knowledge_details,
@@ -364,6 +536,8 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 sensitivity=sensitivity,
                 ttl=ttl,
                 change_reason=change_reason,
+                supersedes=supersedes,
+                distinct_from=distinct_from or None,
             )
         except Exception as e:
             from personal_kb.backend.http import BackendHttpError
@@ -374,7 +548,20 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 return _map_error(e, "")
             return f"Error: {e}"
 
+        if (
+            isinstance(supersedes, list)
+            and supersedes
+            and (ids is None or set(ids) != set(supersedes))
+        ):
+            logger.warning(
+                "supersession-client mismatch op=create sent=%r superseded_ids=%r "
+                "(server skew or regression)",
+                supersedes,
+                ids,
+            )
         result = format_store_result(entry, is_update=False, include_backend_warning=not is_http)
+        if ids:
+            result += "\nSupersedes: " + ", ".join(ids)
         # Advisory mental_map lint
         if entry.entry_type == EntryType.MENTAL_MAP and knowledge_details:
             result = _prepend_map_advisories(

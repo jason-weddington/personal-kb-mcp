@@ -183,8 +183,8 @@ pass it via the `content` parameter to skip fetching.
 Entry types: factual_reference, decision, pattern_convention, lesson_learned.
 Use tags for discoverability. Use project_ref for project-specific knowledge.
 
+supersedes is a required kb_store parameter: the kb ids this entry replaces, or "none".
 Use hints to build the knowledge graph:
-- {"supersedes": "kb-00042"} when replacing prior knowledge
 - {"person": "jason"}, {"tool": "sqlite"} to link entities
 - {"related_entities": [{"id": "kb-00003", "edge_type": "depends_on"}]}
 

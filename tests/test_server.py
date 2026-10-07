@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from personal_kb.server import (
     _build_instructions,
     _get_tool_prefix,
@@ -151,7 +153,7 @@ def test_build_instructions_team_prefix():
         assert "team_kb_feedback" in text
         assert "team_kb_ingest" in text
         # Entry IDs should NOT be replaced
-        assert "kb-00042" in text
+        assert "kb-00003" in text
         # Role prefix should be present
         assert "TEAM knowledge base" in text
 
@@ -174,7 +176,7 @@ def test_build_instructions_personal_prefix():
         assert "personal_kb_store" in text
         assert "personal_kb_ask" in text
         # Entry IDs should NOT be replaced
-        assert "kb-00042" in text
+        assert "kb-00003" in text
         # Role prefix should be present
         assert "PERSONAL knowledge base" in text
 
@@ -252,3 +254,43 @@ async def test_create_server_registers_map_eligibility_tools_without_manager_mod
 # spawns a daemon (see ``test_daemon_spawn.py``).  The maps_index writer and
 # the NOTIFY/LISTEN machinery have since been deleted entirely, so there is
 # no rebuild/teardown wiring left to test here.
+
+
+@pytest.mark.parametrize(("role", "name"), [(None, "kb_store"), ("personal", "personal_kb_store")])
+async def test_kb_store_schema_requires_supersedes(role, name):
+    import os
+
+    from personal_kb.tools.kb_store import SUPERSEDES_DESCRIPTION
+
+    env = {"KB_INSTANCE_ROLE": role} if role else {}
+    with patch.dict("os.environ", env, clear=False):
+        if not role:
+            os.environ.pop("KB_INSTANCE_ROLE", None)
+        mcp = create_server()
+        tools = {t.name: t for t in await mcp.list_tools()}
+    schema = tools[name].parameters
+    assert "supersedes" in schema["required"]
+    assert "distinct_from" not in schema["required"]
+    assert "superseded_by" not in schema["required"]
+    assert schema["properties"]["supersedes"]["description"] == SUPERSEDES_DESCRIPTION
+
+
+async def test_kb_store_call_without_valid_supersedes_raises():
+    import os
+
+    with patch.dict("os.environ", {}, clear=False):
+        os.environ.pop("KB_INSTANCE_ROLE", None)
+        mcp = create_server()
+    base = {"short_title": "a", "long_title": "b", "knowledge_details": "c"}
+    with pytest.raises(Exception) as excinfo:
+        await mcp.call_tool("kb_store", base)
+    assert "supersedes" in str(excinfo.value)
+    with pytest.raises(Exception) as excinfo2:
+        await mcp.call_tool("kb_store", {**base, "supersedes": "kb-00001"})
+    assert "supersedes" in str(excinfo2.value)
+
+
+def test_instructions_supersedes_is_a_parameter_not_a_hint():
+    text = _build_instructions("kb_")
+    assert '{"supersedes"' not in text
+    assert "supersedes is a required kb_store parameter" in text

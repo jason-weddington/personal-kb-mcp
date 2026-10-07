@@ -313,13 +313,13 @@ The check is a closed checklist that mirrors `kb_core/graph/builder.py`'s edge-p
 1. `knowledge_details` contains a `kb-XXXXX` reference (matched with the same `re.compile(r"kb-\d{5}")` the builder uses);
 2. the `related_entities` hint contains either a dict with a non-empty `id`/`target`, or a bare non-empty string.
 
-The client-side copy in `kb_store.py` still also counts a `supersedes` hint and a non-empty `superseded_by`; those clauses are stale and are removed in a follow-up. The server-side guard (`kb_service/routes/map_write_guards.py::_mental_map_has_pointer`) no longer counts them: a mental_map cannot supersede anything (see Supersession), and the builder no longer derives any edge from `superseded_by`.
+Neither the client copy in `kb_store.py` nor the server-side guard (`kb_service/routes/map_write_guards.py::_mental_map_has_pointer`) counts a `supersedes` hint or `superseded_by`: a mental_map cannot supersede anything (see Supersession), and the builder no longer derives any edge from `superseded_by`.
 
 Tag, project, person, and tool hints do **not** count — those are categorization, not orientation. Mirroring the builder's exact predicate set means a future change to what counts as a "pointer" needs to be made in exactly one place; the validator follows automatically.
 
 The error message returned to the caller is a single constant, `ORPHAN_MAP_ERROR`:
 
-> *"A mental_map entry requires at least one outbound pointer (a kb-XXXXX reference in knowledge_details, or a supersedes/related_entities hint). A map with zero pointers is an orphan note, not a map."*
+> *"A mental_map entry requires at least one outbound pointer (a kb-XXXXX reference in knowledge_details, or a related_entities hint). A map with zero pointers is an orphan note, not a map."*
 
 This is the only place in the `kb_store` pipeline where mental_map content is *rejected*. The fact-free lint below is advisory only and never blocks.
 

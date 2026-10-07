@@ -217,7 +217,7 @@ async def test_store_create_returns_created_entry():
         return httpx.Response(200, json={"action": "created", "entry": _ENTRY_JSON})
 
     backend = _make_backend(handler)
-    action, entry = await backend.store(
+    action, entry, _ids = await backend.store(
         short_title="My entry",
         long_title="Long title",
         knowledge_details="Details",
@@ -236,7 +236,7 @@ async def test_store_update_returns_updated_entry():
         return httpx.Response(200, json={"action": "updated", "entry": updated_json})
 
     backend = _make_backend(handler)
-    action, entry = await backend.store(
+    action, entry, _ids = await backend.store(
         short_title="",
         long_title="",
         knowledge_details="New details",
@@ -244,6 +244,70 @@ async def test_store_update_returns_updated_entry():
     )
     assert action == "updated"
     assert entry.version == 2
+
+
+@pytest.mark.asyncio
+async def test_store_returns_superseded_ids_and_sends_supersedes():
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(
+            200,
+            json={"action": "created", "entry": _ENTRY_JSON, "superseded_ids": ["kb-00002"]},
+        )
+
+    backend = _make_backend(handler)
+    _a, _e, ids = await backend.store(
+        short_title="s",
+        long_title="l",
+        knowledge_details="d",
+        supersedes=["kb-00002"],
+        distinct_from=["kb-00007"],
+    )
+    assert ids == ["kb-00002"]
+    assert seen[0]["supersedes"] == ["kb-00002"]
+    assert seen[0]["distinct_from"] == ["kb-00007"]
+
+
+@pytest.mark.asyncio
+async def test_store_superseded_ids_absent_is_none_and_none_literal_sent():
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"action": "created", "entry": _ENTRY_JSON})
+
+    backend = _make_backend(handler)
+    _a, _e, ids = await backend.store(
+        short_title="s", long_title="l", knowledge_details="d", supersedes="none"
+    )
+    assert ids is None
+    assert seen[0]["supersedes"] == "none"
+    assert "distinct_from" not in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_store_batch_forwards_supersedes_and_distinct_from():
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"created": [_ENTRY_JSON]})
+
+    backend = _make_backend(handler)
+    base = {"short_title": "s", "long_title": "l", "knowledge_details": "d"}
+    await backend.store_batch(
+        [
+            {**base, "supersedes": "none", "distinct_from": ["kb-00007"]},
+            {**base, "supersedes": ["kb-00002"], "distinct_from": []},
+        ]
+    )
+    e0, e1 = seen[0]["entries"]
+    assert e0["supersedes"] == "none"
+    assert e0["distinct_from"] == ["kb-00007"]
+    assert e1["supersedes"] == ["kb-00002"]
+    assert "distinct_from" not in e1
 
 
 # ---------------------------------------------------------------------------

@@ -287,8 +287,13 @@ class HttpBackend:
         ttl: str | None = None,
         update_entry_id: str | None = None,
         change_reason: str | None = None,
-    ) -> tuple[Literal["created", "updated"], KnowledgeEntry]:
-        """POST /api/kb/store.  Returns (action, entry) where action is 'created' or 'updated'."""
+        supersedes: list[str] | Literal["none"] | None = None,
+        distinct_from: list[str] | None = None,
+    ) -> tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None]:
+        """POST /api/kb/store.  Returns (action, entry, superseded_ids).
+
+        ``superseded_ids`` is None when the response lacks the key (old server).
+        """
         body: dict[str, Any] = {
             "short_title": short_title,
             "long_title": long_title,
@@ -315,11 +320,17 @@ class HttpBackend:
             body["update_entry_id"] = update_entry_id
         if change_reason is not None:
             body["change_reason"] = change_reason
+        if supersedes is not None:
+            body["supersedes"] = supersedes
+        if distinct_from is not None:
+            body["distinct_from"] = distinct_from
 
         data = await self._post("/api/kb/store", body)
         action: Literal["created", "updated"] = data["action"]
         entry = _parse_entry(data["entry"])
-        return action, entry
+        raw_ids = data.get("superseded_ids")
+        superseded_ids = list(raw_ids) if raw_ids is not None else None
+        return action, entry, superseded_ids
 
     async def deactivate(
         self,
@@ -378,6 +389,10 @@ class HttpBackend:
                 item["sensitivity"] = e["sensitivity"]
             if e.get("ttl"):
                 item["ttl"] = e["ttl"]
+            if "supersedes" in e:
+                item["supersedes"] = e["supersedes"]
+            if e.get("distinct_from"):
+                item["distinct_from"] = e["distinct_from"]
             batch_entries.append(item)
 
         data = await self._post("/api/kb/store_batch", {"entries": batch_entries})

@@ -147,7 +147,7 @@ ollama pull qwen3:4b               # only if using Ollama as LLM provider
 
 Store or update a knowledge entry. Each entry has a short title, long title, full content, entry type, optional tags, and optional project reference. Updates create version records preserving full history. Graph edges and embeddings are built automatically on store. An optional `ttl` parameter (e.g. `'7d'`, `'24h'`, `'2w'`) sets an expiration date after which the entry is excluded from search results.
 
-**Supersession.** When a new entry replaces older ones, declare it with `hints={"supersedes": ["kb-XXXXX", ...]}` (the hosted HTTP API also takes a top-level `supersedes` list, where an absent field, `[]` or `"none"` all mean "replaces nothing"). The hosted service checks every newly named target before writing: it must exist, be active, not be a `mental_map`, not be the entry itself, and not already supersede the writer. A rejected target fails the whole write with a 422 that names the problem. Each superseded entry's `superseded_by` then points at its newest superseder, and the field is maintained automatically when superseders are stored, updated or deactivated. On an update, supersedes targets are only ever added, never retracted. Updates and deactivations through the hosted service require a `change_reason` that says what changed and why; when you deactivate an entry because a newer one replaces it, also pass `superseded_by`.
+**Supersession.** When a new entry replaces older ones, declare it with the `supersedes` parameter of `kb_store`. It is **required** on every call: a list of `kb-XXXXX` ids, or the literal `"none"` when the entry replaces nothing (`[]` is rejected as ambiguous; on deactivate and metadata-only updates pass `"none"`). Combining `supersedes="none"` with a non-empty `hints.supersedes` is rejected; list the ids in `supersedes`. `distinct_from` (create only) lists existing entries the new one is deliberately distinct from, and `superseded_by` (with `deactivate_entry_id`) names the entry that replaces the deactivated one. `change_reason` is required on update and deactivate. `kb_store_batch` entries require `supersedes` too. The hosted service checks every newly named target before writing: it must exist, be active, not be a `mental_map`, not be the entry itself, and not already supersede the writer. A rejected target fails the whole write with a 422 that names the problem. Each superseded entry's `superseded_by` then points at its newest superseder, and the field is maintained automatically when superseders are stored, updated or deactivated. On an update, supersedes targets are only ever added, never retracted. Updates and deactivations through the hosted service require a `change_reason` that says what changed and why; when you deactivate an entry because a newer one replaces it, also pass `superseded_by`.
 
 **Near-duplicate guard.** On the hosted service, creating an entry whose text is at or above cosine 0.88 (`KB_NEAR_DUPLICATE_FLOOR`) to an existing active entry in the same project is rejected with a 409 that lists the candidates. Cover every listed id with one of three escapes: `update_entry_id=<id>` (it is the same fact, so update that entry), `supersedes=[<id>]` (the new entry replaces it), or `distinct_from=[<id>]` (they are genuinely different facts; older clients pass `hints={"distinct_from": [...]}`). Map entries, entries without a project, and creates made while embeddings are unavailable are not checked.
 
@@ -251,7 +251,7 @@ Every `mental_map` must have **at least one outbound pointer**. A pointer is any
 - a `kb-XXXXX` reference inside `knowledge_details`;
 - a `related_entities` hint with either a dict carrying an `id`/`target` or a bare entry id string.
 
-A `supersedes` hint is **not** a map pointer: a map cannot supersede anything, so the hosted service rejects a map whose only pointer is a `supersedes` hint. The local client-side check still counts `supersedes` / `superseded_by` until the MCP client catches up.
+A `supersedes` hint is **not** a map pointer: a map cannot supersede anything, so a map whose only pointer is a `supersedes` hint is rejected as an orphan.
 
 Tags, project refs, and person/tool hints **do not** count — those are categorization, not orientation. `kb_store` rejects an orphan map (zero pointers) on **create**, before any row is written, with an error: *"A mental_map entry requires at least one outbound pointer … A map with zero pointers is an orphan note, not a map."* As of 2026-09-19 the hosted service runs the same guard on **update**, evaluating the effective post-update body, so an update can no longer strip a map's last pointer; the local/no-auth kb-core path is still unguarded. Don't treat "the store would have caught it" as a substitute for checking your own map's pointers — the update guard is new, and every map authored before it predates that check.
 
@@ -560,8 +560,10 @@ decision, or discovered a non-obvious behavior — kb_store it immediately.
 
 ### Good practices
 - Use tags for discoverability and project_ref for scoping
-- Use hints to build the knowledge graph: {"supersedes": "kb-XXXXX"},
-  {"tool": "sqlite"}, {"person": "jason"}
+- supersedes is a required kb_store parameter: the kb ids this entry
+  replaces, or "none".
+- Use hints to build the knowledge graph: {"tool": "sqlite"},
+  {"person": "jason"}
 - Use kb_store_batch when capturing multiple related entries
 - When a previous entry is wrong or outdated, update or deactivate it
 ```
