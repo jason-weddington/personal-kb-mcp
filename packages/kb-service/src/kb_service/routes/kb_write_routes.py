@@ -60,6 +60,7 @@ from kb_service.routes.near_duplicate_guard import (
     enforce_near_duplicate_guard,
     record_stored,
 )
+from kb_service.supersession_log import log_reconcile_report
 
 logger = logging.getLogger(__name__)
 
@@ -851,8 +852,35 @@ async def bulk_update(
         contributor=user.email,
         dry_run=body.dry_run,
     )
+    if not body.dry_run:
+        # An entry_type change can flip which entries qualify as superseders
+        # (e.g. to/from mental_map), so heal superseded_by right away rather
+        # than waiting for the next startup reconcile.
+        changed_ids = [b.id for b, a in pairs if b.entry_type != a.entry_type]
+        if changed_ids:
+            await kb.recompute_supersession(changed_ids)
     results = [BulkUpdatePair(before=b, after=a) for b, a in pairs]
     return BulkUpdateResponse(dry_run=body.dry_run, count=len(results), results=results)
+
+
+@router.post("/admin/reconcile-supersession")
+async def reconcile_supersession(
+    request: Request,
+    user: Annotated[User, Depends(require_admin)],
+) -> dict[str, Any]:
+    """Run the idempotent supersession reconcile now (admin only).
+
+    Same work as the startup reconcile; every drifted row is logged at WARNING.
+    """
+    kb = request.app.state.kb
+    report = await kb.reconcile_supersession()
+    log_reconcile_report(report, logger)
+    return {
+        "edges_added": report.edges_added,
+        "set_count": report.set_count,
+        "cleared_count": report.cleared_count,
+        "changed": [list(t) for t in report.changed],
+    }
 
 
 @router.post("/feedback", response_model=FeedbackResponse)

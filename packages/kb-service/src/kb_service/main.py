@@ -43,6 +43,7 @@ from kb_service.routes.nudge_routes import router as nudge_router
 from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
 from kb_service.routes.telemetry_routes import router as telemetry_router
+from kb_service.supersession_log import log_reconcile_report
 
 if TYPE_CHECKING:
     from kb_core import KnowledgeBase
@@ -177,16 +178,7 @@ async def _reconcile_supersession(kb: "KnowledgeBase") -> None:
     """
     try:
         report = await kb.reconcile_supersession()
-        logger.info(
-            "supersession-reconcile edges_added=%d set=%d cleared=%d",
-            report.edges_added,
-            report.set_count,
-            report.cleared_count,
-        )
-        for target, old, new in report.changed:
-            logger.warning(
-                "supersession-reconcile drift target=%s old=%r new=%r", target, old, new
-            )
+        log_reconcile_report(report, logger)
     except Exception as exc:
         logger.warning("supersession-reconcile failed: %s", exc)
 

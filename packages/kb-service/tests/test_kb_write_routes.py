@@ -629,6 +629,82 @@ def test_bulk_update_happy_path(client: TestClient) -> None:
     assert isinstance(body["results"], list)
 
 
+def _bulk_body(dry_run: bool) -> dict[str, Any]:
+    return {
+        "filters": {"contributor": "x"},
+        "updates": {"entry_type": "decision"},
+        "dry_run": dry_run,
+    }
+
+
+def test_bulk_update_entry_type_change_recomputes_supersession(
+    client: TestClient,
+) -> None:
+    """A persisted entry_type change runs the facade recompute for the changed ids."""
+    _authed(client, admin=True)
+    kb: FakeKnowledgeBase = app.state.kb
+    before = make_entry("kb-00007")
+    after = before.model_copy(update={"entry_type": EntryType.DECISION})
+    unchanged = make_entry("kb-00008")
+    kb.bulk_update_result = [(before, after), (unchanged, unchanged)]
+    resp = client.post("/api/kb/bulk_update", json=_bulk_body(False))
+    assert resp.status_code == 200
+    assert kb.recompute_calls == [["kb-00007"]]
+
+
+def test_bulk_update_no_recompute_without_type_change_or_on_dry_run(
+    client: TestClient,
+) -> None:
+    """No recompute when entry_type is untouched, nor on dry runs."""
+    _authed(client, admin=True)
+    kb: FakeKnowledgeBase = app.state.kb
+    assert client.post("/api/kb/bulk_update", json=_bulk_body(False)).status_code == 200
+    before = make_entry("kb-00007")
+    after = before.model_copy(update={"entry_type": EntryType.DECISION})
+    kb.bulk_update_result = [(before, after)]
+    assert client.post("/api/kb/bulk_update", json=_bulk_body(True)).status_code == 200
+    assert kb.recompute_calls == []
+
+
+# ─── POST /api/kb/admin/reconcile-supersession ───────────────────────────────
+
+
+def test_reconcile_supersession_non_admin_403(client: TestClient) -> None:
+    _authed(client, admin=False)
+    resp = client.post("/api/kb/admin/reconcile-supersession")
+    assert resp.status_code == 403
+
+
+def test_reconcile_supersession_admin_returns_counts_and_logs(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    from kb_core.supersession import SupersessionReconcileReport
+
+    _authed(client, admin=True)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.reconcile_report = SupersessionReconcileReport(
+        edges_added=1,
+        set_count=1,
+        cleared_count=0,
+        changed=(("kb-00002", None, "kb-00003"),),
+        edges_added_ids=(("kb-00003", "kb-00002"),),
+    )
+    before = kb.reconcile_calls
+    with caplog.at_level("INFO"):
+        resp = client.post("/api/kb/admin/reconcile-supersession")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "edges_added": 1,
+        "set_count": 1,
+        "cleared_count": 0,
+        "changed": [["kb-00002", None, "kb-00003"]],
+    }
+    assert kb.reconcile_calls == before + 1
+    assert "supersession-reconcile drift target=kb-00002 old=None new='kb-00003'" in [
+        r.getMessage() for r in caplog.records
+    ]
+
+
 def test_bulk_update_requires_auth(client: TestClient) -> None:
     """POST /api/kb/bulk_update with no credentials returns 401."""
     resp = client.post(

@@ -132,6 +132,10 @@ class Backend(Protocol):
         """Apply metadata updates matching *filters*.  Admin-only over HTTP."""
         ...
 
+    async def reconcile_supersession(self) -> dict[str, Any]:
+        """Run the supersession reconcile.  Admin-only over HTTP."""
+        ...
+
     async def feedback(
         self,
         feedback_type: str,

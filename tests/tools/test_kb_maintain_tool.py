@@ -1,7 +1,10 @@
 """Tests for the kb_maintain MCP tool."""
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from personal_kb.config import is_manager_mode
@@ -658,3 +661,78 @@ async def test_list_audit_empty(db):
     """list_audit with no events should return message."""
     result = await _action_list_audit(db, None, None)
     assert "No audit events found" in result
+
+
+# --- reconcile_supersession ---
+
+
+def _maintain_tool():
+    from personal_kb.tools.kb_maintain import register_kb_maintain
+
+    tools = {}
+
+    def capture(**_kw):
+        def decorator(fn):
+            tools[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    mcp = MagicMock()
+    mcp.tool = capture
+    register_kb_maintain(mcp)
+    return next(iter(tools.values()))
+
+
+@pytest.mark.asyncio
+async def test_reconcile_supersession_http_mode_renders_counts():
+    from personal_kb.backend.http import HttpBackend
+
+    paths: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        paths.append(req.url.path)
+        return httpx.Response(
+            200,
+            json={
+                "edges_added": 1,
+                "set_count": 2,
+                "cleared_count": 3,
+                "changed": [["kb-00002", None, "kb-00003"]],
+            },
+        )
+
+    backend = HttpBackend(base_url="http://kb.test", api_key="k")
+    backend._client = httpx.AsyncClient(
+        base_url="http://kb.test", transport=httpx.MockTransport(handler)
+    )
+    ctx = MagicMock()
+    ctx.lifespan_context = {"backend": backend}
+    result = await _maintain_tool()(action="reconcile_supersession", ctx=ctx)
+    assert paths == ["/api/kb/admin/reconcile-supersession"]
+    assert "edges_added=1 set=2 cleared=3" in result
+    assert "kb-00002: None -> 'kb-00003'" in result
+
+
+@pytest.mark.asyncio
+async def test_reconcile_supersession_local_mode(db, store):
+    """Local mode: heals a drifted superseded_by and reports it."""
+    target = await store.create_entry(
+        short_title="old",
+        long_title="old entry",
+        knowledge_details="d",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+    )
+    await db.execute(
+        "UPDATE knowledge_entries SET superseded_by = ? WHERE id = ?", ("kb-99999", target.id)
+    )
+    await db.commit()
+    ctx = MagicMock()
+    ctx.lifespan_context = {
+        "backend": SimpleNamespace(is_remote=False),
+        "db": db,
+        "store": store,
+    }
+    result = await _maintain_tool()(action="reconcile_supersession", ctx=ctx)
+    assert "Supersession reconcile:" in result
+    assert f"{target.id}: 'kb-99999' -> None" in result

@@ -304,6 +304,11 @@ class FakeKnowledgeBase:
         self.audit_events: list[tuple[str, str | None, str | None, dict[str, Any]]] = []
         self.reactivate_calls: list[tuple[str, str]] = []
         self.bulk_update_calls: list[dict[str, Any]] = []
+        self.bulk_update_result: list[tuple[KnowledgeEntry, KnowledgeEntry]] | None = (
+            None
+        )
+        self.recompute_calls: list[list[str]] = []
+        self.reconcile_report: SupersessionReconcileReport | None = None
         self.map_eligibility_verdicts: list[MapEligibilityVerdict] = []
         self.set_map_eligibility_override_calls: list[tuple[str, dict[str, Any]]] = []
         self.clear_map_eligibility_override_calls: list[str] = []
@@ -651,9 +656,15 @@ class FakeKnowledgeBase:
             (event_type, entry_id, contributor, json.loads(detail))
         )
 
+    async def recompute_supersession(self, entry_ids: Any) -> None:
+        """Record the ids the route asked to recompute."""
+        self.recompute_calls.append(sorted(entry_ids))
+
     async def reconcile_supersession(self) -> SupersessionReconcileReport:
-        """Count the call and return an all-zero report."""
+        """Count the call and return the canned (default all-zero) report."""
         self.reconcile_calls += 1
+        if self.reconcile_report is not None:
+            return self.reconcile_report
         return SupersessionReconcileReport(
             edges_added=0, set_count=0, cleared_count=0, changed=(), edges_added_ids=()
         )
@@ -697,6 +708,8 @@ class FakeKnowledgeBase:
         )
         if self._bulk_update_raises is not None:
             raise self._bulk_update_raises
+        if self.bulk_update_result is not None:
+            return self.bulk_update_result
         return [(make_entry(), make_entry())]
 
     # ── ingest surface (P2) ──────────────────────────────────────────────────

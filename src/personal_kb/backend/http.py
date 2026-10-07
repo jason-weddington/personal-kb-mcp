@@ -415,6 +415,10 @@ class HttpBackend:
             (_parse_entry(r["before"]), _parse_entry(r["after"])) for r in data.get("results", [])
         ]
 
+    async def reconcile_supersession(self) -> dict[str, Any]:
+        """POST /api/kb/admin/reconcile-supersession.  Returns the report counts."""
+        return await self._post("/api/kb/admin/reconcile-supersession", {})
+
     async def feedback(
         self,
         feedback_type: str,

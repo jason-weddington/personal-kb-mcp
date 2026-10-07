@@ -80,7 +80,7 @@ from kb_core.search.hybrid import hybrid_search
 from kb_core.store.knowledge_store import KnowledgeStore, _record_audit_event
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
     from datetime import timedelta
     from types import TracebackType
 
@@ -99,7 +99,7 @@ if TYPE_CHECKING:
     from kb_core.map_eligibility import MapEligibilityOverride, MapEligibilityVerdict
     from kb_core.models.search import SearchQuery, SearchResult
     from kb_core.search.embedder_protocol import Embedder
-    from kb_core.supersession import SupersessionReconcileReport
+    from kb_core.supersession import RecomputeCounts, SupersessionReconcileReport
 
 logger = logging.getLogger(__name__)
 
@@ -841,6 +841,22 @@ class KnowledgeBase:
         from kb_core.supersession import reconcile_supersession
 
         return await reconcile_supersession(self._db)
+
+    async def recompute_supersession(self, entry_ids: Iterable[str]) -> RecomputeCounts:
+        """Recompute ``superseded_by`` for *entry_ids* and their supersedes targets.
+
+        For write paths (e.g. a bulk ``entry_type`` change) that can flip which
+        entries count as superseders. Runs in ONE transaction with
+        ``trigger='reconcile'``.
+        """
+        from kb_core.supersession import outgoing_supersedes_targets, recompute_superseded_by
+
+        ids = set(entry_ids)
+        async with self._db.transaction():
+            affected = set(ids)
+            for eid in ids:
+                affected |= await outgoing_supersedes_targets(self._db, eid)
+            return await recompute_superseded_by(self._db, affected, trigger="reconcile")
 
     async def reactivate(self, entry_id: str, *, contributor: str | None = None) -> KnowledgeEntry:
         """Restore a previously deactivated entry."""

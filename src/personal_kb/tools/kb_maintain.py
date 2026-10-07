@@ -40,6 +40,7 @@ _ACTIONS = {
     "search_stats",
     "list_contributors",
     "list_audit",
+    "reconcile_supersession",
 }
 
 
@@ -55,7 +56,7 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
                     "Maintenance action: stats, deactivate, reactivate, "
                     "rebuild_embeddings, rebuild_graph, purge_inactive, vacuum, "
                     "entry_versions, list_feedback, summarize_feedback, search_stats, "
-                    "list_contributors, list_audit"
+                    "list_contributors, list_audit, reconcile_supersession"
                 ),
             ),
         ],
@@ -112,6 +113,7 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
         - search_stats: Search telemetry overview (optional: since)
         - list_contributors: Show contributor/team stats for active entries
         - list_audit: Recent audit events (optional: entry_id, since)
+        - reconcile_supersession: Heal drifted superseded_by values (idempotent; admin over HTTP)
         """
         from personal_kb.tools._lifespan import backend_from_lifespan, kb_from_lifespan
 
@@ -151,6 +153,17 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
                 except BackendHttpError as exc:
                     return _map_error(exc, "")
                 return f"Reactivated entry {entry.id}: {entry.short_title}"
+            elif action == "reconcile_supersession":
+                try:
+                    data = await backend.reconcile_supersession()
+                except BackendHttpError as exc:
+                    return _map_error(exc, "")
+                return _render_reconcile(
+                    data.get("edges_added", 0),
+                    data.get("set_count", 0),
+                    data.get("cleared_count", 0),
+                    [tuple(c) for c in data.get("changed", [])],
+                )
             else:
                 return (
                     f"Error: action {action} is not supported in HTTP mode"
@@ -195,8 +208,28 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
             return await _action_list_contributors(db)
         elif action == "list_audit":
             return await _action_list_audit(db, entry_id, since)
+        elif action == "reconcile_supersession":
+            report = await kb.reconcile_supersession()
+            return _render_reconcile(
+                report.edges_added, report.set_count, report.cleared_count, list(report.changed)
+            )
 
         return "Action not implemented."
+
+
+def _render_reconcile(
+    edges_added: int,
+    set_count: int,
+    cleared_count: int,
+    changed: list[tuple[str, str | None, str | None]] | list[tuple[object, ...]],
+) -> str:
+    """Render a supersession reconcile report."""
+    lines = [
+        f"Supersession reconcile: edges_added={edges_added} set={set_count} cleared={cleared_count}"
+    ]
+    for target, old, new in changed:
+        lines.append(f"  drift {target}: {old!r} -> {new!r}")
+    return "\n".join(lines)
 
 
 async def _action_stats(db: Database) -> str:

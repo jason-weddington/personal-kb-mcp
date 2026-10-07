@@ -383,6 +383,15 @@ class TestIngestFile:
         assert old_entry is not None
         assert old_entry.is_active is False
 
+        # The audit detail records why it was retired
+        cursor = await deps["db"].execute(
+            "SELECT detail FROM audit_events WHERE entry_id = ? AND event_type = ?",
+            (old_entry_id, "entry_deactivated"),
+        )
+        rows = await cursor.fetchall()
+        assert len(rows) == 1
+        assert "re-ingest: replaced by newer ingestion of the same source" in rows[0]["detail"]
+
     async def test_dry_run_no_storage(self, ingester_deps, tmp_path):
         f = tmp_path / "notes.md"
         f.write_text("# Dry run test")

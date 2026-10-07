@@ -817,7 +817,9 @@ class FileIngester:
             if not isinstance(eid, str):
                 continue
             try:
-                await self._store.deactivate_entry(eid)
+                await self._store.deactivate_entry(
+                    eid, change_reason="re-ingest: replaced by newer ingestion of the same source"
+                )
                 # Remove graph edges
                 await self._db.execute("DELETE FROM graph_edges WHERE source = ?", (eid,))
             except ValueError:
