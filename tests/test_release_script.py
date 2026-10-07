@@ -86,6 +86,10 @@ def sandbox(tmp_path: Path) -> dict[str, Path]:
         cwd=repo,
         check=True,
     )
+    for name in ("origin", "github"):
+        subprocess.run(
+            [REAL_GIT, "remote", "add", name, f"/nonexistent/{name}.git"], cwd=repo, check=True
+        )
     return {"repo": repo, "shims": shims, "log": log}
 
 
@@ -164,6 +168,16 @@ def test_hook_published_but_deploy_incomplete_pushes_then_fails(sandbox):
     assert len(push_is) == 2 and all(i > hook_i for i in push_is)
     assert f"v{NEW_VERSION}" in _tags(sandbox)
     assert "INCOMPLETE deploy" in r.stderr
+
+
+def test_no_github_remote_releases_to_origin_only(sandbox):
+    subprocess.run([REAL_GIT, "remote", "remove", "github"], cwd=sandbox["repo"], check=True)
+    _hook(sandbox, 0)
+    r = _run(sandbox)
+    assert r.returncode == 0, r.stderr
+    pushes = [c for c in _calls(sandbox) if c.startswith("git push")]
+    assert pushes == ["git push origin main --tags"]
+    assert "git push github main --tags" in r.stderr
 
 
 def test_missing_hook_aborts(sandbox):
