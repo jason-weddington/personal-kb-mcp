@@ -20,6 +20,20 @@ from personal_kb.tools.ttl import compute_expires_at
 
 logger = logging.getLogger(__name__)
 
+HINTS_DESCRIPTION = (
+    "Structured hints for graph building (related_entities, person, tool). "
+    "Optional 'resolution' object records a corrected belief that is delivered "
+    "to future sessions: corrected_fact (required str), wrong_belief (str), "
+    "evidence (str), cue {tool, target_class, args_prefix} where a Bash "
+    "target_class is the two-word normalized command class such as 'git remote' "
+    "and args_prefix (optional str) narrows the match to commands whose "
+    "arguments start with it, provenance {capture: deliberate|autonomous, "
+    "grounding: observed|asserted, event_id}, observed_sessions (int >= 1), "
+    "scope (project|global; global applies in every project). The server "
+    "defaults capture to 'deliberate' and grounding to 'asserted' and rejects "
+    "a malformed resolution with 422."
+)
+
 _VALID_SENSITIVITY = {"internal", "restricted", "public"}
 
 _KB_ID_RE = re.compile(r"kb-\d{5}")
@@ -254,9 +268,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         ] = None,
         hints: Annotated[
             dict[str, object] | None,
-            Field(
-                description="Structured hints for graph building (related_entities, person, tool)"
-            ),
+            Field(description=HINTS_DESCRIPTION),
         ] = None,
         update_entry_id: Annotated[
             str | None,

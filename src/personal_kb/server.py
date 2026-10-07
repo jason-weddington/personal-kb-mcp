@@ -187,6 +187,9 @@ supersedes is a required kb_store parameter: the kb ids this entry replaces, or 
 Use hints to build the knowledge graph:
 - {"person": "jason"}, {"tool": "sqlite"} to link entities
 - {"related_entities": [{"id": "kb-00003", "edge_type": "depends_on"}]}
+- {"resolution": {"corrected_fact": "...", "cue": \
+{"tool": "Bash", "target_class": "git remote"}}} records a corrected belief \
+(see kb_store hints)
 
 FEEDBACK — help improve the KB:
 - kb_feedback: Call this whenever a KB query returned poor results (zero hits, \

@@ -228,7 +228,8 @@ def _store_batch_description(prefix: str) -> str:
         "Each entry dict requires: short_title, long_title, knowledge_details, "
         'supersedes (list of kb-XXXXX ids this entry replaces, or "none"). '
         "Optional fields: entry_type (default: factual_reference), project_ref, "
-        "source_context, confidence_level (default: 0.9), tags, hints, ttl, distinct_from."
+        "source_context, confidence_level (default: 0.9), tags, hints, ttl, distinct_from. "
+        f"hints may carry a resolution object; see {prefix}store."
     )
 
 
@@ -245,7 +246,9 @@ def register_kb_store_batch(mcp: FastMCP, prefix: str = "kb_") -> None:
                     "Required keys: short_title, long_title, knowledge_details, "
                     'supersedes (list of kb-XXXXX ids or "none"). '
                     "Optional: entry_type, project_ref, source_context, "
-                    "confidence_level, tags, hints, sensitivity, ttl, distinct_from."
+                    "confidence_level, tags, hints, sensitivity, ttl, distinct_from. "
+                    "hints may carry a resolution object "
+                    "(see the store tool's hints description)."
                 ),
             ),
         ],

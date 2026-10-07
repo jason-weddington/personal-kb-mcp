@@ -30,7 +30,7 @@ from kb_core.ingest.safety import detect_secrets_in_content
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.ttl import compute_expires_at
 
-from kb_service.attribution import resolve_attribution
+from kb_service.attribution import is_machine_principal, resolve_attribution
 from kb_service.auth import get_current_user, require_admin
 from kb_service.models import User
 from kb_service.models_kb import (
@@ -46,6 +46,10 @@ from kb_service.models_kb import (
     StoreBatchResponse,
     StoreRequest,
     StoreResponse,
+)
+from kb_service.resolution_hint import (
+    ResolutionHintError,
+    validate_and_stamp_resolution,
 )
 from kb_service.routes.map_write_guards import (
     _check_machine_principal_map_lint,
@@ -242,6 +246,149 @@ async def _warn_if_build_failed(kb: Any, writer: str, targets: list[str]) -> Non
         )
 
 
+# ─── resolution helpers ──────────────────────────────────────────────────────
+
+# Greppable log marker for every hints.resolution decision this module makes.
+RESOLUTION_ROUTE_MARKER = "resolution-route"
+
+
+def _log_resolution(
+    op: str,
+    outcome: str,
+    reason: str,
+    *,
+    writer: str | None,
+    entry_id: str | None,
+    is_machine: bool,
+    stamped: dict[str, Any] | None,
+    prior_capture: str | None = None,
+) -> None:
+    """Emit the one INFO trail line for a request entry carrying a resolution.
+
+    ``stamped`` is the stamped resolution (None for a rejected line).
+    """
+    capture = grounding = cue_tool = tclass = scope = None
+    if stamped is not None:
+        prov = stamped.get("provenance") or {}
+        capture = prov.get("capture")
+        grounding = prov.get("grounding")
+        cue = stamped.get("cue") or {}
+        cue_tool = cue.get("tool")
+        tclass = cue.get("target_class")
+        scope = stamped.get("scope", "project")
+    logger.info(
+        "%s op=%s outcome=%s reason=%s writer=%r entry_id=%r is_machine=%s "
+        "capture_stamped=%s grounding=%s cue_tool=%r target_class=%r scope=%r "
+        "prior_capture=%r",
+        RESOLUTION_ROUTE_MARKER,
+        op,
+        outcome,
+        reason,
+        writer,
+        entry_id,
+        is_machine,
+        capture,
+        grounding,
+        cue_tool,
+        tclass,
+        scope,
+        prior_capture,
+    )
+
+
+class _MachineFlag:
+    """Lazily computed, at-most-once ``is_machine_principal`` for a request."""
+
+    def __init__(self, user: User) -> None:
+        self._user = user
+        self._value: bool | None = None
+
+    async def get(self) -> bool:
+        if self._value is None:
+            self._value = await is_machine_principal(self._user)
+        return self._value
+
+
+async def _stamp_resolution(
+    hints: dict[str, Any] | None,
+    machine: _MachineFlag,
+    *,
+    op: str,
+    entry_type: Any,
+    writer: str | None,
+    entry_id: str | None = None,
+    existing_hints: dict[str, Any] | None = None,
+    prefix: str = "",
+) -> dict[str, Any] | None:
+    """Validate/stamp ``hints.resolution``; no-op (identity) without one.
+
+    Raises:
+        HTTPException: 422 on a ``ResolutionHintError``.
+    """
+    if not isinstance(hints, dict) or "resolution" not in hints:
+        return hints
+    is_machine = await machine.get()
+    prior = None
+    if existing_hints is not None and isinstance(
+        existing_hints.get("resolution"), dict
+    ):
+        prov = existing_hints["resolution"].get("provenance")
+        prior = (
+            prov["capture"]
+            if isinstance(prov, dict) and isinstance(prov.get("capture"), str)
+            else "deliberate"
+        )
+    try:
+        stamped = validate_and_stamp_resolution(
+            hints,
+            is_machine=is_machine,
+            entry_type=getattr(entry_type, "value", entry_type),
+            existing_hints=existing_hints,
+        )
+    except ResolutionHintError as exc:
+        _log_resolution(
+            op,
+            "rejected",
+            exc.reason,
+            writer=writer,
+            entry_id=entry_id,
+            is_machine=is_machine,
+            stamped=None,
+            prior_capture=prior,
+        )
+        raise HTTPException(status_code=422, detail=prefix + str(exc)) from exc
+    _log_resolution(
+        op,
+        "accepted",
+        "ok",
+        writer=writer,
+        entry_id=entry_id,
+        is_machine=is_machine,
+        stamped=(stamped or {}).get("resolution"),
+        prior_capture=prior,
+    )
+    return stamped
+
+
+async def _warn_resolution_dropped(
+    kb: Any,
+    new_label: str,
+    stamped_hints: dict[str, Any] | None,
+    targets: list[str],
+) -> None:
+    """WARN when a superseder carries no resolution but a target does."""
+    if not targets or "resolution" in (stamped_hints or {}):
+        return
+    for target_id in targets:
+        target = await kb.get(target_id)
+        if target is not None and "resolution" in (target.hints or {}):
+            logger.warning(
+                "resolution_dropped_by_supersede new=%s superseded=%s",
+                new_label,
+                target_id,
+            )
+
+
 # ─── endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -272,6 +419,10 @@ async def store(
         expires_at = _parse_ttl(body.ttl)
         _check_secrets(body.knowledge_details, kb)
         entry_type = body.entry_type or EntryType.FACTUAL_REFERENCE
+        machine = _MachineFlag(user)
+        stamped = await _stamp_resolution(
+            body.hints, machine, op="store", entry_type=entry_type, writer=None
+        )
         _check_orphan_mental_map(entry_type, body.knowledge_details, body.hints)
         await _check_machine_principal_map_lint(
             entry_type, body.knowledge_details, user
@@ -295,7 +446,7 @@ async def store(
         effective = sorted(
             set(hint_targets) | set(_request_supersedes(body.supersedes))
         )
-        store_hints = body.hints
+        store_hints = stamped
         if effective:
             problems = await kb.check_supersedes(
                 effective, writer_id=None, writer_entry_type=entry_type
@@ -313,7 +464,7 @@ async def store(
                     status_code=422,
                     detail="supersedes rejected: " + "; ".join(problems),
                 )
-            store_hints = {**(body.hints or {}), "supersedes": effective}
+            store_hints = {**(stamped or {}), "supersedes": effective}
         _log_supersedes_decision(
             "store",
             "accepted" if effective else "none",
@@ -367,6 +518,7 @@ async def store(
         )
         if effective:
             await _warn_if_build_failed(kb, entry.id, effective)
+            await _warn_resolution_dropped(kb, entry.id, stamped, effective)
         await record_stored(
             kb, decision, entry_id=entry.id, contributor=attr.contributor
         )
@@ -409,6 +561,15 @@ async def store(
     effective_details = (
         body.knowledge_details if body.knowledge_details else existing.knowledge_details
     )
+    stamped = await _stamp_resolution(
+        body.hints,
+        _MachineFlag(user),
+        op="update",
+        entry_type=effective_entry_type,
+        writer=entry_id,
+        entry_id=entry_id,
+        existing_hints=existing.hints,
+    )
     effective_hints: dict[str, Any] = dict(existing.hints)
     if body.hints:
         effective_hints.update(body.hints)
@@ -435,7 +596,7 @@ async def store(
     # Supersedes on update: a MONOTONIC union with what the entry already
     # records. Only targets NEW to this entry are validated, so recorded ones
     # (possibly inactive by now) are grandfathered; nothing is retracted here.
-    update_hints = body.hints
+    update_hints = stamped
     new_targets: list[str] = []
     request_targets = _request_supersedes(body.supersedes)
     if request_targets or (body.hints is not None and "supersedes" in body.hints):
@@ -476,7 +637,7 @@ async def store(
                     status_code=422,
                     detail="supersedes rejected: " + "; ".join(problems),
                 )
-        update_hints = {**(body.hints or {}), "supersedes": merged}
+        update_hints = {**(stamped or {}), "supersedes": merged}
     _log_supersedes_decision(
         "update",
         "accepted" if new_targets else "none",
@@ -611,8 +772,20 @@ async def store_batch(
     batch_supersedes: list[list[str]] = []
     batch_distinct_from: list[list[str]] = []
     batch_decisions: list[Any] = []
+    batch_hints: list[dict[str, Any] | None] = []
+    machine = _MachineFlag(user)
     for i, raw in enumerate(body.entries):
         prefix = f"entry {i}: "
+        batch_hints.append(
+            await _stamp_resolution(
+                raw.hints,
+                machine,
+                op="store_batch",
+                entry_type=raw.entry_type or EntryType.FACTUAL_REFERENCE,
+                writer=None,
+                prefix=prefix,
+            )
+        )
         if raw.ttl is not None:
             try:
                 compute_expires_at(raw.ttl)
@@ -681,12 +854,18 @@ async def store_batch(
 
     # ── build facade dicts ────────────────────────────────────────────────
     entry_dicts: list[dict[str, Any]] = []
-    for raw, effective, distinct in zip(
-        body.entries, batch_supersedes, batch_distinct_from, strict=True
+    for raw, effective, distinct, stamped_hints in zip(
+        body.entries,
+        batch_supersedes,
+        batch_distinct_from,
+        batch_hints,
+        strict=True,
     ):
         expires_at = compute_expires_at(raw.ttl) if raw.ttl is not None else None
         hints = (
-            {**(raw.hints or {}), "supersedes": effective} if effective else raw.hints
+            {**(stamped_hints or {}), "supersedes": effective}
+            if effective
+            else stamped_hints
         )
         if distinct:
             hints = {**(hints or {}), "distinct_from": distinct}
@@ -720,6 +899,9 @@ async def store_batch(
         )
         if batch_supersedes[idx]:
             await _warn_if_build_failed(kb, e.id, batch_supersedes[idx])
+            await _warn_resolution_dropped(
+                kb, f"batch[{idx}]", batch_hints[idx], batch_supersedes[idx]
+            )
 
     # Re-fetch each created entry to pick up has_embedding
     refreshed: list[KnowledgeEntry] = []

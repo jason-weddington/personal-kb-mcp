@@ -411,3 +411,11 @@ async def test_batch_tolerates_missing_superseded_ids():
     )
     assert "Created kb-00001" in result
     assert "Supersedes:" not in result
+
+
+def test_store_batch_description_mentions_resolution() -> None:
+    from personal_kb.tools.kb_store_batch import _store_batch_description
+
+    desc = _store_batch_description("kb_")
+    assert "resolution" in desc
+    assert "kb_store" in desc

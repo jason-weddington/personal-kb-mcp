@@ -13,6 +13,7 @@ No installation needed — just add the MCP config below and your client handles
 - **Synthesized answers** — `kb_summarize` retrieves relevant entries and uses Claude Haiku to produce cited prose answers
 - **File ingestion** — Bulk-import existing notes, code, and docs from disk with LLM-powered extraction
 - **Multi-user attribution** — Server-side identity injection (`KB_CONTRIBUTOR`, `KB_TEAM`), per-entry attribution visible in all output, contributor/team search filters, audit trail for mutations
+- **Resolutions** — a `hints.resolution` object records a corrected belief (with an optional Bash command cue) that the service validates, stamps with provenance and delivers to future sessions; `packages/kb-service/scripts/seed_resolutions.py` seeds them from existing procedure entries (dry run by default)
 - **Graceful degradation** — Every optional component (Ollama, Anthropic, vector search) fails gracefully; core storage and FTS always work
 
 ## Prerequisites

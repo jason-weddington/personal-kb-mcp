@@ -280,6 +280,20 @@ GROUP BY 1;
 
 Two follow-ups: missed duplicates are `clear` rows whose `entry_id` later becomes the target of a `supersedes` edge; and the escape agents chose after a 409 is found by joining `conflict` rows to later `resolved` rows with the same `text_sha`.
 
+## Resolutions (hints.resolution)
+
+A resolution is a corrected belief stored in an entry's `hints` under `resolution`; future sessions receive it through the prevention channels. The format is owned by `kb_service/prevention.py` (the reader), and `kb_service/resolution_hint.py` is the producer-side validator: `corrected_fact` (required, at most 1000 characters), optional `wrong_belief`, `evidence`, `cue` (`tool`, `target_class`, optional `args_prefix`), `provenance` (`capture`, `grounding`, `event_id`), `observed_sessions` and `scope` (`project` or `global`). `provenance.event_id` is an additive key the reader ignores.
+
+`POST /api/kb/store` (create and update) and `POST /api/kb/store_batch` validate any request whose hints carry `resolution` before every other guard, so a shape error is a 422 (`entry i: ...` in a batch, where one bad entry stores nothing) and never a 409. A resolution on a `mental_map` entry is a 422, because the reader excludes maps. A Bash cue's `target_class` must be a fixed point of `kb_core.cues.target_class`.
+
+Stamping: the machine principal's resolution is always `capture='autonomous'` (a supplied `deliberate` is overridden and logged as `resolution_capture_forced`); any other writer defaults to `deliberate`. Grounding defaults to `asserted`; `observed` requires an `event_id`. An autonomous, non-observed resolution cannot replace a deliberate one (a stored resolution with no provenance counts as deliberate) and is a 422 `deliberate_protected`. An update that omits `resolution` leaves the stored one untouched (shallow hint merge in kb-core).
+
+A superseder must carry the resolution forward to keep it alive: nothing is copied automatically, and a write that supersedes an entry holding a resolution without carrying one logs the WARNING `resolution_dropped_by_supersede`.
+
+Every request entry that carries a resolution emits one INFO line starting `resolution-route` (op, outcome, reason, writer, capture, grounding, cue, scope, prior capture).
+
+`packages/kb-service/scripts/seed_resolutions.py` seeds resolutions from existing procedure entries over HTTP. It is a dry run unless `--apply` is given. `--pinned-file` supplies `{entry_id: resolution}` written verbatim (no LLM; apply it with a non-machine-principal key or the capture is downgraded and reported as `capture_forced`). Other entries pass a regex prefilter, an LLM draft, and an ordered guard: `llm_unparseable`, `declined`, `empty_fact`, `bad_scope`, `not_normalized`, `not_two_word`, `example_mismatch`, `denylisted`, `class_collision`. Writes use a `change_reason` starting `seed_resolutions:` (the after-the-fact query key) and are re-fetched and verified. `--audit` is read-only and re-checks every stored resolution against the live validator and cues normalizer; run it after any cues normalizer change.
+
 ## Mental Maps
 
 The `mental_map` entry type is the directory tier of the KB: an orientation node whose body is *pointers and structure*, never retrievable values. The settled design lives in `docs/mental-map-prespec.md` §7; this section documents the shipped code that implements it. The push half — the `personal-kb-hook` CLI — is documented in the next section; what follows is everything in the MCP server itself that makes maps a distinct entry type.

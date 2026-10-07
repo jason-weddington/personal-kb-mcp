@@ -869,3 +869,10 @@ async def test_skew_warning_fires_on_real_mismatch_with_hints(caplog):
         ctx=ctx,
     )
     assert [r for r in caplog.records if "supersession-client mismatch" in r.getMessage()]
+
+
+def test_hints_description_documents_resolution() -> None:
+    from personal_kb.tools.kb_store import HINTS_DESCRIPTION
+
+    for word in ("resolution", "corrected_fact", "target_class", "global"):
+        assert word in HINTS_DESCRIPTION

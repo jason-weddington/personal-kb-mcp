@@ -294,3 +294,8 @@ def test_instructions_supersedes_is_a_parameter_not_a_hint():
     text = _build_instructions("kb_")
     assert '{"supersedes"' not in text
     assert "supersedes is a required kb_store parameter" in text
+
+
+def test_build_instructions_mentions_resolution_hint():
+    """The hints section documents the resolution hint."""
+    assert "resolution" in _build_instructions("kb_")
