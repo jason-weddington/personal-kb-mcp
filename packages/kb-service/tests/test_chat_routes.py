@@ -123,7 +123,8 @@ def test_stream_happy_path_event_order(
 _UPDATE_TOOL_CALL = (
     "```json\n"
     '{"tool": "update_entry", "args": {'
-    '"entry_id": "kb-00001", "knowledge_details": "New details."}}\n'
+    '"entry_id": "kb-00001", "knowledge_details": "New details.",'
+    ' "change_reason": "User asked"}}\n'
     "```"
 )
 
@@ -153,6 +154,7 @@ def test_stream_tool_call_attribution(
     assert kb.update_calls, "Expected at least one update call"
     _, kwargs = kb.update_calls[0]
     assert kwargs["updated_by"] == fake_user().email
+    assert kwargs["change_reason"] == "User asked"
 
     # SSE stream contains tool result event
     assert "event: chat_tool_result" in body
@@ -469,3 +471,33 @@ def test_stream_returns_404_in_no_auth_mode(
         json={"message": "hi"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "args_extra", ["", ', "change_reason": "   "', ', "change_reason": 5']
+)
+def test_stream_update_entry_requires_change_reason(
+    chat_client: tuple[TestClient, str], args_extra: str
+) -> None:
+    """Missing, blank or non-string change_reason is rejected; kb.update not called."""
+    tc, token = chat_client
+    kb: FakeKnowledgeBase = app.state.kb  # type: ignore[assignment]
+    kb.config.ingest.skip_safety = True
+
+    llm = FakeLLM()
+    llm.enqueue(
+        '```json\n{"tool": "update_entry", "args": {"entry_id": "kb-00001",'
+        f' "knowledge_details": "x"{args_extra}}}}}\n```'
+    )
+    llm.enqueue("Could not update.")
+    kb.synthesis_llm = llm
+
+    resp = tc.post(
+        "/api/chat/stream",
+        params={"token": token},
+        json={"message": "Update kb-00001."},
+    )
+    assert resp.status_code == 200
+    assert not kb.update_calls
+    assert "event: chat_tool_result" in resp.text
+    assert '"success":false' in resp.text.replace(" ", "")

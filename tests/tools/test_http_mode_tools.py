@@ -1329,3 +1329,69 @@ async def test_kb_search_forwards_include_superseded(passed, expected):
     kwargs = {} if passed is None else {"include_superseded": passed}
     await kb_search(query="python testing", limit=5, ctx=ctx, **kwargs)
     assert bodies[-1]["include_superseded"] is expected
+
+
+# ---------------------------------------------------------------------------
+# kb_maintain deactivate — HTTP-mode validation + forwarding
+# ---------------------------------------------------------------------------
+
+
+def _maintain_tool():
+    from personal_kb.tools.kb_maintain import register_kb_maintain
+
+    return _register(register_kb_maintain)
+
+
+@pytest.mark.asyncio
+async def test_kb_maintain_deactivate_requires_change_reason():
+    calls: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(req)
+        return httpx.Response(200, json={"entry": _ENTRY_JSON})
+
+    tool = _maintain_tool()
+    for reason in (None, "   "):
+        result = await tool(
+            action="deactivate", entry_id="kb-00001", change_reason=reason, ctx=_make_ctx(handler)
+        )
+        assert result == "Error: change_reason is required for deactivate action."
+    assert not calls
+
+
+@pytest.mark.asyncio
+async def test_kb_maintain_deactivate_forwards_reason_and_superseded_by():
+    bodies: list[dict[str, Any]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"entry": _ENTRY_JSON})
+
+    result = await _maintain_tool()(
+        action="deactivate",
+        entry_id="kb-00001",
+        change_reason="replaced",
+        superseded_by="kb-00002",
+        ctx=_make_ctx(handler),
+    )
+    assert result.startswith("Deactivated entry kb-00001")
+    assert bodies == [{"change_reason": "replaced", "superseded_by": "kb-00002"}]
+
+
+@pytest.mark.asyncio
+async def test_kb_maintain_deactivate_invalid_superseded_by():
+    calls: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(req)
+        return httpx.Response(200, json={"entry": _ENTRY_JSON})
+
+    result = await _maintain_tool()(
+        action="deactivate",
+        entry_id="kb-00001",
+        change_reason="replaced",
+        superseded_by="nope",
+        ctx=_make_ctx(handler),
+    )
+    assert result.startswith("Error:") and "superseded_by" in result
+    assert not calls

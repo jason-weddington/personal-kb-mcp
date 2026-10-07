@@ -69,7 +69,7 @@ _WRITE_TOOLS_PROMPT: str = (
     "Available tools:\n"
     "- update_entry: Update an existing KB entry."
     " Args: entry_id (required), knowledge_details, tags, project_ref,"
-    " sensitivity, ttl, change_reason\n"
+    " sensitivity, ttl; change_reason (required: why the entry is changed)\n"
     "- ingest_url: Ingest a URL into the KB. Args: url (required), project_ref\n"
     "\n"
     "Rules:\n"
@@ -325,6 +325,14 @@ class ChatSession:
                 message="entry_id is required",
             )
 
+        change_reason = args.get("change_reason")
+        if not isinstance(change_reason, str) or not change_reason.strip():
+            return _ToolResult(
+                tool="update_entry",
+                success=False,
+                message="change_reason is required for update_entry",
+            )
+
         sensitivity = args.get("sensitivity")
         if sensitivity is not None and sensitivity not in _VALID_SENSITIVITY:
             sorted_valid = ", ".join(sorted(_VALID_SENSITIVITY))
@@ -371,7 +379,7 @@ class ChatSession:
             entry = await self.kb.update(
                 str(entry_id),
                 knowledge_details=knowledge_details,
-                change_reason=args.get("change_reason"),
+                change_reason=change_reason,
                 tags=tags,
                 updated_by=self.attribution.contributor,
                 sensitivity=sensitivity,

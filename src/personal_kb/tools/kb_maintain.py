@@ -1,6 +1,7 @@
 """kb_maintain MCP tool — database maintenance operations."""
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -86,6 +87,10 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
             str | None,
             Field(description="For deactivate: why the entry is being retired (required)"),
         ] = None,
+        superseded_by: Annotated[
+            str | None,
+            Field(description="For deactivate: ID of the entry that replaces this one (kb-NNNNN)"),
+        ] = None,
         ctx: Context | None = None,
     ) -> str:
         """Administrative maintenance operations for the knowledge base.
@@ -94,7 +99,8 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         Actions:
         - stats: Database overview (entry counts, graph stats, embeddings)
-        - deactivate: Soft-delete an entry (requires entry_id; change_reason over HTTP)
+        - deactivate: Soft-delete an entry (requires entry_id; over HTTP also requires
+          change_reason, the reason it is retired; superseded_by is the entry that replaces it)
         - reactivate: Undo deactivation (requires entry_id)
         - rebuild_embeddings: Re-embed entries (force=True for all)
         - rebuild_graph: Full graph reconstruction from all active entries
@@ -125,8 +131,15 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
                     return "Error: entry_id is required for deactivate action."
                 if not change_reason or not change_reason.strip():
                     return "Error: change_reason is required for deactivate action."
+                if superseded_by is not None and not re.fullmatch(r"kb-\d{5}", superseded_by):
+                    return (
+                        f"Error: superseded_by '{superseded_by}' is not a valid entry ID"
+                        " (expected kb-NNNNN)."
+                    )
                 try:
-                    entry = await backend.deactivate(entry_id, change_reason=change_reason)
+                    entry = await backend.deactivate(
+                        entry_id, change_reason=change_reason, superseded_by=superseded_by
+                    )
                 except BackendHttpError as exc:
                     return _map_error(exc, "")
                 return f"Deactivated entry {entry.id}: {entry.short_title}"
