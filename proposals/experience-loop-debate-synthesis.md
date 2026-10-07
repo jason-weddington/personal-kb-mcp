@@ -1,6 +1,16 @@
 # Experience loop: moderator synthesis
 
 
+> **Amendment 2 (Jason, 2026-10-07): repeat mistakes are days apart.** Recurrence within 5 tool calls measures in-session recovery, not learning. The primary metric is the **cross-session repeat rate**: for each failure cue, the share of later sessions (days apart, on any harness or machine) that hit the same cue after it was first captured and resolved. It is reported per cue, per week, by harness, with the baseline backfilled from historical transcripts and Talos run records. A cue that never recurs is a success.
+>
+> Consequences:
+>
+> - Failure-time delivery only fires after the repeat has happened. It is the **recovery** channel, measured separately by turns-to-recovery, and it is not the first bet.
+> - The **prevention** channels become the first bet, both fed by the same cue index:
+>   - the cue-keyed soft gate on PreToolUse (tool + target, deny once with the procedure attached);
+>   - the session-start slice of known gotchas.
+> - The live 20% holdout is dropped. At cross-session volume it would take months to reach a signal. The replay experiment (known mistakes, KB on vs off) is the causal test.
+
 > **Amendment (Jason, 2026-10-07) — read this before anything below.** The KB is an agent tool. Jason never writes, reviews, confirms or curates entries; agents are his interface to the KB. Every "human-authored", "human-confirmed", "your confirmation", "your queue" or "review minutes" mechanism below is void. Read the provenance tiers as follows:
 >
 > - **Deliberate** replaces human-authored: an agent stored the entry because the session's human asked it to.
