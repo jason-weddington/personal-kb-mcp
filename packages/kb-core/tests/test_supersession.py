@@ -201,6 +201,13 @@ async def test_update_entry_does_not_overwrite_superseded_by(kb: KnowledgeBase) 
 # ─── GraphBuilder integration ─────────────────────────────────────────────────
 
 
+async def check_store_with_supersedes_sets_target(kb: KnowledgeBase) -> None:
+    """Shared body (SQLite + Postgres): storing B with hints.supersedes=[A] points A at B."""
+    a = await _store(kb, "A")
+    b = await _store(kb, "B", hints={"supersedes": [a]})
+    assert await _superseded_by(kb, a) == b
+
+
 async def test_store_with_supersedes_sets_target_and_rebuild_retracts(kb: KnowledgeBase) -> None:
     a = await _store(kb, "A")
     b = await _store(kb, "B", hints={"supersedes": [a]})
@@ -210,6 +217,10 @@ async def test_store_with_supersedes_sets_target_and_rebuild_retracts(kb: Knowle
     assert entry_b is not None
     await kb.graph_builder.build_for_entry(entry_b.model_copy(update={"hints": {"supersedes": []}}))
     assert await _superseded_by(kb, a) is None
+
+
+async def test_store_with_supersedes_sets_target(kb: KnowledgeBase) -> None:
+    await check_store_with_supersedes_sets_target(kb)
 
 
 async def test_rebuild_writes_no_edge_from_superseded_by(kb: KnowledgeBase) -> None:
@@ -234,7 +245,8 @@ async def test_related_entities_supersedes_is_ignored(
 # ─── deactivate / reactivate ──────────────────────────────────────────────────
 
 
-async def test_deactivating_superseder_clears_target(kb: KnowledgeBase) -> None:
+async def check_deactivating_superseder_clears_target(kb: KnowledgeBase) -> None:
+    """Shared body (SQLite + Postgres): deactivating B clears A.superseded_by."""
     a = await _store(kb, "A")
     b = await _store(kb, "B", hints={"supersedes": [a]})
     assert await _superseded_by(kb, a) == b
@@ -252,7 +264,12 @@ async def test_deactivating_superseder_clears_target(kb: KnowledgeBase) -> None:
     assert await _superseded_by(kb, a) == b
 
 
-async def test_deactivate_with_superseded_by(kb: KnowledgeBase) -> None:
+async def test_deactivating_superseder_clears_target(kb: KnowledgeBase) -> None:
+    await check_deactivating_superseder_clears_target(kb)
+
+
+async def check_deactivate_with_superseded_by(kb: KnowledgeBase) -> None:
+    """Shared body (SQLite + Postgres): deactivate(A, superseded_by=B) in one transaction."""
     a = await _store(kb, "A")
     b = await _store(kb, "B")
     entry = await kb.deactivate(a, change_reason="replaced", superseded_by=b)
@@ -266,6 +283,10 @@ async def test_deactivate_with_superseded_by(kb: KnowledgeBase) -> None:
 
     await kb.update(b, knowledge_details="newer", change_reason="edit", enrich=False)
     assert await _superseded_by(kb, a) == b
+
+
+async def test_deactivate_with_superseded_by(kb: KnowledgeBase) -> None:
+    await check_deactivate_with_superseded_by(kb)
 
 
 async def test_store_deactivate_entry_default_audit_detail_is_short_title(

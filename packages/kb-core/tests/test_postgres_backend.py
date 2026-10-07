@@ -60,6 +60,7 @@ from embedding_retry_queue_shape import (
     EXPECTED_PRIMARY_KEY,
     EXPECTED_TEXT_COLUMNS,
 )
+from kb_core import create_postgres
 from kb_core.embedding_retry import (
     _claim_due,
     _vectorless_unqueued_count,
@@ -165,11 +166,19 @@ from supersession_fixture import (
 from supersession_fixture import (
     superseded_by_map,
 )
+from test_supersession import (
+    check_deactivate_with_superseded_by,
+    check_deactivating_superseder_clears_target,
+    check_store_with_supersedes_sets_target,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     # Only used in ``pg_kb: PostgresBackend`` annotations below (stringified
     # under ``from __future__ import annotations``).
     from kb_core.db.postgres_backend import PostgresBackend
+    from kb_core.knowledge_base import KnowledgeBase
 
 pytestmark = pytest.mark.postgres
 
@@ -1082,3 +1091,39 @@ async def test_find_near_duplicates_on_postgres(pg_kb: PostgresBackend) -> None:
     res = await find_near_duplicates(pg_kb, query, project_ref="p", floor=0.88)
     assert [c.id for c in res.candidates] == ["kb-80001"]
     assert abs(res.candidates[0].similarity - 0.95) < 1e-4
+
+
+@pytest.fixture
+async def pg_supersession_kb(
+    pg_kb: PostgresBackend, pg_temp_db: str
+) -> AsyncIterator[KnowledgeBase]:
+    """A Postgres-backed KnowledgeBase on the (already truncated) throwaway DB."""
+    instance = await create_postgres(
+        pg_temp_db,
+        embedder=None,
+        extraction_llm=None,
+        query_llm=None,
+        synthesis_llm=None,
+    )
+    try:
+        yield instance
+    finally:
+        await instance.close()
+
+
+async def test_supersession_store_sets_target_on_postgres(
+    pg_supersession_kb: KnowledgeBase,
+) -> None:
+    await check_store_with_supersedes_sets_target(pg_supersession_kb)
+
+
+async def test_supersession_deactivate_with_superseded_by_on_postgres(
+    pg_supersession_kb: KnowledgeBase,
+) -> None:
+    await check_deactivate_with_superseded_by(pg_supersession_kb)
+
+
+async def test_supersession_deactivating_superseder_clears_target_on_postgres(
+    pg_supersession_kb: KnowledgeBase,
+) -> None:
+    await check_deactivating_superseder_clears_target(pg_supersession_kb)
