@@ -272,6 +272,45 @@ _SCHEMA_STATEMENTS: list[str] = [
     " ON failure_events(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_failure_events_received_ts"
     " ON failure_events(received_ts)",
+    # gate_decisions: SERVICE DB sink for the prevention soft gate. One row
+    # per hook-recorded decision (POST /api/kb/prevention/decisions);
+    # decision_id is the idempotency key. See routes/prevention_routes.py.
+    "CREATE TABLE IF NOT EXISTS gate_decisions ("
+    "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+    "decision_id TEXT NOT NULL UNIQUE, "
+    "session_id TEXT NOT NULL, "
+    "harness TEXT NOT NULL, "
+    "mode TEXT NOT NULL CHECK (mode IN ('interactive', 'headless')), "
+    "engine TEXT, "
+    "host TEXT, "
+    "hook_version TEXT, "
+    "project TEXT NOT NULL DEFAULT '', "
+    "resolution_id TEXT NOT NULL DEFAULT '', "
+    "resolution_updated_at TEXT, "
+    "tool TEXT NOT NULL, "
+    "target TEXT NOT NULL DEFAULT '', "
+    "target_class TEXT NOT NULL DEFAULT '', "
+    "decision TEXT NOT NULL CHECK (decision IN ('denied', 'would_deny', "
+    "'skipped_already_denied', 'skipped_cap', 'retry', 'armed', 'summary')), "
+    "shadow INTEGER NOT NULL DEFAULT 0, "
+    "reason_excerpt TEXT, "
+    "retry_changed_command INTEGER, "
+    "prior_target TEXT, "
+    "observed_once INTEGER NOT NULL DEFAULT 0, "
+    "index_len INTEGER, "
+    "slice_len INTEGER, "
+    "pre_tool_calls INTEGER, "
+    "pre_tool_errors INTEGER, "
+    "last_error_type TEXT, "
+    "tool_use_id TEXT, "
+    "ts TEXT NOT NULL, "
+    "received_ts TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_gate_decisions_session"
+    " ON gate_decisions(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_gate_decisions_resolution_ts"
+    " ON gate_decisions(resolution_id, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_gate_decisions_received_ts"
+    " ON gate_decisions(received_ts)",
 ]
 
 

@@ -2,19 +2,27 @@
 
 Reads a JSON payload from stdin, branches on ``hook_event_name``:
 
+* **PreToolUse** — the prevention soft gate
+  (:func:`personal_kb_hook.prevention.pre_tool`): reads the session's cached
+  Bash cue index, NO network, and on a match prints a one-time ``deny``
+  envelope verbatim (regardless of ``--format``); otherwise no stdout.
 * **SessionStart** / **UserPromptSubmit** — resolves the project via the
   committed ``.kb_project`` walk-up, looks the resolved project up in the
   on-disk JSONL / HTTP maps index, applies per-session suppression, and
   prints a factual directory string. On ``UserPromptSubmit``, also checks
   the listener cache for a pending whisper and appends it (whisper-last).
+  On ``SessionStart``, also fetches the prevention payload
+  (:func:`personal_kb_hook.prevention.session_start`); a non-empty gotcha
+  slice is emitted in the same single output, before the directory.
 * **PostToolUseFailure** — forwards the failed tool call as a record-only
   ``post_tool`` event to ``POST /api/kb/event`` (the failure-cue index) via
   :func:`personal_kb_hook.events.post_failure`. Never produces stdout — no
   additionalContext and no decision of any kind.
 * **PostToolUse** — whisper-telemetry consume on ``kb_get``. Never produces
   stdout.
-* **Stop** — when the listener gate is enabled, extracts the assistant
-  manifest from the transcript and spawns a detached listener-worker
+* **Stop** — records/flushes the soft-gate decision log and refreshes the
+  prevention cache (unconditionally); then, when the listener gate is
+  enabled, extracts the assistant manifest from the transcript and spawns a detached listener-worker
   subprocess. Never produces stdout; never calls :func:`http_index.load_index`.
 
 Tolerant by design: any error path — empty stdin, malformed JSON, an
@@ -26,6 +34,7 @@ resolved project, the same maps already surfaced this session — results in
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import socket
@@ -36,7 +45,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-from personal_kb_hook import events, http_index, listener, telemetry, whisper_debug
+from personal_kb_hook import (
+    events,
+    http_index,
+    listener,
+    prevention,
+    telemetry,
+    whisper_debug,
+)
 from personal_kb_hook.index_reader import MapKey
 from personal_kb_hook.listener_worker import _MAX_POINTERS_PER_KB
 from personal_kb_hook.paths import get_listener_cache_path
@@ -51,7 +67,14 @@ from personal_kb_hook.roster import load_roster
 from personal_kb_hook.suppression import EmitReason, get_surfaced_map_ids, mark_emitted, should_emit
 
 _SUPPORTED_EVENTS = frozenset(
-    {"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure"}
+    {
+        "PreToolUse",
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "PostToolUse",
+        "PostToolUseFailure",
+    }
 )
 _KB_GET_TOOL_NAMES = frozenset({"mcp__personal-kb__kb_get", "mcp__team-kb__team_kb_get"})
 
@@ -131,6 +154,10 @@ def main(argv: list[str] | None = None) -> None:
         # and produce no stdout.
         return
 
+    # SessionStart gotcha slice: once fetched it must reach stdout exactly once
+    # on EVERY exit path of the directory pipeline (incl. an unexpected error).
+    slice_state: dict[str, Any] = {"text": None, "emitted": False}
+
     try:
         payload = _read_payload()
         if payload is None:
@@ -138,6 +165,14 @@ def main(argv: list[str] | None = None) -> None:
 
         event_name = payload.get("hook_event_name")
         if not isinstance(event_name, str) or event_name not in _SUPPORTED_EVENTS:
+            return
+
+        # PreToolUse: prevention soft gate. Cache-only — NO network, no index,
+        # no roster, no resolver. The deny envelope is written verbatim.
+        if event_name == "PreToolUse":
+            decision = prevention.pre_tool(payload)
+            if decision is not None:
+                sys.stdout.write(decision)
             return
 
         cwd = payload.get("cwd")
@@ -194,6 +229,11 @@ def main(argv: list[str] | None = None) -> None:
             session_id_stop_raw = payload.get("session_id")
             if isinstance(session_id_stop_raw, str) and session_id_stop_raw:
                 telemetry.flush_session(session_id_stop_raw)
+                # Prevention: abandoned-retry + summary rows, flush the gate
+                # log, then refresh the cache (delivers server switch flips).
+                prevention.stop(payload)
+                prevention.flush_gate_log(session_id_stop_raw)
+                prevention.refresh(payload)
 
             if not listener.is_listener_enabled():
                 return
@@ -271,6 +311,8 @@ def main(argv: list[str] | None = None) -> None:
             session_id_ss = payload.get("session_id")
             if isinstance(session_id_ss, str) and session_id_ss:
                 telemetry.orphan_sweep(session_id_ss)
+                prevention.orphan_sweep(session_id_ss)
+            slice_state["text"] = prevention.session_start(payload)
 
         # Pending whisper check — UserPromptSubmit only, independent of the
         # directory pipeline's early returns (lines below).  Wrapped in its
@@ -441,8 +483,13 @@ def main(argv: list[str] | None = None) -> None:
                 whisper_pre_pairs = []
                 whisper_emitted_pairs = []
 
-        # Helper: emit whisper-only and update cache
+        # Helper: emit whisper-only (UserPromptSubmit) or slice-only
+        # (SessionStart) on an early return, and update the whisper cache.
         def _flush_whisper() -> None:
+            if slice_state["text"] is not None:
+                slice_state["emitted"] = True
+                _emit(args, event_name, slice_state["text"])
+                return
             if whisper and whisper_emitted_pairs and whisper_cache_path is not None:
                 _emit(args, event_name, whisper)
                 listener.write_listener_cache(
@@ -561,7 +608,10 @@ def main(argv: list[str] | None = None) -> None:
 
         # Compose final output: directory + optional whisper (whisper last)
         combined = directory + "\n" + whisper if whisper else directory
+        if slice_state["text"] is not None:
+            combined = slice_state["text"] + "\n" + combined
 
+        slice_state["emitted"] = True
         _emit(args, event_name, combined)
 
         mark_emitted(
@@ -629,6 +679,9 @@ def main(argv: list[str] | None = None) -> None:
 
     except Exception:
         # Intentional broad catch: the hook must NEVER raise into the harness.
+        if slice_state["text"] is not None and not slice_state["emitted"]:
+            with contextlib.suppress(Exception):
+                _emit(args, "SessionStart", slice_state["text"])
         return
 
 

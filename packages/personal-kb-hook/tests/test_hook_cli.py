@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from personal_kb_hook import cli, listener
+from personal_kb_hook import cli, listener, prevention
 from personal_kb_hook.paths import get_listener_cache_path
 from personal_kb_hook.render import BANNED_TOKENS, render_directory
 
@@ -1477,6 +1477,7 @@ def test_one_kb_down_wall_deadline_elapsed_lt_3p5s(
     is < 3.5s. Proves the single ``wait(timeout=3.0)`` deadline actually
     fires — not a 1.5s fast-fail per call (which would not exercise the cap).
     """
+    monkeypatch.setattr(prevention, "session_start", lambda payload: None)
     import threading
     import time
 

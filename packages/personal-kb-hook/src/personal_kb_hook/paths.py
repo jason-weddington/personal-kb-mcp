@@ -78,3 +78,21 @@ def get_event_drop_log_path() -> Path:
     failure heartbeat should be cross-checked against this log.
     """
     return Path("~/.cache/personal_kb/event-drops.jsonl").expanduser()
+
+
+def get_prevention_cache_path(session_id: str) -> Path:
+    """Return the per-session prevention cache path (hook-only, no drift-guard twin).
+
+    Holds the soft-gate settings and Bash cue index fetched from
+    ``GET /api/kb/prevention`` plus the session's deny-once state.
+    """
+    return Path(f"~/.cache/personal_kb/prevention-{session_id}.json").expanduser()
+
+
+def get_gate_log_path(session_id: str) -> Path:
+    """Return the per-session soft-gate decision log (hook-only).
+
+    PreToolUse appends one jsonl row per gate decision here (it never touches
+    the network); Stop batch-POSTs the file to ``/api/kb/prevention/decisions``.
+    """
+    return Path(f"~/.cache/personal_kb/gate-log-{session_id}.jsonl").expanduser()

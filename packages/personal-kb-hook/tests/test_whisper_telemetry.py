@@ -42,7 +42,7 @@ from typing import Any
 
 import pytest
 
-from personal_kb_hook import cli, listener_worker, roster, telemetry
+from personal_kb_hook import cli, listener_worker, prevention, roster, telemetry
 from personal_kb_hook.paths import get_whisper_log_path
 
 # ─── shared fixtures / helpers ───────────────────────────────────────────────
@@ -766,6 +766,7 @@ def test_stop_flush_posts_even_when_listener_disabled(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """Stop flushes the jsonl even with PERSONAL_KB_LISTENER unset/FALSE."""
+    monkeypatch.setattr(prevention, "refresh", lambda payload: None)
     # Make sure the listener gate is OFF.
     monkeypatch.delenv("PERSONAL_KB_LISTENER", raising=False)
 
@@ -827,6 +828,7 @@ def test_two_kb_roster_posts_once_to_personal_endpoint(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """v1 routing: all rows POST to PERSONAL_KB_URL once, regardless of source_kb."""
+    monkeypatch.setattr(prevention, "refresh", lambda payload: None)
     session_id = "sess-2kb"
     # Two rows, one per source_kb — but Stop still POSTs to the personal endpoint.
     telemetry.append_row(
@@ -992,6 +994,7 @@ def test_flush_silent_when_personal_kb_url_unset(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
     """Stop flush is silent when PERSONAL_KB_URL is unset (no POST attempted)."""
+    monkeypatch.setattr(prevention, "refresh", lambda payload: None)
     monkeypatch.delenv("PERSONAL_KB_URL", raising=False)
     monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
 

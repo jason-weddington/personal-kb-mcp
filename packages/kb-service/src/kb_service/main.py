@@ -41,6 +41,7 @@ from kb_service.routes.map_loop_routes import router as map_loop_router
 from kb_service.routes.map_op_routes import router as map_op_router
 from kb_service.routes.maps_routes import router as maps_router
 from kb_service.routes.nudge_routes import router as nudge_router
+from kb_service.routes.prevention_routes import router as prevention_router
 from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
 from kb_service.routes.telemetry_routes import router as telemetry_router
@@ -242,6 +243,7 @@ app.include_router(chat_router)
 app.include_router(cluster_ledger_router)
 app.include_router(listener_router)
 app.include_router(event_router)
+app.include_router(prevention_router)
 app.include_router(telemetry_router)
 app.include_router(embedding_queue_router)
 app.include_router(map_eligibility_router)

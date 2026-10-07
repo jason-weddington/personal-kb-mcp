@@ -1379,3 +1379,165 @@ class MapDeleteResponse(BaseModel):
     outbound_edges_deleted: int
     inbound_edges_deleted: int
     inbound_referrer_ids: list[str]
+
+
+# --- Prevention channels (SessionStart gotcha slice + PreToolUse soft gate) ---
+
+
+class GateSettings(BaseModel):
+    """Server-side soft-gate switches, read per request from the environment."""
+
+    enabled: bool
+    shadow: bool
+    max_denies: int
+
+
+class IndexCue(BaseModel):
+    """One gate-index entry: a Bash two-word-class cue the hook may deny once.
+
+    ``args_prefix`` ('' when absent) narrows the match: after the tokens that
+    produced ``target_class``, flags are dropped and the remaining tokens must
+    start with ``args_prefix.split()``.
+    """
+
+    resolution_id: str
+    updated_at: str
+    tool: str
+    target_class: str
+    args_prefix: str = ""
+    wrong_belief: str
+    corrected_fact: str
+    evidence: str
+    provenance_label: str
+    observed_once: bool
+
+
+class SliceItem(BaseModel):
+    """One line of the SessionStart gotcha slice."""
+
+    entry_id: str
+    corrected_fact: str
+    wrong_belief: str
+    provenance_label: str
+
+
+class PreventionDiagnostics(BaseModel):
+    """Load/cap counters for one ``GET /api/kb/prevention`` request."""
+
+    resolutions_total: int = 0
+    skipped_malformed: int = 0
+    skipped_observed_once: int = 0
+    index_truncated: int = 0
+    slice_truncated: int = 0
+
+
+class PreventionResponse(BaseModel):
+    """``GET /api/kb/prevention`` — gate settings, gate index and gotcha slice."""
+
+    project: str
+    gate: GateSettings
+    index: list[IndexCue]
+    slice: list[SliceItem]
+    slice_text: str
+    diagnostics: PreventionDiagnostics
+
+
+GateDecision = Literal[
+    "denied",
+    "would_deny",
+    "skipped_already_denied",
+    "skipped_cap",
+    "retry",
+    "armed",
+    "summary",
+]
+
+
+class GateDecisionRow(BaseModel):
+    """One hook-recorded soft-gate decision (a ``gate_decisions`` row)."""
+
+    decision_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    harness: str = "claude-code"
+    mode: Literal["interactive", "headless"] = "interactive"
+    engine: str | None = None
+    host: str | None = None
+    hook_version: str | None = None
+    project: str = ""
+    resolution_id: str = ""
+    resolution_updated_at: str | None = None
+    tool: str = Field(min_length=1)
+    target: str = ""
+    target_class: str = ""
+    decision: GateDecision
+    shadow: bool = False
+    reason_excerpt: str | None = None
+    retry_changed_command: bool | None = None
+    prior_target: str | None = None
+    observed_once: bool = False
+    index_len: int | None = None
+    slice_len: int | None = None
+    pre_tool_calls: int | None = None
+    pre_tool_errors: int | None = None
+    last_error_type: str | None = None
+    tool_use_id: str | None = None
+    ts: str | None = None
+
+
+class GateDecisionBatch(BaseModel):
+    """``POST /api/kb/prevention/decisions`` body (at most 500 rows)."""
+
+    rows: list[GateDecisionRow] = Field(max_length=500)
+
+
+class GateDecisionResponse(BaseModel):
+    """Insert outcome of a decisions batch."""
+
+    inserted: int
+    duplicates: int
+
+
+class GateStatsResolutionRow(BaseModel):
+    """Per-resolution gate outcome counts."""
+
+    resolution_id: str
+    denied: int
+    would_deny: int
+    retries: int
+    retries_changed: int
+    followed_by_failure: int
+
+
+class GateStatsHostRow(BaseModel):
+    """Per-(harness, mode, host) 'armed' liveness counts."""
+
+    harness: str
+    mode: str
+    host: str | None
+    armed: int
+    last_ts: str
+    hook_version: str | None
+
+
+class GateInvariantViolations(BaseModel):
+    """Breaches of deny-once / cap that the hook should make impossible."""
+
+    over_cap_sessions: int
+    repeat_deny_pairs: int
+
+
+class GateStatsResponse(BaseModel):
+    """``GET /api/kb/prevention/stats`` — soft-gate efficacy and health."""
+
+    since: str
+    counts: dict[str, int]
+    armed_sessions: int
+    retries: int
+    retries_changed: int
+    retries_abandoned: int
+    retry_changed_share: float | None
+    would_deny_precision: float | None
+    pre_tool_errors_total: int
+    by_resolution: list[GateStatsResolutionRow]
+    by_host: list[GateStatsHostRow]
+    invariant_violations: GateInvariantViolations

@@ -90,6 +90,7 @@ async def test_service_db_lives_next_to_kb_db_path(local_env: Path) -> None:
             "whisper_telemetry",
             "listener_decisions",
             "failure_events",
+            "gate_decisions",
         } <= names
         mode = await db.fetchval("PRAGMA journal_mode")
         assert mode == "wal"
@@ -166,6 +167,25 @@ async def test_failure_events_schema_is_idempotent(local_env: Path) -> None:
         indexes = await db.fetchval(
             "SELECT COUNT(*) FROM sqlite_master"
             " WHERE type = 'index' AND name LIKE 'idx_failure_events_%'"
+        )
+        assert tables == 1
+        assert indexes == 3
+    finally:
+        await database.close_db()
+
+
+async def test_gate_decisions_schema_is_idempotent(local_env: Path) -> None:
+    await database.init_db()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        tables = await db.fetchval(
+            "SELECT COUNT(*) FROM sqlite_master"
+            " WHERE type = 'table' AND name = 'gate_decisions'"
+        )
+        indexes = await db.fetchval(
+            "SELECT COUNT(*) FROM sqlite_master"
+            " WHERE type = 'index' AND name LIKE 'idx_gate_decisions_%'"
         )
         assert tables == 1
         assert indexes == 3
