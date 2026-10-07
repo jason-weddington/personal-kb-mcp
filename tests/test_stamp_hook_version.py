@@ -29,6 +29,26 @@ def _load_module():  # type: ignore[no-untyped-def]
 
 stamp_hook_version_mod = _load_module()
 
+_REAL_PYPROJECTS = sorted(
+    [REPO_ROOT / "pyproject.toml", *REPO_ROOT.glob("packages/*/pyproject.toml")]
+)
+
+
+@pytest.fixture(autouse=True)
+def _real_tree_untouched():  # type: ignore[no-untyped-def]
+    """Fail any test that writes to the repo's real pyproject files.
+
+    main() stamps every path it is not given explicitly, so a test that omits
+    one flag silently rewrites the working tree (it once set kb-core to 2.0.0
+    on every gate run, and dispatch agents committed it).
+    """
+    before = {p: p.read_bytes() for p in _REAL_PYPROJECTS}
+    yield
+    changed = [str(p.relative_to(REPO_ROOT)) for p, b in before.items() if p.read_bytes() != b]
+    for p, b in before.items():
+        p.write_bytes(b)
+    assert not changed, f"test modified real files: {changed}"
+
 
 ROOT_PYPROJECT_TEMPLATE = """\
 [project]
@@ -121,6 +141,8 @@ def test_main_end_to_end_with_explicit_paths(
     root, hook = _write_pair(tmp_path, "2.0.0", "0.1.0")
     svc = tmp_path / "svc.toml"
     svc.write_text(hook.read_text())
+    core = tmp_path / "core.toml"
+    core.write_text(hook.read_text())
     rc = stamp_hook_version_mod.main(
         [
             "--root-pyproject",
@@ -129,6 +151,8 @@ def test_main_end_to_end_with_explicit_paths(
             str(hook),
             "--service-pyproject",
             str(svc),
+            "--core-pyproject",
+            str(core),
         ]
     )
     assert rc == 0
@@ -144,6 +168,8 @@ def test_main_is_noop_when_already_matching(
     root, hook = _write_pair(tmp_path, "2.0.0", "2.0.0")
     svc = tmp_path / "svc.toml"
     svc.write_text(hook.read_text())
+    core = tmp_path / "core.toml"
+    core.write_text(hook.read_text())
     rc = stamp_hook_version_mod.main(
         [
             "--root-pyproject",
@@ -152,6 +178,8 @@ def test_main_is_noop_when_already_matching(
             str(hook),
             "--service-pyproject",
             str(svc),
+            "--core-pyproject",
+            str(core),
         ]
     )
     assert rc == 0
