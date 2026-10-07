@@ -237,6 +237,41 @@ _SCHEMA_STATEMENTS: list[str] = [
     # text_source: where the hook got the judged text
     # ('last_assistant_message' | 'transcript'); NULL on old rows/hooks.
     "ALTER TABLE listener_decisions ADD COLUMN IF NOT EXISTS text_source TEXT",
+    # failure_events: SERVICE DB sink for the failure-cue index. One row per
+    # recorded post_tool failure (POST /api/kb/event); event_id is the
+    # idempotency key (ON CONFLICT DO NOTHING). cue_key and every normalized
+    # column come from kb_core.cues.build_cue — see that module for the rules
+    # and CUE_NORMALIZER_VERSION. Record-only: nothing is delivered back yet.
+    "CREATE TABLE IF NOT EXISTS failure_events ("
+    "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+    "event_id TEXT NOT NULL UNIQUE, "
+    "cue_key TEXT NOT NULL, "
+    "normalizer_version INTEGER NOT NULL, "
+    "session_id TEXT NOT NULL, "
+    "harness TEXT NOT NULL, "
+    "mode TEXT NOT NULL CHECK (mode IN ('interactive', 'headless')), "
+    "engine TEXT, "
+    "host TEXT, "
+    "hook_version TEXT, "
+    "host_class TEXT NOT NULL, "
+    "project TEXT NOT NULL DEFAULT '', "
+    "project_source TEXT NOT NULL, "
+    "tool TEXT NOT NULL, "
+    "target TEXT NOT NULL DEFAULT '', "
+    "target_class TEXT NOT NULL DEFAULT '', "
+    "normalized_error TEXT NOT NULL, "
+    "error_rule TEXT NOT NULL, "
+    "anomaly TEXT, "
+    "raw_error_excerpt TEXT NOT NULL, "
+    "is_interrupt INTEGER NOT NULL DEFAULT 0, "
+    "ts TEXT NOT NULL, "
+    "received_ts TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_failure_events_cue_ts"
+    " ON failure_events(cue_key, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_failure_events_session"
+    " ON failure_events(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_failure_events_received_ts"
+    " ON failure_events(received_ts)",
 ]
 
 

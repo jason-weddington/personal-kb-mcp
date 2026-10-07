@@ -7,6 +7,12 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
   on-disk JSONL / HTTP maps index, applies per-session suppression, and
   prints a factual directory string. On ``UserPromptSubmit``, also checks
   the listener cache for a pending whisper and appends it (whisper-last).
+* **PostToolUseFailure** — forwards the failed tool call as a record-only
+  ``post_tool`` event to ``POST /api/kb/event`` (the failure-cue index) via
+  :func:`personal_kb_hook.events.post_failure`. Never produces stdout — no
+  additionalContext and no decision of any kind.
+* **PostToolUse** — whisper-telemetry consume on ``kb_get``. Never produces
+  stdout.
 * **Stop** — when the listener gate is enabled, extracts the assistant
   manifest from the transcript and spawns a detached listener-worker
   subprocess. Never produces stdout; never calls :func:`http_index.load_index`.
@@ -30,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-from personal_kb_hook import http_index, listener, telemetry, whisper_debug
+from personal_kb_hook import events, http_index, listener, telemetry, whisper_debug
 from personal_kb_hook.index_reader import MapKey
 from personal_kb_hook.listener_worker import _MAX_POINTERS_PER_KB
 from personal_kb_hook.paths import get_listener_cache_path
@@ -44,7 +50,9 @@ from personal_kb_hook.resolver import resolve_project
 from personal_kb_hook.roster import load_roster
 from personal_kb_hook.suppression import EmitReason, get_surfaced_map_ids, mark_emitted, should_emit
 
-_SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse"})
+_SUPPORTED_EVENTS = frozenset(
+    {"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure"}
+)
 _KB_GET_TOOL_NAMES = frozenset({"mcp__personal-kb__kb_get", "mcp__team-kb__team_kb_get"})
 
 
@@ -134,6 +142,11 @@ def main(argv: list[str] | None = None) -> None:
 
         cwd = payload.get("cwd")
         cwd_str = cwd if isinstance(cwd, str) else None
+
+        # PostToolUseFailure: record-only failure-cue event; ZERO stdout.
+        if event_name == "PostToolUseFailure":
+            events.post_failure(payload)
+            return
 
         # ------------------------------------------------------------------ #
         # PostToolUse event: whisper-telemetry consume; NEVER touches index   #

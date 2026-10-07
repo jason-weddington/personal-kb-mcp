@@ -89,6 +89,7 @@ async def test_service_db_lives_next_to_kb_db_path(local_env: Path) -> None:
             "chat_messages",
             "whisper_telemetry",
             "listener_decisions",
+            "failure_events",
         } <= names
         mode = await db.fetchval("PRAGMA journal_mode")
         assert mode == "wal"
@@ -149,6 +150,25 @@ async def test_init_db_is_idempotent_across_restarts(local_env: Path) -> None:
             r["name"] for r in await db.fetch("PRAGMA table_info(whisper_telemetry)")
         }
         assert {"emit_count", "last_emitted_ts"} <= wt_cols
+    finally:
+        await database.close_db()
+
+
+async def test_failure_events_schema_is_idempotent(local_env: Path) -> None:
+    await database.init_db()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        tables = await db.fetchval(
+            "SELECT COUNT(*) FROM sqlite_master"
+            " WHERE type = 'table' AND name = 'failure_events'"
+        )
+        indexes = await db.fetchval(
+            "SELECT COUNT(*) FROM sqlite_master"
+            " WHERE type = 'index' AND name LIKE 'idx_failure_events_%'"
+        )
+        assert tables == 1
+        assert indexes == 3
     finally:
         await database.close_db()
 

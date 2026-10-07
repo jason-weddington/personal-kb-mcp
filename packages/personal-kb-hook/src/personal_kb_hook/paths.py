@@ -66,3 +66,15 @@ def get_whisper_debug_log_path(session_id: str) -> Path:
     the server; no orphan-sweep; no rotation.
     """
     return Path(f"~/.cache/personal_kb/whisper-debug-{session_id}.log").expanduser()
+
+
+def get_event_drop_log_path() -> Path:
+    """Return the harness-event drop log path (hook-only, no drift-guard twin).
+
+    ``events.post_failure`` appends one jsonl line here for every
+    ``PostToolUseFailure`` event it could not deliver to ``POST /api/kb/event``
+    (missing fields, no URL/key, timeout, URL error, non-2xx). The file is
+    unlinked before an append once it exceeds 256 KB. A zero server-side
+    failure heartbeat should be cross-checked against this log.
+    """
+    return Path("~/.cache/personal_kb/event-drops.jsonl").expanduser()

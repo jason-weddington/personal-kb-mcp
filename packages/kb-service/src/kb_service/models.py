@@ -701,6 +701,73 @@ class WhisperTelemetryFlushResponse(BaseModel):
     upserted: int
 
 
+# --- Harness events (failure-cue index) ---
+
+
+class EventRequest(BaseModel):
+    """Request body for ``POST /api/kb/event``.
+
+    The full harness-event envelope is defined here, but only ``post_tool``
+    failures are acted on today; every other ``type`` is accepted and
+    answered with ``reason='unsupported-type'``.
+    """
+
+    type: Literal["session_start", "pre_tool", "post_tool", "turn_end"]
+    event_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    harness: str = "claude-code"
+    mode: Literal["interactive", "headless"] = "interactive"
+    engine: str | None = None
+    host: str | None = None
+    hook_version: str | None = None
+    cwd: str | None = None
+    project: str | None = None
+    ts: str | None = None
+    tool_name: str | None = None
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+    tool_use_id: str | None = None
+    error: str | None = None
+    is_error: bool = True
+    is_interrupt: bool = False
+    duration_ms: int | None = None
+
+
+class EventResponse(BaseModel):
+    """Response for ``POST /api/kb/event`` — record-only, no delivery content."""
+
+    recorded: bool
+    cue_key: str | None = None
+    normalizer_version: int | None = None
+    reason: Literal[
+        "recorded",
+        "duplicate",
+        "not-failure",
+        "unsupported-type",
+        "missing-fields",
+        "write-failed",
+    ]
+
+
+class EventHeartbeatRow(BaseModel):
+    """One (harness, mode, host) group in the failure-event heartbeat."""
+
+    harness: str
+    mode: str
+    host: str | None
+    count: int
+    anomalies: int
+    last_ts: str
+    hook_version: str | None
+
+
+class EventHeartbeatResponse(BaseModel):
+    """Response for ``GET /api/kb/event/heartbeat``."""
+
+    since: str
+    rows: list[EventHeartbeatRow]
+    route_outcomes: dict[str, int]
+
+
 class IngestFileResult(BaseModel):
     """Lossless mirror of kb-core's ``FileResult`` dataclass for P5 round-trip.
 

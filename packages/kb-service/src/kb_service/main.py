@@ -28,6 +28,7 @@ from kb_service.routes.auth_routes import router as auth_router
 from kb_service.routes.chat_routes import router as chat_router
 from kb_service.routes.cluster_ledger_routes import router as cluster_ledger_router
 from kb_service.routes.embedding_queue_routes import router as embedding_queue_router
+from kb_service.routes.event_routes import router as event_router
 from kb_service.routes.ingest_routes import router as ingest_router
 from kb_service.routes.kb_read_routes import router as kb_read_router
 from kb_service.routes.kb_routes import router as kb_router
@@ -240,6 +241,7 @@ app.include_router(ingest_router)
 app.include_router(chat_router)
 app.include_router(cluster_ledger_router)
 app.include_router(listener_router)
+app.include_router(event_router)
 app.include_router(telemetry_router)
 app.include_router(embedding_queue_router)
 app.include_router(map_eligibility_router)
