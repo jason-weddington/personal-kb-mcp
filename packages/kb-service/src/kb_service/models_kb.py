@@ -33,6 +33,13 @@ class StoreRequest(BaseModel):
     ttl: str | None = None
     update_entry_id: str | None = None
     change_reason: str | None = None
+    supersedes: list[str] | Literal["none"] | None = Field(
+        None,
+        description=(
+            "Entry ids this entry replaces. Absent (older clients), [] and the"
+            " literal 'none' all mean no supersession."
+        ),
+    )
 
 
 class StoreResponse(BaseModel):
@@ -40,6 +47,12 @@ class StoreResponse(BaseModel):
 
     action: Literal["created", "updated"]
     entry: KnowledgeEntry
+    superseded_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "create: all validated targets; update: targets newly added by this request"
+        ),
+    )
 
 
 class StoreBatchEntry(BaseModel):
@@ -61,6 +74,13 @@ class StoreBatchEntry(BaseModel):
     hints: dict[str, Any] | None = None
     sensitivity: Literal["internal", "restricted", "public"] | None = None
     ttl: str | None = None
+    supersedes: list[str] | Literal["none"] | None = Field(
+        None,
+        description=(
+            "Entry ids this entry replaces. Absent (older clients), [] and the"
+            " literal 'none' all mean no supersession."
+        ),
+    )
 
 
 class StoreBatchRequest(BaseModel):
@@ -82,6 +102,18 @@ class StoreBatchResponse(BaseModel):
 
     requested: int
     created: list[KnowledgeEntry]
+
+
+class DeactivateRequest(BaseModel):
+    """Optional body for ``POST /api/kb/entries/{id}/deactivate``.
+
+    Both fields default to ``None`` on purpose: the route returns its own
+    readable 422 for a missing ``change_reason`` rather than pydantic's
+    list envelope.
+    """
+
+    change_reason: str | None = None
+    superseded_by: str | None = None
 
 
 class EntryActionResponse(BaseModel):

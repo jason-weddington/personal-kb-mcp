@@ -17,6 +17,7 @@ from kb_core.db.queries import (
 )
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.version import EntryVersion
+from kb_core.supersession import outgoing_supersedes_targets, recompute_superseded_by
 
 logger = logging.getLogger(__name__)
 
@@ -213,9 +214,17 @@ class KnowledgeStore:
         await self.db.commit()
 
     async def deactivate_entry(
-        self, entry_id: str, contributor: str | None = None
+        self,
+        entry_id: str,
+        contributor: str | None = None,
+        change_reason: str | None = None,
     ) -> KnowledgeEntry:
-        """Deactivate an entry (soft-delete). Entry must exist and be active."""
+        """Deactivate an entry (soft-delete). Entry must exist and be active.
+
+        The audit detail is *change_reason* (``short_title`` when None). Every
+        target this entry supersedes is recomputed, since an inactive entry
+        no longer qualifies as a superseder.
+        """
         async with self.db.transaction():
             existing = await get_entry(self.db, entry_id)
             if existing is None:
@@ -224,10 +233,16 @@ class KnowledgeStore:
                 raise ValueError(f"Entry {entry_id} is already inactive")
 
             await deactivate_entry_db(self.db, entry_id)
-            entry = await get_entry(self.db, entry_id)
             await _record_audit_event(
-                self.db, "entry_deactivated", entry_id, contributor, existing.short_title
+                self.db,
+                "entry_deactivated",
+                entry_id,
+                contributor,
+                change_reason if change_reason is not None else existing.short_title,
             )
+            targets = await outgoing_supersedes_targets(self.db, entry_id)
+            await recompute_superseded_by(self.db, targets | {entry_id}, trigger="deactivate")
+            entry = await get_entry(self.db, entry_id)
         logger.info("Deactivated entry %s", entry_id)
         return entry  # type: ignore[return-value]
 
@@ -243,10 +258,12 @@ class KnowledgeStore:
                 raise ValueError(f"Entry {entry_id} is already active")
 
             await reactivate_entry_db(self.db, entry_id)
-            entry = await get_entry(self.db, entry_id)
             await _record_audit_event(
                 self.db, "entry_reactivated", entry_id, contributor, existing.short_title
             )
+            targets = await outgoing_supersedes_targets(self.db, entry_id)
+            await recompute_superseded_by(self.db, targets | {entry_id}, trigger="build")
+            entry = await get_entry(self.db, entry_id)
         logger.info("Reactivated entry %s", entry_id)
         return entry  # type: ignore[return-value]
 

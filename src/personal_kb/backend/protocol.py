@@ -89,8 +89,18 @@ class Backend(Protocol):
         """
         ...
 
-    async def deactivate(self, entry_id: str) -> KnowledgeEntry:
-        """Soft-delete an entry.  Returns the deactivated entry."""
+    async def deactivate(
+        self,
+        entry_id: str,
+        *,
+        change_reason: str | None = None,
+        superseded_by: str | None = None,
+    ) -> KnowledgeEntry:
+        """Soft-delete an entry.  Returns the deactivated entry.
+
+        ``change_reason`` is required by the server; ``superseded_by`` names
+        the newer entry that replaces this one, when there is one.
+        """
         ...
 
     async def reactivate(self, entry_id: str) -> KnowledgeEntry:

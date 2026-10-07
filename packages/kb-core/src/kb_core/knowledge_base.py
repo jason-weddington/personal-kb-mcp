@@ -95,6 +95,7 @@ if TYPE_CHECKING:
     from kb_core.map_eligibility import MapEligibilityOverride, MapEligibilityVerdict
     from kb_core.models.search import SearchQuery, SearchResult
     from kb_core.search.embedder_protocol import Embedder
+    from kb_core.supersession import SupersessionReconcileReport
 
 logger = logging.getLogger(__name__)
 
@@ -767,12 +768,75 @@ class KnowledgeBase:
             await self._enrich_one(entry)
         return entry
 
-    async def deactivate(self, entry_id: str, *, contributor: str | None = None) -> KnowledgeEntry:
-        """Soft-delete an entry. ``contributor`` defaults to the configured one."""
+    async def deactivate(
+        self,
+        entry_id: str,
+        *,
+        contributor: str | None = None,
+        change_reason: str | None = None,
+        superseded_by: str | None = None,
+    ) -> KnowledgeEntry:
+        """Soft-delete an entry in ONE transaction, maintaining supersession.
+
+        When *superseded_by* is set, that entry's ``hints.supersedes`` gains
+        *entry_id* (no version bump) and the ``supersedes`` edge is written.
+        The entry is then deactivated, its outgoing non-map edges are removed
+        (the cleanup the HTTP route used to do itself) and ``superseded_by``
+        is recomputed for every target it superseded plus itself.
+        ``contributor`` defaults to the configured one. Callers validate
+        *superseded_by* first (the route runs ``check_supersedes``).
+        """
+        from kb_core.supersession import (
+            add_supersedes_hint,
+            insert_supersedes_edge,
+            outgoing_supersedes_targets,
+            recompute_superseded_by,
+        )
+
         contributor = (
             contributor if contributor is not None else self._config.attribution.contributor
         )
-        return await self._store.deactivate_entry(entry_id, contributor=contributor)
+        async with self._db.transaction():
+            if superseded_by is not None:
+                await add_supersedes_hint(self._db, superseded_by, entry_id)
+                await insert_supersedes_edge(self._db, superseded_by, entry_id)
+            await self._store.deactivate_entry(
+                entry_id, contributor=contributor, change_reason=change_reason
+            )
+            old_targets = await outgoing_supersedes_targets(self._db, entry_id)
+            await self._db.execute(
+                "DELETE FROM graph_edges WHERE source = ? AND source NOT IN "
+                "(SELECT id FROM knowledge_entries WHERE entry_type = 'mental_map')",
+                (entry_id,),
+            )
+            await recompute_superseded_by(self._db, old_targets | {entry_id}, trigger="deactivate")
+            entry = await get_entry(self._db, entry_id)
+        if entry is None:  # pragma: no cover - deactivate_entry raised first
+            raise ValueError(f"Entry {entry_id} not found")
+        return entry
+
+    async def check_supersedes(
+        self,
+        target_ids: list[str],
+        *,
+        writer_id: str | None,
+        writer_entry_type: EntryType,
+    ) -> list[str]:
+        """Validate supersedes targets; problem strings, ``[]`` when all valid.
+
+        See :func:`kb_core.supersession.check_supersedes_targets`.
+        """
+        from kb_core.supersession import check_supersedes_targets
+
+        return await check_supersedes_targets(
+            self._db, target_ids, writer_id=writer_id, writer_entry_type=writer_entry_type
+        )
+
+    async def reconcile_supersession(self) -> SupersessionReconcileReport:
+        """Run the idempotent supersession reconcile (backfill edges + recompute)."""
+        from kb_core.supersession import reconcile_supersession
+
+        return await reconcile_supersession(self._db)
 
     async def reactivate(self, entry_id: str, *, contributor: str | None = None) -> KnowledgeEntry:
         """Restore a previously deactivated entry."""

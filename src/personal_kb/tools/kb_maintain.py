@@ -82,6 +82,10 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
             str | None,
             Field(description="ISO date for list_feedback/summarize_feedback/search_stats"),
         ] = None,
+        change_reason: Annotated[
+            str | None,
+            Field(description="For deactivate: why the entry is being retired (required)"),
+        ] = None,
         ctx: Context | None = None,
     ) -> str:
         """Administrative maintenance operations for the knowledge base.
@@ -90,7 +94,7 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
 
         Actions:
         - stats: Database overview (entry counts, graph stats, embeddings)
-        - deactivate: Soft-delete an entry (requires entry_id)
+        - deactivate: Soft-delete an entry (requires entry_id; change_reason over HTTP)
         - reactivate: Undo deactivation (requires entry_id)
         - rebuild_embeddings: Re-embed entries (force=True for all)
         - rebuild_graph: Full graph reconstruction from all active entries
@@ -119,8 +123,10 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
             if action == "deactivate":
                 if not entry_id:
                     return "Error: entry_id is required for deactivate action."
+                if not change_reason or not change_reason.strip():
+                    return "Error: change_reason is required for deactivate action."
                 try:
-                    entry = await backend.deactivate(entry_id)
+                    entry = await backend.deactivate(entry_id, change_reason=change_reason)
                 except BackendHttpError as exc:
                     return _map_error(exc, "")
                 return f"Deactivated entry {entry.id}: {entry.short_title}"
@@ -151,7 +157,7 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
         if action == "stats":
             return await _action_stats(db)
         elif action == "deactivate":
-            return await _action_deactivate(db, store, entry_id, contributor)
+            return await _action_deactivate(db, store, entry_id, contributor, change_reason)
         elif action == "reactivate":
             return await _action_reactivate(
                 db, store, graph_builder, graph_enricher, entry_id, contributor
@@ -228,13 +234,16 @@ async def _action_deactivate(
     store: KnowledgeStore,
     entry_id: str | None,
     contributor: str | None = None,
+    change_reason: str | None = None,
 ) -> str:
     """Soft-delete an entry and clean up graph edges."""
     if not entry_id:
         return "Error: entry_id is required for deactivate action."
 
     try:
-        entry = await store.deactivate_entry(entry_id, contributor=contributor)
+        entry = await store.deactivate_entry(
+            entry_id, contributor=contributor, change_reason=change_reason
+        )
     except ValueError as e:
         return f"Error: {e}"
 

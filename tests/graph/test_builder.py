@@ -177,14 +177,13 @@ async def test_supersedes_rejects_free_text(db, graph_builder):
 
 
 @pytest.mark.asyncio
-async def test_superseded_by_creates_reversed_edge(db, graph_builder):
+async def test_superseded_by_writes_no_reversed_edge(db, graph_builder):
+    """superseded_by is derived state; rebuilding an entry never writes an edge from it."""
     entry = _make_entry(superseded_by="kb-00050")
     await graph_builder.build_for_entry(entry)
 
-    # The edge goes from the superseder TO this entry
     edges = await _get_edges(db, source="kb-00050", edge_type="supersedes")
-    assert len(edges) == 1
-    assert edges[0]["target"] == "kb-00001"
+    assert edges == []
 
 
 # --- References ---

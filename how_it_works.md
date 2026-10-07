@@ -212,6 +212,38 @@ Output format is compact — entry ID, type, and short title only. Agents use `k
 
 See: `kb_core/preflight.py`, `src/personal_kb/tools/kb_preflight.py`
 
+## Supersession
+
+Supersession is structural: "B replaces A" is a `supersedes` graph edge from B to A, and `A.superseded_by` is **derived** from those edges, never written by hand. The code lives in `kb_core/supersession.py`.
+
+### The invariant
+
+Every `knowledge_entries` row's `superseded_by` equals the id of its newest qualifying superseder, or NULL if it has none. A qualifying superseder of T is a row S with `is_active = 1` and `entry_type != 'mental_map'`, joined by a `graph_edges` row `(S, T, 'supersedes')` whose `properties` JSON does not carry `source == 'llm'` (parsed in Python with `json.loads`, so no dialect-specific JSON SQL is needed). "Newest" means max `created_at`, which is immutable. `updated_at` is never used, because it moves on every edit and would flip the pointer. `created_at` is parsed with `datetime.fromisoformat`, naive values are treated as UTC, and ties break by id descending. The invariant holds whether T is active or inactive.
+
+`recompute_superseded_by(db, target_ids, *, trigger)` applies the invariant to a set of targets inside the caller's transaction (it opens none of its own). An unchanged target is not written, counted or logged. A changed one gets an UPDATE of `superseded_by` alone, with no version bump and no `updated_at` change. It also gets a `superseded_by_changed` audit row whose detail is `{old, new, candidates, trigger}`, plus an INFO line `supersession target=... old=... new=... candidates=... trigger=...`. `queries.update_entry` no longer writes `superseded_by` at all, so an update from a stale entry snapshot cannot clobber the derived value.
+
+### The writers
+
+`GraphBuilder.build_for_entry` captures the entry's old `supersedes` targets before clearing its edges. It rebuilds the edges, and its last statement recomputes the old targets, the new targets and the entry itself, so dropping a target from `hints.supersedes` clears that target's pointer in the same transaction. Builder step 5, which wrote a reversed edge from `entry.superseded_by`, is removed. Step 7 (`related_entities`) skips any item typed `supersedes` with a `supersession: ignoring related_entities supersedes edge` warning, so `hints.supersedes` is the single validated channel.
+
+`KnowledgeStore.deactivate_entry` (which gains an optional `change_reason` that becomes the audit detail) and `reactivate_entry` recompute the entry's outgoing targets and the entry itself. `KnowledgeBase.deactivate(entry_id, *, contributor, change_reason, superseded_by)` runs one transaction. When `superseded_by` is given, it appends `entry_id` to the superseder's `hints.supersedes` (a hints-only UPDATE plus a `supersedes_hint_appended` audit row) and inserts the edge. It then deactivates the entry, removes its outgoing non-map edges and recomputes. Hard delete and direct SQL are not maintained; the startup reconcile heals them.
+
+### Startup reconcile
+
+`reconcile_supersession(db)` is idempotent and runs in one transaction. First it backfills a missing `supersedes` edge for every active non-map entry whose `hints.supersedes` names an existing kb id that has no edge yet. Then it recomputes every supersedes-edge target and every row whose `superseded_by` is set. kb-service's lifespan calls `kb.reconcile_supersession()` right after opening the KB, inside a try/except that never blocks startup. It logs `supersession-reconcile edges_added=N set=N cleared=N` and one WARNING `supersession-reconcile drift target=... old=... new=...` per changed row; a failure logs `supersession-reconcile failed: ...`. After the first post-deploy startup has done the backfill, any `supersession-reconcile drift` line is a defect signal: some writer left the invariant broken.
+
+### The HTTP contract
+
+`StoreRequest` and `StoreBatchEntry` carry `supersedes: list[str] | "none" | None`. An absent field (an older client), `[]` and `"none"` all mean no supersession. On create, the effective set is the union of `body.supersedes` and the string items of `hints.supersedes`; a non-string hint item is a 422, never silently filtered. The set is validated with `kb.check_supersedes` before `kb.store`, and the problems are rendered as `supersedes rejected: ...`. A target must be a well-formed kb id that exists and is active. It must not be the writer itself or a mental_map, and it must not already supersede the writer (a cycle). A mental_map writer cannot supersede anything. Cross-project targets are allowed. `StoreResponse.superseded_ids` lists every validated target on create.
+
+On update, `change_reason` is required, and a missing or whitespace-only value is a 422 checked before everything else. Supersedes are a monotonic union with the targets the entry already records, and only the newly added targets are validated, so previously recorded targets (possibly inactive by now) are grandfathered. `hints={"supersedes": []}` retracts nothing; the only API path to retract is deactivating the superseder. `superseded_ids` lists only the newly added targets. `/store_batch` applies the create rule per entry in its up-front validation loop (`entry {i}: supersedes rejected: ...`).
+
+`POST /api/kb/entries/{id}/deactivate` takes an optional `{change_reason, superseded_by}` body, checked in this order: auth (401), the mental_map block (422), a missing change_reason (422), then `superseded_by` must exist and pass `check_supersedes` (422). Only after those does `kb.deactivate` run. Because of that order, an unknown id with no change_reason is a 422, not a 404. Every decision logs one `supersession-route op=... outcome=... mode=... writer=... targets=... problems=...` line. A validated target still unpointed after the write logs `supersession-route build_failed`, because `_build_graph` is best-effort and the next startup reconcile heals it.
+
+### Maps and superseded pointers
+
+`POST /api/kb/map-op` rejects a `create_map` whose body points at a superseded entry, and an `add_pointer` whose added entry is superseded. Both return 409 `pointer_superseded`, with a second trail line carrying the `(pointer, superseded_by)` pairs. `strike_gap` and `propose_gap` are unchanged, so pointers already in a map are grandfathered. `GET /api/kb/map-loop-input` adds `AND superseded_by IS NULL` to its own candidate CTE (the shared `MAPPABLE_ENTRY_WHERE_SQL` and the map-eligibility counts are unchanged), so somnus is never offered a superseded entry and the 409 is unreachable in normal operation.
+
 ## Mental Maps
 
 The `mental_map` entry type is the directory tier of the KB: an orientation node whose body is *pointers and structure*, never retrievable values. The settled design lives in `docs/mental-map-prespec.md` §7; this section documents the shipped code that implements it. The push half — the `personal-kb-hook` CLI — is documented in the next section; what follows is everything in the MCP server itself that makes maps a distinct entry type.
@@ -245,9 +277,9 @@ if entry_type == EntryType.MENTAL_MAP and not _mental_map_has_pointer(
 The check is a closed checklist that mirrors `kb_core/graph/builder.py`'s edge-producing logic exactly. An outbound pointer exists iff *any* of these is true:
 
 1. `knowledge_details` contains a `kb-XXXXX` reference (matched with the same `re.compile(r"kb-\d{5}")` the builder uses);
-2. the `supersedes` hint contains a string that `fullmatch`es `kb-XXXXX`;
-3. `superseded_by` is a non-empty string (the reversed edge the builder creates);
-4. the `related_entities` hint contains either a dict with a non-empty `id`/`target`, or a bare non-empty string.
+2. the `related_entities` hint contains either a dict with a non-empty `id`/`target`, or a bare non-empty string.
+
+The client-side copy in `kb_store.py` still also counts a `supersedes` hint and a non-empty `superseded_by`; those clauses are stale and are removed in a follow-up. The server-side guard (`kb_service/routes/map_write_guards.py::_mental_map_has_pointer`) no longer counts them: a mental_map cannot supersede anything (see Supersession), and the builder no longer derives any edge from `superseded_by`.
 
 Tag, project, person, and tool hints do **not** count — those are categorization, not orientation. Mirroring the builder's exact predicate set means a future change to what counts as a "pointer" needs to be made in exactly one place; the validator follows automatically.
 

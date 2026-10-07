@@ -25,7 +25,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from kb_core.ingest.safety import detect_secrets_in_content
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.ttl import compute_expires_at
@@ -37,9 +37,11 @@ from kb_service.models_kb import (
     BulkUpdatePair,
     BulkUpdateRequest,
     BulkUpdateResponse,
+    DeactivateRequest,
     EntryActionResponse,
     FeedbackRequest,
     FeedbackResponse,
+    StoreBatchEntry,
     StoreBatchRequest,
     StoreBatchResponse,
     StoreRequest,
@@ -122,6 +124,111 @@ _MAP_DEACTIVATE_BLOCKED = (
 )
 
 
+# ─── supersession helpers ────────────────────────────────────────────────────
+
+# Greppable log marker for every supersedes decision this module makes.
+SUPERSESSION_ROUTE_MARKER = "supersession-route"
+
+_CHANGE_REASON_UPDATE = (
+    "change_reason is required when updating an entry: say what changed and why."
+)
+_CHANGE_REASON_DEACTIVATE = (
+    "change_reason is required when deactivating an entry; if a newer entry "
+    "replaces this one, also pass superseded_by."
+)
+_HINTS_SUPERSEDES_SHAPE = (
+    "supersedes rejected: hints.supersedes must be a kb-id string or a list of "
+    "kb-id strings"
+)
+
+
+def _log_supersedes_decision(
+    op: str,
+    outcome: str,
+    *,
+    mode: str,
+    writer: str | None,
+    targets: list[str],
+    problems: list[str],
+) -> None:
+    """Emit the one INFO trail line for a supersedes decision.
+
+    ``op`` is store|store_batch|deactivate|update; ``outcome`` is
+    accepted|rejected|none|change_reason_missing; ``mode`` describes the raw
+    request ``supersedes`` field before normalization
+    (absent|none_literal|empty|list).
+    """
+    logger.info(
+        "%s op=%s outcome=%s mode=%s writer=%r targets=%r problems=%r",
+        SUPERSESSION_ROUTE_MARKER,
+        op,
+        outcome,
+        mode,
+        writer,
+        targets,
+        problems,
+    )
+
+
+def _supersedes_mode(raw: list[str] | str | None) -> str:
+    """Describe the raw request ``supersedes`` value for the trail line."""
+    if raw is None:
+        return "absent"
+    if raw == "none":
+        return "none_literal"
+    if not raw:
+        return "empty"
+    return "list"
+
+
+def _norm(value: object) -> list[object]:
+    """None -> [], scalar -> [value], list as-is (mirrors kb-core's norm)."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _hint_supersedes(hints: dict[str, Any] | None) -> list[str] | None:
+    """Return the str items of ``hints['supersedes']``, or None when malformed.
+
+    Nothing is silently filtered: any non-str item makes the whole value
+    malformed, which the caller rejects with 422.
+    """
+    items = _norm((hints or {}).get("supersedes"))
+    if not all(isinstance(i, str) for i in items):
+        return None
+    return [str(i) for i in items]
+
+
+def _request_supersedes(raw: list[str] | str | None) -> list[str]:
+    """The request ``supersedes`` field as a list (None/'none'/[] -> [])."""
+    return list(raw) if isinstance(raw, list) else []
+
+
+async def _warn_if_build_failed(kb: Any, writer: str, targets: list[str]) -> None:
+    """WARN when a validated supersedes write left a target unpointed.
+
+    A just-written active non-map superseder always qualifies, so a target
+    whose ``superseded_by`` is still NULL means ``_build_graph`` failed
+    (best-effort) and the next startup reconcile has to heal it.
+    """
+    pending: list[str] = []
+    for target_id in targets:
+        target = await kb.get(target_id)
+        if target is not None and target.superseded_by is None:
+            pending.append(target_id)
+    if pending:
+        logger.warning(
+            "%s build_failed writer=%s pending_targets=%r"
+            " (healed by next startup reconcile)",
+            SUPERSESSION_ROUTE_MARKER,
+            writer,
+            pending,
+        )
+
+
 # ─── endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -157,6 +264,49 @@ async def store(
             entry_type, body.knowledge_details, user
         )
 
+        mode = _supersedes_mode(body.supersedes)
+        hint_targets = _hint_supersedes(body.hints)
+        if hint_targets is None:
+            _log_supersedes_decision(
+                "store",
+                "rejected",
+                mode=mode,
+                writer=None,
+                targets=[],
+                problems=[_HINTS_SUPERSEDES_SHAPE],
+            )
+            raise HTTPException(status_code=422, detail=_HINTS_SUPERSEDES_SHAPE)
+        effective = sorted(
+            set(hint_targets) | set(_request_supersedes(body.supersedes))
+        )
+        store_hints = body.hints
+        if effective:
+            problems = await kb.check_supersedes(
+                effective, writer_id=None, writer_entry_type=entry_type
+            )
+            if problems:
+                _log_supersedes_decision(
+                    "store",
+                    "rejected",
+                    mode=mode,
+                    writer=None,
+                    targets=effective,
+                    problems=problems,
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail="supersedes rejected: " + "; ".join(problems),
+                )
+            store_hints = {**(body.hints or {}), "supersedes": effective}
+        _log_supersedes_decision(
+            "store",
+            "accepted" if effective else "none",
+            mode=mode,
+            writer=None,
+            targets=effective,
+            problems=[],
+        )
+
         entry: KnowledgeEntry = await kb.store(
             short_title=body.short_title,
             long_title=body.long_title,
@@ -168,17 +318,30 @@ async def store(
                 body.confidence_level if body.confidence_level is not None else 0.9
             ),
             tags=body.tags,
-            hints=body.hints,
+            hints=store_hints,
             contributor=attr.contributor,
             team=attr.team,
             sensitivity=body.sensitivity,
             expires_at=expires_at,
         )
+        if effective:
+            await _warn_if_build_failed(kb, entry.id, effective)
         entry = await kb.get(entry.id) or entry
-        return StoreResponse(action="created", entry=entry)
+        return StoreResponse(action="created", entry=entry, superseded_ids=effective)
 
     # ── UPDATE path ──────────────────────────────────────────────────────────
     entry_id = body.update_entry_id
+    mode = _supersedes_mode(body.supersedes)
+    if body.change_reason is None or not body.change_reason.strip():
+        _log_supersedes_decision(
+            "update",
+            "change_reason_missing",
+            mode=mode,
+            writer=entry_id,
+            targets=[],
+            problems=[],
+        )
+        raise HTTPException(status_code=422, detail=_CHANGE_REASON_UPDATE)
     expires_at = _parse_ttl(body.ttl)
     if body.knowledge_details:
         _check_secrets(body.knowledge_details, kb)
@@ -215,6 +378,60 @@ async def store(
         effective_entry_type, effective_details, user
     )
 
+    # Supersedes on update: a MONOTONIC union with what the entry already
+    # records. Only targets NEW to this entry are validated, so recorded ones
+    # (possibly inactive by now) are grandfathered; nothing is retracted here.
+    update_hints = body.hints
+    new_targets: list[str] = []
+    request_targets = _request_supersedes(body.supersedes)
+    if request_targets or (body.hints is not None and "supersedes" in body.hints):
+        hint_targets = _hint_supersedes(body.hints)
+        if hint_targets is None:
+            _log_supersedes_decision(
+                "update",
+                "rejected",
+                mode=mode,
+                writer=entry_id,
+                targets=[],
+                problems=[_HINTS_SUPERSEDES_SHAPE],
+            )
+            raise HTTPException(status_code=422, detail=_HINTS_SUPERSEDES_SHAPE)
+        recorded = {
+            str(i)
+            for i in _norm(existing.hints.get("supersedes"))
+            if isinstance(i, str)
+        }
+        merged = sorted(recorded | set(hint_targets) | set(request_targets))
+        new_targets = sorted(set(merged) - recorded)
+        if new_targets:
+            problems = await kb.check_supersedes(
+                new_targets,
+                writer_id=entry_id,
+                writer_entry_type=effective_entry_type,
+            )
+            if problems:
+                _log_supersedes_decision(
+                    "update",
+                    "rejected",
+                    mode=mode,
+                    writer=entry_id,
+                    targets=new_targets,
+                    problems=problems,
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail="supersedes rejected: " + "; ".join(problems),
+                )
+        update_hints = {**(body.hints or {}), "supersedes": merged}
+    _log_supersedes_decision(
+        "update",
+        "accepted" if new_targets else "none",
+        mode=mode,
+        writer=entry_id,
+        targets=new_targets,
+        problems=[],
+    )
+
     try:
         entry = await kb.update(
             entry_id,
@@ -222,7 +439,7 @@ async def store(
             change_reason=body.change_reason,
             confidence_level=body.confidence_level,
             tags=body.tags,
-            hints=body.hints,
+            hints=update_hints,
             updated_by=user.email,
             sensitivity=body.sensitivity,
             expires_at=expires_at,
@@ -234,8 +451,61 @@ async def store(
         )
     except ValueError as exc:
         raise _map_value_error(exc) from exc
+    if new_targets:
+        await _warn_if_build_failed(kb, entry.id, new_targets)
     entry = await kb.get(entry.id) or entry
-    return StoreResponse(action="updated", entry=entry)
+    return StoreResponse(action="updated", entry=entry, superseded_ids=new_targets)
+
+
+async def _validate_batch_supersedes(
+    kb: Any, i: int, raw: StoreBatchEntry
+) -> list[str]:
+    """Apply the CREATE supersedes rule to batch entry *i*; return its target set.
+
+    Raises:
+        HTTPException: 422 ``entry {i}: supersedes rejected: ...``.
+    """
+    mode = _supersedes_mode(raw.supersedes)
+    hint_targets = _hint_supersedes(raw.hints)
+    if hint_targets is None:
+        _log_supersedes_decision(
+            "store_batch",
+            "rejected",
+            mode=mode,
+            writer=None,
+            targets=[],
+            problems=[_HINTS_SUPERSEDES_SHAPE],
+        )
+        raise HTTPException(
+            status_code=422, detail=f"entry {i}: {_HINTS_SUPERSEDES_SHAPE}"
+        )
+    effective = sorted(set(hint_targets) | set(_request_supersedes(raw.supersedes)))
+    if effective:
+        problems = await kb.check_supersedes(
+            effective, writer_id=None, writer_entry_type=raw.entry_type
+        )
+        if problems:
+            _log_supersedes_decision(
+                "store_batch",
+                "rejected",
+                mode=mode,
+                writer=None,
+                targets=effective,
+                problems=problems,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"entry {i}: supersedes rejected: " + "; ".join(problems),
+            )
+    _log_supersedes_decision(
+        "store_batch",
+        "accepted" if effective else "none",
+        mode=mode,
+        writer=None,
+        targets=effective,
+        problems=[],
+    )
+    return effective
 
 
 @router.post("/store_batch", response_model=StoreBatchResponse)
@@ -254,6 +524,7 @@ async def store_batch(
     attr = await resolve_attribution(user)
 
     # ── up-front batch validation ─────────────────────────────────────────
+    batch_supersedes: list[list[str]] = []
     for i, raw in enumerate(body.entries):
         prefix = f"entry {i}: "
         if raw.ttl is not None:
@@ -279,17 +550,21 @@ async def store_batch(
                 detail=(
                     f"{prefix}A mental_map entry requires at least one outbound "
                     "pointer (a kb-XXXXX reference in knowledge_details, or a "
-                    "supersedes/related_entities hint)."
+                    "related_entities hint)."
                 ),
             )
         await _check_machine_principal_map_lint(
             raw.entry_type, raw.knowledge_details, user, prefix=prefix
         )
+        batch_supersedes.append(await _validate_batch_supersedes(kb, i, raw))
 
     # ── build facade dicts ────────────────────────────────────────────────
     entry_dicts: list[dict[str, Any]] = []
-    for raw in body.entries:
+    for raw, effective in zip(body.entries, batch_supersedes, strict=True):
         expires_at = compute_expires_at(raw.ttl) if raw.ttl is not None else None
+        hints = (
+            {**(raw.hints or {}), "supersedes": effective} if effective else raw.hints
+        )
         entry_dicts.append(
             {
                 "short_title": raw.short_title,
@@ -300,7 +575,7 @@ async def store_batch(
                 "source_context": raw.source_context,
                 "confidence_level": raw.confidence_level,
                 "tags": raw.tags,
-                "hints": raw.hints,
+                "hints": hints,
                 "sensitivity": raw.sensitivity,
                 "expires_at": expires_at,
                 "contributor": attr.contributor,
@@ -324,36 +599,75 @@ async def deactivate(
     entry_id: str,
     request: Request,
     user: Annotated[User, Depends(get_current_user)],
+    body: Annotated[DeactivateRequest | None, Body()] = None,
 ) -> EntryActionResponse:
-    """Deactivate a knowledge base entry and clean up its outbound graph edges.
+    """Deactivate a knowledge base entry; kb-core cleans up its outbound edges.
 
-    mental_map entries are rejected with 422 — see ``_MAP_DEACTIVATE_BLOCKED``.
-    A bad map is deleted by the machine principal via
-    ``DELETE /api/kb/maps/{map_id}`` instead, never deactivated.
+    Checked in this order: auth (401); mental_map (422, see
+    ``_MAP_DEACTIVATE_BLOCKED`` — a bad map is deleted via
+    ``DELETE /api/kb/maps/{map_id}`` instead); a missing or blank
+    ``change_reason`` (422 — so an unknown id with no reason is 422, not
+    404); an optional ``superseded_by`` that must exist and pass
+    ``check_supersedes`` (422); then ``kb.deactivate``, whose ``ValueError``
+    maps to 404/409. The edge cleanup and the supersession recompute run
+    inside ``kb.deactivate``'s one transaction.
     """
     kb = request.app.state.kb
     existing = await kb.get(entry_id)
     if existing is not None and existing.entry_type is EntryType.MENTAL_MAP:
         raise HTTPException(status_code=422, detail=_MAP_DEACTIVATE_BLOCKED)
+    change_reason = body.change_reason if body is not None else None
+    superseded_by = body.superseded_by if body is not None else None
+    mode = "absent" if superseded_by is None else "list"
+    if change_reason is None or not change_reason.strip():
+        _log_supersedes_decision(
+            "deactivate",
+            "change_reason_missing",
+            mode=mode,
+            writer=superseded_by,
+            targets=[],
+            problems=[],
+        )
+        raise HTTPException(status_code=422, detail=_CHANGE_REASON_DEACTIVATE)
+    if superseded_by is not None:
+        superseder = await kb.get(superseded_by)
+        if superseder is None:
+            problems = [f"superseded_by {superseded_by} not found"]
+        else:
+            problems = await kb.check_supersedes(
+                [entry_id],
+                writer_id=superseded_by,
+                writer_entry_type=superseder.entry_type,
+            )
+            if problems:
+                problems = ["superseded_by rejected: " + "; ".join(problems)]
+        if problems:
+            _log_supersedes_decision(
+                "deactivate",
+                "rejected",
+                mode=mode,
+                writer=superseded_by,
+                targets=[entry_id],
+                problems=problems,
+            )
+            raise HTTPException(status_code=422, detail=problems[0])
+    _log_supersedes_decision(
+        "deactivate",
+        "accepted" if superseded_by is not None else "none",
+        mode=mode,
+        writer=superseded_by,
+        targets=[entry_id] if superseded_by is not None else [],
+        problems=[],
+    )
     try:
-        entry: KnowledgeEntry = await kb.deactivate(entry_id, contributor=user.email)
+        entry: KnowledgeEntry = await kb.deactivate(
+            entry_id,
+            contributor=user.email,
+            change_reason=change_reason,
+            superseded_by=superseded_by,
+        )
     except ValueError as exc:
         raise _map_value_error(exc) from exc
-    # Replicate the MCP channel's graph cleanup (kb_maintain reactivate path).
-    # Scoped (not blanket) to exclude mental_map sources: the guard above
-    # already keeps a map from reaching this line via this endpoint, but the
-    # delete is scoped too as defense in depth against the same hazard
-    # kb-core's own equivalent delete was narrowed for (personal_kb commit
-    # 8917cb0, graph/builder.py::_clear_edges_for_source ->
-    # Database.delete_deterministic_edges) — a map's outbound "references"
-    # edges are exactly what the listener's detail -> owning-map reverse
-    # lookup depends on. Non-map entries are unaffected.
-    await kb.db.execute(
-        "DELETE FROM graph_edges WHERE source = ? AND source NOT IN "
-        "(SELECT id FROM knowledge_entries WHERE entry_type = 'mental_map')",
-        (entry_id,),
-    )
-    await kb.db.commit()
     return EntryActionResponse(entry=entry)
 
 

@@ -167,6 +167,30 @@ async def _open_kb() -> "KnowledgeBase":
     )
 
 
+async def _reconcile_supersession(kb: "KnowledgeBase") -> None:
+    """Best-effort startup supersession reconcile; never blocks startup.
+
+    Logs one INFO summary line and one WARNING per row whose
+    ``superseded_by`` it had to change. After the first post-deploy startup
+    any ``supersession-reconcile drift`` line is a defect signal: some
+    writer left the invariant broken.
+    """
+    try:
+        report = await kb.reconcile_supersession()
+        logger.info(
+            "supersession-reconcile edges_added=%d set=%d cleared=%d",
+            report.edges_added,
+            report.set_count,
+            report.cleared_count,
+        )
+        for target, old, new in report.changed:
+            logger.warning(
+                "supersession-reconcile drift target=%s old=%r new=%r", target, old, new
+            )
+    except Exception as exc:
+        logger.warning("supersession-reconcile failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage application lifecycle.
@@ -188,6 +212,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
 
     app.state.kb = await _open_kb()
+    await _reconcile_supersession(app.state.kb)
     try:
         await app.state.kb.start_embedding_worker()
         yield

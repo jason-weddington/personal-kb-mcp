@@ -24,6 +24,7 @@ Humans keep ``/api/kb/store``, where the MCP channel renders the findings.
 
 import logging
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from fastapi import HTTPException
@@ -48,13 +49,13 @@ def _mental_map_has_pointer(
     A pointer is present when ANY of:
 
     * ``re.compile(r"kb-\d{5}").search(knowledge_details)`` finds a match.
-    * ``hints["supersedes"]`` (scalar-or-list) contains a string full-matching
-      the pattern ``kb-\d{5}``.
     * ``hints["related_entities"]`` (scalar-or-list) contains either a dict
       with a non-empty ``"id"`` or ``"target"`` string key, or a bare non-empty
       string.
 
-    ``tag``, ``project``, ``person``, and ``tool`` hints do NOT count.
+    ``tag``, ``project``, ``person``, and ``tool`` hints do NOT count, and
+    neither does ``hints["supersedes"]``: a mental_map cannot supersede
+    anything, so that hint is never a map pointer.
     Semantics verified against ``_mental_map_has_pointer`` in the MCP channel
     (kb_store.py:46-87).  Private kb_core helpers are NOT imported.
     """
@@ -62,13 +63,6 @@ def _mental_map_has_pointer(
         return True
     if not hints:
         return False
-    # Check hints["supersedes"]
-    supersedes = hints.get("supersedes")
-    if supersedes is not None:
-        items: list[Any] = supersedes if isinstance(supersedes, list) else [supersedes]
-        for item in items:
-            if isinstance(item, str) and re.fullmatch(r"kb-\d{5}", item):
-                return True
     # Check hints["related_entities"]
     related = hints.get("related_entities")
     if related is not None:
@@ -100,7 +94,7 @@ def _check_orphan_mental_map(
             detail=(
                 "A mental_map entry requires at least one outbound pointer "
                 "(a kb-XXXXX reference in knowledge_details, or a "
-                "supersedes/related_entities hint)."
+                "related_entities hint)."
             ),
         )
 
@@ -146,3 +140,17 @@ async def _check_machine_principal_map_lint(
             f"machine principal: {rendered}"
         ),
     )
+
+
+async def superseded_pointers(kb: Any, ids: Iterable[str]) -> list[tuple[str, str]]:
+    """Return sorted ``(pointer_id, superseded_by)`` pairs for superseded pointers.
+
+    Only existing entries whose ``superseded_by`` is set are reported; an
+    unknown id is not this guard's concern.
+    """
+    pairs: list[tuple[str, str]] = []
+    for pointer_id in sorted(set(ids)):
+        entry = await kb.get(pointer_id)
+        if entry is not None and entry.superseded_by is not None:
+            pairs.append((pointer_id, entry.superseded_by))
+    return pairs

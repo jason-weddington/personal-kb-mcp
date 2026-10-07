@@ -320,9 +320,24 @@ class HttpBackend:
         entry = _parse_entry(data["entry"])
         return action, entry
 
-    async def deactivate(self, entry_id: str) -> KnowledgeEntry:
-        """POST /api/kb/entries/{id}/deactivate.  Returns the deactivated entry."""
-        data = await self._post(f"/api/kb/entries/{entry_id}/deactivate", {})
+    async def deactivate(
+        self,
+        entry_id: str,
+        *,
+        change_reason: str | None = None,
+        superseded_by: str | None = None,
+    ) -> KnowledgeEntry:
+        """POST /api/kb/entries/{id}/deactivate.  Returns the deactivated entry.
+
+        The body carries ``change_reason`` (required by the server) and the
+        optional ``superseded_by``; keys whose value is ``None`` are omitted.
+        """
+        body: dict[str, Any] = {}
+        if change_reason is not None:
+            body["change_reason"] = change_reason
+        if superseded_by is not None:
+            body["superseded_by"] = superseded_by
+        data = await self._post(f"/api/kb/entries/{entry_id}/deactivate", body)
         return _parse_entry(data["entry"])
 
     async def reactivate(self, entry_id: str) -> KnowledgeEntry:

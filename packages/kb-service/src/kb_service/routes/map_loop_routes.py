@@ -195,6 +195,7 @@ _ENTRIES_SQL = f"""WITH mappable AS (
     SELECT id, short_title, long_title, entry_type, tags, knowledge_details
     FROM knowledge_entries
     WHERE {MAPPABLE_ENTRY_WHERE_SQL} AND project_ref = ?
+      AND superseded_by IS NULL
 )
 SELECT m.id, m.short_title, m.long_title, m.entry_type, m.tags,
        substr(m.knowledge_details, 1, {LOOP_INPUT_EXCERPT_CHARS}) AS excerpt,

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from kb_core.db.backend import Database
 from kb_core.models.entry import KnowledgeEntry
+from kb_core.supersession import outgoing_supersedes_targets, recompute_superseded_by
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,17 @@ class GraphBuilder:
 
         Deletes existing outgoing edges, then re-derives nodes and edges
         from the entry's tags, project_ref, hints, and text references.
+
+        Supersession: ``hints.supersedes`` is the ONLY channel that writes a
+        ``supersedes`` edge (a related_entities item typed ``supersedes`` is
+        ignored with a warning). The last statement recomputes
+        ``superseded_by`` for every old and new supersedes target plus the
+        entry itself, so a retracted target is cleared in the same
+        transaction (see :mod:`kb_core.supersession`).
         """
         async with self._db.transaction():
+            old_targets = await outgoing_supersedes_targets(self._db, entry.id)
+            new_targets: set[str] = set()
             await self._clear_edges_for_source(entry.id)
 
             # 1. Upsert entry node
@@ -58,11 +68,10 @@ class GraphBuilder:
                         continue
                     await self._ensure_node(target, "entry")
                     await self._add_edge(entry.id, target, "supersedes")
+                    new_targets.add(target)
 
-            # 5. Superseded_by (reversed — superseder→this entry)
-            if entry.superseded_by:
-                await self._ensure_node(entry.superseded_by, "entry")
-                await self._add_edge(entry.superseded_by, entry.id, "supersedes")
+            # 5. (removed) superseded_by is DERIVED from supersedes edges by
+            # recompute_superseded_by below; it never writes an edge itself.
 
             # 6. Text references (kb-XXXXX patterns in knowledge_details)
             seen_refs: set[str] = set()
@@ -78,6 +87,14 @@ class GraphBuilder:
                 if isinstance(rel, dict):
                     target = rel.get("id") or rel.get("target")
                     edge_type = rel.get("edge_type") or rel.get("type") or "related_to"
+                    if str(edge_type) == "supersedes":
+                        logger.warning(
+                            "supersession: ignoring related_entities supersedes edge"
+                            " %s->%s; use supersedes",
+                            entry.id,
+                            target,
+                        )
+                        continue
                     if isinstance(target, str) and target:
                         await self._ensure_node(target, "entry")
                         await self._add_edge(entry.id, target, str(edge_type))
@@ -98,6 +115,11 @@ class GraphBuilder:
                     node_id = f"tool:{tool.lower()}"
                     await self._ensure_node(node_id, "tool")
                     await self._add_edge(entry.id, node_id, "uses_tool")
+
+            # 10. Supersession invariant — always the LAST statement.
+            await recompute_superseded_by(
+                self._db, old_targets | new_targets | {entry.id}, trigger="build"
+            )
 
     async def _ensure_node(
         self,

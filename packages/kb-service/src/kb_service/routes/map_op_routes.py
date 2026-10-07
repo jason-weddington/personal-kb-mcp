@@ -44,6 +44,10 @@ Status semantics, flat and terminal, matching the ledger and loop-input endpoint
 
 409 invariant violation or stale ``base_version``.
 
+409 ``pointer_superseded``: a create_map or add_pointer names a superseded entry.
+
+The fix is to point at the superseding entry instead; gap ops are unchanged.
+
 422 lint findings, or an op outside the closed vocabulary.
 
 200/201 success. Nothing here is retryable.
@@ -78,6 +82,7 @@ from kb_service.models import (
 from kb_service.routes.map_write_guards import (
     _check_machine_principal_map_lint,
     _check_orphan_mental_map,
+    superseded_pointers,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,6 +156,33 @@ def _envelope(body: str, entry: KnowledgeEntry) -> MapOpResponse:
         version=entry.version,
         pointer_count=pointer_count,
         budget=map_body_budget(pointer_count),
+    )
+
+
+def _reject_superseded(
+    op: str,
+    pairs: list[tuple[str, str]],
+    *,
+    project_ref: str | None,
+    map_id: str | None,
+) -> NoReturn:
+    """Reject a map write whose pointers name superseded entries (409).
+
+    Emits a second trail line carrying the ``(pointer, superseded_by)`` pairs
+    so the night's log shows exactly which pointers to repoint.
+    """
+    logger.info(
+        "%s op=%s outcome=pointer_superseded pairs=%r", MAP_OP_ROUTE_MARKER, op, pairs
+    )
+    rendered = ", ".join(f"{p} (superseded by {s})" for p, s in pairs)
+    _reject(
+        op,
+        "pointer_superseded",
+        409,
+        f"map pointers name superseded entries: {rendered};"
+        " point at the superseding entry instead",
+        project_ref=project_ref,
+        map_id=map_id,
     )
 
 
@@ -262,6 +294,9 @@ async def _create_map(
     op = "create_map"
     _check_orphan_mental_map(EntryType.MENTAL_MAP, op_req.body, None)
     await _check_machine_principal_map_lint(EntryType.MENTAL_MAP, op_req.body, user)
+    pairs = await superseded_pointers(kb, map_pointer_ids(op_req.body))
+    if pairs:
+        _reject_superseded(op, pairs, project_ref=op_req.project_ref, map_id=None)
     # NO PER-NIGHT CREATION CAP, and its removal is a decision rather than an
     # omission (Jason, 2026-09-21). The cap existed solely to bound IRREVERSIBLE
     # damage — the design's words were that it "converts a clustering mistake
@@ -402,6 +437,13 @@ async def _add_pointer(
             f"added_entry_id {op_req.added_entry_id} belongs to project"
             f" {target.project_ref!r}, not the map's different project"
             f" {stored.project_ref!r}",
+            project_ref=stored.project_ref,
+            map_id=op_req.map_id,
+        )
+    if target.superseded_by is not None:
+        _reject_superseded(
+            op,
+            [(op_req.added_entry_id, target.superseded_by)],
             project_ref=stored.project_ref,
             map_id=op_req.map_id,
         )

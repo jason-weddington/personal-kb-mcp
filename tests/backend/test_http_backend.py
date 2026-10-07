@@ -265,6 +265,32 @@ async def test_deactivate():
 
 
 @pytest.mark.asyncio
+async def test_deactivate_posts_change_reason_body():
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"entry": {**_ENTRY_JSON, "is_active": False}})
+
+    backend = _make_backend(handler)
+    await backend.deactivate("kb-00001", change_reason="obsolete")
+    assert seen == [{"change_reason": "obsolete"}]
+
+
+@pytest.mark.asyncio
+async def test_deactivate_posts_superseded_by_body():
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"entry": {**_ENTRY_JSON, "is_active": False}})
+
+    backend = _make_backend(handler)
+    await backend.deactivate("kb-00001", change_reason="replaced", superseded_by="kb-00002")
+    assert seen == [{"change_reason": "replaced", "superseded_by": "kb-00002"}]
+
+
+@pytest.mark.asyncio
 async def test_reactivate():
     def handler(req: httpx.Request) -> httpx.Response:
         assert req.url.path == "/api/kb/entries/kb-00001/reactivate"

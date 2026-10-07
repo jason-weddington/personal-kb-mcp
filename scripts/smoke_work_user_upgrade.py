@@ -188,6 +188,10 @@ WRITES: list[tuple[str, dict[str, Any]]] = [
             "change_reason": "upgrade test",
         },
     ),
+    # kb-00003 is the third seed entry (a pattern_convention in SEED's
+    # kb_store_batch): active and not a mental_map, so the new client's
+    # deactivate (which now sends change_reason) reaches the new daemon.
+    ("kb_store", {"deactivate_entry_id": "kb-00003", "change_reason": "upgrade test"}),
     (
         "kb_feedback",
         {

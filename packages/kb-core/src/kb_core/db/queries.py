@@ -83,13 +83,18 @@ async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
 
 
 async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
-    """Update an existing knowledge entry. FTS is auto-synced via triggers."""
+    """Update an existing knowledge entry. FTS is auto-synced via triggers.
+
+    ``superseded_by`` is deliberately NOT written: it is derived state owned
+    by :mod:`kb_core.supersession`, and writing it from a possibly-stale
+    entry snapshot would be a lost update.
+    """
     tags_text = " ".join(entry.tags)
     await db.execute(
         """UPDATE knowledge_entries SET
         project_ref=?, short_title=?, long_title=?, knowledge_details=?, entry_type=?,
         source_context=?, confidence_level=?, tags=?, hints=?, updated_at=?,
-        superseded_by=?, is_active=?, has_embedding=?, version=?, updated_by=?,
+        is_active=?, has_embedding=?, version=?, updated_by=?,
         sensitivity=?, expires_at=?, team=?
         WHERE id=?""",
         (
@@ -103,7 +108,6 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
             tags_text,
             json.dumps(entry.hints),
             _now_iso(),
-            entry.superseded_by,
             int(entry.is_active),
             int(entry.has_embedding),
             entry.version,

@@ -1341,3 +1341,56 @@ def test_worklist_ineligible_project_absent(
     assert by_ref["journal-proj"]["map_count"] == 1
     assert by_ref[PROJ]["map_count"] == 0
     assert by_ref[PROJ]["latest_map_written_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Supersession candidate filter: somnus is never offered a superseded entry
+# ---------------------------------------------------------------------------
+
+
+async def test_superseded_entry_absent_from_map_loop_candidates(
+    client: TestClient, fake_kb: FakeKnowledgeBase, tmp_path: Path
+) -> None:
+    """The REAL entries statement, run on a real SQLite KB, drops superseded rows.
+
+    Its rows then feed the route, so the response carries the superseder and
+    not the entry it superseded.
+    """
+    from kb_core import create_sqlite
+
+    kb = await create_sqlite(
+        tmp_path / "kb.db",
+        embedder=None,
+        extraction_llm=None,
+        query_llm=None,
+        synthesis_llm=None,
+    )
+    try:
+        old = await kb.store(
+            short_title="Old",
+            long_title="Old approach",
+            knowledge_details="the old approach",
+            project_ref=PROJ,
+            enrich=False,
+        )
+        new = await kb.store(
+            short_title="New",
+            long_title="New approach",
+            knowledge_details="the new approach",
+            project_ref=PROJ,
+            hints={"supersedes": [old.id]},
+            enrich=False,
+        )
+        assert (await kb.get(old.id)).superseded_by == new.id  # type: ignore[union-attr]
+        cursor = await kb.db.execute(map_loop_routes._ENTRIES_SQL, (PROJ,))
+        rows = [tuple(r) for r in await cursor.fetchall()]
+    finally:
+        await kb.close()
+
+    assert [r[0] for r in rows] == [new.id]
+    _wire(fake_kb, verdicts=[_eligible_verdict()], entry_rows=rows, pair_rows=[])
+    resp = client.get(URL, params={"project_ref": PROJ})
+    assert resp.status_code == 200
+    ids = {e["id"] for e in resp.json()["entries"]}
+    assert new.id in ids
+    assert old.id not in ids

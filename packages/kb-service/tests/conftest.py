@@ -30,6 +30,7 @@ from kb_core.map_eligibility import (
 )
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.search import SearchResult
+from kb_core.supersession import SupersessionReconcileReport
 
 import kb_service.attribution as attribution_module
 import kb_service.auth as auth_module
@@ -288,7 +289,11 @@ class FakeKnowledgeBase:
         self.store_calls: list[dict[str, Any]] = []
         self.store_batch_calls: list[tuple[list[dict[str, Any]], bool]] = []
         self.update_calls: list[tuple[str, dict[str, Any]]] = []
-        self.deactivate_calls: list[tuple[str, str]] = []
+        self.deactivate_calls: list[tuple[str, str, str | None, str | None]] = []
+        # supersession facade (kb.check_supersedes / kb.reconcile_supersession)
+        self.supersedes_problems: list[str] = []
+        self.check_supersedes_calls: list[tuple[list[str], str | None, EntryType]] = []
+        self.reconcile_calls = 0
         self.reactivate_calls: list[tuple[str, str]] = []
         self.bulk_update_calls: list[dict[str, Any]] = []
         self.map_eligibility_verdicts: list[MapEligibilityVerdict] = []
@@ -573,12 +578,41 @@ class FakeKnowledgeBase:
             raise self._update_raises
         return make_entry()
 
-    async def deactivate(self, entry_id: str, *, contributor: str) -> KnowledgeEntry:
-        """Record the call; raise configured error if set."""
-        self.deactivate_calls.append((entry_id, contributor))
+    async def deactivate(
+        self,
+        entry_id: str,
+        *,
+        contributor: str,
+        change_reason: str | None = None,
+        superseded_by: str | None = None,
+    ) -> KnowledgeEntry:
+        """Record the call as a 4-tuple; raise configured error if set."""
+        self.deactivate_calls.append(
+            (entry_id, contributor, change_reason, superseded_by)
+        )
         if self._deactivate_raises is not None:
             raise self._deactivate_raises
         return make_entry()
+
+    async def check_supersedes(
+        self,
+        target_ids: list[str],
+        *,
+        writer_id: str | None,
+        writer_entry_type: EntryType,
+    ) -> list[str]:
+        """Record the call and return the configured ``supersedes_problems``."""
+        self.check_supersedes_calls.append(
+            (list(target_ids), writer_id, writer_entry_type)
+        )
+        return list(self.supersedes_problems)
+
+    async def reconcile_supersession(self) -> SupersessionReconcileReport:
+        """Count the call and return an all-zero report."""
+        self.reconcile_calls += 1
+        return SupersessionReconcileReport(
+            edges_added=0, set_count=0, cleared_count=0, changed=(), edges_added_ids=()
+        )
 
     async def reactivate(self, entry_id: str, *, contributor: str) -> KnowledgeEntry:
         """Record the call; raise configured error if set."""

@@ -147,6 +147,8 @@ ollama pull qwen3:4b               # only if using Ollama as LLM provider
 
 Store or update a knowledge entry. Each entry has a short title, long title, full content, entry type, optional tags, and optional project reference. Updates create version records preserving full history. Graph edges and embeddings are built automatically on store. An optional `ttl` parameter (e.g. `'7d'`, `'24h'`, `'2w'`) sets an expiration date after which the entry is excluded from search results.
 
+**Supersession.** When a new entry replaces older ones, declare it with `hints={"supersedes": ["kb-XXXXX", ...]}` (the hosted HTTP API also takes a top-level `supersedes` list, where an absent field, `[]` or `"none"` all mean "replaces nothing"). The hosted service checks every newly named target before writing: it must exist, be active, not be a `mental_map`, not be the entry itself, and not already supersede the writer. A rejected target fails the whole write with a 422 that names the problem. Each superseded entry's `superseded_by` then points at its newest superseder, and the field is maintained automatically when superseders are stored, updated or deactivated. On an update, supersedes targets are only ever added, never retracted. Updates and deactivations through the hosted service require a `change_reason` that says what changed and why; when you deactivate an entry because a newer one replaces it, also pass `superseded_by`.
+
 ### `kb_store_batch`
 
 Store multiple entries in a single call (max 10). More efficient than repeated `kb_store` — uses a single LLM call for graph enrichment across all entries.
@@ -245,9 +247,9 @@ Rule of thumb: ask whether a reader would *act on the value directly* (fact) or 
 Every `mental_map` must have **at least one outbound pointer**. A pointer is any of:
 
 - a `kb-XXXXX` reference inside `knowledge_details`;
-- a `supersedes` hint containing a `kb-XXXXX` id;
-- a `superseded_by` field on the entry;
 - a `related_entities` hint with either a dict carrying an `id`/`target` or a bare entry id string.
+
+A `supersedes` hint is **not** a map pointer: a map cannot supersede anything, so the hosted service rejects a map whose only pointer is a `supersedes` hint. The local client-side check still counts `supersedes` / `superseded_by` until the MCP client catches up.
 
 Tags, project refs, and person/tool hints **do not** count — those are categorization, not orientation. `kb_store` rejects an orphan map (zero pointers) on **create**, before any row is written, with an error: *"A mental_map entry requires at least one outbound pointer … A map with zero pointers is an orphan note, not a map."* As of 2026-09-19 the hosted service runs the same guard on **update**, evaluating the effective post-update body, so an update can no longer strip a map's last pointer; the local/no-auth kb-core path is still unguarded. Don't treat "the store would have caught it" as a substitute for checking your own map's pointers — the update guard is new, and every map authored before it predates that check.
 

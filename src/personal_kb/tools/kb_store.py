@@ -250,7 +250,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         # --- Deactivate path ---
         if deactivate_entry_id:
             try:
-                entry = await backend.deactivate(deactivate_entry_id)
+                entry = await backend.deactivate(deactivate_entry_id, change_reason=change_reason)
             except Exception as e:
                 from personal_kb.backend.http import BackendHttpError
 

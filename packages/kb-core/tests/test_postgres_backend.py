@@ -71,6 +71,7 @@ from kb_core.embedding_retry import (
 from kb_core.map_caps import count_maps_created_since, map_write_summary
 from kb_core.map_delete import delete_map
 from kb_core.store.knowledge_store import KnowledgeStore
+from kb_core.supersession import reconcile_supersession
 from map_caps_fixture import (
     CONTRIBUTOR as MAP_CAPS_CONTRIBUTOR,
 )
@@ -141,6 +142,27 @@ from map_eligibility_override_shape import (
 )
 from map_eligibility_override_shape import (
     EXPECTED_TEXT_COLUMNS as ME_EXPECTED_TEXT_COLUMNS,
+)
+from supersession_fixture import (
+    EXPECTED_CLEARED_COUNT as SUP_EXPECTED_CLEARED_COUNT,
+)
+from supersession_fixture import (
+    EXPECTED_EDGES_ADDED as SUP_EXPECTED_EDGES_ADDED,
+)
+from supersession_fixture import (
+    EXPECTED_EDGES_ADDED_IDS as SUP_EXPECTED_EDGES_ADDED_IDS,
+)
+from supersession_fixture import (
+    EXPECTED_SET_COUNT as SUP_EXPECTED_SET_COUNT,
+)
+from supersession_fixture import (
+    EXPECTED_SUPERSEDED_BY as SUP_EXPECTED_SUPERSEDED_BY,
+)
+from supersession_fixture import (
+    seed_corpus as seed_supersession_corpus,
+)
+from supersession_fixture import (
+    superseded_by_map,
 )
 
 if TYPE_CHECKING:
@@ -1003,3 +1025,26 @@ async def test_get_neighbors_deterministic_order_on_postgres(pg_kb: PostgresBack
     assert [(n[0], n[2]) for n in got] == expected[:3]
     got = await get_neighbors(pg_kb, "kb-00001", edge_types=["has_tag"], limit=10)
     assert [(n[0], n[2]) for n in got] == [("tag:alpha", "outgoing"), ("tag:zeta", "outgoing")]
+
+
+async def test_supersession_reconcile_on_postgres(pg_kb: PostgresBackend) -> None:
+    """The Postgres leg of the supersession reconcile: SAME map, SAME counts as SQLite.
+
+    Seeds the shared ``supersession_fixture`` corpus. Postgres enforces the
+    ``graph_edges`` REFERENCES clauses, so the backfilled edge's node ensure
+    is exercised here, and the properties-JSON / created_at parsing runs over
+    asyncpg rows.
+    """
+    await seed_supersession_corpus(pg_kb)
+
+    report = await reconcile_supersession(pg_kb)
+
+    assert await superseded_by_map(pg_kb) == SUP_EXPECTED_SUPERSEDED_BY
+    assert report.edges_added == SUP_EXPECTED_EDGES_ADDED
+    assert report.edges_added_ids == SUP_EXPECTED_EDGES_ADDED_IDS
+    assert report.set_count == SUP_EXPECTED_SET_COUNT
+    assert report.cleared_count == SUP_EXPECTED_CLEARED_COUNT
+
+    again = await reconcile_supersession(pg_kb)
+    assert (again.edges_added, again.set_count, again.cleared_count) == (0, 0, 0)
+    assert again.changed == ()

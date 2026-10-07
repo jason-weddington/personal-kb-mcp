@@ -855,3 +855,67 @@ def test_rejected_op_logs_outcome_too(
     assert len(records) == 1
     assert "outcome=no_pointer_added" in records[0].getMessage()
     assert f"map_id={MAP_ID!r}" in records[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# pointer_superseded: a map never points at a superseded entry
+# ---------------------------------------------------------------------------
+
+SUPERSEDER_ID = "kb-00004"
+
+
+def _seed_superseded_target(fake_kb: FakeKnowledgeBase) -> None:
+    """TARGET_ID is superseded by SUPERSEDER_ID; both live in PROJ."""
+
+    _seed_targets(fake_kb)
+    fake_kb.entries[TARGET_ID].superseded_by = SUPERSEDER_ID
+    fake_kb.entries[SUPERSEDER_ID] = _entry(SUPERSEDER_ID)
+
+
+def test_create_map_pointing_at_superseded_entry_409(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_kb: FakeKnowledgeBase,
+) -> None:
+    _wire(monkeypatch)
+    _seed_superseded_target(fake_kb)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        resp = client.post(URL, json=_create())
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        f"map pointers name superseded entries: {TARGET_ID} (superseded by"
+        f" {SUPERSEDER_ID}); point at the superseding entry instead"
+    )
+    assert fake_kb.store_calls == []
+    messages = [r.getMessage() for r in _marker_records(caplog)]
+    assert any("outcome=pointer_superseded status=409" in m for m in messages)
+    assert any(f"pairs=[('{TARGET_ID}', '{SUPERSEDER_ID}')]" in m for m in messages)
+
+
+def test_add_pointer_to_superseded_entry_409(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_kb: FakeKnowledgeBase,
+) -> None:
+    _wire(monkeypatch)
+    _wire_map(fake_kb)
+    _seed_superseded_target(fake_kb)
+    resp = client.post(URL, json=_add())
+    assert resp.status_code == 409
+    assert f"{TARGET_ID} (superseded by {SUPERSEDER_ID})" in resp.json()["detail"]
+    assert fake_kb.update_calls == []
+
+
+def test_add_pointer_to_superseder_200(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_kb: FakeKnowledgeBase,
+) -> None:
+    _wire(monkeypatch)
+    _wire_map(fake_kb)
+    _seed_superseded_target(fake_kb)
+    body = STORED_BODY + f"- {SUPERSEDER_ID} the newer one\n"
+    resp = client.post(URL, json=_add(body=body, added_entry_id=SUPERSEDER_ID))
+    assert resp.status_code == 200
+    assert len(fake_kb.update_calls) == 1

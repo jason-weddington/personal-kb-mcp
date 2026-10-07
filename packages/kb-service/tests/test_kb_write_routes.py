@@ -148,7 +148,7 @@ def test_store_update_happy_path(client: TestClient) -> None:
     kb_setup.entries["kb-00001"] = make_entry("kb-00001")
     resp = client.post(
         "/api/kb/store",
-        json={**_STORE_VALID, "update_entry_id": "kb-00001"},
+        json={**_STORE_VALID, "update_entry_id": "kb-00001", "change_reason": "r"},
     )
     assert resp.status_code == 200
     assert resp.json()["action"] == "updated"
@@ -167,7 +167,7 @@ def test_store_update_not_found_404(client: TestClient) -> None:
     kb._update_raises = ValueError("Entry kb-99999 not found")
     resp = client.post(
         "/api/kb/store",
-        json={**_STORE_VALID, "update_entry_id": "kb-99999"},
+        json={**_STORE_VALID, "update_entry_id": "kb-99999", "change_reason": "r"},
     )
     assert resp.status_code == 404
     assert "not found" in resp.json()["detail"]
@@ -183,7 +183,7 @@ def test_store_update_inactive_409(client: TestClient) -> None:
     kb._update_raises = ValueError("Entry kb-00001 is inactive and cannot be updated")
     resp = client.post(
         "/api/kb/store",
-        json={**_STORE_VALID, "update_entry_id": "kb-00001"},
+        json={**_STORE_VALID, "update_entry_id": "kb-00001", "change_reason": "r"},
     )
     assert resp.status_code == 409
     assert "inactive" in resp.json()["detail"]
@@ -202,7 +202,7 @@ def test_store_update_confidence_level_omitted_passes_none(
     kb_setup.entries["kb-00001"] = make_entry("kb-00001")
     resp = client.post(
         "/api/kb/store",
-        json={"update_entry_id": "kb-00001"},
+        json={"update_entry_id": "kb-00001", "change_reason": "r"},
     )
     assert resp.status_code == 200
 
@@ -238,7 +238,7 @@ def test_store_update_metadata_only_map_untouched_succeeds(client: TestClient) -
     kb.entries["kb-00001"] = _map_entry("kb-00001")
     resp = client.post(
         "/api/kb/store",
-        json={"update_entry_id": "kb-00001", "tags": ["reorg"]},
+        json={"update_entry_id": "kb-00001", "change_reason": "r", "tags": ["reorg"]},
     )
     assert resp.status_code == 200
     assert kb.update_calls
@@ -255,7 +255,11 @@ def test_store_update_hints_only_map_untouched_succeeds(client: TestClient) -> N
     kb.entries["kb-00001"] = _map_entry("kb-00001")
     resp = client.post(
         "/api/kb/store",
-        json={"update_entry_id": "kb-00001", "hints": {"tag": "reorg"}},
+        json={
+            "update_entry_id": "kb-00001",
+            "change_reason": "r",
+            "hints": {"tag": "reorg"},
+        },
     )
     assert resp.status_code == 200
 
@@ -269,7 +273,11 @@ def test_store_update_map_orphaned_via_effective_body_422(client: TestClient) ->
     kb.entries["kb-00001"] = _map_entry("kb-00001")
     resp = client.post(
         "/api/kb/store",
-        json={"update_entry_id": "kb-00001", "knowledge_details": "No pointers now."},
+        json={
+            "update_entry_id": "kb-00001",
+            "change_reason": "r",
+            "knowledge_details": "No pointers now.",
+        },
     )
     assert resp.status_code == 422
     detail = resp.json()["detail"]
@@ -291,7 +299,7 @@ def test_store_update_map_becomes_orphan_when_stored_body_has_no_pointer_422(
     )
     resp = client.post(
         "/api/kb/store",
-        json={"update_entry_id": "kb-00001", "tags": ["x"]},
+        json={"update_entry_id": "kb-00001", "change_reason": "r", "tags": ["x"]},
     )
     assert resp.status_code == 422
     assert not kb.update_calls
@@ -300,8 +308,8 @@ def test_store_update_map_becomes_orphan_when_stored_body_has_no_pointer_422(
 def test_store_update_map_pointer_via_merged_hint_succeeds(client: TestClient) -> None:
     """A request hint merges with the entry's EXISTING hints (not replaces
     them) — mirrors kb-core's update_entry merge. A request-supplied
-    supersedes hint satisfies the check even though the stored body/hints
-    have no pointer of their own."""
+    related_entities hint satisfies the check even though the stored
+    body/hints have no pointer of their own."""
     _authed(client)
     kb: FakeKnowledgeBase = app.state.kb
     kb.entries["kb-00001"] = _map_entry(
@@ -309,7 +317,11 @@ def test_store_update_map_pointer_via_merged_hint_succeeds(client: TestClient) -
     )
     resp = client.post(
         "/api/kb/store",
-        json={"update_entry_id": "kb-00001", "hints": {"supersedes": "kb-00099"}},
+        json={
+            "update_entry_id": "kb-00001",
+            "change_reason": "r",
+            "hints": {"related_entities": ["kb-00099"]},
+        },
     )
     assert resp.status_code == 200
 
@@ -325,7 +337,11 @@ def test_store_update_entry_type_flip_to_map_checks_effective_body(
     kb.entries["kb-00001"] = make_entry("kb-00001")  # factual_reference, no pointer
     resp = client.post(
         "/api/kb/store",
-        json={"update_entry_id": "kb-00001", "entry_type": "mental_map"},
+        json={
+            "update_entry_id": "kb-00001",
+            "change_reason": "r",
+            "entry_type": "mental_map",
+        },
     )
     assert resp.status_code == 422
 
@@ -337,7 +353,7 @@ def test_store_update_not_found_uses_direct_404(client: TestClient) -> None:
     kb: FakeKnowledgeBase = app.state.kb
     resp = client.post(
         "/api/kb/store",
-        json={**_STORE_VALID, "update_entry_id": "kb-99999"},
+        json={**_STORE_VALID, "update_entry_id": "kb-99999", "change_reason": "r"},
     )
     assert resp.status_code == 404
     assert not kb.update_calls
@@ -430,27 +446,19 @@ def test_store_batch_orphan_mental_map_422(client: TestClient) -> None:
 
 
 def test_deactivate_happy_path(client: TestClient) -> None:
-    """Deactivate calls kb.deactivate, then records graph-edge cleanup + commit."""
+    """Deactivate hands change_reason to kb.deactivate, which owns the edge cleanup."""
     _authed(client)
-    resp = client.post("/api/kb/entries/kb-00001/deactivate")
+    resp = client.post(
+        "/api/kb/entries/kb-00001/deactivate", json={"change_reason": "r"}
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert "entry" in body
 
     kb: FakeKnowledgeBase = app.state.kb
-    # facade call
-    assert kb.deactivate_calls
-    entry_id, contributor = kb.deactivate_calls[-1]
-    assert entry_id == "kb-00001"
-    assert contributor == "tester@example.com"
-    # graph cleanup — scoped to exclude mental_map sources (defense in depth,
-    # see the guard test below for the primary block on map entries).
-    assert kb.db.calls, "db.execute was not called"
-    sql, params = kb.db.calls[-1]
-    assert "DELETE FROM graph_edges WHERE source = ?" in sql
-    assert "mental_map" in sql
-    assert params == ("kb-00001",)
-    assert kb.db.committed >= 1
+    assert kb.deactivate_calls[-1] == ("kb-00001", "tester@example.com", "r", None)
+    # The raw-SQL edge delete moved into kb-core's one-transaction deactivate.
+    assert not any("DELETE" in sql for sql, _ in kb.db.calls)
 
 
 def test_deactivate_requires_auth(client: TestClient) -> None:
@@ -464,7 +472,9 @@ def test_deactivate_not_found_404(client: TestClient) -> None:
     _authed(client)
     kb: FakeKnowledgeBase = app.state.kb
     kb._deactivate_raises = ValueError("Entry kb-00099 not found")
-    resp = client.post("/api/kb/entries/kb-00099/deactivate")
+    resp = client.post(
+        "/api/kb/entries/kb-00099/deactivate", json={"change_reason": "r"}
+    )
     assert resp.status_code == 404
 
 
@@ -473,7 +483,9 @@ def test_deactivate_already_inactive_409(client: TestClient) -> None:
     _authed(client)
     kb: FakeKnowledgeBase = app.state.kb
     kb._deactivate_raises = ValueError("Entry kb-00001 is already inactive")
-    resp = client.post("/api/kb/entries/kb-00001/deactivate")
+    resp = client.post(
+        "/api/kb/entries/kb-00001/deactivate", json={"change_reason": "r"}
+    )
     assert resp.status_code == 409
 
 
@@ -497,7 +509,9 @@ def test_deactivate_non_map_entry_unaffected(client: TestClient) -> None:
     _authed(client)
     kb: FakeKnowledgeBase = app.state.kb
     kb.entries["kb-00001"] = make_entry("kb-00001")  # factual_reference
-    resp = client.post("/api/kb/entries/kb-00001/deactivate")
+    resp = client.post(
+        "/api/kb/entries/kb-00001/deactivate", json={"change_reason": "r"}
+    )
     assert resp.status_code == 200
     assert kb.deactivate_calls
 
@@ -528,7 +542,7 @@ async def test_map_references_edges_survive_update_and_attempted_deactivate(
     # Metadata-only update: no delete of any kind is issued.
     resp = client.post(
         "/api/kb/store",
-        json={"update_entry_id": map_id, "tags": ["reorg"]},
+        json={"update_entry_id": map_id, "change_reason": "r", "tags": ["reorg"]},
     )
     assert resp.status_code == 200
     assert not any("DELETE" in sql for sql, _ in kb.db.calls)
@@ -740,3 +754,347 @@ def test_write_routes_mounted() -> None:
     assert "/api/kb/entries/{entry_id}/reactivate" in paths
     assert "/api/kb/bulk_update" in paths
     assert "/api/kb/feedback" in paths
+
+
+# ─── supersedes / change_reason (supersession core) ──────────────────────────
+
+
+def _entry(
+    entry_id: str,
+    *,
+    hints: dict[str, Any] | None = None,
+    superseded_by: str | None = None,
+    entry_type: EntryType = EntryType.FACTUAL_REFERENCE,
+) -> KnowledgeEntry:
+    return KnowledgeEntry(
+        id=entry_id,
+        short_title=f"Entry {entry_id}",
+        long_title=f"Entry {entry_id} (long)",
+        knowledge_details="Details.",
+        entry_type=entry_type,
+        hints=hints or {},
+        superseded_by=superseded_by,
+    )
+
+
+def test_store_create_supersedes_list_reaches_hints(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    resp = client.post(
+        "/api/kb/store", json={**_STORE_VALID, "supersedes": ["kb-00002"]}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["superseded_ids"] == ["kb-00002"]
+    assert kb.store_calls[-1]["hints"]["supersedes"] == ["kb-00002"]
+    assert kb.check_supersedes_calls == [
+        (["kb-00002"], None, EntryType.FACTUAL_REFERENCE)
+    ]
+
+
+def test_store_create_supersedes_absent_is_none(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    resp = client.post("/api/kb/store", json=_STORE_VALID)
+    assert resp.status_code == 200
+    assert resp.json()["superseded_ids"] == []
+    assert kb.check_supersedes_calls == []
+    assert kb.store_calls[-1]["hints"] is None
+
+
+@pytest.mark.parametrize("value", ["none", []])
+def test_store_create_supersedes_none_literal_or_empty(
+    client: TestClient, value: Any
+) -> None:
+    _authed(client)
+    resp = client.post("/api/kb/store", json={**_STORE_VALID, "supersedes": value})
+    assert resp.status_code == 200
+    assert resp.json()["superseded_ids"] == []
+
+
+def test_store_create_supersedes_scalar_string_is_pydantic_422(
+    client: TestClient,
+) -> None:
+    _authed(client)
+    resp = client.post("/api/kb/store", json={**_STORE_VALID, "supersedes": "kb-00002"})
+    assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], list)
+
+
+def test_store_create_supersedes_problems_422(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.supersedes_problems = ["kb-99999 not found"]
+    resp = client.post(
+        "/api/kb/store", json={**_STORE_VALID, "supersedes": ["kb-99999"]}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "supersedes rejected: kb-99999 not found"
+    assert not kb.store_calls
+
+
+def test_store_create_hint_scalar_reaches_check(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.supersedes_problems = ["kb-1 is not a valid entry id"]
+    resp = client.post(
+        "/api/kb/store", json={**_STORE_VALID, "hints": {"supersedes": "kb-1"}}
+    )
+    assert resp.status_code == 422
+    assert kb.check_supersedes_calls[-1][0] == ["kb-1"]
+
+
+def test_store_create_hint_non_str_rejected(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    resp = client.post(
+        "/api/kb/store", json={**_STORE_VALID, "hints": {"supersedes": [1]}}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"].startswith(
+        "supersedes rejected: hints.supersedes must be a kb-id string"
+    )
+    assert not kb.store_calls
+
+
+def test_store_create_mental_map_hint_supersedes_is_not_a_pointer(
+    client: TestClient,
+) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    resp = client.post(
+        "/api/kb/store",
+        json={
+            **_STORE_VALID,
+            "knowledge_details": "No pointers here.",
+            "entry_type": "mental_map",
+            "hints": {"supersedes": ["kb-00002"]},
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "A mental_map entry requires at least one outbound pointer (a kb-XXXXX "
+        "reference in knowledge_details, or a related_entities hint)."
+    )
+    assert not kb.store_calls
+
+
+@pytest.mark.parametrize("reason", [None, "   "])
+def test_store_update_requires_change_reason(
+    client: TestClient, reason: str | None
+) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = make_entry("kb-00001")
+    payload: dict[str, Any] = {"update_entry_id": "kb-00001", "tags": ["x"]}
+    if reason is not None:
+        payload["change_reason"] = reason
+    resp = client.post("/api/kb/store", json=payload)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "change_reason is required when updating an entry: say what changed and why."
+    )
+    assert kb.update_calls == []
+
+
+def test_store_update_hint_self_supersedes_rejected(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00001"] = make_entry("kb-00001")
+    kb.supersedes_problems = ["an entry cannot supersede itself"]
+    resp = client.post(
+        "/api/kb/store",
+        json={
+            "update_entry_id": "kb-00001",
+            "change_reason": "r",
+            "hints": {"supersedes": "kb-00001"},
+        },
+    )
+    assert resp.status_code == 422
+    assert (
+        resp.json()["detail"] == "supersedes rejected: an entry cannot supersede itself"
+    )
+    assert kb.check_supersedes_calls[-1][1] == "kb-00001"
+    assert kb.update_calls == []
+
+
+def test_store_update_validates_only_new_targets(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00010"] = _entry("kb-00010", hints={"supersedes": ["kb-00001"]})
+    resp = client.post(
+        "/api/kb/store",
+        json={
+            "update_entry_id": "kb-00010",
+            "change_reason": "r",
+            "supersedes": ["kb-00003"],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["superseded_ids"] == ["kb-00003"]
+    assert kb.check_supersedes_calls == [
+        (["kb-00003"], "kb-00010", EntryType.FACTUAL_REFERENCE)
+    ]
+    _entry_id, kwargs = kb.update_calls[-1]
+    assert kwargs["hints"]["supersedes"] == ["kb-00001", "kb-00003"]
+
+
+def test_store_update_empty_hint_retracts_nothing(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00010"] = _entry("kb-00010", hints={"supersedes": ["kb-00001"]})
+    resp = client.post(
+        "/api/kb/store",
+        json={
+            "update_entry_id": "kb-00010",
+            "change_reason": "r",
+            "hints": {"supersedes": []},
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["superseded_ids"] == []
+    assert kb.check_supersedes_calls == []
+    assert kb.update_calls[-1][1]["hints"]["supersedes"] == ["kb-00001"]
+
+
+def test_store_batch_hint_bad_id_rejects_batch(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.supersedes_problems = ["kb-1 is not a valid entry id"]
+    resp = client.post(
+        "/api/kb/store_batch",
+        json={"entries": [{**_BATCH_ENTRY, "hints": {"supersedes": "kb-1"}}]},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "entry 0: supersedes rejected: kb-1 is not a valid entry id"
+    )
+    assert kb.store_batch_calls == []
+
+
+def test_store_batch_writes_sorted_supersedes(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    resp = client.post(
+        "/api/kb/store_batch",
+        json={
+            "entries": [
+                {
+                    **_BATCH_ENTRY,
+                    "supersedes": ["kb-00003", "kb-00002"],
+                    "hints": {"supersedes": "kb-00002"},
+                },
+                _BATCH_ENTRY,
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    dicts, _enrich = kb.store_batch_calls[-1]
+    assert dicts[0]["hints"]["supersedes"] == ["kb-00002", "kb-00003"]
+    assert dicts[1]["hints"] is None
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"change_reason": "  "}])
+def test_deactivate_requires_change_reason(
+    client: TestClient, payload: dict[str, Any] | None
+) -> None:
+    """Pinned order: an unknown id with no change_reason is 422, not 404."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kwargs: dict[str, Any] = {} if payload is None else {"json": payload}
+    resp = client.post("/api/kb/entries/kb-00077/deactivate", **kwargs)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "change_reason is required when deactivating an entry; if a newer entry "
+        "replaces this one, also pass superseded_by."
+    )
+    assert kb.deactivate_calls == []
+
+
+def test_deactivate_superseded_by_not_found(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    resp = client.post(
+        "/api/kb/entries/kb-00001/deactivate",
+        json={"change_reason": "r", "superseded_by": "kb-00005"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "superseded_by kb-00005 not found"
+    assert kb.deactivate_calls == []
+
+
+def test_deactivate_superseded_by_problems(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00005"] = _entry("kb-00005", entry_type=EntryType.DECISION)
+    kb.supersedes_problems = ["kb-00001 already supersedes kb-00005 (cycle)"]
+    resp = client.post(
+        "/api/kb/entries/kb-00001/deactivate",
+        json={"change_reason": "r", "superseded_by": "kb-00005"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "superseded_by rejected: kb-00001 already supersedes kb-00005 (cycle)"
+    )
+    assert kb.check_supersedes_calls == [(["kb-00001"], "kb-00005", EntryType.DECISION)]
+    assert kb.deactivate_calls == []
+
+
+def test_deactivate_with_superseded_by(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00005"] = _entry("kb-00005")
+    resp = client.post(
+        "/api/kb/entries/kb-00001/deactivate",
+        json={"change_reason": "replaced", "superseded_by": "kb-00005"},
+    )
+    assert resp.status_code == 200
+    assert kb.deactivate_calls[-1] == (
+        "kb-00001",
+        "tester@example.com",
+        "replaced",
+        "kb-00005",
+    )
+
+
+def test_supersession_route_log_lines(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    caplog.set_level("INFO", logger="kb_service.routes.kb_write_routes")
+    client.post("/api/kb/store", json={**_STORE_VALID, "supersedes": ["kb-00002"]})
+    accepted = [
+        r.getMessage() for r in caplog.records if "outcome=accepted" in r.getMessage()
+    ]
+    assert accepted and "supersession-route op=store" in accepted[0]
+    assert "targets=['kb-00002']" in accepted[0]
+    assert "mode=list" in accepted[0]
+
+    kb.supersedes_problems = ["kb-00009 not found"]
+    client.post("/api/kb/store", json={**_STORE_VALID, "supersedes": ["kb-00009"]})
+    rejected = [
+        r.getMessage() for r in caplog.records if "outcome=rejected" in r.getMessage()
+    ]
+    assert rejected and "problems=['kb-00009 not found']" in rejected[0]
+
+    client.post("/api/kb/entries/kb-00001/deactivate", json={})
+    assert any(
+        "op=deactivate outcome=change_reason_missing" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_supersession_build_failed_warning(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A validated target still unpointed after the write: the graph build failed."""
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00002"] = _entry("kb-00002", superseded_by=None)
+    client.post("/api/kb/store", json={**_STORE_VALID, "supersedes": ["kb-00002"]})
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "supersession-route build_failed writer=kb-00001 pending_targets=['kb-00002']"
+        in m
+        for m in warnings
+    )
