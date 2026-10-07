@@ -113,7 +113,7 @@ async def batch_store_entries(
     from personal_kb.backend.http import BackendHttpError, _map_error
 
     try:
-        created, backend_failed = await backend.store_batch(valid_entries)
+        created, backend_failed, superseded_ids = await backend.store_batch(valid_entries)
     except BackendHttpError as e:
         mapped = _map_error(e, "")
         return re.sub(
@@ -168,7 +168,7 @@ async def batch_store_entries(
                     block += "\n" + "\n".join(warnings)
             formatted.append(block)
     else:
-        for entry in created:
+        for pos, entry in enumerate(created):
             anchor = entry.updated_at or entry.created_at or now
             eff = compute_effective_confidence(
                 entry.confidence_level,
@@ -176,6 +176,8 @@ async def batch_store_entries(
                 anchor,
             )
             block = f"Created {entry.id} (v{entry.version})\n" + format_entry_compact(entry, eff)
+            if pos < len(superseded_ids) and superseded_ids[pos]:
+                block += "\nSupersedes: " + ", ".join(superseded_ids[pos])
             if entry.entry_type == EntryType.MENTAL_MAP and entry.knowledge_details:
                 warnings = lint_map_body(entry.knowledge_details)
                 if warnings:

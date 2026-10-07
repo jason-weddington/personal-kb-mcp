@@ -1069,6 +1069,79 @@ def test_store_batch_writes_sorted_supersedes(client: TestClient) -> None:
     assert dicts[1]["hints"] is None
 
 
+def test_store_batch_superseded_ids_aligned(client: TestClient) -> None:
+    _authed(client)
+    resp = client.post(
+        "/api/kb/store_batch",
+        json={
+            "entries": [
+                {**_BATCH_ENTRY, "supersedes": ["kb-00003", "kb-00002"]},
+                _BATCH_ENTRY,
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["superseded_ids"] == [["kb-00002", "kb-00003"], []]
+
+
+def test_store_batch_build_failed_warning(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+    kb.entries["kb-00002"] = _entry("kb-00002", superseded_by=None)
+    client.post(
+        "/api/kb/store_batch",
+        json={"entries": [{**_BATCH_ENTRY, "supersedes": ["kb-00002"]}]},
+    )
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "supersession-route build_failed writer=kb-00001 pending_targets=['kb-00002']"
+        in m
+        for m in warnings
+    )
+
+
+def test_store_batch_partial_failure_audits_created_only(client: TestClient) -> None:
+    _authed(client)
+    kb: FakeKnowledgeBase = app.state.kb
+
+    async def partial(
+        entries: list[dict[str, Any]], *, enrich: bool = True
+    ) -> list[Any]:
+        # the facade skipped entry 1; entries 0 and 2 were created
+        out = []
+        for n, i in ((1, 0), (3, 2)):
+            e = make_entry(f"kb-0000{n}")
+            out.append(
+                e.model_copy(
+                    update={
+                        "short_title": entries[i]["short_title"],
+                        "long_title": entries[i]["long_title"],
+                        "knowledge_details": entries[i]["knowledge_details"],
+                    }
+                )
+            )
+        return out
+
+    kb.store_batch = partial  # type: ignore[method-assign]
+    entries = [
+        {
+            **_BATCH_ENTRY,
+            "short_title": f"T{i}",
+            "supersedes": ["kb-00009"] if i == 2 else "none",
+        }
+        for i in range(3)
+    ]
+    resp = client.post("/api/kb/store_batch", json={"entries": entries})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["requested"] == 3
+    assert body["superseded_ids"] == [[], ["kb-00009"]]
+    audited = [(ev[1], ev[3]["entry_index"]) for ev in kb.audit_events]
+    assert audited == [("kb-00001", 0), ("kb-00003", 2)]
+
+
 @pytest.mark.parametrize("payload", [None, {}, {"change_reason": "  "}])
 def test_deactivate_requires_change_reason(
     client: TestClient, payload: dict[str, Any] | None

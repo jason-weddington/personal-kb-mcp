@@ -113,10 +113,12 @@ class Backend(Protocol):
     async def store_batch(
         self,
         entries: list[dict[str, Any]],
-    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]]]:
+    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]]:
         """Create multiple entries.
 
-        Returns ``(created, failed)`` where *failed* is a list of
+        Returns ``(created, failed, superseded_ids)`` where *superseded_ids*
+        is aligned with *created* (empty from servers that do not report it)
+        and *failed* is a list of
         ``(index, short_title, error)`` tuples for per-entry failures.
         HttpBackend returns an empty *failed* list; the tool renders the
         aggregate failure count from ``len(created) < len(entries)``.

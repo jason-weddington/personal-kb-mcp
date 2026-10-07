@@ -114,10 +114,13 @@ class StoreBatchResponse(BaseModel):
 
     ``created`` may be shorter than ``requested`` when the engine skips
     per-entry runtime failures (logged-and-skipped facade behaviour).
+    ``superseded_ids`` is aligned with ``created``: the validated supersedes
+    targets of each created entry.
     """
 
     requested: int
     created: list[KnowledgeEntry]
+    superseded_ids: list[list[str]] = []
 
 
 class DeactivateRequest(BaseModel):

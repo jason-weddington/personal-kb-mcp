@@ -562,6 +562,36 @@ async def _validate_batch_supersedes(
     return effective
 
 
+def _match_created_to_inputs(
+    entry_dicts: list[dict[str, Any]], created: list[KnowledgeEntry]
+) -> list[int | None]:
+    """Map each created entry to its input index (``None`` if unmatched).
+
+    ``KnowledgeBase.store_batch`` returns created entries in input order with
+    failed ones skipped, so *created* is an ordered subsequence of the input.
+    When nothing was skipped the pairing is positional; otherwise match
+    greedily in order on the title/body identity of each input.
+    """
+    if len(created) == len(entry_dicts):
+        return list(range(len(created)))
+    result: list[int | None] = []
+    cursor = 0
+    for e in created:
+        found: int | None = None
+        for j in range(cursor, len(entry_dicts)):
+            d = entry_dicts[j]
+            if (
+                d["short_title"] == e.short_title
+                and d["long_title"] == e.long_title
+                and d["knowledge_details"] == e.knowledge_details
+            ):
+                found = j
+                cursor = j + 1
+                break
+        result.append(found)
+    return result
+
+
 @router.post("/store_batch", response_model=StoreBatchResponse)
 async def store_batch(
     body: StoreBatchRequest,
@@ -679,13 +709,17 @@ async def store_batch(
         )
 
     created: list[KnowledgeEntry] = await kb.store_batch(entry_dicts, enrich=True)
-    # The facade may skip failed entries, so only pair decisions with created
-    # entries when the counts line up (the normal case).
-    if len(created) == len(batch_decisions):
-        for decision, e in zip(batch_decisions, created, strict=True):
-            await record_stored(
-                kb, decision, entry_id=e.id, contributor=attr.contributor
-            )
+    # The facade may skip failed entries, so map each created entry back to its
+    # input index before recording the audit/stored lines and warnings.
+    indexes = _match_created_to_inputs(entry_dicts, created)
+    for idx, e in zip(indexes, created, strict=True):
+        if idx is None:
+            continue
+        await record_stored(
+            kb, batch_decisions[idx], entry_id=e.id, contributor=attr.contributor
+        )
+        if batch_supersedes[idx]:
+            await _warn_if_build_failed(kb, e.id, batch_supersedes[idx])
 
     # Re-fetch each created entry to pick up has_embedding
     refreshed: list[KnowledgeEntry] = []
@@ -693,7 +727,13 @@ async def store_batch(
         fetched = await kb.get(e.id)
         refreshed.append(fetched if fetched is not None else e)
 
-    return StoreBatchResponse(requested=len(body.entries), created=refreshed)
+    return StoreBatchResponse(
+        requested=len(body.entries),
+        created=refreshed,
+        superseded_ids=[
+            batch_supersedes[idx] if idx is not None else [] for idx in indexes
+        ],
+    )
 
 
 @router.post("/entries/{entry_id}/deactivate", response_model=EntryActionResponse)

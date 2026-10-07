@@ -379,7 +379,7 @@ async def test_store_batch_returns_created_entries():
         return httpx.Response(200, json={"created": [_ENTRY_JSON, second]})
 
     backend = _make_backend(handler)
-    created, failed = await backend.store_batch(
+    created, failed, superseded = await backend.store_batch(
         [
             {"short_title": "A", "long_title": "A long", "knowledge_details": "A details"},
             {"short_title": "B", "long_title": "B long", "knowledge_details": "B details"},
@@ -387,6 +387,7 @@ async def test_store_batch_returns_created_entries():
     )
     assert len(created) == 2
     assert failed == []
+    assert superseded == []
 
 
 # ---------------------------------------------------------------------------
@@ -1000,9 +1001,10 @@ async def test_store_batch_empty_returns_early():
         return httpx.Response(200, json={})
 
     backend = _make_backend(handler)
-    created, failed = await backend.store_batch([])
+    created, failed, superseded = await backend.store_batch([])
     assert created == []
     assert failed == []
+    assert superseded == []
     assert not called  # No HTTP request made
 
 

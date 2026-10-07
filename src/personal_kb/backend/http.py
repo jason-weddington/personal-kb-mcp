@@ -360,10 +360,14 @@ class HttpBackend:
     async def store_batch(
         self,
         entries: list[dict[str, Any]],
-    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]]]:
-        """Send all pre-validated entries to the service in one request."""
+    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]]:
+        """Send all pre-validated entries to the service in one request.
+
+        The third element is the server's per-created-entry ``superseded_ids``
+        (aligned with ``created``); empty when an older server omits it.
+        """
         if not entries:
-            return [], []
+            return [], [], []
 
         # Build the request body — no contributor/team (service attributes from API key)
         batch_entries = []
@@ -397,8 +401,9 @@ class HttpBackend:
 
         data = await self._post("/api/kb/store_batch", {"entries": batch_entries})
         created = [_parse_entry(e) for e in data.get("created", [])]
+        superseded = [[str(i) for i in ids] for ids in data.get("superseded_ids") or []]
         # HTTP backend: no per-entry detail for server-side failures
-        return created, []
+        return created, [], superseded
 
     async def bulk_update(
         self,

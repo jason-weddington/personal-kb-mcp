@@ -381,3 +381,33 @@ async def test_batch_unfiltered_index_alignment() -> None:
     handler = lambda req: httpx.Response(422, json={"detail": detail})  # noqa: E731
     result = await batch_store_entries([_entry_dict(), _entry_dict()], _lifespan(handler))
     assert "entry 1: boom" in result
+
+
+@pytest.mark.asyncio
+async def test_batch_renders_supersedes_line():
+    """superseded_ids from the server render as a 'Supersedes:' line per entry."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "created": [_entry_json("kb-00001", "A"), _entry_json("kb-00002", "B")],
+                "superseded_ids": [["kb-00007", "kb-00008"], []],
+            },
+        )
+
+    result = await batch_store_entries(
+        [_entry_dict(short_title="A"), _entry_dict(short_title="B")], _lifespan(handler)
+    )
+    assert result.count("Supersedes:") == 1
+    assert "Supersedes: kb-00007, kb-00008" in result
+
+
+@pytest.mark.asyncio
+async def test_batch_tolerates_missing_superseded_ids():
+    """Older servers omit superseded_ids; no Supersedes line, no crash."""
+    result = await batch_store_entries(
+        [_entry_dict()], _lifespan(_created_handler(_entry_json("kb-00001")))
+    )
+    assert "Created kb-00001" in result
+    assert "Supersedes:" not in result

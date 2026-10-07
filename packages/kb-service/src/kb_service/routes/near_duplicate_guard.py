@@ -255,7 +255,12 @@ async def enforce_near_duplicate_guard(
         }
         return finish("resolved", check, resolved_by)
 
-    decision = finish("conflict", check)
+    partial_resolved = {
+        c.id: "supersedes" if c.id in supersedes else "distinct_from"
+        for c in check.candidates
+        if c.id in covered
+    }
+    decision = finish("conflict", check, partial_resolved)
     await _write_audit(kb, decision.detail, entry_id=None, contributor=contributor)
     prefix = f"entry {entry_index}: " if op == "store_batch" else ""
     msg = (

@@ -181,6 +181,20 @@ def test_d_partial_cover_lists_only_uncovered(client: TestClient) -> None:
     assert [c["id"] for c in resp.json()["detail"]["candidates"]] == [B]
 
 
+def test_d2_partial_cover_records_resolved_by(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    kb = _setup(client, _cand(A, 0.95), _cand(B, 0.91, "Other"))
+    with caplog.at_level(logging.INFO):
+        resp = client.post("/api/kb/store", json={**_BODY, "supersedes": [A]})
+    assert resp.status_code == 409
+    assert [c["id"] for c in resp.json()["detail"]["candidates"]] == [B]
+    recs = _guard_records(caplog)
+    assert len(recs) == 1
+    assert f"resolved_by={{'{A}': 'supersedes'}}" in recs[0].getMessage()
+    assert kb.audit_events[0][3]["resolved_by"] == {A: "supersedes"}
+
+
 def test_e_legacy_scalar_hint(client: TestClient) -> None:
     kb = _setup(client, _cand(A, 0.93))
     resp = client.post("/api/kb/store", json={**_BODY, "hints": {"distinct_from": A}})
