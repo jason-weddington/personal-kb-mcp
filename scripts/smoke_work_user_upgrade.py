@@ -144,19 +144,27 @@ def _entries() -> list[dict[str, Any]]:
     ]
 
 
+# SEED runs on the OLD build, which by default is GitHub HEAD: what work users
+# run today. Since v1.1.0 every kb_store / kb_store_batch entry there requires
+# ``supersedes``, so the seed uses the current contract. An --old-spec older
+# than v1.1.0 rejects the extra argument and the smoke fails loudly, which is
+# the right outcome: that is not an upgrade path anyone is on.
+_NONE = {"supersedes": "none"}
+
 SEED: list[tuple[str, dict[str, Any]]] = [
-    ("kb_store_batch", {"entries": _entries()[:10]}),
-    ("kb_store", _entries()[10]),
-    ("kb_store", _entries()[11]),
+    ("kb_store_batch", {"entries": [{**e, **_NONE} for e in _entries()[:10]]}),
+    ("kb_store", {**_entries()[10], **_NONE}),
+    ("kb_store", {**_entries()[11], **_NONE}),
     (
         "kb_store",
         {
+            **_NONE,
             "update_entry_id": "kb-00001",
             "knowledge_details": "UPDATED: earlier of session expiry and X-Amz-Expires.",
             "change_reason": "clarify",
         },
     ),
-    ("kb_store", {"deactivate_entry_id": "kb-00012", "change_reason": "template retired"}),
+    ("kb_store", {**_NONE, "deactivate_entry_id": "kb-00012", "change_reason": "template retired"}),
     (
         "kb_feedback",
         {
@@ -169,7 +177,6 @@ SEED: list[tuple[str, dict[str, Any]]] = [
 ]
 
 # WRITES run on the NEW build, whose kb_store schema requires ``supersedes``.
-# SEED (above) runs on the OLD build, whose schema has no supersedes — leave it.
 WRITES: list[tuple[str, dict[str, Any]]] = [
     (
         "kb_store",
