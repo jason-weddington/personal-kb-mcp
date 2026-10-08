@@ -2,6 +2,71 @@
 
 <!-- version list -->
 
+## v1.2.0 (2026-10-07)
+
+### Bug Fixes
+
+- **prevention**: Only deliberate or observed resolutions may become a pre-action deny
+  ([`f7269ee`](https://github.com/jason-weddington/personal-kb-mcp/commit/f7269ee79c24c641fec4dd13adbae6e2135a2131))
+
+- **release**: An aborted release also drops its chore(release) commit
+  ([`540677d`](https://github.com/jason-weddington/personal-kb-mcp/commit/540677df6c79d870a6caac8ef70dd4db05497553))
+
+- **smoke**: Seed the old build with the current kb_store contract (supersedes)
+  ([`3c5c80e`](https://github.com/jason-weddington/personal-kb-mcp/commit/3c5c80e3648f6da25fe4b4ad0c44040aacc8c989))
+
+- **tests**: No test may reach a database named by an ambient KB_DATABASE_URL
+  ([`9cd0158`](https://github.com/jason-weddington/personal-kb-mcp/commit/9cd01588b0f6c17d254c3afcde047090d95a576e))
+
+### Chores
+
+- Pre-push guard — the github remote only receives ./release.sh pushes
+  ([`c029a4b`](https://github.com/jason-weddington/personal-kb-mcp/commit/c029a4be7e7dd4b8bd0fe62b8622d37800c2b47b))
+
+- Skip heavy pre-push gates on docs-only pushes
+  ([`9c3e369`](https://github.com/jason-weddington/personal-kb-mcp/commit/9c3e36904470c72442015eb87bc43630c8f4696f))
+
+### Documentation
+
+- Experience-loop debate synthesis (memory-science, skeptic, systems, evaluator)
+  ([`e90cd1d`](https://github.com/jason-weddington/personal-kb-mcp/commit/e90cd1d5abaf57c8acac1e48b67d56b870026235))
+
+- Experience-loop proposal — an agent that learns from experience (debate input)
+  ([`7cf799f`](https://github.com/jason-weddington/personal-kb-mcp/commit/7cf799f536deeedc22611a3fb516277dbf0dc2fd))
+
+- New proposal
+  ([`b2cb4f6`](https://github.com/jason-weddington/personal-kb-mcp/commit/b2cb4f6eef33db0a5e07ef222ee52ffb0cb77919))
+
+- **experience-loop**: Amend — repeat mistakes are cross-session; prevention channels become the
+  first bet
+  ([`362d3b9`](https://github.com/jason-weddington/personal-kb-mcp/commit/362d3b9814eebed9b4830d4fe9df1e09a90ed791))
+
+- **experience-loop**: Amend — the KB is an agent tool; no human authorship or review tiers
+  ([`269a61e`](https://github.com/jason-weddington/personal-kb-mcp/commit/269a61eeb3af88bc06e63d673d294bae7f2be419))
+
+### Features
+
+- **2872c57d**: SessionStart tool inventory of personal script dirs (the agent's tab completion)
+  ([`56b35e3`](https://github.com/jason-weddington/personal-kb-mcp/commit/56b35e352bdfc6b3d17090f880c444b0428df7db))
+
+- **32605015**: Prevention channels: cue-keyed PreToolUse soft gate and SessionStart gotcha slice
+  ([`2a459e4`](https://github.com/jason-weddington/personal-kb-mcp/commit/2a459e49486510ce4533db7e60841518068ee2c7))
+
+- **9f3f6f50**: Eval: replay experiment harness — known mistakes with KB off vs session-start slice
+  vs soft gate
+  ([`9560993`](https://github.com/jason-weddington/personal-kb-mcp/commit/9560993de41e468c2bd21e450af60d7ae7e32ac9))
+
+- **bab58bbb**: Resolution producer: validate and stamp hints.resolution on store, document it in
+  the kb_store tools, and seed resolutions from existing procedure entries
+  ([`956bea5`](https://github.com/jason-weddington/personal-kb-mcp/commit/956bea579042454211d5efe1292decf8e73b089e))
+
+- **da49350b**: Failure-cue index, post_tool event ingest, and cross-session repeat-rate backfill
+  ([`cecc412`](https://github.com/jason-weddington/personal-kb-mcp/commit/cecc41221047f158c723b513af78ffa04ee69820))
+
+- **listener**: Judge last_assistant_message, skip headless whispers, record text_source
+  ([`acf1f19`](https://github.com/jason-weddington/personal-kb-mcp/commit/acf1f19f44e0aa22b575567c866656ca93c06631))
+
+
 ## v1.1.0 (2026-10-07)
 
 ### Bug Fixes
