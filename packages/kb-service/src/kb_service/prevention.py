@@ -72,8 +72,6 @@ _RESOLUTIONS_SQL = (
     "SELECT id, updated_at, hints, project_ref FROM knowledge_entries"
     " WHERE is_active = 1 AND superseded_by IS NULL"
     " AND entry_type != 'mental_map'"
-    ' AND (project_ref = ? OR hints LIKE \'%"scope": "global"%\''
-    ' OR hints LIKE \'%"scope":"global"%\')'
     " AND hints LIKE '%\"resolution\"%'"
     " ORDER BY updated_at DESC, id DESC"
 )
@@ -218,7 +216,7 @@ async def load_resolutions(
     group, newest first), so project knowledge wins the caps.
     """
     stats = LoadStats()
-    cursor = await db.execute(_RESOLUTIONS_SQL, (project,))
+    cursor = await db.execute(_RESOLUTIONS_SQL)
     rows = await cursor.fetchall()
     own: list[Resolution] = []
     global_: list[Resolution] = []

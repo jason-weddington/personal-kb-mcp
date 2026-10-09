@@ -259,6 +259,22 @@ def test_outcomes(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None
     assert _log_rows(env["root"])[-1]["outcome"] == "emitted"
 
 
+def test_unset_dirs_means_no_inventory(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tool(env["root"] / "scripts", "mytool", "#!/bin/sh\n# does a thing\n")
+    for value in (None, "", "   "):
+        if value is None:
+            monkeypatch.delenv("KB_TOOL_DIRS", raising=False)
+        else:
+            monkeypatch.setenv("KB_TOOL_DIRS", value)
+        assert build_inventory() is None
+        row = _log_rows(env["root"])[-1]
+        assert row["outcome"] == "no_dirs"
+        assert row["dirs_requested"] == []
+        assert row["dirs_scanned"] == []
+
+
 def test_fail_open_logs_error(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     _tool(env["root"] / "t", "a")
     monkeypatch.setenv("KB_TOOL_DIRS", str(env["root"] / "t"))

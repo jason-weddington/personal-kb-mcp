@@ -1,7 +1,8 @@
 """SessionStart inventory of personal script directories (stdlib-only).
 
 Lists the executables found in the directories named by ``KB_TOOL_DIRS``
-(default ``~/scripts``) as ``<name> — <description>`` lines so the agent
+(opt-in: unset or blank means no inventory and no scan) as
+``<name> — <description>`` lines so the agent
 knows which personal tools exist before it improvises one. Purely a local
 filesystem scan: no network, no model call, no KB access. Fails open —
 :func:`build_inventory` never raises.
@@ -26,7 +27,6 @@ from personal_kb_hook.render import _EM_DASH
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-DEFAULT_TOOL_DIRS = "~/scripts"
 MAX_TOOLS = 40
 MAX_CHARS = 2000
 RESERVE = 24
@@ -116,7 +116,7 @@ def _is_off() -> bool:
 def _requested_dirs() -> list[str]:
     raw = os.environ.get("KB_TOOL_DIRS")
     if raw is None or not raw.strip():
-        raw = DEFAULT_TOOL_DIRS
+        return []
     dirs: list[str] = []
     for part in raw.split(":"):
         part = part.strip()

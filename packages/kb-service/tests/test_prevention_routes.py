@@ -1,5 +1,6 @@
 """Prevention channels: helpers on a real SQLite KB, routes, decisions, stats."""
 
+import json
 import logging
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
@@ -330,6 +331,29 @@ async def test_prevention_gate_switches(
     assert body["gate"]["enabled"] is False
     assert body["index"] == []
     assert body["slice"]
+
+
+async def test_prevention_global_scope_ignores_json_spacing(
+    kb: Any, real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spaced = await _store(kb, "a", **_res(cue_tc="git push", scope="global"))
+    compact = await _store(kb, "a", **_res(cue_tc="git pull", scope="global"))
+    local = await _store(kb, "a", **_res(cue_tc="git fetch", scope="project"))
+    cursor = await kb.db.execute(
+        "SELECT hints FROM knowledge_entries WHERE id = ?", (compact,)
+    )
+    row = await cursor.fetchone()
+    await kb.db.execute(
+        "UPDATE knowledge_entries SET hints = ? WHERE id = ?",
+        (json.dumps(json.loads(row[0]), separators=(",", ":")), compact),
+    )
+    await kb.db.commit()
+    assert '"scope":"global"' in row[0] or '"scope": "global"' in row[0]
+    monkeypatch.setenv("KB_SOFT_GATE_ENABLED", "TRUE")
+    body = real_client.get("/api/kb/prevention", params={"project": "b"}).json()
+    ids = {c["resolution_id"] for c in body["index"]}
+    assert ids == {spaced, compact}
+    assert local not in ids
 
 
 async def test_prevention_observed_once_flag(

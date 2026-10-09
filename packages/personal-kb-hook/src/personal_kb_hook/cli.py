@@ -26,7 +26,7 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
   subprocess. Never produces stdout; never calls :func:`http_index.load_index`.
 
 SessionStart additionally appends a tool inventory of the personal script
-directories (``KB_TOOL_DIRS``, default ``~/scripts``; see
+directories (``KB_TOOL_DIRS``, opt-in with no default; see
 :mod:`personal_kb_hook.tool_inventory`) after the directory text.
 
 Tolerant by design: any error path — empty stdin, malformed JSON, an

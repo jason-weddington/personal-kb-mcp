@@ -281,7 +281,7 @@ Both halves read from the same `mental_map` entries you author with `kb_store`; 
 
 The repo also ships a small stdlib-only CLI (`personal-kb-hook`) that you can wire into Claude Code's [hook system](https://docs.claude.com/en/docs/claude-code/hooks) to proactively surface the `mental_map` entries for the project you're working in. The hook itself never talks to the MCP server or the DB — it reads a denormalized JSONL index that the MCP server writes every time a `mental_map` is created, updated, or deactivated.
 
-On every `SessionStart` the hook also lists the executables found in `KB_TOOL_DIRS` (default `~/scripts`) with a one-line description each, so the agent sees your personal tools up front; set `KB_TOOL_INVENTORY=0` to turn it off. See the [hook README](packages/personal-kb-hook/README.md) for the format and caps.
+On every `SessionStart` the hook also lists the executables found in `KB_TOOL_DIRS` (opt-in: unset means no inventory) with a one-line description each, so the agent sees your personal tools up front; set `KB_TOOL_INVENTORY=0` to turn it off. See the [hook README](packages/personal-kb-hook/README.md) for the format and caps.
 
 ### Install
 
