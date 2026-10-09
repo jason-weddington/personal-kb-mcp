@@ -335,3 +335,47 @@ async def test_profile_fallback_when_boto3_missing():
         from personal_kb.llm.bedrock import _find_aws_profile
 
         assert _find_aws_profile(None) is None
+
+
+def _converse_response(*values):
+    """Build a converse response; non-str values mimic reasoning-content unions."""
+    items = []
+    for v in values:
+        item = MagicMock()
+        item.value = v
+        items.append(item)
+    message = MagicMock()
+    message.content = items
+    response = MagicMock()
+    response.output.value = message
+    return response
+
+
+async def _generate_with(response):
+    with (
+        patch("kb_core.llm.bedrock.BedrockLLMClient._get_client") as mock_get,
+        patch("kb_core.llm.bedrock.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        client = MagicMock()
+        client.converse = AsyncMock(return_value=response)
+        mock_get.return_value = client
+        return await _client().generate("test"), client
+
+
+@pytest.mark.asyncio
+async def test_generate_skips_reasoning_block():
+    result, _ = await _generate_with(_converse_response(object(), "answer"))
+    assert result == "answer"
+
+
+@pytest.mark.asyncio
+async def test_generate_concatenates_text_items():
+    result, _ = await _generate_with(_converse_response("foo", "bar"))
+    assert result == "foobar"
+
+
+@pytest.mark.asyncio
+async def test_generate_reasoning_only_returns_none():
+    result, client = await _generate_with(_converse_response(object()))
+    assert result is None
+    assert client.converse.call_count == 4

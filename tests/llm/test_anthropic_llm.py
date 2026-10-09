@@ -17,6 +17,7 @@ def _client(api_key: str | None = None, model: str = "claude-haiku-4-5") -> Anth
 def mock_response():
     """Create a mock Anthropic response."""
     content_block = MagicMock()
+    content_block.type = "text"
     content_block.text = "Hello from Haiku"
     response = MagicMock()
     response.content = [content_block]
@@ -165,3 +166,56 @@ async def test_protocol_conformance():
     from personal_kb.llm.provider import LLMProvider
 
     assert isinstance(_client(), LLMProvider)
+
+
+def _resp(*blocks):
+    response = MagicMock()
+    response.content = list(blocks)
+    return response
+
+
+def _block(type_, text=None):
+    b = MagicMock(spec=["type", "text"] if text is not None else ["type"])
+    b.type = type_
+    if text is not None:
+        b.text = text
+    return b
+
+
+@pytest.mark.asyncio
+async def test_generate_skips_leading_thinking_block(mock_anthropic_class):
+    mock_anthropic_class.messages.create.return_value = _resp(
+        _block("thinking"), _block("text", "answer")
+    )
+    assert await _client().generate("p") == "answer"
+
+
+@pytest.mark.asyncio
+async def test_generate_concatenates_text_blocks(mock_anthropic_class):
+    mock_anthropic_class.messages.create.return_value = _resp(
+        _block("text", "foo"), _block("text", "bar")
+    )
+    assert await _client().generate("p") == "foobar"
+
+
+@pytest.mark.asyncio
+async def test_generate_only_thinking_returns_none(mock_anthropic_class):
+    mock_anthropic_class.messages.create.return_value = _resp(_block("thinking"))
+    llm = _client()
+    llm._available = True
+    assert await llm.generate("p") is None
+    assert llm._available is None
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_skips_leading_thinking_block(mock_anthropic_class):
+    mock_anthropic_class.messages.create.return_value = _resp(
+        _block("redacted_thinking"), _block("text", "a"), _block("text", "b")
+    )
+    assert await _client().generate_chat([{"role": "user", "content": "hi"}]) == "ab"
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_only_thinking_returns_none(mock_anthropic_class):
+    mock_anthropic_class.messages.create.return_value = _resp(_block("thinking"))
+    assert await _client().generate_chat([{"role": "user", "content": "hi"}]) is None

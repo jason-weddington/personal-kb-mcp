@@ -268,7 +268,13 @@ class BedrockLLMClient:
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 response = await client.converse(converse_input)
-                result: str = response.output.value.content[0].value
+                items = response.output.value.content
+                result = "".join(
+                    v for v in (getattr(i, "value", None) for i in items) if isinstance(v, str)
+                )
+                if not result:
+                    # Reasoning-only (or empty) output: treat as a failed call.
+                    raise ValueError("Bedrock response contained no text content")
                 self._available = True
                 return result
             except Exception as exc:

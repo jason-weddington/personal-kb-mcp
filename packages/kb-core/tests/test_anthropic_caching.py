@@ -40,6 +40,7 @@ def _make_client(model: str = "claude-haiku-4-5") -> AnthropicLLMClient:
 def _mock_response(text: str = "ok") -> MagicMock:
     """Build a minimal Anthropic response mock."""
     block = MagicMock()
+    block.type = "text"
     block.text = text
     response = MagicMock()
     response.content = [block]

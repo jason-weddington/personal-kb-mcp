@@ -23,6 +23,27 @@ _SONNET_MODEL = "claude-sonnet-4-6"
 """Default model identifier for the human-facing synthesis role."""
 
 
+def _extract_text(response: Any) -> str | None:
+    """Join the text blocks of a response; None (with a warning) if there are none.
+
+    Responses may lead with thinking/redacted_thinking blocks, so ``content[0]``
+    is not safe to read.
+    """
+    blocks = list(response.content)
+    texts = [
+        b.text
+        for b in blocks
+        if getattr(b, "type", None) == "text" and isinstance(getattr(b, "text", None), str)
+    ]
+    if not texts:
+        logger.warning(
+            "Anthropic response had no text block (block types: %s)",
+            [getattr(b, "type", type(b).__name__) for b in blocks],
+        )
+        return None
+    return "".join(texts)
+
+
 class AnthropicLLMClient:
     """Generates text via the Anthropic Messages API."""
 
@@ -71,7 +92,10 @@ class AnthropicLLMClient:
                 **kwargs,
                 timeout=self._config.timeout,
             )
-            result: str = response.content[0].text
+            result = _extract_text(response)
+            if result is None:
+                self._available = None
+                return None
             self._available = True
             return result
         except Exception:
@@ -139,7 +163,10 @@ class AnthropicLLMClient:
                 **kwargs,
                 timeout=self._config.timeout,
             )
-            result: str = response.content[0].text
+            result = _extract_text(response)
+            if result is None:
+                self._available = None
+                return None
             self._available = True
             return result
         except Exception:
