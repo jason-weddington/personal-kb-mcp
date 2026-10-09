@@ -1,6 +1,6 @@
 [project]
 name = "kb-core"
-version = "1.2.0"
+version = "1.3.0"
 description = "Channel-agnostic graph-RAG engine: hybrid FTS+vector search, knowledge graph, agentic retrieval"
 readme = "README.md"
 license = "MIT"

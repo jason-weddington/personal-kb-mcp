@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.3.0 (2026-10-09)
+
+### Bug Fixes
+
+- **hook**: Soft gate matches every segment of a compound Bash command
+  ([`2b55e21`](https://github.com/jason-weddington/personal-kb-mcp/commit/2b55e210366937bb70797375f7b0afde5ed3836d))
+
+### Features
+
+- **hook**: KB_GOTCHA_SLICE=0 suppresses the SessionStart gotcha slice while still arming the gate
+  ([`f2968e4`](https://github.com/jason-weddington/personal-kb-mcp/commit/f2968e4b1b048f7e037e935cf80aeb3fa193b0bd))
+
+
 ## v1.2.0 (2026-10-07)
 
 ### Bug Fixes
