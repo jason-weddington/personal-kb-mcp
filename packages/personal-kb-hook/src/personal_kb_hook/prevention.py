@@ -304,7 +304,7 @@ def build_reason(entry: dict[str, Any]) -> str:
 # --- PreToolUse -------------------------------------------------------------
 
 
-def _matches(entry: object, tool_name: str, tc: str, target: str) -> bool:
+def _matches(entry: object, tool_name: str, tc: str, args: list[str]) -> bool:
     if not isinstance(entry, dict):
         return False
     if entry.get("tool") != tool_name or entry.get("target_class") != tc:
@@ -313,7 +313,6 @@ def _matches(entry: object, tool_name: str, tc: str, target: str) -> bool:
     if not isinstance(prefix, str) or not prefix.strip():
         return True
     wanted = prefix.split()
-    args = cues_lite.bash_args_after_class(target)
     return args[: len(wanted)] == wanted
 
 
@@ -344,12 +343,20 @@ def _gate(
         )
         cache["pending_retry"] = None
 
-    tc = cues_lite.target_class(tool_name, target)
-    if not tc:
-        return None
+    if tool_name == "Bash":
+        candidates = cues_lite.bash_segments(target)
+    else:
+        tc0 = cues_lite.target_class(tool_name, target)
+        candidates = [(tc0, cues_lite.bash_args_after_class(target))] if tc0 else []
     index = cache.get("index")
     entries = index if isinstance(index, list) else []
-    match = next((e for e in entries if _matches(e, tool_name, tc, target)), None)
+    match: dict[str, Any] | None = None
+    tc = ""
+    for seg_class, seg_args in candidates:
+        found = next((e for e in entries if _matches(e, tool_name, seg_class, seg_args)), None)
+        if found is not None:
+            match, tc = found, seg_class
+            break
     if match is None:
         return None
 

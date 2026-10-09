@@ -122,3 +122,27 @@ def bash_args_after_class(command: str) -> list[str]:
         return []
     rest = tokens[2:] if _is_two_word(tokens) else tokens[1:]
     return [t for t in rest if not t.startswith("-")]
+
+
+_NEWLINE_SPLIT = re.compile(r"&&|\|\||;|\||\n")
+
+
+def bash_segments(command: str) -> list[tuple[str, list[str]]]:
+    """``(target_class, args_after_class)`` for every segment of ``command``.
+
+    Hook-only (powers the soft gate). Splits on ``&&``, ``||``, ``;``, ``|`` and
+    newlines; ``cd`` segments and segments that classify to ``''`` are skipped.
+    Each segment is run through the same helpers as the single-segment path.
+    """
+    out: list[tuple[str, list[str]]] = []
+    for segment in _NEWLINE_SPLIT.split(command):
+        cls = _bash_class(segment)
+        if not cls:
+            continue
+        # A segment starting with ``cd`` is skipped by _bash_tokens only when it
+        # is not the last candidate; check explicitly.
+        parts = segment.split()
+        if parts and parts[0] == "cd":
+            continue
+        out.append((cls, bash_args_after_class(segment)))
+    return out

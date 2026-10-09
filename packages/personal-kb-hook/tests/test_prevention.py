@@ -632,7 +632,7 @@ def test_error_inside_matching(
     def _boom(*args: Any) -> str:
         raise KeyError("x")
 
-    monkeypatch.setattr(prevention.cues_lite, "target_class", _boom)
+    monkeypatch.setattr(prevention.cues_lite, "bash_segments", _boom)
     assert _run(monkeypatch, _pre("git push", "t1"), []) == ""
     cache = _cache()
     assert cache["pre_tool_errors"] == 1
@@ -739,3 +739,51 @@ def test_drop_log_rotation(server: _Server, tmp_path: Path) -> None:
     server.prevention = TimeoutError()
     prevention.session_start(_ss(tmp_path))
     assert len(_drops()) == 1
+
+
+# ─── compound Bash commands: every segment is matched ────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("tc", "prefix", "command", "denied"),
+    [
+        (
+            "systemctl restart",
+            "",
+            "caddy validate --config /etc/caddy/Caddyfile && systemctl restart caddy",
+            True,
+        ),
+        ("git push", "github", "git commit -qam x && git push github main", True),
+        ("git push", "github", "git commit -qam x && git push origin main", False),
+        ("make smoke", "", "cd /app\nmake smoke 2>&1 | tail -5", True),
+        ("systemctl restart", "", "sudo systemctl restart caddy; echo ok", True),
+        ("git push", "", "git commit -qam x && echo hi", False),
+    ],
+)
+def test_compound_segments_match(
+    server: _Server,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tc: str,
+    prefix: str,
+    command: str,
+    denied: bool,
+) -> None:
+    server.prevention = _prevention_body(index=[_cue(tc=tc, args_prefix=prefix)])
+    _run(monkeypatch, _ss(tmp_path), [])
+    out = _run(monkeypatch, _pre(command, "t1"), [])
+    assert bool(out) is denied
+    if denied:
+        rows = [r for r in _rows() if r["decision"] == "denied"]
+        assert rows[0]["target_class"] == tc
+
+
+def test_bash_segments() -> None:
+    from personal_kb_hook import cues_lite
+
+    assert cues_lite.bash_segments("cd /a && FOO=1 git push -f github main; ls | wc -l") == [
+        ("git push", ["github", "main"]),
+        ("ls", []),
+        ("wc", []),
+    ]
+    assert cues_lite.bash_segments("cd /a") == []
