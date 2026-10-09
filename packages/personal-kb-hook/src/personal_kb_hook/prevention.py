@@ -42,6 +42,7 @@ from personal_kb_hook.paths import (
     get_prevention_cache_path,
 )
 from personal_kb_hook.resolver import resolve_project
+from personal_kb_hook.tool_inventory import _OFF_VALUES
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -237,6 +238,8 @@ def session_start(payload: dict[str, Any]) -> str | None:
         data = _arm(payload, session_id, "SessionStart")
         if data is None:
             return None
+        if os.environ.get("KB_GOTCHA_SLICE", "").strip().lower() in _OFF_VALUES:
+            return None  # gate_only arm: index stays armed, slice text is withheld
         text = data.get("slice_text")
         return text if isinstance(text, str) and text else None
     except Exception:

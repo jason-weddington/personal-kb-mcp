@@ -787,3 +787,44 @@ def test_bash_segments() -> None:
         ("wc", []),
     ]
     assert cues_lite.bash_segments("cd /a") == []
+
+
+# ─── KB_GOTCHA_SLICE ─────────────────────────────────────────────────────────
+
+
+def test_gotcha_slice_off_still_arms_gate(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_GOTCHA_SLICE", "0")
+    server.prevention = _prevention_body(slice_text="X")
+    assert prevention.session_start(_ss(tmp_path)) is None
+    assert _cache()["index"] == [_cue()]
+    out = _run(monkeypatch, _pre("git push origin main", "t1"), ["--format=text"])
+    hso = json.loads(out)["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "deny"
+    assert any(r["decision"] == "denied" and r.get("tool_use_id") == "t1" for r in _rows())
+
+
+def test_gotcha_slice_unset_returns_slice(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_GOTCHA_SLICE", raising=False)
+    server.prevention = _prevention_body(slice_text="X")
+    assert prevention.session_start(_ss(tmp_path)) == "X"
+
+
+def test_gotcha_slice_off_keeps_tool_inventory(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools = tmp_path / "scripts"
+    tools.mkdir()
+    tool = tools / "mytool"
+    tool.write_text("#!/bin/sh\n", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("KB_TOOL_DIRS", str(tools))
+    monkeypatch.setenv("KB_TOOL_INVENTORY", "1")
+    monkeypatch.setenv("KB_GOTCHA_SLICE", "0")
+    server.prevention = _prevention_body(slice_text="SLICE-X")
+    out = _run(monkeypatch, _ss(tmp_path), ["--format=text"])
+    assert "mytool" in out
+    assert "SLICE-X" not in out

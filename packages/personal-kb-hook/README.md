@@ -11,6 +11,7 @@ and listener whispers. See the repo root `README.md` for install and wiring.
 | `KB_LISTENER_HEADLESS` | `TRUE` runs the listener on `Stop` even in headless dispatch runs (`HEADLESS_BUILD_ENGINE` set). Default: skipped, because a headless run never gets another `UserPromptSubmit`, the only whisper delivery path, so the Sonnet votes would be wasted. |
 | `KB_TOOL_DIRS` | Colon-separated directories scanned for the SessionStart tool inventory. Default `~/scripts`. Missing or relative entries are skipped; the first dir wins on duplicate names. |
 | `KB_TOOL_INVENTORY` | Default on. `0`/`false`/`no`/`off` disables the SessionStart tool inventory. |
+| `KB_GOTCHA_SLICE` | Default on. `0`/`false`/`no`/`off` suppresses the SessionStart gotcha slice text while the soft gate is still armed (gate index fetched and cached). |
 
 ## SessionStart tool inventory
 
