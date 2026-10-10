@@ -88,6 +88,11 @@ _CORRECTIONS_SQL = (
 )
 
 
+# Shapes trusted at first sighting: 1 is detected from tool output, 2 from the
+# user's own correction. Shape 3 (a model judgment) waits for a second sighting.
+FIRST_SIGHTING_SHAPES = frozenset({1, 2})
+
+
 @dataclass(frozen=True)
 class Resolution:
     """A parsed ``hints.resolution`` record."""
@@ -105,6 +110,7 @@ class Resolution:
     observed_once: bool
     scope: str = "project"
     cue_args_prefix: str = ""
+    shape: int | None = None
 
 
 @dataclass(frozen=True)
@@ -194,6 +200,17 @@ def parse_resolution(entry_id: str, updated_at: str, hints_raw: object) -> Resol
     if scope not in _SCOPES:
         raise _SkipError("scope")
 
+    shape: int | None = None
+    sc = hints.get("surprise_capture")
+    if isinstance(sc, dict):
+        raw_shape = sc.get("shape")
+        if (
+            isinstance(raw_shape, int)
+            and not isinstance(raw_shape, bool)
+            and raw_shape in (1, 2, 3)
+        ):
+            shape = raw_shape
+
     return Resolution(
         entry_id=entry_id,
         updated_at=updated_at,
@@ -208,6 +225,7 @@ def parse_resolution(entry_id: str, updated_at: str, hints_raw: object) -> Resol
         observed_once=capture == "autonomous" and observed < 2,
         scope=str(scope),
         cue_args_prefix=args_prefix,
+        shape=shape,
     )
 
 
@@ -294,13 +312,15 @@ def _gate_trusted(r: Resolution) -> bool:
     only, as labelled low-trust context. Fail closed: unknown means untrusted.
 
     An autonomous resolution observed in a single session (observed-once)
-    reaches the slice only, labelled 'observed once, unconfirmed', and only
-    while ``KB_DELIVER_OBSERVED_ONCE`` is on. An autonomous + observed
+    reaches the slice labelled 'observed once, unconfirmed', and only while
+    ``KB_DELIVER_OBSERVED_ONCE`` is on; it is gate-eligible at first sighting
+    only when ``hints.surprise_capture.shape`` is 1 or 2 (unknown or 3 stays
+    out). An autonomous + observed
     resolution becomes gate-eligible at ``observed_sessions >= 2`` (recurrence
     promotion); autonomous + asserted stays untrusted at any count.
     """
     if r.observed_once:
-        return False
+        return r.shape in FIRST_SIGHTING_SHAPES
     return r.capture == "deliberate" or r.grounding == "observed"
 
 
@@ -312,6 +332,7 @@ def count_index_excluded_observed_once(resolutions: list[Resolution]) -> int:
         if r.cue_tool == "Bash"
         and " " in r.cue_target_class
         and r.observed_once
+        and r.shape not in FIRST_SIGHTING_SHAPES
         and r.grounding == "observed"
     )
 

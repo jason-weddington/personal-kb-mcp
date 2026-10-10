@@ -404,6 +404,7 @@ async def test_write_merge_same_session_sequence(
             "scope": "project",
         },
         "surprise_capture": {
+            "shape": 1,
             "sessions": ["s1"],
             "candidate_ids": [c1.id],
             "event_ids": ["s1:0"],
@@ -447,6 +448,7 @@ async def test_write_merge_same_session_sequence(
     assert _res_of(entry)["observed_sessions"] == 2
     assert _res_of(entry)["evidence"] == "rejected"
     assert entry.hints["surprise_capture"] == {
+        "shape": 1,
         "sessions": ["s1", "s2"],
         "candidate_ids": [c1.id, c2.id],
         "event_ids": ["s1:0", "s2:0"],
@@ -1208,8 +1210,8 @@ def test_end_to_end_recurrence_promotion(
     prev = _prevention(client)
     labels = {s["entry_id"]: s["provenance_label"] for s in prev["slice"]}
     assert labels[x] == "autonomous/observed, observed once, unconfirmed"
-    assert prev["index"] == []
-    assert prev["diagnostics"]["index_excluded_observed_once"] == 1
+    assert [c["resolution_id"] for c in prev["index"]] == [x]
+    assert prev["diagnostics"]["index_excluded_observed_once"] == 0
 
     _seed_push(client, "s2")
     body = _drain(client)

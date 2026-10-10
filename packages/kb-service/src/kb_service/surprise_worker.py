@@ -722,7 +722,7 @@ async def _distill_one(
         ),
         confidence_level=DISTILL_CONFIDENCE_LEVEL,
         tags=[SURPRISE_TAG, f"shape-{c.shape}"],
-        hints={**stamped, SURPRISE_HINT_KEY: merged_surprise_hint({}, c)},
+        hints={**stamped, SURPRISE_HINT_KEY: merged_surprise_hint({}, c, new=True)},
         contributor=SURPRISE_CONTRIBUTOR,
         enrich=False,
     )

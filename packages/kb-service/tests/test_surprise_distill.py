@@ -338,7 +338,8 @@ def test_surprise_hint_parsing() -> None:
 
 def test_merged_surprise_hint() -> None:
     c = _cand(cid=7, session_id="s1", turn_event_ids=["s1:0", "s1:1"])
-    assert merged_surprise_hint({}, c) == {
+    assert merged_surprise_hint({}, c, new=True) == {
+        "shape": 1,
         "sessions": ["s1"],
         "candidate_ids": [7],
         "event_ids": ["s1:1"],
@@ -370,6 +371,19 @@ def test_merged_surprise_hint() -> None:
     assert len(merged["candidate_ids"]) == 100
     no_events = _cand(cid=10, turn_event_ids=[])
     assert merged_surprise_hint(many, no_events)["event_ids"] == ["e"]
+
+
+def test_merge_keeps_first_shape() -> None:
+    first = merged_surprise_hint({}, _cand(cid=1, shape=2, session_id="s1"), new=True)
+    assert first["shape"] == 2
+    again = merged_surprise_hint(
+        {"surprise_capture": first}, _cand(cid=2, shape=3, session_id="s2")
+    )
+    assert again["shape"] == 2
+    legacy = merged_surprise_hint(
+        {"surprise_capture": {"sessions": ["a"]}}, _cand(cid=3, shape=1)
+    )
+    assert "shape" not in legacy
 
 
 def test_known_sessions() -> None:

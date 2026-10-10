@@ -359,11 +359,22 @@ def merge_block_reason(
 
 
 def merged_surprise_hint(
-    hints: Mapping[str, object], candidate: SurpriseCandidate
-) -> dict[str, list[Any]]:
-    """The ``hints.surprise_capture`` value after folding in *candidate*."""
+    hints: Mapping[str, object], candidate: SurpriseCandidate, *, new: bool = False
+) -> dict[str, Any]:
+    """The ``hints.surprise_capture`` value after folding in *candidate*.
+
+    The shape is written only for a *new* entry; a merge keeps the stored value
+    (or its absence) and never overwrites or adds it.
+    """
     sessions, ids, event_ids = surprise_hint(hints)
+    block = hints.get(SURPRISE_HINT_KEY)
+    shape_part: dict[str, Any] = {}
+    if new:
+        shape_part = {"shape": candidate.shape}
+    elif isinstance(block, dict) and "shape" in block:
+        shape_part = {"shape": block["shape"]}
     return {
+        **shape_part,
         "sessions": [*sessions, candidate.session_id][-SURPRISE_HINT_LIST_CAP:],
         "candidate_ids": [*ids, candidate.id][-SURPRISE_HINT_LIST_CAP:],
         "event_ids": (event_ids + candidate.turn_event_ids[-1:])[

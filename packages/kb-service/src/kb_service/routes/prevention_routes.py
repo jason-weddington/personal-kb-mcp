@@ -49,6 +49,7 @@ from kb_service.models import (
     User,
 )
 from kb_service.prevention import (
+    FIRST_SIGHTING_SHAPES,
     build_gate_index,
     build_slice,
     count_index_excluded_observed_once,
@@ -234,12 +235,18 @@ async def get_prevention(
         else:
             index, index_truncated = [], 0
             excluded = 0
-        if any(c.observed_once for c in index):
+        untrusted_once = {
+            r.entry_id
+            for r in resolutions
+            if r.observed_once and r.shape not in FIRST_SIGHTING_SHAPES
+        }
+        leaked = [c.resolution_id for c in index if c.resolution_id in untrusted_once]
+        if leaked:
             logger.warning(
                 "prevention tripwire=observed_once_in_index project=%s"
                 " resolution_ids=%s",
                 effective,
-                [c.resolution_id for c in index if c.observed_once],
+                leaked,
             )
         items, slice_truncated = build_slice(resolutions, corrections)
         slice_text = render_slice(effective, items)
