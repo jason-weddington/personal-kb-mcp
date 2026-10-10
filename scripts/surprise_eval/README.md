@@ -45,7 +45,7 @@ Each `--model` is built exactly as production builds the detector: an `Anthropic
 
 The production default detector is `claude-sonnet-5-5` (`surprise_worker.SURPRISE_DETECTOR_DEFAULT_MODEL`). `KB_SURPRISE_DETECTOR_MODEL` overrides it in the service and is ignored by the harness, which takes `--model`; the report warns when the production default was not among the measured models.
 
-`KB_SURPRISE_MIN_CONFIDENCE` in the runner's environment sets the confidence floor (default 0.7), exactly as in the service. It is read once per run and recorded as `min_confidence` in `report.json` and `report.md`. There is no threshold sweep; rerun with a different value instead.
+The confidence floor resolves per shape exactly as in the service: `KB_SURPRISE_MIN_CONFIDENCE_SHAPE2` / `KB_SURPRISE_MIN_CONFIDENCE_SHAPE3` (per shape), then `KB_SURPRISE_MIN_CONFIDENCE` (global override, both shapes), then the defaults (shape 2: 0.5, shape 3: 0.7). Invalid values are ignored. The floors are read once per run and recorded as `min_confidence_by_shape` (plus the global `min_confidence`) in `report.json` and `report.md`. There is no threshold sweep; rerun with a different value instead.
 
 ## What is measured
 

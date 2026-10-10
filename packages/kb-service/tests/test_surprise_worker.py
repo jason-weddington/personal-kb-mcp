@@ -552,12 +552,12 @@ def test_drain_shadow_then_idempotent(
     model_rows = [rows[2], rows[4]]
     for r in model_rows:
         assert r["prompt_chars"] > 0
-        assert json.loads(r["details"])["min_confidence"] == 0.7
+        assert json.loads(r["details"])["min_confidence"] in (0.5, 0.7)
     assert (rows[3]["candidate_id"] is not None) and (rows[4]["candidate_id"])
     assert rows[0]["candidate_id"] is None
     line = _info_line(caplog)
     assert "llm_calls=2" in line
-    assert "min_confidence=0.70" in line
+    assert "min_confidence_s2=0.50 min_confidence_s3=0.70" in line
     assert "distill_input=0" in line
     assert "new_candidates=2" in line
 
@@ -884,7 +884,7 @@ def test_drain_min_confidence_override(
     assert row["candidate_id"] is None
     assert json.loads(row["details"])["min_confidence"] == 0.95
     assert [c["shape"] for c in body["candidates"]] == [1]
-    assert "min_confidence=0.95" in _info_line(caplog)
+    assert "min_confidence_s2=0.95 min_confidence_s3=0.95" in _info_line(caplog)
 
 
 def test_drain_bad_min_confidence_falls_back(
@@ -922,3 +922,64 @@ def test_drain_lost_after_claim(
 async def test_distill_candidates_hook_is_noop() -> None:
     result = await surprise_worker.distill_candidates(object(), object(), [], "on")
     assert result == DistillResult()
+
+
+# --- per-shape confidence floors -----------------------------------------------
+
+
+def test_floor_defaults_per_shape() -> None:
+    assert surprise_worker.detector_min_confidence_for(2) == 0.5
+    assert surprise_worker.detector_min_confidence_for(3) == 0.7
+    assert surprise_worker.detector_min_confidence() == 0.7
+
+
+def test_floor_resolution_order(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_MIN_CONFIDENCE", "0.8")
+    assert surprise_worker.detector_min_confidence_for(2) == 0.8
+    assert surprise_worker.detector_min_confidence_for(3) == 0.8
+    monkeypatch.setenv("KB_SURPRISE_MIN_CONFIDENCE_SHAPE2", "0.3")
+    assert surprise_worker.detector_min_confidence_for(2) == 0.3
+    assert surprise_worker.detector_min_confidence_for(3) == 0.8
+    monkeypatch.setenv("KB_SURPRISE_MIN_CONFIDENCE_SHAPE3", "0.6")
+    assert surprise_worker.detector_min_confidence_for(3) == 0.6
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        monkeypatch.setenv("KB_SURPRISE_MIN_CONFIDENCE_SHAPE2", "bogus")
+        assert surprise_worker.detector_min_confidence_for(2) == 0.8
+        monkeypatch.delenv("KB_SURPRISE_MIN_CONFIDENCE")
+        assert surprise_worker.detector_min_confidence_for(2) == 0.5
+    assert any("bad_min_confidence" in r.getMessage() for r in caplog.records)
+
+
+async def test_detect_digest_shape_floors_under_defaults() -> None:
+    """Confidence 0.6 is a candidate for shape 2 but low_confidence for shape 3."""
+    s2 = json.dumps(
+        {
+            "surprise": True,
+            "wrong_belief": "port 8080 is free",
+            "corrected_fact": "port 8080 is taken by caddy",
+            "evidence_excerpt": "8080 is taken by caddy",
+            "confidence": 0.6,
+        }
+    )
+    prev = surprise_worker.digest_from_row(
+        _row(final_message="port 8080 is free", user_prompt="go")
+    )
+    cur = surprise_worker.digest_from_row(
+        _row(
+            event_id="s:1",
+            turn_index=1,
+            user_prompt="no, 8080 is taken by caddy, use 8081",
+            items=_S3_ITEMS,
+        )
+    )
+    llm = FakeLLM()
+    llm.enqueue(s2)
+    llm.enqueue(_s3_verdict("config is at /etc/foo/main.conf", 0.6))
+    records = await surprise_worker.detect_digest(llm, cur, [prev, cur])
+    by_shape = {r.shape: r for r in records}
+    assert by_shape[2].outcome == "candidate"
+    assert by_shape[2].details["min_confidence"] == 0.5
+    assert by_shape[3].outcome == "low_confidence"
+    assert by_shape[3].details["min_confidence"] == 0.7

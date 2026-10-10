@@ -713,9 +713,14 @@ def _base_row(case: Case, model: str) -> dict[str, Any]:
     return row
 
 
-async def _score(case: Case, llm: Any, min_confidence: float, row: dict[str, Any]) -> None:
+async def _score(
+    case: Case, llm: Any, min_confidence_by_shape: dict[int, float], row: dict[str, Any]
+) -> None:
     records = await surprise_worker.detect_digest(
-        llm, case.digests[-1], case.digests, min_confidence=min_confidence
+        llm,
+        case.digests[-1],
+        case.digests,
+        min_confidence=min_confidence_by_shape.get(case.shape),
     )
     for r in records:
         if r.outcome not in OUTCOMES:
@@ -781,7 +786,7 @@ async def _evaluate(
     case: Case,
     model: str,
     llm: Any,
-    min_confidence: float,
+    min_confidence_by_shape: dict[int, float],
     sem: asyncio.Semaphore,
     progress: dict[str, int],
 ) -> dict[str, Any]:
@@ -790,7 +795,7 @@ async def _evaluate(
         _EVAL_LOG.set(log)
         row = _base_row(case, model)
         try:
-            await _score(case, llm, min_confidence, row)
+            await _score(case, llm, min_confidence_by_shape, row)
         except Exception as exc:
             row = _base_row(case, model)
             row["harness_error"] = f"{type(exc).__name__}: {str(exc)[:_CUT]}"
@@ -1011,7 +1016,9 @@ def _render_md(report: dict[str, Any], rows_by_cell: list[list[dict[str, Any]]])
         f" git_commit={report['git_commit'] or 'unknown'}"
         f" git_dirty={'unknown' if dirty is None else str(dirty).lower()}"
         f" timeout_s={report['timeout_s']} production_timeout_s={report['production_timeout_s']}"
-        f" min_confidence={report['min_confidence']:.2f}",
+        f" min_confidence={report['min_confidence']:.2f}"
+        f" min_confidence_by_shape="
+        + ",".join(f"s{k}={v:.2f}" for k, v in report["min_confidence_by_shape"].items()),
         "",
         TABLE_HEADER,
         "|" + "---|" * 19,
@@ -1190,6 +1197,9 @@ async def _run(
 ) -> int:
     started_at = _now()
     min_confidence = surprise_worker.detector_min_confidence()
+    min_confidence_by_shape = {
+        shape: surprise_worker.detector_min_confidence_for(shape) for shape in (2, 3)
+    }
     production_timeout_s = service_config.get_anthropic_timeout()
     timeout_s = args.timeout if args.timeout is not None else production_timeout_s
     models: list[str] = list(args.model)
@@ -1215,7 +1225,7 @@ async def _run(
         provider_logger.setLevel(logging.WARNING)
     try:
         rows = await asyncio.gather(
-            *(_evaluate(c, m, llm, min_confidence, sem, progress) for c, m, llm in jobs)
+            *(_evaluate(c, m, llm, min_confidence_by_shape, sem, progress) for c, m, llm in jobs)
         )
     finally:
         provider_logger.removeHandler(handler)
@@ -1275,6 +1285,7 @@ async def _run(
         "production_timeout_s": production_timeout_s,
         "production_default_model": default_model,
         "min_confidence": min_confidence,
+        "min_confidence_by_shape": {str(k): v for k, v in min_confidence_by_shape.items()},
         "prompt_set_sha256": (
             hashlib.sha256("\n".join(sorted(prompt_pairs)).encode("utf-8")).hexdigest()
             if prompt_pairs

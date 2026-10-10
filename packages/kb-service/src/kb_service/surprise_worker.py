@@ -47,6 +47,7 @@ from kb_service.resolution_hint import (
 )
 from kb_service.surprise import (
     DETECTOR_MIN_CONFIDENCE,
+    DETECTOR_MIN_CONFIDENCE_BY_SHAPE,
     RAW_RESPONSE_EXCERPT_MAX,
     SHAPE1_DETECTOR_MODEL,
     SURPRISE_DETECTOR_SYSTEM,
@@ -181,19 +182,50 @@ def get_distiller_llm() -> LLMProvider | None:
     return client
 
 
-def detector_min_confidence() -> float:
-    """Read ``KB_SURPRISE_MIN_CONFIDENCE`` (0..1); invalid values give 0.7."""
-    raw = os.environ.get("KB_SURPRISE_MIN_CONFIDENCE", "").strip()
+def _read_floor(name: str) -> float | None:
+    """Parse env var *name* as a 0..1 float; None when unset or invalid (warns)."""
+    raw = os.environ.get(name, "").strip()
     if raw == "":
-        return DETECTOR_MIN_CONFIDENCE
+        return None
     try:
         value = float(raw)
     except ValueError:
         value = math.nan
     if math.isfinite(value) and 0.0 <= value <= 1.0:
         return value
-    logger.warning("surprise_drain bad_min_confidence value=%r fallback=0.7", raw)
-    return DETECTOR_MIN_CONFIDENCE
+    logger.warning("surprise_drain bad_min_confidence value=%r var=%s", raw, name)
+    return None
+
+
+def detector_min_confidence() -> float:
+    """Global floor: ``KB_SURPRISE_MIN_CONFIDENCE`` (0..1), else 0.7."""
+    value = _read_floor("KB_SURPRISE_MIN_CONFIDENCE")
+    return DETECTOR_MIN_CONFIDENCE if value is None else value
+
+
+def detector_min_confidence_for(shape: int) -> float:
+    """Floor for *shape*: per-shape env, then global env, then shape default."""
+    value = _read_floor(f"KB_SURPRISE_MIN_CONFIDENCE_SHAPE{shape}")
+    if value is not None:
+        return value
+    value = _read_floor("KB_SURPRISE_MIN_CONFIDENCE")
+    if value is not None:
+        return value
+    return DETECTOR_MIN_CONFIDENCE_BY_SHAPE.get(shape, DETECTOR_MIN_CONFIDENCE)
+
+
+def detector_min_confidence_by_shape() -> dict[int, float]:
+    """Floors for shapes 2 and 3, each env var read (and warned on) once."""
+    glob = _read_floor("KB_SURPRISE_MIN_CONFIDENCE")
+    out: dict[int, float] = {}
+    for shape in (2, 3):
+        value = _read_floor(f"KB_SURPRISE_MIN_CONFIDENCE_SHAPE{shape}")
+        if value is None:
+            value = glob
+        if value is None:
+            value = DETECTOR_MIN_CONFIDENCE_BY_SHAPE[shape]
+        out[shape] = value
+    return out
 
 
 def detector_model_name(llm: Any) -> str:
@@ -323,15 +355,21 @@ async def detect_digest(
     session_digests: list[TurnDigest],
     *,
     min_confidence: float | None = None,
+    min_confidence_by_shape: Mapping[int, float] | None = None,
 ) -> list[DetectionRecord]:
     """Run shapes 1, 2 and 3 on *cur*; return its detection records in order.
 
     *session_digests* holds the session's digests with ``turn_index`` up to
     the current one. Model calls run sequentially (shape 2, then shape 3).
     """
-    threshold = (
-        min_confidence if min_confidence is not None else detector_min_confidence()
-    )
+
+    def floor(shape: int) -> float:
+        if min_confidence is not None:
+            return min_confidence
+        if min_confidence_by_shape is not None:
+            return min_confidence_by_shape[shape]
+        return detector_min_confidence_for(shape)
+
     records: list[DetectionRecord] = []
 
     shape1 = detect_shape1(session_digests, cur.event_id)
@@ -378,7 +416,7 @@ async def detect_digest(
                 build_shape2_prompt(prev, cur),
                 [cur.user_prompt or ""],
                 [prev.event_id, cur.event_id],
-                threshold,
+                floor(2),
             )
         )
 
@@ -395,7 +433,7 @@ async def detect_digest(
         ]
         records.append(
             await _model_record(
-                llm, 3, build_shape3_prompt(cur), sources, [cur.event_id], threshold
+                llm, 3, build_shape3_prompt(cur), sources, [cur.event_id], floor(3)
             )
         )
     return records
@@ -961,7 +999,8 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         return DrainResult(0, [], [], [])
 
     pruned = await prune_turn_events(pool)
-    min_confidence = detector_min_confidence()
+    floors = detector_min_confidence_by_shape()
+    floor2, floor3 = floors[2], floors[3]
     llm = get_detector_llm()
     pending = await list_pending_turn_digests(pool)
     pending = sorted(pending, key=lambda d: (d.session_id, d.turn_index))
@@ -992,7 +1031,7 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
             and not any(s.turn_index == p.turn_index - 1 for s in stored),
         }
         records = await detect_digest(
-            llm, cur, session_digests, min_confidence=min_confidence
+            llm, cur, session_digests, min_confidence_by_shape=floors
         )
         for rec in records:
             if rec.shape in (2, 3) and rec.outcome not in (
@@ -1069,7 +1108,8 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
     candidates = await _fetch_candidates(pool, ids)
 
     logger.info(
-        "surprise_drain mode=%s detector_version=%d min_confidence=%.2f pruned=%d"
+        "surprise_drain mode=%s detector_version=%d min_confidence_s2=%.2f"
+        " min_confidence_s3=%.2f pruned=%d"
         " pending=%d digests=%d double_detect=%d new_candidates=%d shape1=%d"
         " shape2=%d shape3=%d llm_calls=%d llm_errors=%d unparseable=%d"
         " invalid=%d no_surprise=%d low_confidence=%d ungrounded=%d no_llm=%d"
@@ -1077,7 +1117,8 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         " response_chars=%d distill_input=%d written=%d merged=%d",
         mode,
         SURPRISE_DETECTOR_VERSION,
-        min_confidence,
+        floor2,
+        floor3,
         pruned,
         len(pending),
         c["digests"],

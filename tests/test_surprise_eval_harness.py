@@ -244,6 +244,7 @@ def test_a_digests_fixture_perfect(tmp_path, capsys, made):
         " was not measured",
     ]
     assert report["min_confidence"] == 0.7
+    assert report["min_confidence_by_shape"] == {"2": 0.5, "3": 0.7}
     assert report["timeout_s"] == report["production_timeout_s"]
     assert report["timeout_s"] == service_config.get_anthropic_timeout()
     assert HEX64.match(report["prompt_set_sha256"])
@@ -253,7 +254,7 @@ def test_a_digests_fixture_perfect(tmp_path, capsys, made):
     md = res["md"]
     lines = md.splitlines()
     assert lines[0] == "# Surprise detector eval"
-    assert "min_confidence=0.70" in lines[1]
+    assert "min_confidence=0.70 min_confidence_by_shape=s2=0.50,s3=0.70" in lines[1]
     assert se.TABLE_HEADER in lines
     assert "## Outcomes" in lines
     i = lines.index("## Disagreements")
@@ -300,7 +301,7 @@ def test_c_ungrounded(tmp_path, capsys, made):
 
 
 def test_d_low_confidence(tmp_path, capsys, made):
-    StubLLM.mapping = _perfect(0.69)
+    StubLLM.mapping = _perfect(0.45)
     res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model")
     assert _row(res, "syn-s2-pos")["outcome"] == "low_confidence"
     assert _row(res, "syn-s3-pos")["outcome"] == "low_confidence"
@@ -317,6 +318,7 @@ def test_d2_min_confidence_env(tmp_path, capsys, made, monkeypatch):
         assert _cell(res, shape)["tp"] == 0
         assert _cell(res, shape)["lost_to_gates"] == 1
     assert res["report"]["min_confidence"] == 0.95
+    assert res["report"]["min_confidence_by_shape"] == {"2": 0.95, "3": 0.95}
     assert "min_confidence=0.95" in res["md"].splitlines()[1]
 
 
@@ -358,7 +360,7 @@ def test_f_detect_digest_and_min_confidence_called(tmp_path, capsys, made, monke
     res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model")
     assert res["code"] == 0
     assert len(seen) == 6
-    assert all(kw.get("min_confidence") == 0.7 for kw in seen)
+    assert all(kw.get("min_confidence") in (None, 0.5, 0.7) for kw in seen)
     assert len(min_calls) == 1
 
 

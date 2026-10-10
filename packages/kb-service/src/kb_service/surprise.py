@@ -40,6 +40,8 @@ ParseReject = Literal["llm_error", "unparseable", "invalid_fields", "no_surprise
 SURPRISE_DETECTOR_VERSION: int = 1
 SHAPE1_DETECTOR_MODEL = "rule:shape1"
 DETECTOR_MIN_CONFIDENCE = 0.7
+# per-shape defaults (shape 2 recall gain; shape 3 must not drop)
+DETECTOR_MIN_CONFIDENCE_BY_SHAPE: dict[int, float] = {2: 0.5, 3: 0.7}
 WRONG_BELIEF_MAX = 500
 CORRECTED_FACT_MAX = 500
 EVIDENCE_EXCERPT_MAX = 1500
