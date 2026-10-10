@@ -1,6 +1,6 @@
 [project]
 name = "personal-kb-web-service"
-version = "1.6.0"
+version = "1.7.0"
 description = "Hosted HTTP API wrapping the kb-core engine behind authentication."
 requires-python = ">=3.13"
 dependencies = [
@@ -8,7 +8,7 @@ dependencies = [
     "bcrypt>=4.0",
     "fastapi>=0.115",
     "httpx>=0.28",
-    "kb-core[postgres,ingest,anthropic,safety]==1.6.0",
+    "kb-core[postgres,ingest,anthropic,safety]==1.7.0",
     "pydantic>=2.10",
     "pyjwt>=2.9",
     "python-multipart>=0.0.9",

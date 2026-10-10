@@ -2,6 +2,26 @@
 
 <!-- version list -->
 
+## v1.7.0 (2026-10-10)
+
+### Documentation
+
+- Experience-loop roadmap, lesson-precision audit, model-agnostic results, decisions for Jason
+  ([`582b2de`](https://github.com/jason-weddington/personal-kb-mcp/commit/582b2de2207fcd7323f2d9a03e654c8514544ccc))
+
+- Experience-loop roadmap, overnight results, incident and status
+  ([`32274c3`](https://github.com/jason-weddington/personal-kb-mcp/commit/32274c37a89624536a635d2f02130dde44d19dbe))
+
+### Features
+
+- **surprise**: Autonomous lessons expire after 30 days unless re-observed; prevention ignores
+  expired entries; critic rejects hedged claims
+  ([`07563b5`](https://github.com/jason-weddington/personal-kb-mcp/commit/07563b5ef908f48fcd3a386d02a313323972dcad))
+
+- **surprise**: Scope-faithful distiller rules and a critic pass before autonomous writes
+  ([`55676e7`](https://github.com/jason-weddington/personal-kb-mcp/commit/55676e78c299e91f15a9d39495ff13a85fbafe04))
+
+
 ## v1.6.0 (2026-10-10)
 
 ### Features
