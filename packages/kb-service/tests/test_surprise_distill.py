@@ -10,11 +10,16 @@ from kb_service.prevention import Resolution
 from kb_service.resolution_hint import validate_and_stamp_resolution
 from kb_service.surprise import SurpriseCandidate
 from kb_service.surprise_distill import (
+    CRITIC_INSTRUCTIONS,
+    CRITIC_SCHEMA_LINE,
     DISTILLER_INSTRUCTIONS,
     DISTILLER_SCHEMA_LINE,
     SHAPE_DESCRIPTIONS,
+    SURPRISE_CRITIC_SYSTEM,
     SURPRISE_DISTILLER_SYSTEM,
+    CriticVerdict,
     DistillVerdict,
+    build_critic_prompt,
     build_distill_prompt,
     build_knowledge_details,
     build_resolution,
@@ -24,6 +29,7 @@ from kb_service.surprise_distill import (
     merged_surprise_hint,
     normalize_text,
     not_durable_reason,
+    parse_critic_response,
     parse_distill_response,
     shape1_cue,
     stored_capture,
@@ -114,7 +120,7 @@ def test_pinned_literals() -> None:
         "backed by tool output, that contradicts what it, the code, a comment, a "
         "doc, a config or the environment had indicated before."
     )
-    assert sd.SURPRISE_DISTILLER_VERSION == 4
+    assert sd.SURPRISE_DISTILLER_VERSION == 5
     assert sd.SURPRISE_EVENT_IDS_CAP == 20
     assert sd.SURPRISE_HINT_LIST_CAP == 100
 
@@ -340,7 +346,145 @@ def test_distiller_instructions_durability_test() -> None:
     ) in DISTILLER_INSTRUCTIONS
     examples_end = DISTILLER_INSTRUCTIONS.index("leave the other fields empty.")
     assert DISTILLER_INSTRUCTIONS.index("Also set durable to false") > examples_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 4
+    assert sd.SURPRISE_DISTILLER_VERSION == 5
+
+
+_SCOPE_RULE = (
+    "State the corrected fact at exactly the scope the evidence supports: if"
+    " the user corrected one narrow point, record that narrow point, never a"
+    " broader rule. Use only facts present in the evidence; add no details,"
+    " motives or events that are not there. If the correction describes a"
+    " temporary state, a work-in-progress, or something the user says will"
+    " change, set durable to false. If the correction is a priority or"
+    " preference for the current task rather than a fact about the project,"
+    " its tools or its environment, set durable to false."
+)
+
+
+def test_distiller_instructions_scope_rule() -> None:
+    assert _SCOPE_RULE in DISTILLER_INSTRUCTIONS
+    durability_end = DISTILLER_INSTRUCTIONS.index(
+        "would plausibly hold the same wrong belief."
+    )
+    assert DISTILLER_INSTRUCTIONS.index(_SCOPE_RULE) > durability_end
+    assert sd.SURPRISE_DISTILLER_VERSION == 5
+    assert _SCOPE_RULE in build_distill_prompt(_cand())
+
+
+# --- critic -------------------------------------------------------------------
+
+
+def _critic_reply(**kw: Any) -> str:
+    obj: dict[str, Any] = {
+        "supported": True,
+        "scope_ok": True,
+        "durable": True,
+        "misleading": False,
+        "reason": "matches the evidence",
+    }
+    obj.update(kw)
+    return json.dumps(obj)
+
+
+def test_critic_pinned() -> None:
+    assert sd.SURPRISE_CRITIC_VERSION == 1
+    assert SURPRISE_CRITIC_SYSTEM.endswith(
+        "Reply with exactly one JSON object and nothing else."
+    )
+    assert CRITIC_SCHEMA_LINE == (
+        '{"supported": true|false, "scope_ok": true|false, "durable": true|false,'
+        ' "misleading": true|false, "reason": str}'
+    )
+    assert "  " not in CRITIC_INSTRUCTIONS
+
+
+def test_build_critic_prompt_shape2_has_evidence_and_draft() -> None:
+    cand = _cand(
+        shape=2,
+        output={
+            "wrong_belief": "DRO must be enabled",
+            "corrected_fact": "DRO doesn't matter for this shot",
+            "evidence_excerpt": "DRO doesn't matter here",
+            "confidence": 0.9,
+        },
+    )
+    prompt = build_critic_prompt(
+        cand,
+        _VERDICT,
+        user_correction="no, DRO doesn't matter here",
+        tool_results=["ignored for shape 2"],
+    )
+    for text in (
+        SHAPE_DESCRIPTIONS[2],
+        "Wrong belief: DRO must be enabled",
+        "Corrected fact: DRO doesn't matter for this shot",
+        "Evidence excerpt: DRO doesn't matter here",
+        "The human's correction: no, DRO doesn't matter here",
+        f"Short title: {_VERDICT.short_title}",
+        f"Corrected fact: {_VERDICT.corrected_fact}",
+        f"Lesson: {_VERDICT.lesson}",
+        CRITIC_INSTRUCTIONS,
+        CRITIC_SCHEMA_LINE,
+    ):
+        assert text in prompt
+    assert "ignored for shape 2" not in prompt
+    assert prompt.index("Evidence:") < prompt.index("Drafted lesson:")
+
+
+def test_build_critic_prompt_shape3_tool_results() -> None:
+    cand = _cand(shape=3)
+    prompt = build_critic_prompt(
+        cand, _VERDICT, user_correction="ignored", tool_results=["boom 1", " ", "ok"]
+    )
+    assert "Tool results from the turn:" in prompt
+    assert "[tool_result] boom 1" in prompt
+    assert "[tool_result] ok" in prompt
+    assert "ignored" not in prompt
+    assert "[tool_result] \n" not in prompt
+
+
+def test_build_critic_prompt_without_digest() -> None:
+    prompt = build_critic_prompt(_cand(shape=3), _VERDICT)
+    assert "Tool results" not in prompt
+    assert "Drafted lesson:" in prompt
+
+
+@pytest.mark.parametrize(
+    ("raw", "accepted"),
+    [
+        (_critic_reply(), True),
+        (_critic_reply(supported=False), False),
+        (_critic_reply(scope_ok=False), False),
+        (_critic_reply(durable=False), False),
+        (_critic_reply(misleading=True), False),
+    ],
+)
+def test_parse_critic_response(raw: str, accepted: bool) -> None:
+    verdict, reject = parse_critic_response(raw)
+    assert reject is None
+    assert isinstance(verdict, CriticVerdict)
+    assert verdict.accepted is accepted
+    assert verdict.reason == "matches the evidence"
+
+
+@pytest.mark.parametrize(
+    ("raw", "reject"),
+    [
+        (None, "llm_error"),
+        ("not json", "unparseable"),
+        (_critic_reply(supported="yes"), "unparseable"),
+        (json.dumps({"supported": True, "reason": "x"}), "unparseable"),
+    ],
+)
+def test_parse_critic_response_rejects(raw: str | None, reject: str) -> None:
+    assert parse_critic_response(raw) == (None, reject)
+
+
+def test_parse_critic_response_reason_optional_and_capped() -> None:
+    verdict, _ = parse_critic_response(_critic_reply(reason="x" * 500))
+    assert verdict is not None and len(verdict.reason) == sd.CRITIC_REASON_MAX
+    verdict, _ = parse_critic_response(_critic_reply(reason=3))
+    assert verdict is not None and verdict.reason == ""
 
 
 def test_build_knowledge_details() -> None:

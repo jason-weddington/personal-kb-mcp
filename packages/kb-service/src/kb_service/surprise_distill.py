@@ -3,7 +3,8 @@
 No I/O, no DB access and no logging here: ``distill_candidates`` in
 ``kb_service.surprise_worker`` calls the model, reads and writes the KB and
 records each decision in ``surprise_distillations``. This module builds the
-distiller prompt, parses its reply, builds the autonomous resolution and the
+distiller prompt, parses its reply, builds and parses the critic pass that
+checks a drafted lesson against its evidence, builds the autonomous resolution and the
 entry details, and decides whether a candidate matches (and may merge into)
 an existing resolution.
 """
@@ -24,7 +25,11 @@ from kb_service.surprise import SurpriseCandidate
 # parse_distill_response, build_resolution, build_knowledge_details,
 # shape1_cue, find_exact_match, merge_block_reason, known_sessions,
 # merged_surprise_hint or the S0-S13 order
-SURPRISE_DISTILLER_VERSION: int = 4
+SURPRISE_DISTILLER_VERSION: int = 5
+
+# bump on ANY change to SURPRISE_CRITIC_SYSTEM, CRITIC_INSTRUCTIONS,
+# CRITIC_SCHEMA_LINE, build_critic_prompt or parse_critic_response
+SURPRISE_CRITIC_VERSION: int = 1
 
 SURPRISE_CONTRIBUTOR = "surprise-capture"
 SURPRISE_HINT_KEY = "surprise_capture"
@@ -67,7 +72,15 @@ DISTILLER_INSTRUCTIONS = (
     " environment that will still be true for a fresh session tomorrow. Set"
     " durable to true only"
     " when a future session in this project would plausibly hold the same wrong"
-    " belief. corrected_fact is one self-contained sentence a future agent can"
+    " belief. State the corrected fact at exactly the scope the evidence"
+    " supports: if the user corrected one narrow point, record that narrow"
+    " point, never a broader rule. Use only facts present in the evidence; add"
+    " no details, motives or events that are not there. If the correction"
+    " describes a temporary state, a work-in-progress, or something the user"
+    " says will change, set durable to false. If the correction is a priority"
+    " or preference for the current task rather than a fact about the project,"
+    " its tools or its environment, set durable to false. corrected_fact is"
+    " one self-contained sentence a future agent can"
     " act on, at most 300 characters. short_title is at most 80 characters and"
     " long_title at most 200 characters. lesson is at most 1500 characters and"
     " explains why the belief was wrong and how to avoid it. Never include"
@@ -94,6 +107,38 @@ SHAPE_DESCRIPTIONS: dict[int, str] = {
         " comment, a doc, a config or the environment had indicated before."
     ),
 }
+
+SURPRISE_CRITIC_SYSTEM = (
+    "You review drafted knowledge-base lessons from coding-agent sessions"
+    " against the evidence they were drawn from. Reply with exactly one JSON"
+    " object and nothing else."
+)
+
+CRITIC_INSTRUCTIONS = (
+    "Judge the drafted lesson strictly against the evidence above. supported"
+    " is true only when every claim in the draft is present in the evidence;"
+    " any added detail, motive, event or cause that the evidence does not"
+    " state makes it false. scope_ok is true only when the draft states the"
+    " correction at exactly the scope the evidence supports; a narrow"
+    " correction stretched into a broader or general rule makes it false."
+    " durable is true only when the draft is a fact about the project, its"
+    " tools or its environment that will still be true for a fresh session"
+    " tomorrow; a temporary state, a work-in-progress, something the user says"
+    " will change, or a priority or preference for the current task makes it"
+    " false. misleading is true when a future agent acting on the draft would"
+    " plausibly do the wrong thing, for example because the cause is misplaced"
+    " or the rule is overstated. reason is one short sentence explaining the"
+    " judgement."
+)
+
+CRITIC_SCHEMA_LINE = (
+    '{"supported": true|false, "scope_ok": true|false, "durable": true|false,'
+    ' "misleading": true|false, "reason": str}'
+)
+
+CRITIC_REASON_MAX = 200
+CRITIC_EVIDENCE_ITEM_MAX = 2000
+CRITIC_TOOL_RESULTS_MAX = 20
 
 DistillReject = Literal["llm_error", "unparseable", "invalid_fields", "not_durable"]
 
@@ -187,6 +232,110 @@ def not_durable_reason(raw: str | None) -> str:
     if not isinstance(why, str):
         return ""
     return why.strip()[:NOT_DURABLE_WHY_MAX]
+
+
+# --- critic ------------------------------------------------------------------
+
+CriticReject = Literal["llm_error", "unparseable"]
+
+
+@dataclass(frozen=True)
+class CriticVerdict:
+    """The critic's parsed reply on one drafted lesson."""
+
+    supported: bool
+    scope_ok: bool
+    durable: bool
+    misleading: bool
+    reason: str
+
+    @property
+    def accepted(self) -> bool:
+        """True only when the draft may be written or merged."""
+        return self.supported and self.scope_ok and self.durable and not self.misleading
+
+
+def build_critic_prompt(
+    candidate: SurpriseCandidate,
+    verdict: DistillVerdict,
+    *,
+    user_correction: str | None = None,
+    tool_results: Sequence[str] = (),
+) -> str:
+    """Build the critic's user prompt: the candidate's evidence and the draft.
+
+    *user_correction* is the human's message (shape 2) and *tool_results* the
+    turn's tool-result excerpts (shape 3), both read from the stored turn
+    digests; either may be empty when the digest is gone.
+    """
+    parts = [
+        SHAPE_DESCRIPTIONS[candidate.shape],
+        f"Project: {candidate.project}",
+        "",
+        "Evidence:",
+        f"Wrong belief: {_output_str(candidate, 'wrong_belief')}",
+        f"Corrected fact: {_output_str(candidate, 'corrected_fact')}",
+        f"Evidence excerpt: {_output_str(candidate, 'evidence_excerpt')}",
+    ]
+    if candidate.shape == 2 and (user_correction or "").strip():
+        parts.append(
+            "The human's correction: "
+            f"{(user_correction or '').strip()[:CRITIC_EVIDENCE_ITEM_MAX]}"
+        )
+    if candidate.shape == 3:
+        excerpts = [t.strip() for t in tool_results if t.strip()]
+        if excerpts:
+            parts.append("Tool results from the turn:")
+            parts.extend(
+                f"[tool_result] {t[:CRITIC_EVIDENCE_ITEM_MAX]}"
+                for t in excerpts[:CRITIC_TOOL_RESULTS_MAX]
+            )
+    parts.extend(
+        [
+            "",
+            "Drafted lesson:",
+            f"Short title: {verdict.short_title}",
+            f"Corrected fact: {verdict.corrected_fact}",
+            f"Lesson: {verdict.lesson}",
+            "",
+            CRITIC_INSTRUCTIONS,
+            CRITIC_SCHEMA_LINE,
+        ]
+    )
+    return "\n".join(parts)
+
+
+def parse_critic_response(
+    raw: str | None,
+) -> tuple[CriticVerdict | None, CriticReject | None]:
+    """Parse the critic's reply; exactly one element is non-None.
+
+    Any missing or non-boolean judgement is ``unparseable`` (fail closed).
+    """
+    if raw is None:
+        return None, "llm_error"
+    obj = parse_json_object(raw)
+    if obj is None:
+        return None, "unparseable"
+    flags: list[bool] = []
+    for key in ("supported", "scope_ok", "durable", "misleading"):
+        value = obj.get(key)
+        if not isinstance(value, bool):
+            return None, "unparseable"
+        flags.append(value)
+    reason = obj.get("reason")
+    reason_text = reason.strip()[:CRITIC_REASON_MAX] if isinstance(reason, str) else ""
+    supported, scope_ok, durable, misleading = flags
+    return (
+        CriticVerdict(
+            supported=supported,
+            scope_ok=scope_ok,
+            durable=durable,
+            misleading=misleading,
+            reason=reason_text,
+        ),
+        None,
+    )
 
 
 # --- resolution builders -----------------------------------------------------

@@ -31,6 +31,7 @@ from kb_service.surprise import (
     SurpriseCandidate,
 )
 from kb_service.surprise_distill import (
+    SURPRISE_CRITIC_VERSION,
     SURPRISE_DISTILLER_SYSTEM,
     SURPRISE_DISTILLER_VERSION,
     SURPRISE_HINT_KEY,
@@ -39,7 +40,7 @@ from kb_service.surprise_distill import (
     parse_distill_response,
 )
 from kb_service.surprise_worker import candidate_from_row, distill_candidates
-from tests.conftest import FakeLLM
+from tests.conftest import CRITIC_ACCEPT, FakeCritic, FakeLLM
 
 LOGGER = "kb_service.surprise_worker"
 
@@ -56,6 +57,7 @@ _HERMETIC_ENV = (
     "KB_SURPRISE_CAPTURE",
     "KB_SURPRISE_DETECTOR_MODEL",
     "KB_SURPRISE_DISTILL_MODEL",
+    "KB_SURPRISE_CRITIC_MODEL",
     "KB_SURPRISE_MIN_CONFIDENCE",
     "KB_SURPRISE_MIN_CONFIDENCE_SHAPE2",
     "KB_SURPRISE_MIN_CONFIDENCE_SHAPE3",
@@ -161,6 +163,13 @@ async def kb_cos(tmp_path: Path) -> AsyncIterator[Any]:
 
 def _raise_detector() -> Any:
     raise RuntimeError("the distiller must never use the detector getter")
+
+
+@pytest.fixture(autouse=True)
+def critic(monkeypatch: pytest.MonkeyPatch) -> FakeCritic:
+    fake = FakeCritic()
+    monkeypatch.setattr(surprise_worker, "get_critic_llm", lambda: fake)
+    return fake
 
 
 @pytest.fixture
@@ -436,7 +445,11 @@ async def test_write_merge_same_session_sequence(
     assert row["cue_target_class"] == "git push"
     assert row["observed_sessions_before"] is None
     assert row["observed_sessions_after"] == 1
-    assert json.loads(row["verdict"]) == _D_FIELDS
+    assert json.loads(row["verdict"]) == {
+        **_D_FIELDS,
+        "critic_version": SURPRISE_CRITIC_VERSION,
+        "critic": json.loads(CRITIC_ACCEPT),
+    }
     assert row["distiller_model"] == "FakeLLM"
     assert row["distiller_version"] == SURPRISE_DISTILLER_VERSION
     assert row["raw_response_excerpt"] == D
@@ -1397,3 +1410,260 @@ async def test_new_entry_records_turn_mode(
     (r,) = [r for r in resolutions if r.entry_id == x]
     assert r.mode == mode
     assert r.observed_once is (mode != "interactive")
+
+
+# --- critic pass ----------------------------------------------------------------
+
+_REAL_GET_CRITIC_LLM = surprise_worker.get_critic_llm
+
+_CRITIC_TURN_INSERT = (
+    "INSERT INTO turn_events (event_id, session_id, harness, mode, turn_index,"
+    " ts, user_prompt, items, capture_mode, received_ts) VALUES ($1, $2,"
+    " 'claude-code', 'interactive', $3, $4, $5, $6, 'on', $4)"
+)
+
+
+def _critic_reply(**kw: Any) -> str:
+    obj = json.loads(CRITIC_ACCEPT)
+    obj.update(kw)
+    return json.dumps(obj)
+
+
+async def test_critic_rejection_prevents_write(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    critic.enqueue(
+        _critic_reply(scope_ok=False, reason="stretches a narrow correction")
+    )
+    llm.enqueue(D)
+    c = await _s(pool, "s1")
+    assert await distill_candidates(pool, kb, [c], "on") == DistillResult([], [])
+    assert await _lessons(kb) == 0
+    row = (await _rows(pool))[0]
+    assert (row["outcome"], row["reason"]) == (
+        "not_durable",
+        "critic: stretches a narrow correction",
+    )
+    verdict = json.loads(row["verdict"])
+    assert verdict["critic_version"] == SURPRISE_CRITIC_VERSION
+    assert verdict["critic"]["scope_ok"] is False
+    assert await _cand_row(pool, c.id) == {"status": "rejected", "entry_id": None}
+    assert len(critic.generate_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _critic_reply(supported=False),
+        _critic_reply(durable=False),
+        _critic_reply(misleading=True),
+    ],
+)
+async def test_critic_any_failed_check_rejects(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic, reply: str
+) -> None:
+    critic.enqueue(reply)
+    llm.enqueue(D)
+    c = await _s(pool, "s1")
+    await distill_candidates(pool, kb, [c], "on")
+    assert await _lessons(kb) == 0
+    assert (await _rows(pool))[0]["outcome"] == "not_durable"
+
+
+async def test_critic_accept_writes_as_before(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    critic.enqueue(CRITIC_ACCEPT)
+    llm.enqueue(D)
+    c = await _s(pool, "s1")
+    result = await distill_candidates(pool, kb, [c], "on")
+    (x,) = result.entries_written
+    entry = await kb.get(x)
+    assert entry.short_title == _D_OBJ["short_title"]
+    assert entry.long_title == _D_OBJ["long_title"]
+    verdict = parse_distill_response(D)[0]
+    assert verdict is not None
+    res = build_resolution(c, verdict)
+    assert entry.knowledge_details == build_knowledge_details(c, verdict, res)
+    assert (await _rows(pool))[0]["outcome"] == "written"
+    assert [call[1] for call in critic.generate_calls] == [
+        surprise_worker.SURPRISE_CRITIC_SYSTEM
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reply", "outcome", "reason"),
+    [
+        ("not json", "unparseable", "critic: unparseable"),
+        (_critic_reply(supported="yes"), "unparseable", "critic: unparseable"),
+        (None, "llm_error", "critic: none"),
+    ],
+)
+async def test_critic_unparseable_or_error_prevents_write(
+    pool: SqlitePool,
+    kb: Any,
+    llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: str | None,
+    outcome: str,
+    reason: str,
+) -> None:
+    stub = FakeLLM()  # exhausted queue -> None
+    if reply is not None:
+        stub.enqueue(reply)
+    monkeypatch.setattr(surprise_worker, "get_critic_llm", lambda: stub)
+    llm.enqueue(D)
+    c = await _s(pool, "s1")
+    assert await distill_candidates(pool, kb, [c], "on") == DistillResult([], [])
+    assert await _lessons(kb) == 0
+    row = (await _rows(pool))[0]
+    assert (row["outcome"], row["reason"]) == (outcome, reason)
+    assert await _cand_row(pool, c.id) == {"status": "rejected", "entry_id": None}
+
+
+async def test_critic_exception_prevents_write(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Boom(FakeLLM):
+        async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(surprise_worker, "get_critic_llm", Boom)
+    llm.enqueue(D)
+    c = await _s(pool, "s1")
+    await distill_candidates(pool, kb, [c], "on")
+    assert await _lessons(kb) == 0
+    row = (await _rows(pool))[0]
+    assert (row["outcome"], row["reason"]) == ("llm_error", "critic: exception")
+
+
+async def test_no_critic_client_leaves_candidate_pending(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(surprise_worker, "get_critic_llm", lambda: None)
+    c = await _s(pool, "s1")
+    assert await distill_candidates(pool, kb, [c], "on") == DistillResult()
+    assert llm.generate_calls == []
+    assert await _cand_row(pool, c.id) == {"status": "pending", "entry_id": None}
+    assert await _rows(pool) == []
+
+
+async def test_exact_match_merge_skips_critic(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    w1 = await _w(kb)
+    c = await _s(pool, "s6")
+    assert await distill_candidates(pool, kb, [c], "on") == DistillResult([], [w1])
+    assert llm.generate_calls == []
+    assert critic.generate_calls == []
+    row = (await _rows(pool))[0]
+    assert row["outcome"] == "merged"
+    assert row["verdict"] is None
+
+
+async def test_non_durable_distiller_reply_skips_critic(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    llm.enqueue('{"durable": false, "why": "one-off"}')
+    c = await _s(pool, "s1")
+    await distill_candidates(pool, kb, [c], "on")
+    assert critic.generate_calls == []
+    assert (await _rows(pool))[0]["outcome"] == "not_durable"
+
+
+async def test_critic_prompt_shape2_has_user_correction_and_draft(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    await pool.execute(_CRITIC_TURN_INSERT, "s1:0", "s1", 0, _CREATED_AT, "do it", "[]")
+    await pool.execute(
+        _CRITIC_TURN_INSERT,
+        "s1:1",
+        "s1",
+        1,
+        _CREATED_AT,
+        "no, 8080 is taken by caddy on this box",
+        "[]",
+    )
+    c = await _t(pool, "s1", "port 8080 is free")
+    llm.enqueue(D)
+    await distill_candidates(pool, kb, [c], "on")
+    (call,) = critic.generate_calls
+    prompt = call[0]
+    for text in (
+        "Wrong belief: port 8080 is free",
+        "Corrected fact: port 8080 is taken by caddy",
+        "Evidence excerpt: 8080 is taken by caddy",
+        "The human's correction: no, 8080 is taken by caddy on this box",
+        f"Short title: {_D_OBJ['short_title']}",
+        f"Corrected fact: {_D_OBJ['corrected_fact']}",
+        f"Lesson: {_D_OBJ['lesson']}",
+    ):
+        assert text in prompt
+    assert "do it" not in prompt
+
+
+async def test_critic_prompt_shape3_has_tool_results(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    items = [
+        {
+            "kind": "tool_call",
+            "tool_use_id": "t1",
+            "tool": "Bash",
+            "target": "cat config.toml",
+        },
+        {
+            "kind": "tool_result",
+            "tool_use_id": "t1",
+            "is_error": False,
+            "excerpt": "port = 9090",
+        },
+        {"kind": "assistant_text", "text": "Root cause: the port is 9090"},
+    ]
+    await pool.execute(
+        _CRITIC_TURN_INSERT, "s3:0", "s3", 0, _CREATED_AT, None, json.dumps(items)
+    )
+    c = await _insert(
+        pool,
+        3,
+        "s3",
+        "p",
+        ["s3:0"],
+        "FakeLLM",
+        {
+            "wrong_belief": "the service listens on 8080",
+            "corrected_fact": "the service listens on 9090",
+            "evidence_excerpt": "port = 9090",
+            "confidence": 0.9,
+        },
+    )
+    llm.enqueue(D)
+    await distill_candidates(pool, kb, [c], "on")
+    (call,) = critic.generate_calls
+    prompt = call[0]
+    assert "[tool_result] port = 9090" in prompt
+    assert "Wrong belief: the service listens on 8080" in prompt
+    assert f"Lesson: {_D_OBJ['lesson']}" in prompt
+
+
+def test_get_critic_llm_default_and_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(surprise_worker, "_CRITIC_LLM_CACHE", {})
+    monkeypatch.setattr(surprise_worker, "_DISTILLER_LLM_CACHE", {})
+    monkeypatch.setenv("KB_SURPRISE_DISTILL_MODEL", "distill-model")
+    llm = _REAL_GET_CRITIC_LLM()
+    assert llm is not None
+    assert surprise_worker.detector_model_name(llm) == "claude-sonnet-5-5"
+    monkeypatch.setenv("KB_SURPRISE_CRITIC_MODEL", "critic-model")
+    other = _REAL_GET_CRITIC_LLM()
+    assert surprise_worker.detector_model_name(other) == "critic-model"
+    assert _REAL_GET_CRITIC_LLM() is other
+    assert surprise_worker._DISTILLER_LLM_CACHE == {}
+
+
+def test_get_critic_llm_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(surprise_worker, "_CRITIC_LLM_CACHE", {})
+    monkeypatch.setitem(sys.modules, "kb_core.llm.anthropic", None)
+    assert _REAL_GET_CRITIC_LLM() is None
+    assert surprise_worker._CRITIC_LLM_CACHE == {}

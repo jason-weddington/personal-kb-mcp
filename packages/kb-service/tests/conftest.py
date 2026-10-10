@@ -972,6 +972,33 @@ class FakeLLM:
         return None
 
 
+CRITIC_ACCEPT = json.dumps(
+    {
+        "supported": True,
+        "scope_ok": True,
+        "durable": True,
+        "misleading": False,
+        "reason": "matches the evidence",
+    }
+)
+
+
+class FakeCritic(FakeLLM):
+    """Surprise-capture critic stub: scripted replies, then accept by default.
+
+    Records every call like ``FakeLLM``; once the scripted queue is empty it
+    returns ``CRITIC_ACCEPT`` so tests that do not care about the critic see
+    the pre-critic behaviour.
+    """
+
+    async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+        """Record the call; pop a scripted reply, else accept."""
+        self.generate_calls.append((prompt, system))
+        if self._responses:
+            return self._responses.pop(0)
+        return CRITIC_ACCEPT
+
+
 def make_search_result() -> SearchResult:
     """Build one SearchResult-shaped object for the non-empty search case."""
     entry = KnowledgeEntry(
@@ -1264,6 +1291,7 @@ _AMBIENT_SURPRISE_VARS = (
     "KB_SURPRISE_MIN_CONFIDENCE_SHAPE2",
     "KB_SURPRISE_MIN_CONFIDENCE_SHAPE3",
     "KB_SURPRISE_DISTILL_MODEL",
+    "KB_SURPRISE_CRITIC_MODEL",
 )
 
 

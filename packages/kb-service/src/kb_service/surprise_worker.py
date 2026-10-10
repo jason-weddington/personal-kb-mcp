@@ -74,11 +74,15 @@ from kb_service.surprise_distill import (
     REDACTION_MARKER,
     RESOLUTION_WRONG_BELIEF_MAX,
     SURPRISE_CONTRIBUTOR,
+    SURPRISE_CRITIC_SYSTEM,
+    SURPRISE_CRITIC_VERSION,
     SURPRISE_DISTILLER_SYSTEM,
     SURPRISE_DISTILLER_VERSION,
     SURPRISE_HINT_KEY,
     SURPRISE_TAG,
+    CriticVerdict,
     DistillVerdict,
+    build_critic_prompt,
     build_distill_prompt,
     build_knowledge_details,
     build_resolution,
@@ -87,6 +91,7 @@ from kb_service.surprise_distill import (
     merge_block_reason,
     merged_surprise_hint,
     not_durable_reason,
+    parse_critic_response,
     parse_distill_response,
     shape1_cue,
     stored_observed_sessions,
@@ -108,6 +113,9 @@ _DETECTOR_LLM_CACHE: dict[str, LLMProvider] = {}
 
 SURPRISE_DISTILLER_DEFAULT_MODEL = "claude-sonnet-5-5"
 _DISTILLER_LLM_CACHE: dict[str, LLMProvider] = {}
+
+SURPRISE_CRITIC_DEFAULT_MODEL = "claude-sonnet-5-5"
+_CRITIC_LLM_CACHE: dict[str, LLMProvider] = {}
 
 _CANDIDATE_COLUMNS = (
     "id, shape, session_id, project, turn_event_ids, detector_model,"
@@ -182,6 +190,30 @@ def get_distiller_llm() -> LLMProvider | None:
         return None
     client = AnthropicLLMClient(build_anthropic_config(model=model))
     _DISTILLER_LLM_CACHE[model] = client
+    return client
+
+
+def get_critic_llm() -> LLMProvider | None:
+    """Return the critic's own Anthropic client, cached per model.
+
+    The model is ``KB_SURPRISE_CRITIC_MODEL`` or
+    ``SURPRISE_CRITIC_DEFAULT_MODEL``, read on every call. Independent of the
+    detector and the distiller clients and of ``KB_QUERY_PROVIDER``. None
+    (nothing cached) when the Anthropic client cannot be imported.
+    """
+    model = (
+        os.environ.get("KB_SURPRISE_CRITIC_MODEL", "").strip()
+        or SURPRISE_CRITIC_DEFAULT_MODEL
+    )
+    cached = _CRITIC_LLM_CACHE.get(model)
+    if cached is not None:
+        return cached
+    try:
+        from kb_core.llm.anthropic import AnthropicLLMClient
+    except ImportError:
+        return None
+    client = AnthropicLLMClient(build_anthropic_config(model=model))
+    _CRITIC_LLM_CACHE[model] = client
     return client
 
 
@@ -509,6 +541,7 @@ async def distill_candidates(
         return DistillResult()
     result = DistillResult()
     llm = get_distiller_llm()
+    critic = get_critic_llm()
     counts: Counter[str] = Counter()
     aborted = 0
     try:
@@ -532,6 +565,8 @@ async def distill_candidates(
                     floor,
                     decision,
                     counts,
+                    critic=critic,
+                    pool=pool,
                     kb_answered_targets=kb_answered,
                     turn_mode=turn_mode,
                 )
@@ -557,7 +592,9 @@ async def distill_candidates(
             " secret_detected=%d no_project=%d kb_error=%d no_llm=%d"
             " double_distill=%d exact_matches=%d cosine_matches=%d"
             " near_dup_unavailable=%d promoted=%d llm_ms=%d prompt_chars=%d"
-            " response_chars=%d oldest_input_created_at=%s aborted=%d",
+            " response_chars=%d oldest_input_created_at=%s aborted=%d"
+            " critic_version=%d critic_model=%s critic_calls=%d critic_rejected=%d"
+            " critic_ms=%d",
             SURPRISE_DISTILLER_VERSION,
             detector_model_name(llm) if llm is not None else "",
             len(candidates),
@@ -587,6 +624,11 @@ async def distill_candidates(
             counts["response_chars"],
             min(c.created_at for c in candidates),
             aborted,
+            SURPRISE_CRITIC_VERSION,
+            detector_model_name(critic) if critic is not None else "",
+            counts["critic_calls"],
+            counts["critic_rejected"],
+            counts["critic_ms"],
         )
     return result
 
@@ -611,6 +653,7 @@ async def dry_run_candidates(
     if not candidates:
         return 0
     llm = get_distiller_llm()
+    critic = get_critic_llm()
     counts: Counter[str] = Counter()
     recorded = 0
     floor = _near_duplicate_floor()
@@ -634,6 +677,8 @@ async def dry_run_candidates(
                     floor,
                     decision,
                     counts,
+                    critic=critic,
+                    pool=pool,
                     kb_answered_targets=kb_answered,
                     turn_mode=turn_mode,
                 )
@@ -653,7 +698,8 @@ async def dry_run_candidates(
         logger.info(
             "surprise_dry_run summary distiller_version=%d distiller_model=%s"
             " input=%d recorded=%d llm_calls=%d would_write=%d would_merge=%d"
-            " outcomes=%s no_llm=%d double_dry_run=%d",
+            " outcomes=%s no_llm=%d double_dry_run=%d critic_version=%d"
+            " critic_model=%s critic_calls=%d",
             SURPRISE_DISTILLER_VERSION,
             detector_model_name(llm) if llm is not None else "",
             len(candidates),
@@ -668,6 +714,9 @@ async def dry_run_candidates(
             ),
             counts["no_llm"],
             counts["double_dry_run"],
+            SURPRISE_CRITIC_VERSION,
+            detector_model_name(critic) if critic is not None else "",
+            counts["critic_calls"],
         )
     return recorded
 
@@ -743,6 +792,7 @@ _DRY_RUN_OUTCOME_KEYS = frozenset(
         "same_session",
         "covered",
         "not_durable",
+        "critic_rejected",
         "redacted",
         "gate_induced",
         "llm_error",
@@ -808,6 +858,8 @@ class _Decision:
     prompt_chars: int | None = None
     response_chars: int | None = None
     latency_ms: int | None = None
+    critic: CriticVerdict | None = None
+    critic_called: bool = False
     store_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
     update_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
@@ -830,6 +882,8 @@ def dry_run_payload(c: SurpriseCandidate, d: _Decision) -> dict[str, Any]:
         "cue": d.cue,
         "matched_entry_id": d.matched_id,
         "similarity": d.similarity,
+        "critic_version": SURPRISE_CRITIC_VERSION if d.critic_called else None,
+        "critic": dataclasses.asdict(d.critic) if d.critic is not None else None,
     }
 
 
@@ -881,10 +935,21 @@ async def _decide_one(
     d: _Decision,
     counts: Counter[str],
     *,
+    critic: LLMProvider | None,
+    pool: DbPool | None = None,
     kb_answered_targets: frozenset[str] = frozenset(),
     turn_mode: str | None = None,
 ) -> bool:
     """Run S1-S13 for one candidate, filling *d*; False means a no_llm skip.
+
+    A candidate without an exact match needs both the distiller (*llm*) and
+    the *critic*; when either is missing it is a no_llm skip. After a durable,
+    validated draft and before the near-duplicate lookup (so before any write
+    or merge) the critic checks the draft against the candidate's evidence
+    (read from the stored turn digests through *pool*); a rejection is
+    ``critic_rejected`` (mode 'on' records it as ``not_durable``) and a
+    critic error or unparseable reply fails closed as ``llm_error`` /
+    ``unparseable``.
 
     Reads the KB and calls the distiller but never writes: the KB-writing
     outcomes are left as ``would_write`` (``d.store_kwargs``) or
@@ -927,7 +992,7 @@ async def _decide_one(
         await _decide_match(c, kb, d)
         return True
 
-    if llm is None:
+    if llm is None or critic is None:
         return False
     prompt = build_distill_prompt(c)
     counts["llm_calls"] += 1
@@ -992,6 +1057,9 @@ async def _decide_one(
         d.outcome, d.reason = "invalid_resolution", "no_resolution"
         return True
 
+    if not await _run_critic(c, verdict, critic, pool, d, counts):
+        return True
+
     check = await kb.find_near_duplicates(
         short_title=verdict.short_title,
         long_title=verdict.long_title,
@@ -1030,6 +1098,78 @@ async def _decide_one(
         "contributor": SURPRISE_CONTRIBUTOR,
         "enrich": False,
     }
+    return True
+
+
+async def _critic_evidence(
+    pool: DbPool | None, c: SurpriseCandidate
+) -> tuple[str | None, list[str]]:
+    """The user's correction (shape 2) and tool results (shape 3) of *c*.
+
+    Read from the stored digest of the candidate's last turn event; empty
+    when there is no pool, no event id or the digest is gone.
+    """
+    if pool is None or not c.turn_event_ids or c.shape not in (2, 3):
+        return None, []
+    last = c.turn_event_ids[-1]
+    stored = next(
+        (
+            g
+            for g in await get_session_turn_digests(pool, c.session_id)
+            if g.event_id == last
+        ),
+        None,
+    )
+    if stored is None:
+        return None, []
+    digest = digest_from_row(stored.model_dump())
+    if c.shape == 2:
+        return digest.user_prompt, []
+    return None, [
+        str(i.get("excerpt") or "")
+        for i in digest.items
+        if i.get("kind") == "tool_result"
+    ]
+
+
+async def _run_critic(
+    c: SurpriseCandidate,
+    verdict: DistillVerdict,
+    critic: LLMProvider,
+    pool: DbPool | None,
+    d: _Decision,
+    counts: Counter[str],
+) -> bool:
+    """The critic pass on a drafted lesson; True means proceed.
+
+    On False *d* holds the terminal outcome: ``critic_rejected`` with reason
+    ``'critic: ' + reason``, or ``llm_error`` / ``unparseable`` (fail closed).
+    """
+    user_correction, tool_results = await _critic_evidence(pool, c)
+    prompt = build_critic_prompt(
+        c, verdict, user_correction=user_correction, tool_results=tool_results
+    )
+    counts["critic_calls"] += 1
+    d.critic_called = True
+    start = time.monotonic()
+    raw: str | None
+    try:
+        raw = await critic.generate(prompt, system=SURPRISE_CRITIC_SYSTEM)
+    except Exception:
+        raw, llm_reason = None, "exception"
+    else:
+        llm_reason = "none"
+    counts["critic_ms"] += int((time.monotonic() - start) * 1000)
+    critic_verdict, reject = parse_critic_response(raw)
+    if critic_verdict is None:
+        d.outcome = reject or "unparseable"
+        d.reason = f"critic: {llm_reason if reject == 'llm_error' else 'unparseable'}"
+        return False
+    d.critic = critic_verdict
+    if not critic_verdict.accepted:
+        counts["critic_rejected"] += 1
+        d.outcome, d.reason = "critic_rejected", f"critic: {critic_verdict.reason}"
+        return False
     return True
 
 
@@ -1084,9 +1224,13 @@ async def _execute_decision(kb: Any, d: _Decision, result: DistillResult) -> Non
     """Mode 'on' only: perform a would_write / would_merge decision's KB write.
 
     Turns ``would_write`` into ``written`` (a new entry) and ``would_merge``
-    into ``merged``; every other outcome has no KB write and is left as is.
+    into ``merged``; ``critic_rejected`` is recorded under the existing
+    ``not_durable`` outcome (the ``surprise_distillations`` CHECK has no
+    critic outcome); every other outcome has no KB write and is left as is.
     """
-    if d.outcome == "would_write":
+    if d.outcome == "critic_rejected":
+        d.outcome = "not_durable"
+    elif d.outcome == "would_write":
         entry = await kb.store(**d.store_kwargs)
         result.entries_written.append(entry.id)
         d.outcome, d.entry_id = "written", entry.id
@@ -1102,11 +1246,17 @@ async def _persist_decision(
 ) -> None:
     """Move the candidate to its terminal status and insert its decision row."""
     status = _CANDIDATE_STATUS.get(d.outcome, "rejected")
-    verdict = (
-        json.dumps(dataclasses.asdict(d.verdict))
+    verdict_obj: dict[str, Any] | None = (
+        dataclasses.asdict(d.verdict)
         if d.verdict is not None and d.outcome != "secret_detected"
         else None
     )
+    if verdict_obj is not None and d.critic_called:
+        verdict_obj["critic_version"] = SURPRISE_CRITIC_VERSION
+        verdict_obj["critic"] = (
+            dataclasses.asdict(d.critic) if d.critic is not None else None
+        )
+    verdict = json.dumps(verdict_obj) if verdict_obj is not None else None
     inserted = False
     try:
         async with pool.acquire() as conn, conn.transaction():

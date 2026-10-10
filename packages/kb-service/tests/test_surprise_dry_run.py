@@ -24,6 +24,7 @@ from kb_service.db_sqlite import SqlitePool
 from kb_service.main import app
 from kb_service.surprise import DistillResult, SurpriseCandidate
 from kb_service.surprise_distill import (
+    SURPRISE_CRITIC_VERSION,
     SURPRISE_DISTILLER_SYSTEM,
     SURPRISE_DISTILLER_VERSION,
 )
@@ -33,7 +34,7 @@ from kb_service.surprise_worker import (
     drain_once,
     dry_run_candidates,
 )
-from tests.conftest import FakeLLM
+from tests.conftest import CRITIC_ACCEPT, FakeCritic, FakeLLM
 from tests.test_surprise_distill_worker import (
     _HERMETIC_ENV,
     _SCRUB_ENV,
@@ -86,6 +87,13 @@ async def kb(tmp_path: Path) -> AsyncIterator[Any]:
         yield k
     finally:
         await k.close()
+
+
+@pytest.fixture(autouse=True)
+def critic(monkeypatch: pytest.MonkeyPatch) -> FakeCritic:
+    fake = FakeCritic()
+    monkeypatch.setattr(surprise_worker, "get_critic_llm", lambda: fake)
+    return fake
 
 
 @pytest.fixture
@@ -221,6 +229,8 @@ async def test_shadow_would_write_records_and_writes_nothing(
         },
         "matched_entry_id": None,
         "similarity": None,
+        "critic_version": SURPRISE_CRITIC_VERSION,
+        "critic": json.loads(CRITIC_ACCEPT),
     }
     assert await _lessons(kb) == 0
     assert await _cand_row(pool, c.id) == {"status": "shadow", "entry_id": None}
@@ -567,3 +577,40 @@ def test_candidates_endpoint_rejects_bad_params(
 ) -> None:
     resp = client.get("/api/kb/surprise/candidates", params=params)
     assert resp.status_code == 422
+
+
+# --- critic pass in the dry run ---------------------------------------------------
+
+
+async def test_shadow_critic_rejection_records_critic_rejected(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    reply = json.loads(CRITIC_ACCEPT)
+    reply.update(durable=False, reason="the user said this will change")
+    critic.enqueue(json.dumps(reply))
+    await _turn(pool, "s1")
+    c = await _cand(pool, "s1")
+    llm.enqueue(D)
+    assert await dry_run_candidates(pool, kb, [c]) == 1
+    (r,) = await _dry_runs(pool)
+    assert r["would_outcome"] == "critic_rejected"
+    assert r["reason"] == "critic: the user said this will change"
+    payload = json.loads(r["payload"])
+    assert payload["critic_version"] == SURPRISE_CRITIC_VERSION
+    assert payload["critic"]["durable"] is False
+    assert payload["short_title"] == "Push to HEAD:main"
+    assert await _distillations(pool) == []
+    assert await _lessons(kb) == 0
+    assert len(critic.generate_calls) == 1
+
+
+async def test_shadow_unparseable_critic_records_unparseable(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    critic.enqueue("nope")
+    await _turn(pool, "s1")
+    c = await _cand(pool, "s1")
+    llm.enqueue(D)
+    assert await dry_run_candidates(pool, kb, [c]) == 1
+    (r,) = await _dry_runs(pool)
+    assert (r["would_outcome"], r["reason"]) == ("unparseable", "critic: unparseable")

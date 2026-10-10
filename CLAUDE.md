@@ -250,6 +250,7 @@ Format: `type(optional-scope): description`
 | `KB_INSTANCE_ROLE` | (unset) | `personal` or `team` — prepends role-specific instructions and prefixes tool names (`personal` → `personal_kb_*`, `team` → `team_kb_*`) |
 | `KB_SURPRISE_MIN_CONFIDENCE_SHAPE2` | `0.5` | Surprise-detector confidence floor for shape 2 (overrides the global value) |
 | `KB_SURPRISE_MIN_CONFIDENCE_SHAPE3` | `0.7` | Surprise-detector confidence floor for shape 3 (overrides the global value) |
+| `KB_SURPRISE_CRITIC_MODEL` | `claude-sonnet-5-5` | Model for the surprise-capture critic pass, which checks each drafted lesson against its evidence before any autonomous write or merge |
 | `KB_SURPRISE_MIN_CONFIDENCE` | (unset) | Global surprise-detector floor override for both shapes; unset uses the per-shape defaults |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
 
