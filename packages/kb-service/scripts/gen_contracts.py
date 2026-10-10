@@ -431,7 +431,10 @@ _EVENT_RAWS: list[tuple[str, dict[str, Any]]] = [
             "tool_name": "bash",
             "tool_input": {"command": "git push mirror feat/x"},
             "tool_use_id": "toolu_contract_t1",
-            "error": "Exit code 1\nremote: Permission to mirror denied",
+            "error": (
+                "exit 1 (0.01s)\n--- stdout ---\n\n--- stderr ---\n"
+                "remote: Permission to mirror denied\n"
+            ),
             "is_error": True,
             "duration_ms": 95,
         },

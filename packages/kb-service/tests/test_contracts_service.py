@@ -794,6 +794,9 @@ def test_event_examples_match_live_route(turn_client: TestClient, name: str) -> 
     for key, value in want.items():
         assert row[key] == value, key
     assert row["tool"] != "" and row["error_rule"] != ""
+    if name == "talos_bash_failure":
+        cc = event["stored"]["claude_code_bash_failure"]
+        assert want["normalized_error"] == cc["normalized_error"]
     assert row["event_id"] == body["event_id"]
     # a repeat of the same event_id is a duplicate
     again = turn_client.post("/api/kb/event", json=body).json()

@@ -39,8 +39,8 @@ def test_not_reexported_from_package_root() -> None:
     assert "cues" not in getattr(kb_core, "__all__", [])
 
 
-def test_version_is_one() -> None:
-    assert CUE_NORMALIZER_VERSION == 1
+def test_version_is_two() -> None:
+    assert CUE_NORMALIZER_VERSION == 2
 
 
 # --- AC2: extract_target ----------------------------------------------------
@@ -190,6 +190,47 @@ def test_normalize_exit_line_keeps_code() -> None:
     assert normalize_error("Exit code 144\nsomething")[0] == "exit 144 | something"
 
 
+_CC_CAT = "Exit code 1\ncat: does-not-exist.txt: No such file or directory"
+_WANT_CAT = ("exit 1 | cat: does-not-exist.txt: no such file or directory", "keyword")
+
+
+@pytest.mark.parametrize("secs", ["0.01", "2.37", "3"])
+def test_normalize_talos_header_matches_claude_code(secs: str) -> None:
+    talos = (
+        f"exit 1 ({secs}s)\n--- stdout ---\n\n--- stderr ---\n"
+        "cat: does-not-exist.txt: No such file or directory\n"
+    )
+    assert normalize_error(talos) == _WANT_CAT
+    assert normalize_error(_CC_CAT) == _WANT_CAT
+
+
+def test_cue_key_equal_across_harnesses() -> None:
+    talos = "exit 1 (0.01s)\n--- stdout ---\n\n--- stderr ---\ncat: x: No such file or directory\n"
+    cc = "Exit code 1\ncat: x: No such file or directory"
+    a = build_cue("Bash", {"command": "cat x"}, talos, "p", None)
+    b = build_cue("Bash", {"command": "cat x"}, cc, "p", None)
+    assert a.cue_key == b.cue_key
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("Exit code 144\nsomething", "exit 144 | something"),
+        ("Exit code 1\n--- stderr ---\nboom failed", "exit 1 | boom failed"),
+        ("first\nsecond line", "second line"),
+    ],
+)
+def test_claude_code_corpus_unchanged(text: str, want: str) -> None:
+    assert normalize_error(text)[0] == want
+
+
+def test_markers_without_talos_header_are_kept() -> None:
+    out, rule = normalize_error("--- stderr ---")
+    assert (out, rule) == ("--- stderr ---", "last_line")
+    out, _ = normalize_error("oops\n--- stderr ---")
+    assert out == "--- stderr ---"
+
+
 # --- AC5: host_class, project, cue_key --------------------------------------
 
 
@@ -232,7 +273,7 @@ def test_resolve_cue_project() -> None:
 def test_cue_key_formula_and_stability() -> None:
     import hashlib
 
-    expected = hashlib.sha256(b"1\x1fBash\x1fgit push\x1fexit 1\x1fp").hexdigest()[:16]
+    expected = hashlib.sha256(b"2\x1fBash\x1fgit push\x1fexit 1\x1fp").hexdigest()[:16]
     assert cue_key("Bash", "git push", "exit 1", "p") == expected
     assert cue_key("Bash", "git push", "exit 1", "p") == cue_key("Bash", "git push", "exit 1", "p")
     assert len(expected) == 16
@@ -244,7 +285,7 @@ def test_cue_key_sensitivity() -> None:
     assert cue_key("Bash", "git pull", "exit 1", "p") != base
     assert cue_key("Bash", "git push", "exit 2", "p") != base
     assert cue_key("Bash", "git push", "exit 1", "q") != base
-    assert cue_key("Bash", "git push", "exit 1", "p", version=2) != base
+    assert cue_key("Bash", "git push", "exit 1", "p", version=3) != base
 
 
 def test_cue_key_ignores_host_class() -> None:

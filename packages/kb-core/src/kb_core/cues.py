@@ -19,6 +19,10 @@ the two-word program set, the keyword regex, the 200-char cap or the
 4000-char truncation) MUST increment :data:`CUE_NORMALIZER_VERSION`, because
 the version is part of the key and keys from different rule sets must never
 be compared as equal.
+
+**Version history:** 1 = initial rules. 2 = :func:`normalize_error` also
+recognizes the talos bash header (``exit N (1.2s)`` plus ``--- stdout ---`` /
+``--- stderr ---`` markers) so the same failure keys identically across harnesses.
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ __all__ = [
     "target_class",
 ]
 
-CUE_NORMALIZER_VERSION: int = 1
+CUE_NORMALIZER_VERSION: int = 2
 
 _ERROR_TRUNCATE = 4000
 _NORMALIZED_CAP = 200
@@ -81,6 +85,8 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _TRUNC_MARKER = re.compile(r"\.\.\. \[\d+ characters truncated\] \.\.\.")
 _EXIT_LINE = re.compile(r"^Exit code (\d+)$")
+_TALOS_EXIT_LINE = re.compile(r"^exit (\d+) \(\d+(?:\.\d+)?s\)$")
+_TALOS_MARKERS = frozenset({"--- stdout ---", "--- stderr ---"})
 _KEYWORD = re.compile(
     r"error|fail|denied|not found|no such|cannot|can't|refused|invalid|traceback"
     r"|exception|fatal|timed out|forbidden|unauthorized|conflict",
@@ -257,6 +263,11 @@ def normalize_error(text: str) -> tuple[str, str]:
     if match:
         lines.pop(0)
         exit_line = f"exit {match.group(1)}"
+    else:
+        talos = _TALOS_EXIT_LINE.fullmatch(lines[0])
+        if talos:
+            lines = [line for line in lines[1:] if line not in _TALOS_MARKERS]
+            exit_line = f"exit {talos.group(1)}"
 
     kept = [line for line in lines if _KEYWORD.search(line)][:2]
     if kept:
