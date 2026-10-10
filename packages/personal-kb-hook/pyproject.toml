@@ -1,6 +1,6 @@
 [project]
 name = "personal-kb-hook"
-version = "1.4.0"
+version = "1.4.1"
 description = "Stdlib-only CLI hook that surfaces personal-kb mental_map directories into a Claude Code session"
 requires-python = ">=3.13"
 # ZERO runtime dependencies — this package is deliberately stdlib-only so it

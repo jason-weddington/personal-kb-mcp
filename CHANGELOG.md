@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.4.1 (2026-10-09)
+
+### Bug Fixes
+
+- **prevention**: Deliver shape-1/2 first sightings without the observed-once hedge
+  ([`e4e5bc6`](https://github.com/jason-weddington/personal-kb-mcp/commit/e4e5bc6c5c41b53a63169a2f3a9cb64d050b2933))
+
+### Documentation
+
+- Experience-loop roadmap, second eval round and v1.4.0 status
+  ([`f3df440`](https://github.com/jason-weddington/personal-kb-mcp/commit/f3df4409507e162a0929fb6549a580078c51f7ab))
+
+
 ## v1.4.0 (2026-10-09)
 
 ### Bug Fixes
