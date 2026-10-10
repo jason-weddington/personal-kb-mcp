@@ -64,27 +64,66 @@ Second round, on v1.4.0 (shape-1 compound fix and first-sighting gate eligibilit
 
 Jobs: learn-matrix-*-k3 and learn-mined-*-k3 in the kb-bench jobs dir; detector eval in the private evals repo (surprise/run-2026-10-10).
 
-## Next, in order
+## Overnight 2026-10-10 (v1.5.0 and v1.6.0)
 
-1. **Ship and enable for Jason's KB** (GTD cd878c09). Release with surprise capture default off on every instance, then set `KB_SURPRISE_CAPTURE=on` on Jason's personal KB only. No shadow-only phase: the offline detector eval already measures precision on his own transcripts, so read cost as it runs instead. The other instances stay off until his has run for a while.
-2. **Detector cost, Jason's call** (GTD 0dbe49a3). Up to two Sonnet calls per turn (shape 2 on turns that start with a human prompt, shape 3 on every turn). Turn the eval's per-call token counts into dollars per day at real volume; the levers are a cheaper detector model (Haiku, or Clef locally once the GPU is free) and the shape-2 confidence floor, both measured by the eval harness for their recall cost.
-3. **Gate-eligible first sightings for shapes 1 and 2** (GTD 03ce88c7, dispatched with the shape-1 fix f3d06c8d). A shape-1 capture is detected deterministically from tool output and a shape-2 capture comes from the user's own words, so both become gate-eligible at the first sighting; shape 3, a model judgment, keeps waiting for a second sighting. The two-session matrix showed a delivered slice lesson failing to stop a habitual wrong push 3/3.
-4. **Headless fleet digests** (GTD 60cd0a1c). Enable the turn-digest hook for the dispatch user on the fleet, so headless runs learn shapes 1 and 3 (they never receive a human correction).
-5. **Relevance-aware delivery** (GTD 10d811fa). The slice is the 20 newest corrections per project, blind to the task, and it will crowd out as autonomous captures accumulate. The mined "the KB knew but did not deliver" episodes are the eval that must show lexical and recency delivery falling short before a better matcher is built.
-6. **Somnus consolidation of autonomous captures** (GTD 5399b5b0; overlaps fb8a4f52). Nightly: merge duplicate lessons, retire ones that stop being true (the debate's use-based strength: a success after delivery strengthens, the same failure after delivery weakens and flags), and promote recurring ones. This extends what somnus already does for maps and overlaps the existing inconsistency item.
+First night with capture on, and the incident. Within about four hours the distiller wrote three autonomous lessons, all shape 1 from headless dispatch runs. One was false: a dispatch clone's momentary lint errors became "the repo has lint errors, run ruff only on touched files". Two had gate cues as broad as a whole command family ({uv run}, {git checkout}). The {uv run} cue denied an unrelated interactive command within minutes. All three were deactivated and capture went back to shadow (kb-03707). Fixes in v1.5.0:
+
+- cue args_prefix is the shortest prefix of the failed command's arguments that differs from the fix's, and there is no cue when they cannot be told apart;
+- the distiller rejects lessons rooted in the session's own in-progress state or task-specific narrowing;
+- headless shape-1 lessons wait for a second sighting before gating.
+
+The roadmap's "no shadow phase" call was wrong: the bench scenarios contain only the intended trap, so only real traffic shows the noise.
+
+v1.6.0 makes shadow useful. It dry-runs the full distiller and cue pipeline into `surprise_dry_runs`, and `GET /api/kb/surprise/candidates` exposes candidates with their would-be outcome, so an agent can audit before capture goes back on. First shadow output: both headless shape-1 candidates were rejected as not durable (correctly: the session's own in-progress edits), and the one would-write was a correct shape-3 lesson from the lead session's own investigation.
+
+Detector results (private evals repo, surprise/):
+
+- Shape-3 redesign, v2: the trigger is the agent reaching a corrected understanding or root cause backed by tool output. On Sonnet, recall went from 0.08 to 0.41 at population precision 0.62 (v1: 0.66), with no cases out of scope.
+- Per-shape confidence floor: shape 2 now defaults to 0.5, which moves recall from 0.48 to 0.76 for population precision 0.69 to 0.64; shape 3 stays at 0.7.
+
+Delivery gap, measured on a random 90 durable mined episodes: the KB held the fact BEFORE the mistake in only 14%, held it after in 34%, and lacked it in 49% (about 9 of those are steering facts that belong in CLAUDE.md). None of the known-before facts was a correction or resolution, 10 of 13 sat under another project_ref, and most were one line in a run log. Capture, not delivery, is the bigger hole, which demotes step 5.
+
+Clef as a System-1 prefilter (odin; context only, not a production dependency):
+
+- clef-flash, shape 2, threshold 0.3: recall 0.74 while passing only 18% of turns to Sonnet.
+- clef-flash, shape 3 (v1-style question): recall 0.69 at threshold 0.5, passing 31%.
+- clef 27B is no better and about 3x slower.
+- clef-flash cannot write the lesson text; it would only gate the Sonnet call.
+
+Local extraction models on odin (shape 2, same 80-case stratified sample as the API models; latency under load from other jobs): qwen3.8:27b reached precision 0.86 and recall 0.60 on the raw sample at about 45 s per call. The other two models are recorded in the private repo once their runs finish.
+
+Cost estimate for step 2. Assuming Sonnet-class pricing of $3/M input and $15/M output (check current pricing), a detector call is about 2-2.5k input tokens and under 100 output tokens, roughly $0.008-0.01. Interactive volume averages 15 prompts per active day (164 on the busiest), plus every tool-using turn for shape 3. A headless dispatch run is one turn. That comes to about $0.5-1 on a typical day and $5 on a heavy day. A clef-flash prefilter would cut shape-2 calls by about 80%.
+
+Status of the six steps:
+
+1. Release and enable: done (v1.4.0 to v1.6.0). On Jason's KB the soft gate is live and capture is in shadow pending the automated audit of dry runs; then back to on.
+2. Cost: estimate above; the choice of detector model and prefilter is Jason's.
+3. First-sighting gate trust: done, then narrowed after the incident. Interactive shape 1 and all shape 2 are trusted at first sighting with precise cues; headless shape 1 and shape 3 wait for a second sighting. Trusted lessons are delivered without the "unconfirmed" hedge (Sonnet ignored hedged denies).
+4. Headless fleet digests: done. The dispatch user has hook 1.4.1+ with Stop wired on all four hosts, and headless digests are arriving.
+5. Relevance-aware delivery: demoted by the delivery-gap result. If picked up, trigger at the moment of action with the assumption as the query, and drop project scoping.
+6. Somnus consolidation: open, needed once autonomous lessons accumulate.
+
+Also shipped overnight:
+
+- delivery on tool failure: PostToolUseFailure returns the matching correction next to the failure (KB_FAILURE_CONTEXT=1, synchronous wiring; on in the synced settings);
+- the weekly cross-session repeat-rate metric (`GET /api/kb/metrics/repeat-rate`, `kb-service metrics repeat-rate`);
+- stop_reason logging on empty provider responses;
+- the per-shape floor.
+
+kb-bench qwen lane (Claude Code on qwen3.8:27b-256k, the 5090 now free): two-session trials on removed-remote, stop-hook, ollama-num-ctx and review-push, k=2, running overnight.
 
 ## Remaining roadmap after that
 
 Items from the experience-loop plan and the debate that are not covered above, with their state:
 
-- **Shape-3 detector recall** (GTD 13079367). At 0.09 it is not yet useful; widen the window the detector sees, revisit the scope rule, and check the silver labels before tuning the prompt. Mined scenarios are in a kb-bench rollout (efe29fbc): gateway-bearer-learn, uv-stale-install-learn and tail-masks-failure-learn (shape 3) and removed-remote-learn (shape 2).
-- **Shape-2 confidence floor** (GTD 65bb7c2b). Re-run the detector eval at floors 0.5 and 0.6 and pick the floor from the precision and recall trade, after confirming whether the silver labels undercount real corrections.
-- **Episodes on failure, the debate's first bet** (GTD c5c57405). On PostToolUseFailure, deliver the matching resolution as same-turn context. The failure-cue index already records failures; delivery is not built.
+- **Shape-3 detector recall** (GTD 13079367): done, v2 above. At 0.09 it is not yet useful; widen the window the detector sees, revisit the scope rule, and check the silver labels before tuning the prompt. Mined scenarios are in a kb-bench rollout (efe29fbc): gateway-bearer-learn, uv-stale-install-learn and tail-masks-failure-learn (shape 3) and removed-remote-learn (shape 2).
+- **Shape-2 confidence floor** (GTD 65bb7c2b): done (0.5). Re-run the detector eval at floors 0.5 and 0.6 and pick the floor from the precision and recall trade, after confirming whether the silver labels undercount real corrections.
+- **Episodes on failure, the debate's first bet** (GTD c5c57405): done (v1.5.0). On PostToolUseFailure, deliver the matching resolution as same-turn context. The failure-cue index already records failures; delivery is not built.
 - **Automatic capture beyond corrections** (GTD 78a2997a). A System 1 check per turn for new facts, decisions with their reasons and gotchas, written by a System 2 model or somnus. Surprise capture covers only corrections.
 - **Write-time conflict detection** (GTD 87cafc8a). On every store, classify the new entry against its neighbours as supports, refines, conflicts or unrelated, and turn conflicts into supersedes edges or flags.
 - **Decision triggers** (GTD b43b65a6). Deliver a recorded decision when an agent is about to reverse or relitigate it.
 - **Harness-agnostic delivery** (GTD 506d0b53). A KB delivery channel inside Talos and a native-memory sync (AGENTS.md or equivalent) for harnesses other than Claude Code.
 - **Listener and roster decision** (GTD c2d96250). Production consumption of whispers and roster pushes is near zero; refetch the consumption detector once, then switch off or redesign those channels.
-- **Repeat-mistake metric in production** (GTD a3a7b307). A weekly cross-session repeat rate per cue from `failure_events`, cut by harness and machine, so the north star is read from real traffic. Related: L4 search telemetry (GTD cf855f71).
+- **Repeat-mistake metric in production** (GTD a3a7b307): done (v1.5.0). A weekly cross-session repeat rate per cue from `failure_events`, cut by harness and machine, so the north star is read from real traffic. Related: L4 search telemetry (GTD cf855f71).
 - **Deferred until an eval demands it** (GTD 30ff4dc2, someday): a first-class resolutions table (triggers: the gate proves its value in long sessions, or autonomous captures need their own lifecycle), a semantic gate matcher (the current lexical matcher also false-matches heredoc body lines), a long-session gate scenario, and the one-event-stream sidecar (wait for a third consumer).
-- **Small** (GTD 2f89e8f2): log the provider's stop_reason when a response has no text block, so a refusal is distinguishable from an empty answer.
+- **Small** (GTD 2f89e8f2, done): log the provider's stop_reason when a response has no text block, so a refusal is distinguishable from an empty answer.
