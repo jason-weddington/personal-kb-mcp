@@ -708,3 +708,25 @@ async def test_prevention_talos_query_matches_fixture(
     ex = _examples(prevention["response"]["examples"])["talos_gate_armed"]
     assert body["tool_map"] == ex["tool_map"]
     assert body["index"][0]["tool"] == "Bash"
+
+
+async def test_prevention_talos_gate_switch_off_matches_fixture(
+    kb: Any, real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(kb)
+    monkeypatch.delenv("KB_SOFT_GATE_ENABLED", raising=False)
+    prevention = _prevention()
+    query = next(
+        e["query"] for e in prevention["request"]["examples"] if e["name"] == "talos"
+    )
+    resp = real_client.get("/api/kb/prevention", params=query)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert Draft202012Validator(prevention["response"]["schema"]).is_valid(body)
+    ex = _examples(prevention["response"]["examples"])["talos_gate_switch_off"]
+    assert ex["gate"]["enabled"] is False
+    assert ex["index"]
+    assert body["gate"]["enabled"] is False
+    assert len(body["index"]) == 1
+    assert set(body["index"][0]) == set(ex["index"][0])
+    assert body["tool_map"] == ex["tool_map"]

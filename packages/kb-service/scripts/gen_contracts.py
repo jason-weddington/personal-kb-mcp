@@ -231,11 +231,18 @@ def build_prevention() -> dict[str, Any]:
         surprise_capture="on",
     )
     talos = armed.model_copy(update={"tool_map": harness_tools.tool_map("talos")})
+    talos_off = talos.model_copy(
+        update={"gate": _gate(enabled=False, shadow=True), "slice": [_S1]}
+    )
+    talos_off = talos_off.model_copy(
+        update={"slice_text": render_slice("personal-kb", [_S1])}
+    )
     examples = [
         ("gate_armed", armed),
         ("gate_disabled_slice_only", disabled),
         ("no_project", no_project),
         ("talos_gate_armed", talos),
+        ("talos_gate_switch_off", talos_off),
     ]
     return {
         **_header("prevention", "GET", "/api/kb/prevention"),

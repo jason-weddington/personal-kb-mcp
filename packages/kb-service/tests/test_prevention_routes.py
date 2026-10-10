@@ -30,6 +30,7 @@ from kb_service.prevention import (
     render_slice,
 )
 from kb_service.routes import prevention_routes
+from kb_service.write_policy import sanitize_harness
 from tests.conftest import FakeKnowledgeBase, fake_user
 
 _SWITCHES = (
@@ -1478,3 +1479,68 @@ def test_decisions_canonicalize_tool_only(local_client: TestClient) -> None:
         ("web_fetch", "git push origin main", "git push"),
         ("bash", "git push origin main", "git push"),
     ]
+
+
+async def test_prevention_harness_from_header(
+    kb: Any, real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_SOFT_GATE_ENABLED", raising=False)
+    monkeypatch.delenv("KB_SOFT_GATE_DISABLED_PROJECTS", raising=False)
+    await _store(kb, **_res())
+    get = real_client.get
+    params = {"project": "p"}
+    body = get(
+        "/api/kb/prevention", params=params, headers={"X-KB-Harness": "talos"}
+    ).json()
+    assert len(body["index"]) == 1
+    assert body["tool_map"] == _TALOS_MAP
+    assert body["gate"]["enabled"] is False
+    body = get(
+        "/api/kb/prevention", params=params, headers={"X-KB-Harness": "claude-code"}
+    ).json()
+    assert body["index"] == []
+    assert body["tool_map"] == {}
+
+
+async def test_prevention_query_harness_wins_over_header(
+    kb: Any, real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_SOFT_GATE_ENABLED", raising=False)
+    await _store(kb, **_res())
+    get = real_client.get
+    both = get(
+        "/api/kb/prevention",
+        params={"project": "p", "harness": "claude-code"},
+        headers={"X-KB-Harness": "talos"},
+    ).json()
+    assert both["index"] == []
+    assert both["tool_map"] == {}
+    both = get(
+        "/api/kb/prevention",
+        params={"project": "p", "harness": "talos"},
+        headers={"X-KB-Harness": "claude-code"},
+    ).json()
+    assert len(both["index"]) == 1
+    assert both["tool_map"] == _TALOS_MAP
+
+
+def test_prevention_header_harness_is_sanitized(
+    real_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    noisy = "tal os!\t" + "x" * 200
+    real_client.get(
+        "/api/kb/prevention", params={"project": "p"}, headers={"X-KB-Harness": noisy}
+    )
+    want = sanitize_harness(noisy)
+    assert want.startswith("talosxxx")
+    assert len(want) < len(noisy)
+    assert f"harness={want} " in caplog.text
+    assert "\t" not in caplog.text
+    caplog.clear()
+    real_client.get(
+        "/api/kb/prevention",
+        params={"project": "p"},
+        headers={"X-KB-Harness": " !\t "},
+    )
+    assert "harness=None " in caplog.text

@@ -71,6 +71,7 @@ from kb_service.prevention import (
     render_slice,
 )
 from kb_service.turn_digest import surprise_capture_mode
+from kb_service.write_policy import sanitize_harness
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
@@ -276,6 +277,7 @@ async def get_prevention(
 ) -> PreventionResponse:
     """Return the gate settings, Bash cue index and gotcha slice for a session."""
     del user  # auth gate only
+    harness = harness or sanitize_harness(request.headers.get("X-KB-Harness")) or None
     published_map = harness_tools.tool_map(harness)
     mode = surprise_capture_mode()
     effective = ""

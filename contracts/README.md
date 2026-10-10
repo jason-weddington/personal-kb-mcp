@@ -2,7 +2,7 @@
 
 ## What this is
 
-Golden request/response fixtures for the two endpoints a harness calls, `GET /api/kb/prevention` and `POST /api/kb/turn`. They are used today by the Claude Code hook and vendored by talos, so a schema change breaks the other side's tests instead of drifting silently.
+Golden request/response fixtures for the two endpoints a harness calls, `GET /api/kb/prevention` and `POST /api/kb/turn`. They are used today by the Claude Code hook and are intended for talos to vendor (adoption is a harness-design item), so a schema change breaks the other side's tests instead of drifting silently.
 
 ## File format
 
@@ -27,6 +27,12 @@ GET /api/kb/prevention resolves the project as the non-blank `project` stripped,
 GET /api/kb/prevention never answers 5xx; on failure it returns an inert body (gate enabled false, shadow true, empty index and slice, zero diagnostics) that a client cannot tell from an empty result.
 
 `harness=talos` returns `tool_map` (native name to canonical name) while the index stays in canonical Claude Code names, so a consumer translates its native names through `tool_map` before matching; without `harness`, `tool_map` is `{}`.
+
+`gate.enabled` and `gate.shadow` reflect only the Claude Code gate switch, and a mapped harness receives the index regardless and applies its own mode.
+
+An absent `tool_map` key means a server older than tool-name normalization, so the harness must not post native-named digests to it.
+
+Turn `event_id`s must be unique per session within the server's turn-digest retention (90 days).
 
 Undeclared query params are silently ignored, so a consumer must validate its query against `query_schema`.
 
