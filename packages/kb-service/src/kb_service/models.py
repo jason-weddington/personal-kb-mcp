@@ -1991,3 +1991,100 @@ class RepeatRateResponse(BaseModel):
     failure_rows: int
     resolutions_loaded: int
     diagnostics: RepeatRateDiagnostics
+
+
+class ObserveTurnEventRow(BaseModel):
+    """One ``turn_events`` row; JSON-text columns are returned parsed."""
+
+    id: int
+    event_id: str
+    session_id: str
+    harness: str
+    mode: str
+    engine: str | None = None
+    host: str | None = None
+    hook_version: str | None = None
+    project: str
+    turn_index: int
+    ts: str
+    user_prompt: str | None = None
+    items: list[dict[str, Any]]
+    final_message: str | None = None
+    truncated: int
+    redactions: list[Any]
+    anomaly: str | None = None
+    capture_mode: str
+    processed_at: str | None = None
+    received_ts: str
+
+
+class ObserveFailureEventRow(BaseModel):
+    """One ``failure_events`` row."""
+
+    id: int
+    event_id: str
+    cue_key: str
+    normalizer_version: int
+    session_id: str
+    harness: str
+    mode: str
+    engine: str | None = None
+    host: str | None = None
+    hook_version: str | None = None
+    host_class: str
+    project: str
+    project_source: str
+    tool: str
+    target: str
+    target_class: str
+    normalized_error: str
+    error_rule: str
+    anomaly: str | None = None
+    raw_error_excerpt: str
+    is_interrupt: int
+    ts: str
+    received_ts: str
+
+
+class ObserveSurpriseDetectionRow(BaseModel):
+    """One ``surprise_detections`` row; ``details`` is returned parsed."""
+
+    id: int
+    event_id: str
+    session_id: str
+    project: str
+    shape: int
+    mode: str
+    outcome: str
+    reason: str
+    detector_model: str
+    detector_version: int
+    confidence: float | None = None
+    candidate_id: int | None = None
+    details: dict[str, Any]
+    raw_response_excerpt: str | None = None
+    prompt_chars: int | None = None
+    response_chars: int | None = None
+    latency_ms: int | None = None
+    ts: str
+
+
+class ObserveTurnEventsResponse(BaseModel):
+    """A keyset page of turn events."""
+
+    rows: list[ObserveTurnEventRow]
+    next_after_id: int | None = None
+
+
+class ObserveFailureEventsResponse(BaseModel):
+    """A keyset page of failure events."""
+
+    rows: list[ObserveFailureEventRow]
+    next_after_id: int | None = None
+
+
+class ObserveSurpriseDetectionsResponse(BaseModel):
+    """A keyset page of surprise detections."""
+
+    rows: list[ObserveSurpriseDetectionRow]
+    next_after_id: int | None = None

@@ -50,6 +50,7 @@ from kb_service.routes.map_op_routes import router as map_op_router
 from kb_service.routes.maps_routes import router as maps_router
 from kb_service.routes.metrics_routes import router as metrics_router
 from kb_service.routes.nudge_routes import router as nudge_router
+from kb_service.routes.observe_routes import router as observe_router
 from kb_service.routes.prevention_routes import router as prevention_router
 from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
@@ -326,6 +327,7 @@ app.include_router(embedding_queue_router)
 app.include_router(map_eligibility_router)
 app.include_router(map_lint_router)
 app.include_router(nudge_router)
+app.include_router(observe_router)
 app.include_router(map_loop_router)
 app.include_router(map_op_router)
 app.include_router(map_delete_router)
