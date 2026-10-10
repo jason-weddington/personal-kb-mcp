@@ -13,6 +13,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -1084,7 +1085,7 @@ def test_failure_context_delivers_without_touching_cache(armed: _Server) -> None
     }
     assert get_prevention_cache_path(_SID).read_bytes() == cache_before
     assert len(armed.calls) == calls
-    assert json.loads(_fc_state().read_text()) == {"delivered_resolution_ids": ["kb-00001"]}
+    assert list(json.loads(_fc_state().read_text())["delivered"]) == ["kb-00001"]
     (row,) = _fc_rows("failure_context")
     assert row["decision_id"] == f"cc:{_SID}:toolu_f1:failure_context"
     assert row["reason_excerpt"] == prevention.build_failure_context(_cue())
@@ -1125,18 +1126,58 @@ def test_failure_context_repeat(armed: _Server) -> None:
     assert rep["shadow"] is False
 
 
-@pytest.mark.parametrize("content", ["[]", '{"delivered_resolution_ids": "kb-00001"}', "{bad"])
+@pytest.mark.parametrize(
+    "content", ["[]", '{"delivered_resolution_ids": "kb-00001"}', '{"delivered": 3}', "{bad"]
+)
 def test_failure_context_malformed_state_delivers(armed: _Server, content: str) -> None:
     _fc_state().write_text(content)
     assert prevention.failure_context(_fail()) is not None
-    assert json.loads(_fc_state().read_text()) == {"delivered_resolution_ids": ["kb-00001"]}
+    assert list(json.loads(_fc_state().read_text())["delivered"]) == ["kb-00001"]
 
 
 def test_failure_context_state_keeps_str_members(armed: _Server) -> None:
-    _fc_state().write_text(json.dumps({"delivered_resolution_ids": ["kb-9", 3]}))
-    assert prevention._load_failure_state(_SID) == ["kb-9"]
+    ts = prevention.telemetry.now_ts()
+    _fc_state().write_text(json.dumps({"delivered": {"kb-9": ts, "kb-8": 3}}))
+    assert prevention._load_failure_state(_SID) == {"kb-9": ts}
     assert prevention.failure_context(_fail()) is not None
-    assert json.loads(_fc_state().read_text()) == {"delivered_resolution_ids": ["kb-9", "kb-00001"]}
+    assert set(json.loads(_fc_state().read_text())["delivered"]) == {"kb-9", "kb-00001"}
+
+
+def test_failure_context_redelivers_after_window(armed: _Server) -> None:
+    assert prevention.failure_context(_fail()) is not None
+    old = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+    _fc_state().write_text(json.dumps({"delivered": {"kb-00001": old}}))
+    assert prevention.failure_context(_fail(tool_use_id="toolu_f2")) is not None
+    assert json.loads(_fc_state().read_text())["delivered"]["kb-00001"] > old
+    assert len(_fc_rows("failure_context")) == 2
+
+
+def test_failure_context_unparseable_timestamp_is_expired(armed: _Server) -> None:
+    _fc_state().write_text(json.dumps({"delivered": {"kb-00001": "garbage"}}))
+    assert prevention.failure_context(_fail()) is not None
+
+
+def test_failure_context_legacy_state_suppresses(armed: _Server) -> None:
+    _fc_state().write_text(json.dumps({"delivered_resolution_ids": ["kb-00001"]}))
+    assert prevention.failure_context(_fail()) is None
+    assert len(_fc_rows("failure_context_repeat")) == 1
+
+
+@pytest.mark.parametrize("source", ["compact", "resume", "clear", "startup"])
+def test_failure_context_rearm_on_session_start(
+    armed: _Server, tmp_path: Path, source: str
+) -> None:
+    assert prevention.failure_context(_fail()) is not None
+    prevention.session_start({**_ss(tmp_path), "source": source})
+    if source == "startup":
+        assert _fc_state().exists()
+        assert prevention.failure_context(_fail(tool_use_id="toolu_f2")) is None
+        assert not _fc_rows("rearmed")
+        return
+    assert not _fc_state().exists()
+    (rearmed,) = _fc_rows("rearmed")
+    assert rearmed["failure_context_cleared"] == 1
+    assert prevention.failure_context(_fail(tool_use_id="toolu_f2")) is not None
 
 
 def test_failure_context_state_write_failure(

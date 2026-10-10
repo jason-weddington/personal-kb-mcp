@@ -128,7 +128,8 @@ def get_turn_digest_log_path(session_id: str) -> Path:
 def get_failure_context_state_path(session_id: str) -> Path:
     """Per-session PostToolUseFailure failure-context delivery state (hook-only).
 
-    Holds ``delivered_resolution_ids`` so each resolution is delivered at most
-    once per session. Hook-only: it has no twin in ``personal_kb.config``.
+    Holds ``{"delivered": {resolution_id: ISO UTC timestamp}}`` so a resolution
+    is not repeated within the gate's ``rearm_hours``; a compact / resume /
+    clear SessionStart deletes the file. Hook-only: it has no twin in ``personal_kb.config``.
     """
     return Path(f"~/.cache/personal_kb/failure-context-{session_id}.json").expanduser()

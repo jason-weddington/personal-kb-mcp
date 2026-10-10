@@ -27,11 +27,13 @@
   ``KB_FAILURE_CONTEXT`` (off when unset), cache-only with NO network. A
   failed Bash call is checked against the cached index with the same matcher
   as the gate (:func:`_find_match`); on a match the corrected fact is returned
-  as same-turn ``additionalContext``, at most once per resolution per session
-  (tracked in ``failure-context-<session>.json``). It records
-  ``failure_context`` (delivered), ``failure_context_repeat`` (already
-  delivered this session, same failure again) and ``failure_context_error``
-  rows, and is independent of shadow mode and the deny limits.
+  as same-turn ``additionalContext``. A resolution is not repeated within the
+  gate's ``rearm_hours`` of its last delivery (tracked as id -> timestamp in
+  ``failure-context-<session>.json``); it delivers again once the window has
+  passed, and a SessionStart with source compact / resume / clear clears the
+  state. It records ``failure_context`` (delivered),
+  ``failure_context_repeat`` (delivered within the window, same failure
+  again) and ``failure_context_error`` rows, and is independent of shadow mode and the deny limits.
 
 Every decision is appended to ``gate-log-<session>.jsonl``; every failed
 fetch / flush lands in the shared ``event-drops.jsonl`` drop log. Every public
@@ -334,6 +336,9 @@ def _rearm(session_id: str, source: str) -> None:
         cache["deny_state"] = {}
         cache["turn_denies"] = 0
         _write_cache(session_id, cache)
+    fc_cleared = len(_load_failure_state(session_id))
+    with contextlib.suppress(OSError):
+        get_failure_context_state_path(session_id).unlink()
     ts = telemetry.now_ts()
     _record(
         session_id,
@@ -343,6 +348,7 @@ def _rearm(session_id: str, source: str) -> None:
         tool="SessionStart",
         source=source,
         cleared=cleared,
+        failure_context_cleared=fc_cleared,
     )
 
 
@@ -645,18 +651,27 @@ def pre_tool(payload: dict[str, Any]) -> str | None:
 # --- PostToolUseFailure: failure context ------------------------------------
 
 
-def _load_failure_state(session_id: str) -> list[str]:
-    """Resolution ids already delivered as failure context this session."""
+def _load_failure_state(session_id: str) -> dict[str, str]:
+    """Map of resolution id -> ISO UTC delivery timestamp for this session.
+
+    A legacy ``delivered_resolution_ids`` file maps each id to the file's
+    mtime. Anything unparseable loads as ``{}`` (worst case: one extra delivery).
+    """
+    path = get_failure_context_state_path(session_id)
     try:
-        data = json.loads(get_failure_context_state_path(session_id).read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        delivered = data.get("delivered")
+        if isinstance(delivered, dict):
+            return {k: v for k, v in delivered.items() if isinstance(k, str) and isinstance(v, str)}
+        ids = data.get("delivered_resolution_ids")
+        if isinstance(ids, list):
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+            return {i: mtime for i in ids if isinstance(i, str)}
     except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
-    ids = data.get("delivered_resolution_ids")
-    if not isinstance(ids, list):
-        return []
-    return [i for i in ids if isinstance(i, str)]
+        return {}
+    return {}
 
 
 def failure_context(payload: dict[str, Any]) -> str | None:
@@ -664,7 +679,9 @@ def failure_context(payload: dict[str, Any]) -> str | None:
 
     Opt-in via ``KB_FAILURE_CONTEXT``. A failed Bash call that matches the
     session's cached gate index gets the corrected fact, at most once per
-    resolution per session, independent of shadow mode and the deny limits.
+    resolution within the gate's ``rearm_hours`` of its last delivery (state is
+    cleared on a compact / resume / clear SessionStart), independent of shadow
+    mode and the deny limits.
     Never raises and never writes the prevention cache.
     """
     sid: str | None = None
@@ -716,7 +733,10 @@ def failure_context(payload: dict[str, Any]) -> str | None:
             "retry_changed_command": None,
             "shadow": False,
         }
-        if rid in _load_failure_state(sid):
+        state = _load_failure_state(sid)
+        rearm = timedelta(hours=_setting(cache["gate"], "rearm_hours", DEFAULT_REARM_HOURS))
+        last = _parse_ts(state.get(rid))
+        if last is not None and datetime.now(UTC) - last < rearm:
             _record(
                 sid,
                 cache,
@@ -729,7 +749,7 @@ def failure_context(payload: dict[str, Any]) -> str | None:
         try:
             _atomic_write(
                 get_failure_context_state_path(sid),
-                json.dumps({"delivered_resolution_ids": [*_load_failure_state(sid), rid]}),
+                json.dumps({"delivered": {**state, rid: telemetry.now_ts()}}),
             )
         except Exception:
             _record_drop(sid, "failure_context", "state_write", 0)

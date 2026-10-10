@@ -364,7 +364,7 @@ Add the hook to `~/.claude/settings.json` (or your project-level `.claude/settin
 
 The `PreToolUse` entry is the prevention soft gate. It runs synchronously so it can deny a call, and it matches `Bash` only because only Bash cues are gated. It never touches the network and stays inert until the service enables the gate (see `packages/personal-kb-hook/README.md`).
 
-The `PostToolUseFailure` entry records every failed tool call to the failure-cue index and, with `KB_FAILURE_CONTEXT=1`, hands the agent the matching corrected fact once per resolution per session; it must be synchronous (no `async: true`) so the context lands next to the failure instead of on a later turn.
+The `PostToolUseFailure` entry records every failed tool call to the failure-cue index and, with `KB_FAILURE_CONTEXT=1`, hands the agent the matching corrected fact once per resolution per `rearm_hours` window (re-armed by compact, resume or clear); it must be synchronous (no `async: true`) so the context lands next to the failure instead of on a later turn.
 
 Stop flushes the gate log, refreshes the prevention settings and, when the service enables KB_SURPRISE_CAPTURE, ships the turn digest, and it prints nothing.
 
