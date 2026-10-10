@@ -16,6 +16,7 @@ from kb_core.cues import resolve_cue_project
 from kb_core.ingest.safety import redact_secrets
 
 from kb_service.db_types import DbPool
+from kb_service.harness_tools import HARNESS_TOOL_MAPS
 from kb_service.models import (
     TURN_EXCERPT_MAX,
     TURN_FINAL_MESSAGE_MAX,
@@ -157,6 +158,10 @@ def turn_digest_anomalies(body: TurnDigestRequest) -> list[str]:
             out.append("orphan_tool_result")
     if not body.items and body.user_prompt is None and body.final_message is None:
         out.append("empty_turn")
+    if body.harness in HARNESS_TOOL_MAPS and any(
+        c.tool in ("Edit", "Write", "Read") and c.target == "" for c in calls
+    ):
+        out.append("empty_tool_target")
     return out
 
 

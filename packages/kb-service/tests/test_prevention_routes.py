@@ -701,7 +701,7 @@ def test_gate_settings_unset_no_warning(caplog: pytest.LogCaptureFixture) -> Non
 def test_inert_response_carries_new_settings(
     real_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    gate = prevention_routes._inert("p").gate
+    gate = prevention_routes._inert("p", tool_map={}).gate
     assert gate.enabled is False
     assert gate.max_denies == 1000
     assert gate.rearm_hours == 24
@@ -1276,3 +1276,121 @@ async def test_expired_correction_excluded(kb: Any) -> None:
         enrich=False,
     )
     assert await load_corrections(kb.db, "p", 20) == []
+
+
+_TALOS_MAP = {
+    "bash": "Bash",
+    "edit_file": "Edit",
+    "read_file": "Read",
+    "list_files": "LS",
+    "run_checks": "run_checks",
+    "finish": "finish",
+}
+
+
+async def test_prevention_tool_map_talos(
+    kb: Any,
+    real_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    push = await _store(kb, **_res())
+    monkeypatch.setenv("KB_SOFT_GATE_ENABLED", "TRUE")
+    params = {"project": "p", "harness": "talos"}
+    body = real_client.get("/api/kb/prevention", params=params).json()
+    assert body["gate"]["enabled"] is True
+    assert [(c["resolution_id"], c["tool"]) for c in body["index"]] == [(push, "Bash")]
+    assert body["tool_map"] == _TALOS_MAP
+    assert "harness=talos tool_map_len=6" in caplog.text
+    caplog.clear()
+    for q in ({"project": "p"}, {"project": "p", "harness": "claude-code"}):
+        assert real_client.get("/api/kb/prevention", params=q).json()["tool_map"] == {}
+    assert "harness=None tool_map_len=0" in caplog.text
+    body = real_client.get("/api/kb/prevention", params={"harness": "talos"}).json()
+    assert body["project"] == ""
+    assert body["tool_map"] == _TALOS_MAP
+
+
+def test_prevention_tool_map_on_inert_path(
+    real_client: TestClient, fake_kb: FakeKnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Boom:
+        async def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("boom")
+
+    monkeypatch.setenv("KB_SOFT_GATE_ENABLED", "TRUE")
+    monkeypatch.setattr(fake_kb, "db", Boom())
+    params = {"project": "p", "harness": "talos"}
+    body = real_client.get("/api/kb/prevention", params=params).json()
+    assert body["gate"]["enabled"] is False
+    assert body["tool_map"] == _TALOS_MAP
+
+
+async def test_prevention_mapped_harness_index_without_gate_switch(
+    kb: Any, real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_SOFT_GATE_ENABLED", raising=False)
+    monkeypatch.delenv("KB_SOFT_GATE_DISABLED_PROJECTS", raising=False)
+    await _store(kb, **_res())
+    get = real_client.get
+    body = get("/api/kb/prevention", params={"project": "p", "harness": "talos"}).json()
+    assert len(body["index"]) == 1
+    assert body["gate"]["enabled"] is False
+    for q in ({"project": "p"}, {"project": "p", "harness": "claude-code"}):
+        assert get("/api/kb/prevention", params=q).json()["index"] == []
+    monkeypatch.setenv("KB_SOFT_GATE_DISABLED_PROJECTS", "p")
+    body = get("/api/kb/prevention", params={"project": "p", "harness": "talos"}).json()
+    assert body["index"] == []
+
+
+async def test_prevention_mapped_harness_excludes_observed_once(
+    kb: Any, real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_SOFT_GATE_ENABLED", raising=False)
+    monkeypatch.delenv("KB_SOFT_GATE_DISABLED_PROJECTS", raising=False)
+    await _store(
+        kb,
+        **_res(
+            provenance={
+                "capture": "autonomous",
+                "grounding": "observed",
+                "shape": 1,
+                "sessions": ["s1"],
+            }
+        ),
+    )
+    body = real_client.get(
+        "/api/kb/prevention", params={"project": "p", "harness": "talos"}
+    ).json()
+    assert body["index"] == []
+
+
+def test_decisions_canonicalize_tool_only(local_client: TestClient) -> None:
+    rows = [
+        _row(
+            1,
+            decision_id="talos:s1:toolu_1:denied",
+            harness="talos",
+            tool="bash",
+            target="ls && git push github main",
+            target_class="git push",
+        ),
+        _row(
+            2, decision_id="talos:s1:toolu_2:denied", harness="talos", tool="web_fetch"
+        ),
+        _row(3, decision_id="cc:s1:toolu_3:denied", tool="bash"),
+    ]
+    resp = local_client.post("/api/kb/prevention/decisions", json={"rows": rows})
+    assert resp.json() == {"inserted": 3, "duplicates": 0}
+    got = [
+        tuple(r)
+        for r in _query(
+            "SELECT tool, target, target_class FROM gate_decisions ORDER BY id"
+        )
+    ]
+    assert got == [
+        ("Bash", "ls && git push github main", "git push"),
+        ("web_fetch", "git push origin main", "git push"),
+        ("bash", "git push origin main", "git push"),
+    ]

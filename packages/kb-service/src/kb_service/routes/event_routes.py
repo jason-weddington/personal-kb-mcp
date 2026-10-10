@@ -28,6 +28,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from kb_core.cues import FailureCue, build_cue
 
+from kb_service import harness_tools
 from kb_service.auth import get_current_user
 from kb_service.database import get_db
 from kb_service.models import (
@@ -154,7 +155,9 @@ async def _decide(body: EventRequest) -> tuple[EventResponse, FailureCue | None]
     tool_name, error = body.tool_name, body.error
     if tool_name is None or error is None or not tool_name.strip() or not error.strip():
         return EventResponse(recorded=False, reason="missing-fields"), None
-    return await _record(body, tool_name, error)
+    return await _record(
+        body, harness_tools.canonical_tool(body.harness, tool_name), error
+    )
 
 
 @router.post("/event", response_model=EventResponse)

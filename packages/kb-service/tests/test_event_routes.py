@@ -317,3 +317,27 @@ def test_heartbeat_hours_bounds(local_client: TestClient, hours: int) -> None:
 def test_event_endpoints_mounted() -> None:
     paths = {getattr(r, "path", None) for r in app.routes}
     assert {"/api/kb/event", "/api/kb/event/heartbeat"} <= paths
+
+
+def test_talos_tool_name_canonicalized(local_client: TestClient) -> None:
+    body = _event(event_id="talos:sess-1:toolu_1", harness="talos", tool_name="bash")
+    resp = local_client.post("/api/kb/event", json=body)
+    assert resp.json()["reason"] == "recorded"
+    expected = build_cue(
+        "Bash", body["tool_input"], body["error"], body["project"], body["cwd"]
+    )
+    assert resp.json()["cue_key"] == expected.cue_key
+    [row] = _rows()
+    assert row["harness"] == "talos"
+    assert row["tool"] == "Bash"
+    assert row["target"] == "cd /x && git push origin main"
+    assert row["target_class"] == "git push"
+    assert row["anomaly"] is None
+
+
+def test_claude_code_lowercase_tool_untouched(local_client: TestClient) -> None:
+    body = _event(event_id="cc:sess-1:toolu_9", tool_name="bash")
+    assert local_client.post("/api/kb/event", json=body).json()["reason"] == "recorded"
+    [row] = _rows()
+    assert (row["tool"], row["target"], row["target_class"]) == ("bash", "", "")
+    assert row["anomaly"] is None

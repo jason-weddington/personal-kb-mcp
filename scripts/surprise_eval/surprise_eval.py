@@ -2,10 +2,10 @@
 
 Scores the production detector, ``kb_service.surprise_worker.detect_digest``,
 per shape on a labelled case file. Every case goes through the same
-``TurnDigestRequest`` validation, 64 KiB check and ``redact_turn_digest``
-redaction as a live digest before any model sees it. The harness writes
-nothing to the KB, GTD or any database; its outputs go to ``--out``, which must
-lie outside this repo.
+``TurnDigestRequest`` validation, 64 KiB check, ``normalize_turn_tools`` tool-name
+normalization and ``redact_turn_digest`` redaction as a live digest before any
+model sees it. The harness writes nothing to the KB, GTD or any database; its
+outputs go to ``--out``, which must lie outside this repo.
 
 Run from the repo root::
 
@@ -39,7 +39,7 @@ from kb_core import cues
 from kb_core.llm import anthropic as anthropic_llm
 from kb_core.llm import json_parser
 from kb_service import config as service_config
-from kb_service import surprise, surprise_worker, turn_digest
+from kb_service import harness_tools, surprise, surprise_worker, turn_digest
 from kb_service.models import TurnDigestRequest
 
 if TYPE_CHECKING:
@@ -489,7 +489,7 @@ def _check_digest_structure(cid: str, shape: int, digests: Any) -> None:
 def _ingest_digests(
     cid: str, digests: list[dict[str, Any]]
 ) -> tuple[list[surprise.TurnDigest], list[str]]:
-    """Run each digest through the production ingest path (validate, cap, redact)."""
+    """Run each digest through the production ingest path (validate, cap, normalize, redact)."""
     out: list[surprise.TurnDigest] = []
     redactions: list[str] = []
     for i, d in enumerate(digests):
@@ -504,6 +504,7 @@ def _ingest_digests(
         size = len(json.dumps(req.model_dump(mode="json")).encode("utf-8"))
         if size > turn_digest.TURN_DIGEST_MAX_BYTES:
             raise CaseError(f"{cid}: digest {i} exceeds 65536 bytes")
+        req, _ = harness_tools.normalize_turn_tools(req)
         red = turn_digest.redact_turn_digest(req)
         if red is None:
             raise CaseError(f"{cid}: redaction unavailable")

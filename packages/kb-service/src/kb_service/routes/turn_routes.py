@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from kb_core.cues import resolve_cue_project
 
+from kb_service import harness_tools
 from kb_service.auth import get_current_user
 from kb_service.database import get_db
 from kb_service.models import (
@@ -53,6 +54,9 @@ _Reason = Literal[
 # Count of each outcome since process start (heartbeat surface).
 _OUTCOMES: dict[str, int] = {}
 
+# Count of unmapped native tool names per "<harness>:<tool>" (heartbeat surface).
+_UNMAPPED: dict[str, int] = {}
+
 _HEARTBEAT_SQL = (
     "SELECT harness, mode, host, COUNT(*) AS count,"
     " SUM(truncated) AS truncated,"
@@ -77,11 +81,14 @@ _GAPS_SQL = (
 )
 
 
-def record_validation_failure(errors: Sequence[Any]) -> None:
+def record_validation_failure(
+    errors: Sequence[Any], harness: str | None = None
+) -> None:
     """Log a /api/kb/turn 422 (loc and type only) and count it."""
     logger.warning(
-        "turn_event reason=invalid errors=%s",
+        "turn_event reason=invalid errors=%s harness=%s",
         [(".".join(map(str, e["loc"])), e["type"]) for e in errors][:10],
+        harness,
     )
     _OUTCOMES["invalid"] = _OUTCOMES.get("invalid", 0) + 1
 
@@ -121,11 +128,16 @@ async def post_turn(
     reason: _Reason
     types: list[str] = []
     anomaly = ""
+    unmapped: list[str] | None = None
     if mode == "off":
         reason = "capture-off"
     else:
         try:
-            redacted = redact_turn_digest(body)
+            normalized, unmapped = harness_tools.normalize_turn_tools(body)
+            for tool in unmapped:
+                key = f"{body.harness}:{tool}"
+                _UNMAPPED[key] = _UNMAPPED.get(key, 0) + 1
+            redacted = redact_turn_digest(normalized)
             if redacted is None:
                 logger.warning(
                     "turn_event redaction unavailable event_id=%s", body.event_id
@@ -167,7 +179,7 @@ async def post_turn(
         "turn_event reason=%s capture_mode=%s session_id=%s turn_index=%d"
         " project=%s host=%s hook_version=%s bytes=%d items=%d tool_calls=%d"
         " tool_results=%d result_errors=%d truncated=%s anomaly=%s redactions=%s"
-        " harness=%s reasoning=%d",
+        " harness=%s reasoning=%d unmapped_tools=%s",
         reason,
         mode,
         body.session_id,
@@ -185,6 +197,7 @@ async def post_turn(
         types,
         body.harness,
         n_reasoning,
+        unmapped,
     )
     return response
 
@@ -223,4 +236,5 @@ async def turn_heartbeat(
         oldest_pending_received_ts=pending["oldest"] if pending is not None else None,
         sessions_with_gaps=int(gaps["n"] or 0) if gaps is not None else 0,
         route_outcomes=dict(_OUTCOMES),
+        unmapped_tools=dict(_UNMAPPED),
     )

@@ -252,7 +252,10 @@ async def _validation_error_handler(
 ) -> Response:
     """Log /api/kb/turn 422s (loc and type only); body is FastAPI's default."""
     if request.url.path == "/api/kb/turn":
-        record_validation_failure(exc.errors())
+        raw = exc.body.get("harness") if isinstance(exc.body, dict) else None
+        record_validation_failure(
+            exc.errors(), raw[:64] if isinstance(raw, str) else None
+        )
     return await request_validation_exception_handler(request, exc)
 
 

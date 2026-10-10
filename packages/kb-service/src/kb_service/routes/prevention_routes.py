@@ -45,6 +45,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query, Request
 from kb_core.cues import resolve_cue_project
 
+from kb_service import harness_tools
 from kb_service.auth import get_current_user
 from kb_service.database import get_db
 from kb_service.models import (
@@ -244,7 +245,10 @@ def _deliver_observed_once() -> bool:
 
 
 def _inert(
-    project: str, surprise_capture: SurpriseCaptureMode = "off"
+    project: str,
+    surprise_capture: SurpriseCaptureMode = "off",
+    *,
+    tool_map: dict[str, str],
 ) -> PreventionResponse:
     return PreventionResponse(
         project=project,
@@ -254,6 +258,7 @@ def _inert(
         slice_text="",
         diagnostics=PreventionDiagnostics(),
         surprise_capture=surprise_capture,
+        tool_map=tool_map,
     )
 
 
@@ -267,9 +272,11 @@ async def get_prevention(
     project: str | None = None,
     cwd: str | None = None,
     session_id: str | None = None,
+    harness: str | None = None,
 ) -> PreventionResponse:
     """Return the gate settings, Bash cue index and gotcha slice for a session."""
     del user  # auth gate only
+    published_map = harness_tools.tool_map(harness)
     mode = surprise_capture_mode()
     effective = ""
     try:
@@ -278,9 +285,11 @@ async def get_prevention(
         if not effective:
             logger.info(
                 "prevention_fetch project= session_id=%s no_project=true"
-                " surprise_capture=%s",
+                " surprise_capture=%s harness=%s tool_map_len=%d",
                 session_id,
                 mode,
+                harness,
+                len(published_map),
             )
             return PreventionResponse(
                 project="",
@@ -290,13 +299,17 @@ async def get_prevention(
                 slice_text="",
                 diagnostics=PreventionDiagnostics(),
                 surprise_capture=mode,
+                tool_map=published_map,
             )
         db = request.app.state.kb.db
         resolutions, stats = await load_resolutions(
             db, effective, _deliver_observed_once()
         )
         corrections = await load_corrections(db, effective, _CORRECTIONS_LIMIT)
-        if gate.enabled:
+        if gate.enabled or (
+            harness in harness_tools.HARNESS_TOOL_MAPS
+            and not _project_disabled(effective)
+        ):
             index, index_truncated = build_gate_index(resolutions)
             excluded = count_index_excluded_observed_once(resolutions)
         else:
@@ -323,18 +336,21 @@ async def get_prevention(
         )
     except Exception as exc:
         logger.warning(
-            "prevention_fetch failed project=%s session_id=%s exc=%s",
+            "prevention_fetch failed project=%s session_id=%s exc=%s"
+            " harness=%s tool_map_len=%d",
             effective,
             session_id,
             type(exc).__name__,
+            harness,
+            len(published_map),
         )
-        return _inert(effective, mode)
+        return _inert(effective, mode, tool_map=published_map)
     logger.info(
         "prevention_fetch project=%s session_id=%s enabled=%s shadow=%s"
         " index_len=%d slice_len=%d resolutions_total=%d skipped_malformed=%d"
         " skipped_observed_once=%d index_truncated=%d slice_truncated=%d"
         " slice_ids=%s surprise_capture=%s index_excluded_observed_once=%d"
-        " index_ids=%s",
+        " index_ids=%s harness=%s tool_map_len=%d",
         effective,
         session_id,
         gate.enabled,
@@ -350,6 +366,8 @@ async def get_prevention(
         mode,
         diagnostics.index_excluded_observed_once,
         [c.resolution_id for c in index],
+        harness,
+        len(published_map),
     )
     return PreventionResponse(
         project=effective,
@@ -359,6 +377,7 @@ async def get_prevention(
         slice_text=slice_text,
         diagnostics=diagnostics,
         surprise_capture=mode,
+        tool_map=published_map,
     )
 
 
@@ -453,7 +472,7 @@ def _insert_args(row: GateDecisionRow, received_ts: str) -> tuple[Any, ...]:
         row.project,
         row.resolution_id,
         row.resolution_updated_at,
-        row.tool,
+        harness_tools.canonical_tool(row.harness, row.tool),
         row.target[:500],
         row.target_class,
         row.decision,

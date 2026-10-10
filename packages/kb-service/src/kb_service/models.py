@@ -917,6 +917,7 @@ class TurnHeartbeatResponse(BaseModel):
     oldest_pending_received_ts: str | None
     sessions_with_gaps: int
     route_outcomes: dict[str, int]
+    unmapped_tools: dict[str, int] = Field(default_factory=dict)
 
 
 # --- Surprise capture: detection drain ---
@@ -1672,6 +1673,7 @@ class PreventionResponse(BaseModel):
     slice_text: str
     diagnostics: PreventionDiagnostics
     surprise_capture: SurpriseCaptureMode = "off"
+    tool_map: dict[str, str] = Field(default_factory=dict)
 
 
 GateDecision = Literal[

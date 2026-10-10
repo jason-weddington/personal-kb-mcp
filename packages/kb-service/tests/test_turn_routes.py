@@ -1,5 +1,6 @@
 """POST /api/kb/turn + GET /api/kb/turn/heartbeat on the SQLite service DB."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -11,7 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import kb_service.database as database
-from kb_service import turn_digest
+from kb_service import surprise, surprise_worker, turn_digest
+from kb_service.db_sqlite import SqlitePool
 from kb_service.main import app
 from kb_service.routes import turn_routes
 
@@ -56,6 +58,7 @@ def local_client(
     monkeypatch.setenv("KB_QUERY_PROVIDER", "ollama")
     monkeypatch.setattr(database, "_pool", None)
     monkeypatch.setattr(turn_routes, "_OUTCOMES", {})
+    monkeypatch.setattr(turn_routes, "_UNMAPPED", {})
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()
@@ -371,3 +374,241 @@ def test_too_large_reasoning(
     assert "harness=talos" in caplog.text
     assert "reasoning=33" in caplog.text
     assert f"bytes={len(raw)}" in caplog.text
+
+
+def _call_item(i: int, tool: str, target: str, cls: str = "") -> dict[str, Any]:
+    return {
+        "kind": "tool_call",
+        "tool_use_id": f"toolu_{i}",
+        "tool": tool,
+        "target": target,
+        "target_class": cls,
+    }
+
+
+def _result_item(i: int, is_error: bool = False, excerpt: str = "") -> dict[str, Any]:
+    return {
+        "kind": "tool_result",
+        "tool_use_id": f"toolu_{i}",
+        "is_error": is_error,
+        "excerpt": excerpt,
+    }
+
+
+TALOS_ITEMS: list[dict[str, Any]] = [
+    {"kind": "assistant_text", "text": "pushing"},
+    _call_item(1, "bash", "git push github main"),
+    _result_item(1, True, "remote: Permission denied"),
+    _call_item(2, "bash", "git push origin main"),
+    _result_item(2),
+    _call_item(3, "edit_file", "src/kb_service/models.py"),
+    _result_item(3),
+    _call_item(4, "run_checks", ""),
+    _result_item(4),
+]
+
+TALOS_EXPECTED: list[dict[str, Any]] = [
+    {"kind": "assistant_text", "text": "pushing"},
+    _call_item(1, "Bash", "git push github main", "git push"),
+    _result_item(1, True, "remote: Permission denied"),
+    _call_item(2, "Bash", "git push origin main", "git push"),
+    _result_item(2),
+    _call_item(3, "Edit", "src/kb_service/models.py", "ext:py"),
+    _result_item(3),
+    _call_item(4, "run_checks", ""),
+    _result_item(4),
+]
+
+
+def _stored(session: str) -> list[Any]:
+    async def run() -> list[Any]:
+        pool = await SqlitePool.open(database.sqlite_service_db_path())
+        try:
+            return await turn_digest.get_session_turn_digests(pool, session)
+        finally:
+            await pool.close()
+
+    return asyncio.run(run())
+
+
+def _talos(session: str = "talos-1", **kw: Any) -> dict[str, Any]:
+    return _digest(session=session, harness="talos", mode="headless", **kw)
+
+
+def test_talos_digest_stored_canonical(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _talos(items=TALOS_ITEMS))
+    assert resp.json() == {"recorded": True, "reason": "recorded", "redactions": []}
+    (row,) = _rows()
+    assert row["harness"] == "talos"
+    assert row["event_id"] == "talos-1:0"
+    assert row["anomaly"] is None
+    assert json.loads(row["items"]) == TALOS_EXPECTED
+
+
+def test_talos_redaction_after_normalization(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    items = [_call_item(1, "bash", _AWS_LINE), _result_item(1)]
+    resp = _post(local_client, _talos("talos-red", items=items))
+    assert resp.json()["redactions"] == ["Secret Keyword", "AWS Access Key"]
+    (row,) = _rows()
+    assert "wJalrXUtnFEMI" not in row["items"]
+    assert json.loads(row["items"])[0] == _call_item(
+        1, "Bash", "[REDACTED:Secret Keyword]", "export"
+    )
+
+
+def test_talos_duplicate_after_normalization(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    assert _post(local_client, _talos(items=TALOS_ITEMS)).json()["reason"] == "recorded"
+    assert (
+        _post(local_client, _talos(items=TALOS_ITEMS)).json()["reason"] == "duplicate"
+    )
+    assert _rows("SELECT COUNT(*) FROM turn_events")[0][0] == 1
+
+
+def test_claude_code_digest_untouched_and_extra_key_dropped(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    call = _call_item(1, "bash", "git push github main", "x")
+    items = [{**call, "native_tool": "spoof"}, _result_item(1)]
+    assert _post(local_client, _digest(items=items)).json()["reason"] == "recorded"
+    (row,) = _rows()
+    assert json.loads(row["items"])[0] == call
+
+
+def test_talos_empty_bash_target_anomaly(
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    items = [
+        {**_call_item(1, "bash", ""), "args": {"command": "git push github main"}},
+        _result_item(1),
+    ]
+    _post(local_client, _talos("talos-empty", items=items))
+    (row,) = _rows()
+    assert row["anomaly"] == "empty_bash_target_class"
+    assert "anomaly=empty_bash_target_class" in caplog.text
+    assert json.loads(row["items"])[0] == _call_item(1, "Bash", "", "")
+
+
+def test_empty_tool_target_anomaly_route(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    talos = [_call_item(1, "edit_file", ""), _result_item(1)]
+    _post(local_client, _talos("t1", items=talos))
+    cc = [_call_item(1, "Edit", ""), _result_item(1)]
+    _post(local_client, _digest(session="c1", items=cc))
+    rows = {r["session_id"]: r["anomaly"] for r in _rows()}
+    assert rows == {"t1": "empty_tool_target", "c1": None}
+
+
+def test_shape1_fires_on_talos_digest(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    _post(local_client, _talos(items=TALOS_ITEMS))
+    stored = _stored("talos-1")
+    assert len(stored) == 1
+    digest = surprise_worker.digest_from_row(stored[0].model_dump())
+    result = surprise.detect_shape1([digest], digest.event_id)
+    assert len(result.candidates) == 1
+    c = result.candidates[0]
+    assert c.shape == 1
+    assert c.turn_event_ids == ["talos-1:0"]
+    assert c.detector_output == {
+        "wrong_belief": "git push github main",
+        "corrected_fact": "git push origin main",
+        "evidence_excerpt": "remote: Permission denied",
+        "confidence": 1.0,
+    }
+    assert result.stats["bash_calls"] == 2
+    assert result.stats["failures"] == 1
+    assert result.stats["pairs"] == 1
+
+    _post(
+        local_client,
+        _digest(
+            session="cc-1", harness="claude-code", mode="headless", items=TALOS_ITEMS
+        ),
+    )
+    cc = _stored("cc-1")
+    digest = surprise_worker.digest_from_row(cc[0].model_dump())
+    result = surprise.detect_shape1([digest], digest.event_id)
+    assert result.candidates == []
+    assert result.stats["bash_calls"] == 0
+
+
+def test_unmapped_tools_logged_and_counted(
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    items = [
+        _call_item(1, "web_fetch", "https://x"),
+        _result_item(1),
+        _call_item(2, "web_fetch", "https://y"),
+        _result_item(2),
+    ]
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    _post(local_client, _talos(items=items))
+    assert "harness=talos" in caplog.text
+    assert "unmapped_tools=['web_fetch']" in caplog.text
+    hb = local_client.get("/api/kb/turn/heartbeat").json()
+    assert hb["unmapped_tools"] == {"talos:web_fetch": 1}
+    caplog.clear()
+    _post(local_client, _digest(session="cc"))
+    assert "harness=claude-code" in caplog.text
+    assert "unmapped_tools=[]" in caplog.text
+
+
+def test_unmapped_tools_none_when_capture_off(
+    local_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    items = [_call_item(1, "web_fetch", "https://x"), _result_item(1)]
+    _post(local_client, _talos(items=items))
+    assert "harness=talos" in caplog.text
+    assert "unmapped_tools=None" in caplog.text
+    assert local_client.get("/api/kb/turn/heartbeat").json()["unmapped_tools"] == {}
+
+
+def test_invalid_talos_digest_logs_harness(
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    items = [_call_item(1, "bash", "x" * 501), _result_item(1)]
+    assert _post(local_client, _talos(items=items)).status_code == 422
+    assert "reason=invalid" in caplog.text
+    assert "harness=talos" in caplog.text
+    caplog.clear()
+    resp = local_client.post(
+        "/api/kb/turn", content=b"[]", headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 422
+    assert "harness=None" in caplog.text
+
+
+def test_too_large_talos_logs_harness(
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    items = [{"kind": "assistant_text", "text": "t" * 2000}] * 40
+    assert _post(local_client, _talos(items=items)).status_code == 413
+    assert "reason=too-large" in caplog.text
+    assert "harness=talos" in caplog.text

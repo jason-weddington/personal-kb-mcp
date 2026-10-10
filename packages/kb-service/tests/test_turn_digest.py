@@ -367,3 +367,19 @@ def test_turn_item_kinds_pinned() -> None:
         for c in typing.get_args(u)
     }
     assert kinds == {"assistant_text", "tool_call", "tool_result", "reasoning"}
+
+
+def test_empty_tool_target_anomaly() -> None:
+    edit = {"kind": "tool_call", "tool_use_id": "a", "tool": "Edit"}
+    assert turn_digest_anomalies(_body(harness="talos", items=[edit, _res()])) == [
+        "empty_tool_target"
+    ]
+    assert turn_digest_anomalies(_body(items=[edit, _res()])) == []
+    full = {**edit, "target": "src/a.py"}
+    assert turn_digest_anomalies(_body(harness="talos", items=[full, _res()])) == []
+    ls = {**edit, "tool": "LS"}
+    assert turn_digest_anomalies(_body(harness="talos", items=[ls, _res()])) == []
+    read = {"kind": "tool_call", "tool_use_id": "b", "tool": "Read"}
+    assert turn_digest_anomalies(
+        _body(harness="talos", items=[_call(cls=""), read, _res("zz")])
+    ) == ["empty_bash_target_class", "orphan_tool_result", "empty_tool_target"]
