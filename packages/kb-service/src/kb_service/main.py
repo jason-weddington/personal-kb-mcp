@@ -1,5 +1,6 @@
 """Personal KB web service — FastAPI application."""
 
+import asyncio
 import importlib.metadata
 import logging
 import os
@@ -46,10 +47,16 @@ from kb_service.routes.nudge_routes import router as nudge_router
 from kb_service.routes.prevention_routes import router as prevention_router
 from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
+from kb_service.routes.surprise_routes import router as surprise_router
 from kb_service.routes.telemetry_routes import router as telemetry_router
 from kb_service.routes.turn_routes import record_validation_failure
 from kb_service.routes.turn_routes import router as turn_router
 from kb_service.supersession_log import log_reconcile_report
+from kb_service.surprise_worker import (
+    SurpriseCaptureWorker,
+    should_start_surprise_worker,
+)
+from kb_service.turn_digest import surprise_capture_mode
 
 if TYPE_CHECKING:
     from kb_core import KnowledgeBase
@@ -211,10 +218,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.kb = await _open_kb()
     await _reconcile_supersession(app.state.kb)
+    app.state.surprise_drain_lock = asyncio.Lock()
+    app.state.surprise_worker = None
     try:
         await app.state.kb.start_embedding_worker()
+        mode = surprise_capture_mode()
+        if should_start_surprise_worker(mode, os.environ.get("KB_DATABASE_URL")):
+            worker = SurpriseCaptureWorker(app.state.kb, app.state.surprise_drain_lock)
+            await worker.start()
+            app.state.surprise_worker = worker
+        else:
+            logger.info(
+                "surprise_worker not started mode=%s (needs shadow/on and a"
+                " Postgres KB_DATABASE_URL; use POST /api/kb/surprise/drain)",
+                mode,
+            )
         yield
     finally:
+        if app.state.surprise_worker is not None:
+            await app.state.surprise_worker.stop()
         await app.state.kb.stop_embedding_worker()
         await app.state.kb.close()
         await close_db()
@@ -259,6 +281,7 @@ app.include_router(cluster_ledger_router)
 app.include_router(listener_router)
 app.include_router(event_router)
 app.include_router(turn_router)
+app.include_router(surprise_router)
 app.include_router(prevention_router)
 app.include_router(telemetry_router)
 app.include_router(embedding_queue_router)

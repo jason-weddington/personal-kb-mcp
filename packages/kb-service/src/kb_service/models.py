@@ -902,6 +902,33 @@ class TurnHeartbeatResponse(BaseModel):
     route_outcomes: dict[str, int]
 
 
+# --- Surprise capture: detection drain ---
+
+
+class SurpriseCandidateOut(BaseModel):
+    """One ``surprise_candidates`` row as returned by the drain."""
+
+    id: int
+    shape: Literal[1, 2, 3]
+    session_id: str
+    project: str
+    turn_event_ids: list[str]
+    detector_model: str
+    detector_output: dict[str, Any]
+    status: Literal["pending", "shadow", "rejected", "written", "merged"]
+    entry_id: str | None
+    created_at: str
+
+
+class SurpriseDrainResponse(BaseModel):
+    """Response for ``POST /api/kb/surprise/drain``."""
+
+    digests_processed: int
+    candidates: list[SurpriseCandidateOut]
+    entries_written: list[str]
+    entries_merged: list[str]
+
+
 class IngestFileResult(BaseModel):
     """Lossless mirror of kb-core's ``FileResult`` dataclass for P5 round-trip.
 

@@ -6,6 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import kb_service.main as main_module
+import kb_service.routes.surprise_routes as surprise_routes
+from kb_service import surprise_worker
 from kb_service.auth import get_current_user
 from kb_service.main import app
 from tests.conftest import FakeKnowledgeBase, fake_user
@@ -337,6 +339,71 @@ async def test_lifespan_shutdown_runs_on_clean_exit(
     assert fake_kb.close_calls == 1
 
 
+async def test_lifespan_starts_and_stops_surprise_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_kb = FakeKnowledgeBase(results=[], filtered_count=0)
+
+    async def _fake_init_db() -> None:
+        return None
+
+    async def _fake_close_db() -> None:
+        return None
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        return fake_kb
+
+    async def _noop_drain(pool: Any, kb: Any) -> None:
+        return None
+
+    async def _noop_get_db() -> Any:
+        return object()
+
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://test/test")
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "FALSE")
+    monkeypatch.setattr(main_module, "init_db", _fake_init_db)
+    monkeypatch.setattr(main_module, "close_db", _fake_close_db)
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+    monkeypatch.setattr(surprise_worker, "drain_once", _noop_drain)
+    monkeypatch.setattr(surprise_worker, "get_db", _noop_get_db)
+
+    async with main_module.lifespan(app):
+        worker = app.state.surprise_worker
+        assert isinstance(worker, surprise_worker.SurpriseCaptureWorker)
+        assert worker.running is True
+
+    assert worker.running is False
+    assert fake_kb.stop_embedding_worker_calls == 1
+
+
+def test_surprise_drain_requires_auth_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_AUTH_MODE", raising=False)
+    resp = client.post("/api/kb/surprise/drain")
+    assert resp.status_code == 401
+
+
+def test_surprise_drain_non_admin_200_mode_off(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _stub_get_db() -> Any:
+        return object()
+
+    monkeypatch.delenv("KB_AUTH_MODE", raising=False)
+    monkeypatch.setattr(surprise_routes, "get_db", _stub_get_db)
+    app.dependency_overrides[get_current_user] = fake_user
+    resp = client.post("/api/kb/surprise/drain")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "digests_processed": 0,
+        "candidates": [],
+        "entries_written": [],
+        "entries_merged": [],
+    }
+
+
 def test_search_include_superseded_defaults_false(client: TestClient) -> None:
     app.dependency_overrides[get_current_user] = fake_user
     resp = client.post("/api/kb/search", json={"query": "x"})
@@ -353,3 +420,17 @@ def test_search_include_superseded_passthrough(client: TestClient) -> None:
     assert resp.status_code == 200
     kb: FakeKnowledgeBase = app.state.kb
     assert kb.search_calls[-1][0].include_superseded is True
+
+
+def test_surprise_drain_creates_lock_when_missing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _stub_get_db() -> Any:
+        return object()
+
+    monkeypatch.setattr(surprise_routes, "get_db", _stub_get_db)
+    app.dependency_overrides[get_current_user] = fake_user
+    del app.state.surprise_drain_lock
+    resp = client.post("/api/kb/surprise/drain")
+    assert resp.status_code == 200
+    assert app.state.surprise_drain_lock is not None

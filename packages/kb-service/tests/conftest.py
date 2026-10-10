@@ -1256,9 +1256,16 @@ def chat_client(
 # the live KB and ran the startup reconcile, 2026-10-07). Tests that need one
 # set it explicitly with monkeypatch after this runs.
 _AMBIENT_DB_VARS = ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL")
+# Surprise capture runs with mode off and default models unless a test opts in.
+_AMBIENT_SURPRISE_VARS = (
+    "KB_SURPRISE_CAPTURE",
+    "KB_SURPRISE_DETECTOR_MODEL",
+    "KB_SURPRISE_MIN_CONFIDENCE",
+    "KB_SURPRISE_DISTILL_MODEL",
+)
 
 
 @pytest.fixture(autouse=True)
 def _no_ambient_production_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in _AMBIENT_DB_VARS:
+    for var in _AMBIENT_DB_VARS + _AMBIENT_SURPRISE_VARS:
         monkeypatch.delenv(var, raising=False)

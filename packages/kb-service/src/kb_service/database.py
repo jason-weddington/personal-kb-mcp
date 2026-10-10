@@ -343,6 +343,54 @@ _SCHEMA_STATEMENTS: list[str] = [
     " ON turn_events(session_id, turn_index)",
     "CREATE INDEX IF NOT EXISTS idx_turn_events_received_ts"
     " ON turn_events(received_ts)",
+    # surprise_candidates: corrected beliefs detected by the surprise drain.
+    # turn_event_ids and detector_output hold json.dumps() TEXT. This module
+    # only ever writes 'pending' (mode on) or 'shadow' (mode shadow, terminal:
+    # never distilled, never replayed). The distiller sets rejected / written
+    # / merged; written and merged carry entry_id.
+    "CREATE TABLE IF NOT EXISTS surprise_candidates ("
+    "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+    "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3)), "
+    "session_id TEXT NOT NULL, "
+    "project TEXT NOT NULL DEFAULT '', "
+    "turn_event_ids TEXT NOT NULL DEFAULT '[]', "
+    "detector_model TEXT NOT NULL, "
+    "detector_output TEXT NOT NULL DEFAULT '{}', "
+    "status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', "
+    "'shadow', 'rejected', 'written', 'merged')), "
+    "entry_id TEXT, "
+    "created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_surprise_candidates_status"
+    " ON surprise_candidates(status, id)",
+    "CREATE INDEX IF NOT EXISTS idx_surprise_candidates_session"
+    " ON surprise_candidates(session_id)",
+    # surprise_detections: one row per detection decision (negatives too),
+    # mirroring listener_decisions / gate_decisions. candidate_id is non-NULL
+    # iff outcome = 'candidate'.
+    "CREATE TABLE IF NOT EXISTS surprise_detections ("
+    "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+    "event_id TEXT NOT NULL, "
+    "session_id TEXT NOT NULL, "
+    "project TEXT NOT NULL DEFAULT '', "
+    "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3)), "
+    "mode TEXT NOT NULL CHECK (mode IN ('shadow', 'on')), "
+    "outcome TEXT NOT NULL CHECK (outcome IN ('candidate', 'not_applicable', "
+    "'no_llm', 'llm_error', 'unparseable', 'invalid_fields', 'no_surprise', "
+    "'low_confidence', 'ungrounded')), "
+    "reason TEXT NOT NULL DEFAULT '', "
+    "detector_model TEXT NOT NULL DEFAULT '', "
+    "detector_version INTEGER NOT NULL, "
+    "confidence DOUBLE PRECISION, "
+    "candidate_id BIGINT, "
+    "details TEXT NOT NULL DEFAULT '{}', "
+    "raw_response_excerpt TEXT, "
+    "prompt_chars INTEGER, "
+    "response_chars INTEGER, "
+    "latency_ms INTEGER, "
+    "ts TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_surprise_detections_ts ON surprise_detections(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_surprise_detections_session"
+    " ON surprise_detections(session_id)",
 ]
 
 

@@ -92,6 +92,8 @@ async def test_service_db_lives_next_to_kb_db_path(local_env: Path) -> None:
             "failure_events",
             "gate_decisions",
             "turn_events",
+            "surprise_candidates",
+            "surprise_detections",
         } <= names
         mode = await db.fetchval("PRAGMA journal_mode")
         assert mode == "wal"
@@ -418,5 +420,28 @@ async def test_turn_events_schema_is_idempotent(local_env: Path) -> None:
         )
         assert tables == 1
         assert indexes == 2
+    finally:
+        await database.close_db()
+
+
+async def test_surprise_schema_is_idempotent(local_env: Path) -> None:
+    await database.init_db()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        for table in ("surprise_candidates", "surprise_detections"):
+            count = await db.fetchval(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
+                table,
+            )
+            assert count == 1
+            indexes = await db.fetchval(
+                "SELECT COUNT(*) FROM sqlite_master"
+                " WHERE type = 'index' AND name LIKE $1",
+                f"idx_{table}_%",
+            )
+            assert indexes == 2
+        cols = await db.fetch("PRAGMA table_info(turn_events)")
+        assert "detected_at" not in {c["name"] for c in cols}
     finally:
         await database.close_db()
