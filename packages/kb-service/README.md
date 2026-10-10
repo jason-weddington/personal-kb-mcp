@@ -50,6 +50,7 @@ Configure the service with environment variables (see `.env.example` for the ful
 - `KB_DATABASE_URL` — DSN of the kb-core data database.
 - Setting `KB_DB_PATH` together with `KB_DATABASE_URL` or `KB_SERVICE_DATABASE_URL` is a startup error; unset one.
 - `KB_SERVICE_PUBLIC_URL` — public base URL, used in invite and password-reset links.
+- `KB_WRITE_POLICY_DEFAULT_SURFACE` — write-policy surface for API keys with none set and for no-auth callers: `interactive` (default), `headless` or `autonomous` (an unknown value means headless). Headless and autonomous `kb_store` creates are queued as candidates; updates, deactivations and ingests from those surfaces are refused. Set per-key surfaces with `kb-service set-key-surface` before setting this to `headless`; see the root README's write-policy section for the rollout order.
 - `KB_OLLAMA_URL`, `KB_EMBEDDING_MODEL`, `KB_EMBEDDING_DIM` — embeddings.
 - `KB_LOG_LEVEL` — log level for the `kb_service`/`kb_core` loggers (default `INFO`; unknown values fall back to `INFO` with a warning). Third-party libraries stay at `WARNING`. Logs go to stderr (the journal under systemd).
 - `ANTHROPIC_API_KEY` (or the Bedrock/Ollama provider settings) — enrichment, planning and synthesis.

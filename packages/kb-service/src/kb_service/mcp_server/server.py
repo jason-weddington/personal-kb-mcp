@@ -14,6 +14,7 @@ from fastmcp import FastMCP
 
 from kb_service.config import get_contributor, get_instance_role, is_manager_mode
 from kb_service.mcp_server.observability import McpCallLogMiddleware
+from kb_service.mcp_server.surface_filter import SurfaceToolFilterMiddleware
 from kb_service.mcp_server.tools.kb_ask import register_kb_ask
 from kb_service.mcp_server.tools.kb_bulk_update import register_kb_bulk_update
 from kb_service.mcp_server.tools.kb_explore import register_kb_explore
@@ -174,7 +175,7 @@ def create_mcp_server() -> FastMCP:
     mcp = FastMCP(
         "personal-kb",
         instructions=_build_instructions(prefix),
-        middleware=[McpCallLogMiddleware()],
+        middleware=[McpCallLogMiddleware(), SurfaceToolFilterMiddleware(prefix)],
     )
 
     register_kb_store(mcp, prefix)

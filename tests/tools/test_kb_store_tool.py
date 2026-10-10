@@ -876,3 +876,93 @@ def test_hints_description_documents_resolution() -> None:
 
     for word in ("resolution", "corrected_fact", "target_class", "global"):
         assert word in HINTS_DESCRIPTION
+
+
+# ---------------------------------------------------------------------------
+# Write policy: queued creates and never-queued updates
+# ---------------------------------------------------------------------------
+
+QUEUED_STORE_TEXT = {
+    "on": (
+        "Queued as candidate 7 for review (write policy: headless surface). Not in"
+        " the KB yet: the candidate pipeline's distiller and critic decide whether"
+        " it is written."
+    ),
+    "shadow": (
+        "Queued as candidate 7 (write policy: headless surface). Not in the KB:"
+        " capture mode is shadow, so it is recorded for audit only."
+    ),
+    "off": (
+        "Queued as candidate 7 (write policy: headless surface). Not in the KB:"
+        " capture mode is off, so it is recorded for audit only."
+    ),
+}
+
+
+def _queued_handler(mode: str):
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/kb/store"
+        return httpx.Response(
+            200,
+            json={
+                "status": "queued",
+                "candidate_id": 7,
+                "surface": "headless",
+                "capture_mode": mode,
+            },
+        )
+
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["on", "shadow", "off"])
+async def test_queued_create_renders(mode: str) -> None:
+    from personal_kb.backend.protocol import QueuedStore
+    from personal_kb.tools.kb_store import format_queued_store
+
+    assert format_queued_store(QueuedStore(7, "headless", mode)) == QUEUED_STORE_TEXT[mode]
+    kb_store = _register_and_capture()
+    result = await kb_store(
+        short_title="t",
+        long_title="lt",
+        knowledge_details="d",
+        supersedes=["kb-00001"],
+        ctx=_make_ctx(_queued_handler(mode)),
+    )
+    assert result == QUEUED_STORE_TEXT[mode]
+
+
+@pytest.mark.asyncio
+async def test_queued_update_is_an_error() -> None:
+    kb_store = _register_and_capture()
+    result = await kb_store(
+        update_entry_id="kb-00001",
+        knowledge_details="d",
+        change_reason="r",
+        supersedes="none",
+        ctx=_make_ctx(_queued_handler("on")),
+    )
+    assert result == (
+        "Error: the KB service queued an update as candidate 7; updates are never queued."
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_policy_403_renders_detail() -> None:
+    detail = (
+        "write policy: deactivating an entry requires an interactive surface; this"
+        " request is headless."
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"detail": detail})
+
+    kb_store = _register_and_capture()
+    result = await kb_store(
+        supersedes="none",
+        deactivate_entry_id="kb-00001",
+        change_reason="r",
+        ctx=_make_ctx(handler),
+    )
+    assert result == f"Error: {detail}"

@@ -332,6 +332,75 @@ async def test_output_parity_over_call_sequence(
     assert b[16].startswith("Batch: 2 entries created")
 
 
+WRITE_POLICY_CALLS: list[tuple[str, dict[str, Any]]] = [
+    ("kb_store", {"short_title": "Queued one", **F, "supersedes": "none"}),
+    (
+        "kb_store_batch",
+        {
+            "entries": [
+                {"short_title": "Queued two", **F, "supersedes": "none"},
+                {"short_title": "Queued three", **F, "supersedes": "none"},
+            ]
+        },
+    ),
+    (
+        "kb_store",
+        {
+            "update_entry_id": "kb-00001",
+            "knowledge_details": "x",
+            "change_reason": "parity",
+            "supersedes": "none",
+        },
+    ),
+    (
+        "kb_store",
+        {
+            "deactivate_entry_id": "kb-00001",
+            "change_reason": "parity",
+            "supersedes": "none",
+        },
+    ),
+    ("kb_store", {"short_title": "Queued four", **F, "supersedes": ["kb-00001"]}),
+]
+
+WRITE_POLICY_EXPECTED = [
+    "Queued as candidate 1 (write policy: headless surface). Not in the KB: capture"
+    " mode is shadow, so it is recorded for audit only.",
+    "Batch: 2 entries queued as candidates 2, 3 (write policy: headless surface)."
+    " Not in the KB: capture mode is shadow, so they are recorded for audit only.",
+    "Error: write policy: updating an entry requires an interactive surface; this"
+    " request is headless. Store a new entry instead and it is queued for review.",
+    "Error: write policy: deactivating an entry requires an interactive surface;"
+    " this request is headless.",
+    "Error: write policy: superseding entries requires an interactive surface; this"
+    ' request is headless. Store the entry with supersedes "none" and it is queued'
+    " for review.",
+]
+
+
+async def test_write_policy_parity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from kb_service.main import app
+
+    def _env(db_dir: Path) -> None:
+        _parity_env(monkeypatch, db_dir)
+        monkeypatch.setenv("KB_WRITE_POLICY_DEFAULT_SURFACE", "headless")
+        monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+
+    _env(tmp_path / "a")
+    async with app.router.lifespan_context(app):
+        a = await _channel_a(
+            app,
+            WRITE_POLICY_CALLS,
+            httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        )
+
+    _env(tmp_path / "b")
+    async with app.router.lifespan_context(app):
+        b = await _channel_b(app, WRITE_POLICY_CALLS)
+
+    assert a == b == WRITE_POLICY_EXPECTED
+
+
 # ─── client-side rejection table ─────────────────────────────────────────────
 #
 # One row per client-side rejection branch reachable without any backend call.

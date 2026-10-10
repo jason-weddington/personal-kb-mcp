@@ -573,7 +573,7 @@ def test_candidates_endpoint(client: TestClient) -> None:
 
 @pytest.mark.parametrize(
     "params",
-    [{"limit": 1001}, {"limit": 0}, {"shape": 5}, {"status": "bogus"}],
+    [{"limit": 1001}, {"limit": 0}, {"shape": 6}, {"status": "bogus"}],
 )
 def test_candidates_endpoint_rejects_bad_params(
     client: TestClient, params: dict[str, Any]

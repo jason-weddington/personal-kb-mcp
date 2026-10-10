@@ -606,16 +606,16 @@ def _drop(table: str) -> str:
 def _add(table: str) -> str:
     return (
         f"ALTER TABLE {table} ADD CONSTRAINT {table}_shape_check"
-        " CHECK (shape IN (1, 2, 3, 4))"
+        " CHECK (shape IN (1, 2, 3, 4, 5))"
     )
 
 
 def test_surprise_shape_constants() -> None:
-    assert database.SURPRISE_SHAPES == (1, 2, 3, 4)
-    assert database._SURPRISE_SHAPE_CHECK == "CHECK (shape IN (1, 2, 3, 4))"
+    assert database.SURPRISE_SHAPES == (1, 2, 3, 4, 5)
+    assert database._SURPRISE_SHAPE_CHECK == "CHECK (shape IN (1, 2, 3, 4, 5))"
     assert typing.get_args(models.SurpriseShape) == database.SURPRISE_SHAPES
     for table in _SHAPE_TABLES:
-        assert "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3, 4)), " in _create(
+        assert "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3, 4, 5)), " in _create(
             table
         )
     assert "CHECK (shape" not in _create("surprise_dry_runs")
@@ -683,9 +683,9 @@ async def test_surprise_shape_check_is_rebuilt(
             await db.fetchval(f"SELECT id FROM {table} WHERE shape = 3")  # noqa: S608
             == old_id
         )
-        await db.execute(insert, 4)
+        await db.execute(insert, 5)
         with pytest.raises(sqlite3.IntegrityError):
-            await db.execute(insert, 5)
+            await db.execute(insert, 6)
         sql = await db.fetchval(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = $1", table
         )
@@ -732,9 +732,104 @@ async def test_fresh_db_surprise_shape_check(local_env: Path) -> None:
     try:
         db = await database.get_db()
         for table, insert in _SHAPE_INSERT.items():
-            await db.execute(insert, 4)
+            await db.execute(insert, 5)
             with pytest.raises(sqlite3.IntegrityError):
-                await db.execute(insert, 5)
+                await db.execute(insert, 6)
             assert await db.fetchval(f"SELECT COUNT(*) FROM {table}") == 1  # noqa: S608
+    finally:
+        await database.close_db()
+
+
+@pytest.mark.parametrize("table", _SHAPE_TABLES)
+async def test_surprise_shape_check_rebuilt_from_shape4(
+    local_env: Path, table: str
+) -> None:
+    """A 043c8dd3-era (1..4) CHECK is widened to admit the write-policy shape 5."""
+    old_ddl = (
+        _create(table)
+        .replace(database._SURPRISE_SHAPE_CHECK, "CHECK (shape IN (1, 2, 3, 4))")
+        .replace(database._PG_IDENTITY, database._SQLITE_IDENTITY)
+    )
+    insert = _SHAPE_INSERT[table]
+    raw = await SqlitePool.open(local_env)
+    try:
+        await raw.execute(old_ddl)
+        await raw.execute(insert, 4)
+        with pytest.raises(sqlite3.IntegrityError):
+            await raw.execute(insert, 5)
+    finally:
+        await raw.close()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        assert await db.fetchval(f"SELECT COUNT(*) FROM {table} WHERE shape = 4") == 1  # noqa: S608
+        await db.execute(insert, 5)
+        with pytest.raises(sqlite3.IntegrityError):
+            await db.execute(insert, 6)
+    finally:
+        await database.close_db()
+
+
+# --- api_keys.surface (write policy) -------------------------------------------
+
+_SURFACE_STMT = (
+    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS surface TEXT CHECK (surface IS NULL"
+    " OR surface IN ('interactive', 'headless', 'autonomous'))"
+)
+_OLD_API_KEYS_DDL = (
+    "CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, user_id TEXT NOT"
+    " NULL REFERENCES users(id), key_hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL"
+    " DEFAULT '', created_at TEXT NOT NULL)"
+)
+
+
+def test_api_keys_surface_statement_position() -> None:
+    stmts = database._SCHEMA_STATEMENTS
+    idx = stmts.index(
+        "CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)"
+    )
+    assert stmts[idx + 1] == _SURFACE_STMT
+
+
+async def test_api_keys_surface_migration(local_env: Path) -> None:
+    raw = await SqlitePool.open(local_env)
+    try:
+        await raw.execute(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL,"
+            " hashed_password TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0,"
+            " created_at TEXT NOT NULL)"
+        )
+        await raw.execute(_OLD_API_KEYS_DDL)
+        await raw.execute(
+            "INSERT INTO users (id, email, hashed_password, created_at)"
+            " VALUES ('u1', 'a@b', 'x', 't')"
+        )
+        await raw.execute(
+            "INSERT INTO api_keys (id, user_id, key_hash, name, created_at)"
+            " VALUES ('k1', 'u1', 'h1', 'n', 't')"
+        )
+    finally:
+        await raw.close()
+
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        cols = await db.fetch("PRAGMA table_info(api_keys)")
+        assert "surface" in {c["name"] for c in cols}
+        assert await db.fetchval("SELECT surface FROM api_keys WHERE id = 'k1'") is None
+        with pytest.raises(sqlite3.IntegrityError):
+            await db.execute("UPDATE api_keys SET surface = 'bogus' WHERE id = 'k1'")
+        await db.execute("UPDATE api_keys SET surface = 'headless' WHERE id = 'k1'")
+        assert (
+            await db.fetchval("SELECT surface FROM api_keys WHERE id = 'k1'")
+            == "headless"
+        )
+    finally:
+        await database.close_db()
+
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        assert len(await db.fetch("PRAGMA table_info(api_keys)")) == len(cols)
     finally:
         await database.close_db()

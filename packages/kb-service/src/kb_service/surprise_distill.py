@@ -29,10 +29,14 @@ from kb_service.surprise import SurpriseCandidate
 # parse_distill_response, build_resolution, build_knowledge_details,
 # shape1_cue, find_exact_match, merge_block_reason, known_sessions,
 # merged_surprise_hint or the S0-S13 order
-SURPRISE_DISTILLER_VERSION: int = 7
+# (LESSON_CLASSES, LESSON_CLASS_PROMPT and SHAPE_DESCRIPTIONS also feed
+# store_distill.py: bump STORE_DISTILLER_VERSION too)
+SURPRISE_DISTILLER_VERSION: int = 8
 
 # bump on ANY change to SURPRISE_CRITIC_SYSTEM, CRITIC_INSTRUCTIONS,
 # CRITIC_SCHEMA_LINE, build_critic_prompt or parse_critic_response
+# (CRITIC_SCHEMA_LINE and parse_critic_response also feed store_distill.py:
+# bump STORE_CRITIC_VERSION too)
 SURPRISE_CRITIC_VERSION: int = 2
 
 logger = logging.getLogger(__name__)
@@ -201,6 +205,10 @@ SHAPE_DESCRIPTIONS: dict[int, str] = {
         " claim, a finish with no change, or a nudge), and the agent's next actions"
         " resolved it. Wrong belief and evidence are the harness's trigger detail;"
         " corrected fact lists the resolving actions."
+    ),
+    5: (
+        "A coding agent in an unattended (headless or autonomous) session asked"
+        " to store this knowledge-base entry, and no human reviewed it."
     ),
 }
 

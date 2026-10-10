@@ -247,3 +247,123 @@ def test_metrics_invalid_weeks(
     assert capsys.readouterr().err.startswith(
         "Error: weeks must be between 1 and 104, got 0"
     )
+
+
+# --- write policy: list-keys / set-key-surface --------------------------------
+
+
+async def _seed_keys(service_db: Path) -> None:
+    import sqlite3
+
+    await database.init_db()
+    await database.close_db()
+    conn = sqlite3.connect(service_db)
+    try:
+        conn.executemany(
+            "INSERT INTO users (id, email, hashed_password, is_admin, created_at)"
+            " VALUES (?, ?, 'x', 0, '2020-01-01')",
+            [("u1", "a@example.com"), ("u2", "b@example.com")],
+        )
+        conn.executemany(
+            "INSERT INTO api_keys (id, user_id, key_hash, name, created_at, surface)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("k1", "u1", "abcdef0123456789", "laptop", "2020-01-02", None),
+                ("k2", "u1", "1234567890abcdef", "talos", "2020-01-03", "headless"),
+                ("k3", "u2", "ffffffff00000000", "ci", "2020-01-01", "autonomous"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def test_list_keys(local_env: Path) -> None:
+    await _seed_keys(local_env)
+    out = await cli._list_keys(None)
+    assert out.split("\n") == [
+        "id\temail\tname\thash_prefix\tsurface\tcreated_at",
+        "k1\ta@example.com\tlaptop\tabcdef01\tdefault\t2020-01-02",
+        "k2\ta@example.com\ttalos\t12345678\theadless\t2020-01-03",
+        "k3\tb@example.com\tci\tffffffff\tautonomous\t2020-01-01",
+    ]
+    filtered = await cli._list_keys("b@example.com")
+    assert filtered.split("\n")[1:] == [
+        "k3\tb@example.com\tci\tffffffff\tautonomous\t2020-01-01"
+    ]
+    assert await cli._list_keys("nobody@example.com") == "no API keys"
+
+
+async def test_list_keys_empty(local_env: Path) -> None:
+    assert await cli._list_keys(None) == "no API keys"
+
+
+async def test_set_key_surface(local_env: Path) -> None:
+    import sqlite3
+
+    await _seed_keys(local_env)
+    assert await cli._set_key_surface("k1", "headless") == (
+        "set surface of API key k1 (a@example.com, 'laptop') to headless"
+    )
+    assert await cli._set_key_surface("k2", "default") == (
+        "cleared surface of API key k2 (a@example.com, 'talos'); it follows"
+        " KB_WRITE_POLICY_DEFAULT_SURFACE"
+    )
+    conn = sqlite3.connect(local_env)
+    try:
+        rows = dict(conn.execute("SELECT id, surface FROM api_keys").fetchall())
+    finally:
+        conn.close()
+    assert rows == {"k1": "headless", "k2": None, "k3": "autonomous"}
+    with pytest.raises(ValueError, match="no API key with id nope"):
+        await cli._set_key_surface("nope", "headless")
+
+
+def test_key_commands_dispatch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: list[tuple[Any, ...]] = []
+
+    async def fake_list(*args: Any) -> str:
+        seen.append(("list", *args))
+        return "L"
+
+    async def fake_set(*args: Any) -> str:
+        seen.append(("set", *args))
+        return "S"
+
+    monkeypatch.setattr(cli, "_list_keys", fake_list)
+    monkeypatch.setattr(cli, "_set_key_surface", fake_set)
+    monkeypatch.setattr("sys.argv", ["kb-service", "list-keys", "--email", "a@b"])
+    cli.main()
+    monkeypatch.setattr(
+        "sys.argv",
+        ["kb-service", "set-key-surface", "--key-id", "k1", "--surface", "default"],
+    )
+    cli.main()
+    assert seen == [("list", "a@b"), ("set", "k1", "default")]
+    assert capsys.readouterr().out == "L\nS\n"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["kb-service", "set-key-surface", "--key-id", "k1", "--surface", "bogus"],
+    )
+    with pytest.raises(SystemExit):
+        cli.main()
+
+
+def test_set_key_surface_unknown_exits_1(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        ["kb-service", "set-key-surface", "--key-id", "nope", "--surface", "headless"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+
+
+def test_create_api_key_request_has_only_name() -> None:
+    from kb_service.models import CreateApiKeyRequest
+
+    assert set(CreateApiKeyRequest.model_fields) == {"name"}

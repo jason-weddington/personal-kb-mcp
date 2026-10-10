@@ -63,6 +63,19 @@ class StoreResponse(BaseModel):
     )
 
 
+class StoreQueuedResponse(BaseModel):
+    """``POST /api/kb/store`` from a non-interactive surface: queued, not written.
+
+    The create became a shape-5 candidate; the candidate pipeline's distiller
+    and critic decide whether it is written (capture mode ``on``).
+    """
+
+    status: Literal["queued"]
+    candidate_id: int
+    surface: Literal["headless", "autonomous"]
+    capture_mode: Literal["off", "shadow", "on"]
+
+
 class StoreBatchEntry(BaseModel):
     """Single entry in a ``store_batch`` request.
 
@@ -121,6 +134,16 @@ class StoreBatchResponse(BaseModel):
     requested: int
     created: list[KnowledgeEntry]
     superseded_ids: list[list[str]] = []
+
+
+class StoreBatchQueuedResponse(BaseModel):
+    """``POST /api/kb/store_batch`` from a non-interactive surface: all queued."""
+
+    status: Literal["queued"]
+    requested: int
+    candidate_ids: list[int]
+    surface: Literal["headless", "autonomous"]
+    capture_mode: Literal["off", "shadow", "on"]
 
 
 class DeactivateRequest(BaseModel):

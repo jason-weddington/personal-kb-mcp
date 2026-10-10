@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from pydantic import Field
 
+from personal_kb.backend.protocol import QueuedBatch
 from personal_kb.confidence.decay import compute_effective_confidence
 from personal_kb.config import is_safety_skip
 from personal_kb.ingest.safety import detect_secrets_in_content
@@ -22,6 +23,23 @@ logger = logging.getLogger(__name__)
 _MAX_BATCH = 10
 
 _REQUIRED_FIELDS = {"short_title", "long_title", "knowledge_details", "supersedes"}
+
+
+def format_queued_batch(q: QueuedBatch) -> str:
+    """Render a batch the KB service's write policy queued as candidates."""
+    n = len(q.candidate_ids)
+    ids = ", ".join(str(i) for i in q.candidate_ids)
+    if q.capture_mode == "on":
+        return (
+            f"Batch: {n} entries queued as candidates {ids} for review (write"
+            f" policy: {q.surface} surface). Not in the KB yet: the candidate"
+            " pipeline's distiller and critic decide whether each is written."
+        )
+    return (
+        f"Batch: {n} entries queued as candidates {ids} (write policy:"
+        f" {q.surface} surface). Not in the KB: capture mode is {q.capture_mode},"
+        " so they are recorded for audit only."
+    )
 
 
 async def batch_store_entries(
@@ -113,7 +131,7 @@ async def batch_store_entries(
     from personal_kb.backend.http import BackendHttpError, _map_error
 
     try:
-        created, backend_failed, superseded_ids = await backend.store_batch(valid_entries)
+        res = await backend.store_batch(valid_entries)
     except BackendHttpError as e:
         mapped = _map_error(e, "")
         return re.sub(
@@ -125,6 +143,19 @@ async def batch_store_entries(
             ),
             mapped,
         )
+
+    if isinstance(res, QueuedBatch):
+        queued = format_queued_batch(res)
+        if client_failed:
+            queued += "\n".join(
+                [
+                    "",
+                    "Failed entries (retry these):",
+                    *[f"  Entry {idx} ({title}): {err}" for idx, title, err in client_failed],
+                ]
+            )
+        return queued
+    created, backend_failed, superseded_ids = res
 
     # Backend failure indices are positions in valid_entries; restore caller's.
     backend_failed = [

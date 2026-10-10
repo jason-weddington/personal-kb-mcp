@@ -8,7 +8,9 @@ nightly map-maintenance jobs — without over-granting admin's invite/reset/read
 powers. ``set-machine-principal`` designates which user (by email) is the machine
 principal via the ``machine_principal_email`` app_config row (see
 ``kb_service.attribution.is_machine_principal``); it does not require the user to
-already exist.
+already exist. ``list-keys`` and ``set-key-surface`` show and set the
+write-policy surface of each API key (``kb_service.write_policy``); the CLI is
+the only setter, so a key's surface is always admin-set.
 """
 
 import argparse
@@ -145,6 +147,84 @@ async def _make_admin(email: str) -> str:
                 return f"{email} is already an admin"
             await conn.execute("UPDATE users SET is_admin = 1 WHERE email = $1", email)
             return f"promoted {email} to admin"
+    finally:
+        await close_db()
+
+
+async def _list_keys(email: str | None) -> str:
+    """List API keys (no secret material) with their write-policy surface.
+
+    Returns:
+        A tab-separated table, or ``no API keys``.
+    """
+    from kb_service.database import close_db, get_db, init_db
+
+    await init_db()
+    try:
+        pool = await get_db()
+        sql = (
+            "SELECT k.id, u.email, k.name, k.key_hash, k.surface, k.created_at"
+            " FROM api_keys k JOIN users u ON u.id = k.user_id"
+        )
+        args: list[Any] = []
+        if email is not None:
+            sql += " WHERE u.email = $1"
+            args.append(email)
+        sql += " ORDER BY u.email, k.created_at"
+        rows = await pool.fetch(sql, *args)
+        if not rows:
+            return "no API keys"
+        lines = ["id\temail\tname\thash_prefix\tsurface\tcreated_at"]
+        lines.extend(
+            "\t".join(
+                [
+                    str(r["id"]),
+                    str(r["email"]),
+                    str(r["name"]),
+                    str(r["key_hash"])[:8],
+                    str(r["surface"]) if r["surface"] is not None else "default",
+                    str(r["created_at"]),
+                ]
+            )
+            for r in rows
+        )
+        return "\n".join(lines)
+    finally:
+        await close_db()
+
+
+async def _set_key_surface(key_id: str, surface: str) -> str:
+    """Set (or clear, with ``default``) the write-policy surface of an API key.
+
+    Returns:
+        Human-readable status message.
+
+    Raises:
+        ValueError: If no API key has that id.
+    """
+    from kb_service.database import close_db, get_db, init_db
+
+    await init_db()
+    try:
+        pool = await get_db()
+        row = await pool.fetchrow(
+            "SELECT k.name, u.email FROM api_keys k JOIN users u ON u.id = k.user_id"
+            " WHERE k.id = $1",
+            key_id,
+        )
+        if row is None:
+            raise ValueError(f"no API key with id {key_id}")
+        email, name = row["email"], row["name"]
+        value = None if surface == "default" else surface
+        await pool.execute(
+            "UPDATE api_keys SET surface = $1 WHERE id = $2", value, key_id
+        )
+        if value is None:
+            return (
+                f"cleared surface of API key {key_id} ({email}, {name!r}); it follows"
+                " KB_WRITE_POLICY_DEFAULT_SURFACE"
+            )
+        return f"set surface of API key {key_id} ({email}, {name!r}) to {surface}"
     finally:
         await close_db()
 
@@ -296,6 +376,24 @@ def main() -> None:
         help="Email of the user to designate as machine principal.",
     )
 
+    lk = subparsers.add_parser(
+        "list-keys",
+        help="List API keys with their write-policy surface (direct DB read).",
+    )
+    lk.add_argument("--email", default=None, help="Only keys of this user.")
+
+    sks = subparsers.add_parser(
+        "set-key-surface",
+        help="Set an API key's write-policy surface (direct DB update).",
+    )
+    sks.add_argument("--key-id", required=True, help="Id of the API key.")
+    sks.add_argument(
+        "--surface",
+        required=True,
+        choices=["interactive", "headless", "autonomous", "default"],
+        help="The surface; default clears it (KB_WRITE_POLICY_DEFAULT_SURFACE).",
+    )
+
     sv = subparsers.add_parser(
         "serve",
         help="Run the web service with uvicorn (foreground).",
@@ -334,6 +432,10 @@ def main() -> None:
         _run(_make_admin(args.email))
     elif args.command == "set-machine-principal":
         _run(_set_machine_principal(args.email))
+    elif args.command == "list-keys":
+        _run(_list_keys(args.email))
+    elif args.command == "set-key-surface":
+        _run(_set_key_surface(args.key_id, args.surface))
     elif args.command == "serve":
         _serve(args.host, args.port)
     elif args.command == "metrics" and args.metrics_command == "repeat-rate":

@@ -458,6 +458,7 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | **Multi-user** | | |
 | `KB_CONTRIBUTOR` | _(unset)_ | Your name — attached to entries, versions, search events, and audit trail |
 | `KB_TEAM` | _(unset)_ | Your team — attached to entries alongside contributor |
+| `KB_WRITE_POLICY_DEFAULT_SURFACE` | `interactive` | kb-service: the surface for API keys with none set and for no-auth callers (interactive, headless or autonomous; an unknown value means headless). Password (JWT) logins are always interactive. |
 | `KB_SKIP_SAFETY` | _(unset)_ | Set to `TRUE` to bypass secret scanning on store |
 | `KB_PG_POOL_MIN` | `1` | Postgres connection pool minimum size |
 | `KB_PG_POOL_MAX` | `5` | Postgres connection pool maximum size |
@@ -532,13 +533,37 @@ Each team member sets their identity via environment variables in their MCP conf
 - **Secret scanning** — `kb_store` and `kb_store_batch` scan content for potential secrets (API keys, passwords) before storing. Override with `KB_SKIP_SAFETY=TRUE`.
 - **Contributor stats** — `kb_maintain list_contributors` shows who has contributed what.
 
+### Write policy: interactive, headless and autonomous surfaces
+
+The hosted kb-service (`/mcp` and the REST API) decides what a write may do from the surface it comes from: `interactive` (a person is in the loop), `headless` (an unattended agent run, such as a dispatched build) or `autonomous` (an agent acting on its own initiative).
+
+A request's surface comes from its API key's surface when the key has one. A password (JWT) login is always interactive. Otherwise (a key with no surface, or a no-auth local install) it is `KB_WRITE_POLICY_DEFAULT_SURFACE`, which defaults to `interactive`; an unknown value means headless.
+
+The `X-KB-Mode` header (`interactive`, `headless` or `autonomous`) can only downgrade that trust, never raise it. An unknown value counts as headless.
+
+An interactive surface writes exactly as before. From a headless or autonomous surface, `kb_store` and `kb_store_batch` creates are not written. Each is queued as a candidate for the surprise-capture pipeline, and the tool answers `Queued as candidate N ...`. Updates, deactivations, reactivations, `bulk_update` with `dry_run=false` and non-dry-run ingests are refused with a `write policy: ...` 403. Creates that supersede an entry, set `distinct_from`, are `mental_map` entries or have no `project_ref` are refused the same way. Over `/mcp`, such a caller also sees only the read tools, `kb_store`, `kb_store_batch` and `kb_feedback`; every other tool is hidden.
+
+An API key minted by a headless or autonomous caller inherits that surface, so an unattended agent cannot mint itself a trusted key. Key surfaces are set only by an admin, with `kb-service list-keys` and `kb-service set-key-surface --key-id <id> --surface interactive|headless|autonomous|default`.
+
+What happens to a queued create depends on `KB_SURPRISE_CAPTURE`. With `on`, the distiller and critic review it, and it may be written. With `shadow`, it gets a dry run only and nothing is written. With `off`, it is recorded for audit only. A written entry carries the `write-policy` tag and `surface:<surface>`, has confidence at most 0.7, and expires after the lesson TTL (`KB_SURPRISE_LESSON_TTL_DAYS`, 30 days).
+
+The stdio client sends `X-KB-Harness` from `HEADLESS_BUILD_ENGINE` when that is set, but never sends `X-KB-Mode`: its surface comes from its API key. For an unattended agent that connects to `/mcp` directly, add `--header "X-KB-Mode: headless"` and `--header "X-KB-Harness: <name>"` to its MCP config.
+
+Rollout order for a fail-closed instance:
+
+1. Deploy kb-service.
+2. Upgrade personal-kb on every client whose key will be non-interactive. An older client renders a queued response as `Error: 'action'` and a write-policy 403 as `admin privileges required`.
+3. Run `kb-service list-keys`, then `kb-service set-key-surface --key-id <id> --surface interactive` for each interactive machine's key AND the machine-principal key (seed_resolutions.py updates and the nightly map maintenance run as the machine principal).
+4. Only then set `KB_WRITE_POLICY_DEFAULT_SURFACE=headless`.
+5. Set `KB_SURPRISE_CAPTURE` to `shadow` or `on`. On a SQLite KB, drain with `POST /api/kb/surprise/drain`, since the background worker needs Postgres.
+
 ### Trust model and limitations
 
 The multi-user features provide **attribution and visibility, not access control**. Understanding the trust model is important before deploying to a team:
 
 - **Identity is environment-based, not authenticated.** `KB_CONTRIBUTOR` is set by each MCP server instance at startup. There is no login, no tokens, no verification. Anyone with database access can set any contributor name. This is appropriate for trusted teams where members configure their own environments honestly.
 - **No read restrictions.** All entries are visible to all users regardless of contributor, team, or sensitivity classification. The `sensitivity` field is a label for human judgment — it does not hide or encrypt anything. A `restricted` entry is just as readable as a `public` one.
-- **No write restrictions.** Any user can update or deactivate any entry. The `updated_by` field and audit trail record who did what, but nothing prevents the action.
+- **Write restrictions are by surface, not by owner.** Any interactive caller can update or deactivate any entry; headless and autonomous surfaces cannot (see the write policy above). The `updated_by` field and audit trail record who did what, but nothing restricts an interactive caller to its own entries.
 - **Vector search ignores contributor/team filters.** The contributor and team filters apply to full-text search only. Vector similarity search returns all entries regardless of attribution. Filtered-out entries can still appear in results via the RRF fusion step. This is a known limitation of the current search architecture.
 - **Audit trail is append-only but not tamper-proof.** Audit events are stored in the same database as everything else. Anyone with database access can modify or delete them. This is sufficient for "who did what" visibility, not for compliance or forensics.
 - **Last-write-wins on concurrent edits.** If two contributors update the same entry simultaneously, the last write wins. There is no locking, merge, or conflict resolution. Version history preserves both changes, but only the latest version is active.

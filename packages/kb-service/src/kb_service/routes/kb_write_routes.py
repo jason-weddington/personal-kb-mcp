@@ -42,8 +42,10 @@ from kb_service.models_kb import (
     FeedbackRequest,
     FeedbackResponse,
     StoreBatchEntry,
+    StoreBatchQueuedResponse,
     StoreBatchRequest,
     StoreBatchResponse,
+    StoreQueuedResponse,
     StoreRequest,
     StoreResponse,
 )
@@ -65,6 +67,13 @@ from kb_service.routes.near_duplicate_guard import (
     record_stored,
 )
 from kb_service.supersession_log import log_reconcile_report
+from kb_service.write_policy import (
+    log_decision,
+    queue_store,
+    queue_store_batch,
+    require_interactive,
+    resolve_write_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -392,19 +401,24 @@ async def _warn_resolution_dropped(
 # ─── endpoints ───────────────────────────────────────────────────────────────
 
 
-@router.post("/store", response_model=StoreResponse)
+@router.post("/store", response_model=StoreResponse | StoreQueuedResponse)
 async def store(
     body: StoreRequest,
     request: Request,
     user: Annotated[User, Depends(get_current_user)],
-) -> StoreResponse:
+) -> StoreResponse | StoreQueuedResponse:
     """Create or update a single knowledge base entry.
 
     LLM graph enrichment runs synchronously inside the request and may take
     several seconds.  Set ``update_entry_id`` to update an existing entry.
+
+    Write policy: a create from a headless or autonomous surface is queued as
+    a candidate (``StoreQueuedResponse``) instead of written; an update from
+    one is refused with 403 (``kb_service.write_policy``).
     """
     kb = request.app.state.kb
     attr = await resolve_attribution(user)
+    wctx = await resolve_write_context(request, user)
 
     if body.update_entry_id is None:
         # ── CREATE path ──────────────────────────────────────────────────────
@@ -419,6 +433,9 @@ async def store(
         expires_at = _parse_ttl(body.ttl)
         _check_secrets(body.knowledge_details, kb)
         entry_type = body.entry_type or EntryType.FACTUAL_REFERENCE
+        if wctx.surface != "interactive":
+            return await queue_store(wctx, body, entry_type=entry_type, attr=attr)
+        log_decision("store", "allowed", wctx)
         machine = _MachineFlag(user)
         stamped = await _stamp_resolution(
             body.hints, machine, op="store", entry_type=entry_type, writer=None
@@ -526,6 +543,7 @@ async def store(
         return StoreResponse(action="created", entry=entry, superseded_ids=effective)
 
     # ── UPDATE path ──────────────────────────────────────────────────────────
+    require_interactive("update", wctx)
     entry_id = body.update_entry_id
     mode = _supersedes_mode(body.supersedes)
     if body.change_reason is None or not body.change_reason.strip():
@@ -753,20 +771,31 @@ def _match_created_to_inputs(
     return result
 
 
-@router.post("/store_batch", response_model=StoreBatchResponse)
+@router.post(
+    "/store_batch", response_model=StoreBatchResponse | StoreBatchQueuedResponse
+)
 async def store_batch(
     body: StoreBatchRequest,
     request: Request,
     user: Annotated[User, Depends(get_current_user)],
-) -> StoreBatchResponse:
+) -> StoreBatchResponse | StoreBatchQueuedResponse:
     """Create multiple knowledge base entries in a single request.
 
     LLM graph enrichment runs synchronously inside the request; a batch may
     take tens of seconds.  All entries are validated up-front — any failure
     rejects the entire batch (422 with the failing entry index in the detail).
+
+    Write policy: from a headless or autonomous surface every entry is queued
+    as a candidate (``StoreBatchQueuedResponse``) instead of written.
     """
     kb = request.app.state.kb
     attr = await resolve_attribution(user)
+    wctx = await resolve_write_context(request, user)
+    if wctx.surface != "interactive":
+        return await queue_store_batch(
+            wctx, body, attr=attr, skip_safety=kb.config.ingest.skip_safety
+        )
+    log_decision("store_batch", "allowed", wctx)
 
     # ── up-front batch validation ─────────────────────────────────────────
     batch_supersedes: list[list[str]] = []
@@ -934,8 +963,11 @@ async def deactivate(
     404); an optional ``superseded_by`` that must exist and pass
     ``check_supersedes`` (422); then ``kb.deactivate``, whose ``ValueError``
     maps to 404/409. The edge cleanup and the supersession recompute run
-    inside ``kb.deactivate``'s one transaction.
+    inside ``kb.deactivate``'s one transaction. The write policy (403 for a
+    non-interactive surface) runs before all of these.
     """
+    wctx = await resolve_write_context(request, user)
+    require_interactive("deactivate", wctx)
     kb = request.app.state.kb
     existing = await kb.get(entry_id)
     if existing is not None and existing.entry_type is EntryType.MENTAL_MAP:
@@ -1004,8 +1036,10 @@ async def reactivate(
     """Reactivate a previously deactivated entry and rebuild its graph (admin only).
 
     Graph rebuild is best-effort: failures are logged as warnings and never
-    propagate to the caller.
+    propagate to the caller. A non-interactive surface gets the policy 403.
     """
+    wctx = await resolve_write_context(request, user)
+    require_interactive("reactivate", wctx)
     kb = request.app.state.kb
     try:
         entry: KnowledgeEntry = await kb.reactivate(entry_id, contributor=user.email)
@@ -1037,8 +1071,11 @@ async def bulk_update(
 
     ``dry_run`` defaults to ``True``; callers must explicitly set ``False`` to
     persist changes.  Unknown filter or update keys cause a 422 — the engine
-    silently ignores them but this endpoint enforces the whitelist.
+    silently ignores them but this endpoint enforces the whitelist. A
+    non-dry-run from a non-interactive surface gets the policy 403 first.
     """
+    if not body.dry_run:
+        require_interactive("bulk_update", await resolve_write_context(request, user))
     kb = request.app.state.kb
 
     if not body.filters:

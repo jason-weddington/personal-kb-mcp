@@ -132,7 +132,11 @@ def test_pinned_literals() -> None:
         "resolved it. Wrong belief and evidence are the harness's trigger detail; "
         "corrected fact lists the resolving actions."
     )
-    assert sd.SURPRISE_DISTILLER_VERSION == 7
+    assert SHAPE_DESCRIPTIONS[5] == (
+        "A coding agent in an unattended (headless or autonomous) session asked "
+        "to store this knowledge-base entry, and no human reviewed it."
+    )
+    assert sd.SURPRISE_DISTILLER_VERSION == 8
     assert sd.SURPRISE_EVENT_IDS_CAP == 20
     assert sd.SURPRISE_HINT_LIST_CAP == 100
 
@@ -360,7 +364,7 @@ def test_distiller_instructions_durability_test() -> None:
     ) in DISTILLER_INSTRUCTIONS
     examples_end = DISTILLER_INSTRUCTIONS.index("leave the other fields empty.")
     assert DISTILLER_INSTRUCTIONS.index("Also set durable to false") > examples_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 7
+    assert sd.SURPRISE_DISTILLER_VERSION == 8
 
 
 _SCOPE_RULE = (
@@ -381,7 +385,7 @@ def test_distiller_instructions_scope_rule() -> None:
         "would plausibly hold the same wrong belief."
     )
     assert DISTILLER_INSTRUCTIONS.index(_SCOPE_RULE) > durability_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 7
+    assert sd.SURPRISE_DISTILLER_VERSION == 8
     assert _SCOPE_RULE in build_distill_prompt(_cand())
 
 

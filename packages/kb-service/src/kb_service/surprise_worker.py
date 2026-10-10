@@ -47,6 +47,18 @@ from kb_service.resolution_hint import (
     ResolutionHintError,
     validate_and_stamp_resolution,
 )
+from kb_service.store_distill import (
+    STORE_CANDIDATE_SHAPE,
+    STORE_CRITIC_SYSTEM,
+    STORE_CRITIC_VERSION,
+    STORE_DISTILLER_SYSTEM,
+    STORE_DISTILLER_VERSION,
+    build_store_critic_prompt,
+    build_store_distill_prompt,
+    build_store_knowledge_details,
+    build_store_kwargs,
+    parse_store_distill_response,
+)
 from kb_service.surprise import (
     DETECTOR_MIN_CONFIDENCE,
     DETECTOR_MIN_CONFIDENCE_BY_SHAPE,
@@ -662,6 +674,25 @@ async def distill_candidates(
             counts["critic_rejected"],
             counts["critic_ms"],
         )
+        store_input = sum(1 for x in candidates if x.shape == STORE_CANDIDATE_SHAPE)
+        if store_input > 0:
+            logger.info(
+                "surprise_distill store_summary store_distiller_version=%d"
+                " store_critic_version=%d input=%d written=%d covered=%d"
+                " not_durable=%d failed=%d llm_calls=%d llm_ms=%d critic_calls=%d"
+                " critic_ms=%d",
+                STORE_DISTILLER_VERSION,
+                STORE_CRITIC_VERSION,
+                store_input,
+                counts["store_written"],
+                counts["store_covered"],
+                counts["store_not_durable"],
+                sum(counts[f"store_{o}"] for o in _STORE_FAILED_OUTCOMES),
+                counts["store_llm_calls"],
+                counts["store_llm_ms"],
+                counts["store_critic_calls"],
+                counts["store_critic_ms"],
+            )
     return result
 
 
@@ -724,6 +755,8 @@ async def dry_run_candidates(
             if await _persist_dry_run(pool, cand, decision, turn_mode):
                 recorded += 1
                 counts[decision.outcome] += 1
+                if cand.shape == STORE_CANDIDATE_SHAPE:
+                    counts[f"store_{decision.outcome}"] += 1
             else:
                 counts["double_dry_run"] += 1
     finally:
@@ -750,6 +783,15 @@ async def dry_run_candidates(
             detector_model_name(critic) if critic is not None else "",
             counts["critic_calls"],
         )
+        store_input = sum(1 for x in candidates if x.shape == STORE_CANDIDATE_SHAPE)
+        if store_input > 0:
+            logger.info(
+                "surprise_dry_run store_summary store_distiller_version=%d input=%d"
+                " would_write=%d",
+                STORE_DISTILLER_VERSION,
+                store_input,
+                counts["store_would_write"],
+            )
     return recorded
 
 
@@ -787,6 +829,17 @@ _DISTILL_FAILED_OUTCOMES = frozenset(
         "secret_detected",
         "kb_error",
     }
+)
+
+# Shape-5 (write-policy) outcomes summed as ``failed`` in the store_summary line.
+_STORE_FAILED_OUTCOMES = (
+    "llm_error",
+    "unparseable",
+    "invalid_fields",
+    "redacted",
+    "secret_detected",
+    "no_project",
+    "kb_error",
 )
 
 _CANDIDATE_STATUS = {"written": "written", "merged": "merged", "same_session": "merged"}
@@ -896,6 +949,20 @@ class _Decision:
     update_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
+def _distiller_version(c: SurpriseCandidate) -> int:
+    """The distiller version of *c*'s shape family (shape 5 versus 1-4)."""
+    if c.shape == STORE_CANDIDATE_SHAPE:
+        return STORE_DISTILLER_VERSION
+    return SURPRISE_DISTILLER_VERSION
+
+
+def _critic_version(c: SurpriseCandidate) -> int:
+    """The critic version of *c*'s shape family (shape 5 versus 1-4)."""
+    if c.shape == STORE_CANDIDATE_SHAPE:
+        return STORE_CRITIC_VERSION
+    return SURPRISE_CRITIC_VERSION
+
+
 def dry_run_payload(c: SurpriseCandidate, d: _Decision) -> dict[str, Any]:
     """The ``surprise_dry_runs.payload`` object for decision *d*.
 
@@ -915,7 +982,7 @@ def dry_run_payload(c: SurpriseCandidate, d: _Decision) -> dict[str, Any]:
         "cue": d.cue,
         "matched_entry_id": d.matched_id,
         "similarity": d.similarity,
-        "critic_version": SURPRISE_CRITIC_VERSION if d.critic_called else None,
+        "critic_version": _critic_version(c) if d.critic_called else None,
         "critic": dataclasses.asdict(d.critic) if d.critic is not None else None,
     }
 
@@ -931,7 +998,7 @@ async def _persist_dry_run(
         c.project,
         c.shape,
         d.distiller_model,
-        SURPRISE_DISTILLER_VERSION,
+        _distiller_version(c),
         d.outcome,
         d.reason,
         json.dumps(dry_run_payload(c, d)),
@@ -989,7 +1056,11 @@ async def _decide_one(
     ``would_merge`` (``d.update_kwargs``). Mode 'on' then runs
     :func:`_execute_decision`; mode 'shadow' records the decision as a dry
     run. Both modes share this one function so they cannot drift.
+
+    A shape-5 (write-policy) candidate takes :func:`_decide_store_one`.
     """
+    if c.shape == STORE_CANDIDATE_SHAPE:
+        return await _decide_store_one(c, kb, llm, floor, d, counts, critic=critic)
     if c.project.strip() == "":
         d.outcome = "no_project"
         return True
@@ -1142,6 +1213,155 @@ async def _decide_one(
         "expires_at": lesson_expires_at(),
         "enrich": False,
     }
+    return True
+
+
+def _nonblank_str(value: object) -> bool:
+    return isinstance(value, str) and value.strip() != ""
+
+
+async def _decide_store_one(
+    c: SurpriseCandidate,
+    kb: Any,
+    llm: LLMProvider | None,
+    floor: float,
+    d: _Decision,
+    counts: Counter[str],
+    *,
+    critic: LLMProvider | None,
+) -> bool:
+    """Run W1-W9 for a queued store (shape 5); False means a no_llm skip.
+
+    W1 request fields; W2 project; W3 both models present; W4 the store
+    distiller; W5 redaction markers; W6 secret scan; W7 the store critic;
+    W8 a cosine near-duplicate (covered, never merged); W9 would_write.
+    """
+    req = c.detector_output.get("request")
+    if not isinstance(req, dict) or not all(
+        _nonblank_str(req.get(k))
+        for k in ("short_title", "long_title", "knowledge_details")
+    ):
+        d.outcome, d.reason = "invalid_fields", "request"
+        return True
+    if c.project.strip() == "":
+        d.outcome = "no_project"
+        return True
+    if llm is None or critic is None:
+        return False
+
+    prompt = build_store_distill_prompt(c)
+    counts["llm_calls"] += 1
+    counts["store_llm_calls"] += 1
+    start = time.monotonic()
+    raw: str | None
+    try:
+        raw = await llm.generate(prompt, system=STORE_DISTILLER_SYSTEM)
+    except Exception:
+        raw, llm_reason = None, "exception"
+    else:
+        llm_reason = "none"
+    d.latency_ms = int((time.monotonic() - start) * 1000)
+    d.prompt_chars = len(STORE_DISTILLER_SYSTEM) + len(prompt)
+    d.response_chars = len(raw or "")
+    d.distiller_model = detector_model_name(llm)
+    redacted = redact_secrets(raw) if raw else None
+    if redacted is not None:
+        d.raw_response_excerpt = redacted[0][:RAW_RESPONSE_EXCERPT_MAX] or None
+    counts["llm_ms"] += d.latency_ms
+    counts["store_llm_ms"] += d.latency_ms
+    counts["prompt_chars"] += d.prompt_chars
+    counts["response_chars"] += d.response_chars
+
+    verdict, reject = parse_store_distill_response(raw)
+    if verdict is None:
+        d.outcome = reject or "unparseable"
+        if reject == "llm_error":
+            d.reason = llm_reason
+        elif reject == "not_durable":
+            d.reason = not_durable_reason(raw)
+        return True
+    d.verdict = verdict
+    if any(
+        REDACTION_MARKER in text
+        for text in (
+            verdict.short_title,
+            verdict.long_title,
+            str(req["knowledge_details"]),
+        )
+    ):
+        d.outcome, d.reason = "redacted", "verdict"
+        return True
+
+    details = build_store_knowledge_details(c)
+    if not kb.config.ingest.skip_safety:
+        findings = detect_secrets_in_content(
+            "\n".join([verdict.short_title, verdict.long_title, details])
+        )
+        if findings:
+            d.outcome, d.reason = "secret_detected", ",".join(findings)
+            return True
+
+    if not await _run_store_critic(c, verdict, critic, d, counts):
+        return True
+
+    check = await kb.find_near_duplicates(
+        short_title=verdict.short_title,
+        long_title=verdict.long_title,
+        knowledge_details=details,
+        project_ref=c.project,
+        floor=floor,
+        limit=5,
+    )
+    d.near_duplicate_status = check.status
+    d.near_duplicate_floor = floor
+    if check.status != "checked":
+        counts["near_dup_unavailable"] += 1
+    if check.candidates:
+        top = check.candidates[0]
+        counts["cosine_matches"] += 1
+        d.outcome, d.reason = "covered", "near_duplicate"
+        d.matched_id, d.match_kind, d.similarity = top.id, "cosine", top.similarity
+        d.before = d.after = None
+        return True
+
+    d.outcome, d.after = "would_write", 1
+    d.store_kwargs = build_store_kwargs(c, verdict)
+    return True
+
+
+async def _run_store_critic(
+    c: SurpriseCandidate,
+    verdict: DistillVerdict,
+    critic: LLMProvider,
+    d: _Decision,
+    counts: Counter[str],
+) -> bool:
+    """The critic pass on a queued store; True means proceed (see _run_critic)."""
+    prompt = build_store_critic_prompt(c, verdict)
+    counts["critic_calls"] += 1
+    counts["store_critic_calls"] += 1
+    d.critic_called = True
+    start = time.monotonic()
+    raw: str | None
+    try:
+        raw = await critic.generate(prompt, system=STORE_CRITIC_SYSTEM)
+    except Exception:
+        raw, llm_reason = None, "exception"
+    else:
+        llm_reason = "none"
+    elapsed = int((time.monotonic() - start) * 1000)
+    counts["critic_ms"] += elapsed
+    counts["store_critic_ms"] += elapsed
+    critic_verdict, reject = parse_critic_response(raw)
+    if critic_verdict is None:
+        d.outcome = reject or "unparseable"
+        d.reason = f"critic: {llm_reason if reject == 'llm_error' else 'unparseable'}"
+        return False
+    d.critic = critic_verdict
+    if not critic_verdict.accepted:
+        counts["critic_rejected"] += 1
+        d.outcome, d.reason = "critic_rejected", f"critic: {critic_verdict.reason}"
+        return False
     return True
 
 
@@ -1302,7 +1522,7 @@ async def _persist_decision(
         else None
     )
     if verdict_obj is not None and d.critic_called:
-        verdict_obj["critic_version"] = SURPRISE_CRITIC_VERSION
+        verdict_obj["critic_version"] = _critic_version(c)
         verdict_obj["critic"] = (
             dataclasses.asdict(d.critic) if d.critic is not None else None
         )
@@ -1333,7 +1553,7 @@ async def _persist_decision(
                     d.after,
                     verdict,
                     d.distiller_model,
-                    SURPRISE_DISTILLER_VERSION,
+                    _distiller_version(c),
                     d.raw_response_excerpt,
                     d.prompt_chars,
                     d.response_chars,
@@ -1356,6 +1576,8 @@ async def _persist_decision(
         counts["double_distill"] += 1
         return
     counts[d.outcome] += 1
+    if c.shape == STORE_CANDIDATE_SHAPE:
+        counts[f"store_{d.outcome}"] += 1
     cue = d.cue or {}
     if (
         d.outcome == "merged"

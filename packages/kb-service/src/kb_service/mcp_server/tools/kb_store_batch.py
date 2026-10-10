@@ -15,6 +15,7 @@ from pydantic import Field
 
 from kb_service.config import is_safety_skip
 from kb_service.mcp_server import context
+from kb_service.mcp_server.backend import QueuedBatch
 from kb_service.mcp_server.errors import BackendHttpError, map_error
 from kb_service.mcp_server.tools.kb_store import (
     _VALID_SENSITIVITY,
@@ -40,6 +41,23 @@ _ENTRIES_DESCRIPTION = (
     "hints may carry a resolution object "
     "(see the store tool's hints description)."
 )
+
+
+def format_queued_batch(q: QueuedBatch) -> str:
+    """Render a batch the KB service's write policy queued as candidates."""
+    n = len(q.candidate_ids)
+    ids = ", ".join(str(i) for i in q.candidate_ids)
+    if q.capture_mode == "on":
+        return (
+            f"Batch: {n} entries queued as candidates {ids} for review (write"
+            f" policy: {q.surface} surface). Not in the KB yet: the candidate"
+            " pipeline's distiller and critic decide whether each is written."
+        )
+    return (
+        f"Batch: {n} entries queued as candidates {ids} (write policy:"
+        f" {q.surface} surface). Not in the KB: capture mode is {q.capture_mode},"
+        " so they are recorded for audit only."
+    )
 
 
 async def batch_store_entries(entries: list[dict[str, Any]]) -> str:
@@ -120,9 +138,7 @@ async def batch_store_entries(entries: list[dict[str, Any]]) -> str:
         original_index.append(i)
 
     try:
-        created, backend_failed, superseded_ids = await backend.store_batch(
-            valid_entries
-        )
+        res = await backend.store_batch(valid_entries)
     except BackendHttpError as e:
         mapped = map_error(e)
         return re.sub(
@@ -134,6 +150,22 @@ async def batch_store_entries(entries: list[dict[str, Any]]) -> str:
             ),
             mapped,
         )
+
+    if isinstance(res, QueuedBatch):
+        queued = format_queued_batch(res)
+        if client_failed:
+            queued += "\n".join(
+                [
+                    "",
+                    "Failed entries (retry these):",
+                    *[
+                        f"  Entry {idx} ({title}): {err}"
+                        for idx, title, err in client_failed
+                    ],
+                ]
+            )
+        return queued
+    created, backend_failed, superseded_ids = res
 
     backend_failed = [
         (original_index[idx] if 0 <= idx < len(original_index) else idx, t, err)

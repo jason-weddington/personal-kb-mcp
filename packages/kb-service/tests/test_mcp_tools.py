@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from kb_core.models.entry import EntryType, KnowledgeEntry
 
 from kb_service.mcp_server import context
+from kb_service.mcp_server.backend import QueuedBatch, QueuedStore
 from kb_service.mcp_server.errors import BackendHttpError
 from kb_service.mcp_server.tools import (
     kb_ask,
@@ -1360,3 +1361,90 @@ async def test_override_clear_noop_and_errors(stub: MagicMock) -> None:
     )
     stub.set_map_eligibility_override = AsyncMock(side_effect=RuntimeError("x"))
     assert await fn(project_ref="p", eligible=True, reason="r") == "Error: x"
+
+
+# ─── write policy: queued results (twins of the stdio tools) ─────────────────
+
+QUEUED_STORE_TEXT = {
+    "on": (
+        "Queued as candidate 7 for review (write policy: headless surface). Not in"
+        " the KB yet: the candidate pipeline's distiller and critic decide whether"
+        " it is written."
+    ),
+    "shadow": (
+        "Queued as candidate 7 (write policy: headless surface). Not in the KB:"
+        " capture mode is shadow, so it is recorded for audit only."
+    ),
+    "off": (
+        "Queued as candidate 7 (write policy: headless surface). Not in the KB:"
+        " capture mode is off, so it is recorded for audit only."
+    ),
+}
+QUEUED_BATCH_TEXT = {
+    "on": (
+        "Batch: 2 entries queued as candidates 7, 8 for review (write policy:"
+        " headless surface). Not in the KB yet: the candidate pipeline's distiller"
+        " and critic decide whether each is written."
+    ),
+    "shadow": (
+        "Batch: 2 entries queued as candidates 7, 8 (write policy: headless"
+        " surface). Not in the KB: capture mode is shadow, so they are recorded for"
+        " audit only."
+    ),
+    "off": (
+        "Batch: 2 entries queued as candidates 7, 8 (write policy: headless"
+        " surface). Not in the KB: capture mode is off, so they are recorded for"
+        " audit only."
+    ),
+}
+
+
+@pytest.mark.parametrize("mode", ["on", "shadow", "off"])
+async def test_store_queued_renders(store_fn: Any, stub: MagicMock, mode: str) -> None:
+    stub.store = AsyncMock(return_value=QueuedStore(7, "headless", mode))
+    assert await store_fn(**STORE_ARGS) == QUEUED_STORE_TEXT[mode]
+    assert (
+        kb_store.format_queued_store(QueuedStore(7, "headless", mode))
+        == (QUEUED_STORE_TEXT[mode])
+    )
+
+
+async def test_store_update_queued_is_error(store_fn: Any, stub: MagicMock) -> None:
+    stub.store = AsyncMock(return_value=QueuedStore(7, "headless", "on"))
+    out = await store_fn(
+        update_entry_id="kb-00001",
+        knowledge_details="d",
+        change_reason="r",
+        supersedes="none",
+    )
+    assert out == (
+        "Error: the KB service queued an update as candidate 7; updates are never"
+        " queued."
+    )
+
+
+@pytest.mark.parametrize("mode", ["on", "shadow", "off"])
+async def test_store_batch_queued_renders(
+    batch_fn: Any, stub: MagicMock, mode: str
+) -> None:
+    stub.store_batch = AsyncMock(return_value=QueuedBatch((7, 8), "headless", mode))
+    out = await batch_fn(entries=[_batch_entry(), _batch_entry(short_title="t")])
+    assert out == QUEUED_BATCH_TEXT[mode]
+
+
+async def test_store_batch_queued_appends_ttl_failures(
+    batch_fn: Any, stub: MagicMock
+) -> None:
+    stub.store_batch = AsyncMock(return_value=QueuedBatch((7, 8), "headless", "shadow"))
+    out = await batch_fn(
+        entries=[
+            _batch_entry(),
+            _batch_entry(short_title="bad", ttl="never"),
+            _batch_entry(short_title="t"),
+        ]
+    )
+    lines = out.split("\n")
+    assert lines[0] == QUEUED_BATCH_TEXT["shadow"]
+    assert lines[1] == "Failed entries (retry these):"
+    assert lines[2].startswith("  Entry 1 (bad): ")
+    assert len(lines) == 3

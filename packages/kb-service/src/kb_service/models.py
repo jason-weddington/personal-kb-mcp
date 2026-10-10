@@ -963,7 +963,7 @@ class TurnHeartbeatResponse(BaseModel):
 
 # --- Surprise capture: detection drain ---
 
-SurpriseShape = Literal[1, 2, 3, 4]
+SurpriseShape = Literal[1, 2, 3, 4, 5]
 
 
 class SurpriseCandidateOut(BaseModel):

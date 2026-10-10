@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from kb_core import Attribution, EmbeddingRetryConfig, create_postgres, create_sqlite
 from starlette.routing import Route
 
+from kb_service import write_policy
 from kb_service.config import (
     build_agentic_config,
     build_embedding_config,
@@ -241,6 +242,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 " Postgres KB_DATABASE_URL; use POST /api/kb/surprise/drain)",
                 mode,
             )
+        await write_policy.log_startup(
+            mode, worker_started=app.state.surprise_worker is not None
+        )
         # A fresh MCP app per lifespan entry: the mcp session manager's run()
         # can only be entered once per instance.
         mcp = create_mcp_server()

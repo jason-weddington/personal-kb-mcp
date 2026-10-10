@@ -16,6 +16,7 @@ from pydantic import Field
 
 from kb_service.config import is_safety_skip
 from kb_service.mcp_server import context
+from kb_service.mcp_server.backend import QueuedStore
 from kb_service.mcp_server.errors import BackendHttpError, map_error
 from kb_service.mcp_server.tools.map_lint import lint_map_body
 
@@ -212,6 +213,21 @@ def _mental_map_has_pointer(
             return True
 
     return False
+
+
+def format_queued_store(q: QueuedStore) -> str:
+    """Render a create the KB service's write policy queued as a candidate."""
+    if q.capture_mode == "on":
+        return (
+            f"Queued as candidate {q.candidate_id} for review (write policy:"
+            f" {q.surface} surface). Not in the KB yet: the candidate pipeline's"
+            " distiller and critic decide whether it is written."
+        )
+    return (
+        f"Queued as candidate {q.candidate_id} (write policy: {q.surface} surface)."
+        f" Not in the KB: capture mode is {q.capture_mode}, so it is recorded for"
+        " audit only."
+    )
 
 
 def format_store_result(entry: KnowledgeEntry, is_update: bool = False) -> str:
@@ -432,7 +448,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     return f"Error: {e}"
 
             try:
-                _action, entry, ids = await backend.store(
+                res = await backend.store(
                     short_title=short_title,
                     long_title=long_title,
                     knowledge_details=knowledge_details,
@@ -453,6 +469,12 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     return map_error(e)
                 return f"Error: {e}"
 
+            if isinstance(res, QueuedStore):
+                return (
+                    "Error: the KB service queued an update as candidate"
+                    f" {res.candidate_id}; updates are never queued."
+                )
+            _action, entry, ids = res
             if ids is None and isinstance(supersedes, list) and supersedes:
                 logger.warning(
                     "supersession-client mismatch op=update sent=%r superseded_ids=%r "
@@ -520,7 +542,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 return f"Error: {e}"
 
         try:
-            _action, entry, ids = await backend.store(
+            res = await backend.store(
                 short_title=short_title,
                 long_title=long_title,
                 knowledge_details=knowledge_details,
@@ -541,6 +563,9 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                 return map_error(e)
             return f"Error: {e}"
 
+        if isinstance(res, QueuedStore):
+            return format_queued_store(res)
+        _action, entry, ids = res
         hint_sup = hints.get("supersedes") if isinstance(hints, dict) else None
         expected_sup: set[str] = (
             set(supersedes) if isinstance(supersedes, list) else set()

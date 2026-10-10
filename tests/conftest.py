@@ -196,9 +196,12 @@ async def fake_embedder(db):
 # the live KB and ran the startup reconcile, 2026-10-07). Tests that need one
 # set it explicitly with monkeypatch after this runs.
 _AMBIENT_DB_VARS = ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL")
+# Dispatch hosts set HEADLESS_BUILD_ENGINE, which would add X-KB-Harness to
+# every HttpBackend request in the gate; neither may leak into a test.
+_AMBIENT_WRITE_POLICY_VARS = ("HEADLESS_BUILD_ENGINE", "KB_WRITE_POLICY_DEFAULT_SURFACE")
 
 
 @pytest.fixture(autouse=True)
 def _no_ambient_production_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in _AMBIENT_DB_VARS:
+    for var in (*_AMBIENT_DB_VARS, *_AMBIENT_WRITE_POLICY_VARS):
         monkeypatch.delenv(var, raising=False)

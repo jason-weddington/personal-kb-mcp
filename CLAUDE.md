@@ -264,6 +264,7 @@ Format: `type(optional-scope): description`
 | `KB_SOFT_GATE_MAX_DENIES_PER_TURN` | `1` | Soft gate: most denies (or shadow `would_deny`) per turn; integer 1..1000, anything else falls back to the default with a warning |
 | `KB_SOFT_GATE_MAX_DENIES_PER_HOUR` | `6` | Soft gate: most denies in any rolling 60 minutes; integer 1..1000, anything else falls back to the default with a warning |
 | `KB_SOFT_GATE_REARM_HOURS` | `24` | Soft gate: hours a lesson stays quiet after it denies before it may deny again (compaction, resume or clear re-arms sooner); integer 1..1000, anything else falls back to the default with a warning |
+| `KB_WRITE_POLICY_DEFAULT_SURFACE` | `interactive` | kb-service: the surface for API keys with none set and for no-auth callers (interactive, headless or autonomous; an unknown value means headless). Password (JWT) logins are always interactive |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
 
 ## Agent Feedback Loop

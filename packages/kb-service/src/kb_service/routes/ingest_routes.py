@@ -36,6 +36,7 @@ from kb_service.models import (
     IngestUrlRequest,
     User,
 )
+from kb_service.write_policy import require_interactive, resolve_write_context
 
 router = APIRouter(prefix="/api/kb/ingest", tags=["kb"])
 
@@ -92,8 +93,11 @@ async def ingest_text(
 
     ``dry_run=True`` runs the extraction pipeline but writes nothing to the
     database; the result carries ``action="dry_run"`` and the count of entries
-    that *would* be created.
+    that *would* be created. A non-dry-run from a non-interactive surface
+    gets the write-policy 403 first.
     """
+    if not body.dry_run:
+        require_interactive("ingest_text", await resolve_write_context(request, user))
     _check_safety()
     attr = await resolve_attribution(user)
     try:
@@ -131,8 +135,11 @@ async def ingest_url(
     kb-core does **not** raise on fetch failure — ``FileIngester.ingest_url``
     returns ``FileResult(action="error", reason="Failed to fetch: ...")`` on
     ``httpx.HTTPError`` and on empty trafilatura extraction.  Those pass
-    through as ``HTTP 200`` with the result body.
+    through as ``HTTP 200`` with the result body. A non-dry-run from a
+    non-interactive surface gets the write-policy 403 first.
     """
+    if not body.dry_run:
+        require_interactive("ingest_url", await resolve_write_context(request, user))
     _check_safety()
     attr = await resolve_attribution(user)
     try:
@@ -182,7 +189,12 @@ async def ingest_file(
     the normal ``unchanged``/``replace`` dedup path.  kb-core's deny-list,
     extension-allowlist, and size checks run on the temp path and surface as
     ``action="skipped"`` results (``HTTP 200``), not HTTP errors.
+
+    A non-dry-run from a non-interactive surface gets the write-policy 403
+    before the upload is read.
     """
+    if not dry_run:
+        require_interactive("ingest_file", await resolve_write_context(request, user))
     _check_safety()
 
     filename = file.filename or ""

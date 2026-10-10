@@ -107,9 +107,12 @@ Registration is invite-gated, so bootstrap the first admin directly:
 uv run kb-service create-admin --email you@example.com --password '...'
 # promote an existing user:
 uv run kb-service make-admin --email someone@example.com
+# list API keys with their write-policy surface, then set one:
+uv run kb-service list-keys [--email someone@example.com]
+uv run kb-service set-key-surface --key-id <id> --surface interactive|headless|autonomous|default
 ```
 
-Both talk directly to `KB_SERVICE_DATABASE_URL`.
+All of them talk directly to `KB_SERVICE_DATABASE_URL`. `set-key-surface` is the only way to set a key's write-policy surface (`default` clears it, so the key follows `KB_WRITE_POLICY_DEFAULT_SURFACE`).
 
 ## kb-core source
 

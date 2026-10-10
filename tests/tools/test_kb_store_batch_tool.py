@@ -419,3 +419,69 @@ def test_store_batch_description_mentions_resolution() -> None:
     desc = _store_batch_description("kb_")
     assert "resolution" in desc
     assert "kb_store" in desc
+
+
+# ---------------------------------------------------------------------------
+# Write policy: queued batches
+# ---------------------------------------------------------------------------
+
+QUEUED_BATCH_TEXT = {
+    "on": (
+        "Batch: 2 entries queued as candidates 7, 8 for review (write policy:"
+        " headless surface). Not in the KB yet: the candidate pipeline's distiller"
+        " and critic decide whether each is written."
+    ),
+    "shadow": (
+        "Batch: 2 entries queued as candidates 7, 8 (write policy: headless"
+        " surface). Not in the KB: capture mode is shadow, so they are recorded for"
+        " audit only."
+    ),
+    "off": (
+        "Batch: 2 entries queued as candidates 7, 8 (write policy: headless"
+        " surface). Not in the KB: capture mode is off, so they are recorded for"
+        " audit only."
+    ),
+}
+
+
+def _queued_batch_handler(mode: str):
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "queued",
+                "requested": 2,
+                "candidate_ids": [7, 8],
+                "surface": "headless",
+                "capture_mode": mode,
+            },
+        )
+
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["on", "shadow", "off"])
+async def test_queued_batch_renders(mode: str) -> None:
+    from personal_kb.backend.protocol import QueuedBatch
+    from personal_kb.tools.kb_store_batch import format_queued_batch
+
+    assert format_queued_batch(QueuedBatch((7, 8), "headless", mode)) == (QUEUED_BATCH_TEXT[mode])
+    entries = [_entry_dict(short_title="A"), _entry_dict(short_title="B")]
+    result = await batch_store_entries(entries, _lifespan(_queued_batch_handler(mode)))
+    assert result == QUEUED_BATCH_TEXT[mode]
+
+
+@pytest.mark.asyncio
+async def test_queued_batch_appends_ttl_failures() -> None:
+    entries = [
+        _entry_dict(short_title="A"),
+        _entry_dict(short_title="Bad", ttl="forever"),
+        _entry_dict(short_title="B"),
+    ]
+    result = await batch_store_entries(entries, _lifespan(_queued_batch_handler("shadow")))
+    lines = result.split("\n")
+    assert lines[0] == QUEUED_BATCH_TEXT["shadow"]
+    assert lines[1] == "Failed entries (retry these):"
+    assert lines[2].startswith("  Entry 1 (Bad): ")
+    assert len(lines) == 3

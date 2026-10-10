@@ -856,8 +856,11 @@ class StatefulFakeDbPool(FakeDbPool):
     ) -> None:
         self._app_config = app_config
         self._users: dict[str, dict[str, Any]] = users or {}
-        # {key_hash: {"id": str, "user_id": str}} for API-key auth tests.
+        # {key_hash: {"id": str, "user_id": str, "surface"?: str}} for API-key
+        # auth tests; "surface" is the optional write-policy surface.
         self._api_keys: dict[str, dict[str, Any]] = api_keys or {}
+        # args of every answered write-policy surface lookup, in order.
+        self.surface_queries: list[tuple[Any, ...]] = []
         # in-memory chat store: {chat_id: {id, user_id, title, mode, updated_at}}
         self._chats: dict[str, dict[str, Any]] = {}
         # {chat_id: [{role, content}]}
@@ -876,6 +879,12 @@ class StatefulFakeDbPool(FakeDbPool):
         return []
 
     async def fetchrow(self, sql: str, *args: Any) -> Any | None:
+        if sql.strip() == "SELECT surface FROM api_keys WHERE id = $1":
+            self.surface_queries.append(args)
+            for v in self._api_keys.values():
+                if v.get("id") == args[0]:
+                    return {"surface": v.get("surface")}
+            return None
         if "FROM api_keys WHERE key_hash" in sql:
             return self._api_keys.get(args[0])
         if "app_config" in sql and "SELECT value" in sql:
@@ -1398,7 +1407,16 @@ _AMBIENT_MCP_VARS = (
 )
 
 
+# The write-policy default surface must not leak in from a developer shell.
+_AMBIENT_WRITE_POLICY_VARS = ("KB_WRITE_POLICY_DEFAULT_SURFACE",)
+
+
 @pytest.fixture(autouse=True)
 def _no_ambient_production_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in _AMBIENT_DB_VARS + _AMBIENT_SURPRISE_VARS + _AMBIENT_MCP_VARS:
+    for var in (
+        _AMBIENT_DB_VARS
+        + _AMBIENT_SURPRISE_VARS
+        + _AMBIENT_MCP_VARS
+        + _AMBIENT_WRITE_POLICY_VARS
+    ):
         monkeypatch.delenv(var, raising=False)

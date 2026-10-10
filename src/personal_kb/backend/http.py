@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import httpx
+
+from personal_kb.backend.protocol import QueuedBatch, QueuedStore
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -71,6 +74,8 @@ def _map_error(exc: BackendHttpError, base_url: str) -> str:
     if exc.status == 401:
         return "Error: KB service authentication failed (401). Check PERSONAL_KB_API_KEY."
     if exc.status == 403:
+        if exc.detail.startswith("write policy: "):
+            return f"Error: {exc.detail}"
         return f"Error: admin privileges required (403): {exc.detail}"
     if exc.status in (404, 409):
         return f"Error: {exc.detail}"
@@ -116,8 +121,16 @@ class HttpBackend:
     # ------------------------------------------------------------------
 
     async def open(self) -> None:
-        """Open the shared httpx client."""
+        """Open the shared httpx client.
+
+        Sends ``X-KB-Harness`` from ``HEADLESS_BUILD_ENGINE`` when it is set.
+        Never sends ``X-KB-Mode``: the stdio client does not self-declare a
+        write-policy surface; the server resolves it from the API key.
+        """
         headers = {"Authorization": f"Bearer {self._api_key}"}
+        harness = os.environ.get("HEADLESS_BUILD_ENGINE", "").strip()
+        if harness:
+            headers["X-KB-Harness"] = harness
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers=headers,
@@ -289,10 +302,11 @@ class HttpBackend:
         change_reason: str | None = None,
         supersedes: list[str] | Literal["none"] | None = None,
         distinct_from: list[str] | None = None,
-    ) -> tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None]:
+    ) -> tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None] | QueuedStore:
         """POST /api/kb/store.  Returns (action, entry, superseded_ids).
 
         ``superseded_ids`` is None when the response lacks the key (old server).
+        A queued response (write policy) returns a :class:`QueuedStore`.
         """
         body: dict[str, Any] = {
             "short_title": short_title,
@@ -326,6 +340,12 @@ class HttpBackend:
             body["distinct_from"] = distinct_from
 
         data = await self._post("/api/kb/store", body)
+        if data.get("status") == "queued":
+            return QueuedStore(
+                candidate_id=int(data["candidate_id"]),
+                surface=str(data["surface"]),
+                capture_mode=str(data["capture_mode"]),
+            )
         action: Literal["created", "updated"] = data["action"]
         entry = _parse_entry(data["entry"])
         raw_ids = data.get("superseded_ids")
@@ -360,7 +380,7 @@ class HttpBackend:
     async def store_batch(
         self,
         entries: list[dict[str, Any]],
-    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]]:
+    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]] | QueuedBatch:
         """Send all pre-validated entries to the service in one request.
 
         The third element is the server's per-created-entry ``superseded_ids``
@@ -400,6 +420,12 @@ class HttpBackend:
             batch_entries.append(item)
 
         data = await self._post("/api/kb/store_batch", {"entries": batch_entries})
+        if data.get("status") == "queued":
+            return QueuedBatch(
+                candidate_ids=tuple(int(i) for i in data["candidate_ids"]),
+                surface=str(data["surface"]),
+                capture_mode=str(data["capture_mode"]),
+            )
         created = [_parse_entry(e) for e in data.get("created", [])]
         superseded = [[str(i) for i in ids] for ids in data.get("superseded_ids") or []]
         # HTTP backend: no per-entry detail for server-side failures

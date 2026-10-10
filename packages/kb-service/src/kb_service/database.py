@@ -29,7 +29,7 @@ _pool: DbPool | None = None
 
 # Surprise-capture shapes allowed by the shape CHECK on surprise_candidates,
 # surprise_detections and surprise_distillations (surprise_dry_runs has none).
-SURPRISE_SHAPES: tuple[int, ...] = (1, 2, 3, 4)
+SURPRISE_SHAPES: tuple[int, ...] = (1, 2, 3, 4, 5)
 _SURPRISE_SHAPE_CHECK = (
     "CHECK (shape IN (" + ", ".join(str(s) for s in SURPRISE_SHAPES) + "))"
 )
@@ -64,6 +64,11 @@ _SCHEMA_STATEMENTS: list[str] = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash)",
     "CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)",
+    # api_keys.surface: the write-policy surface of a key (kb_service.write_policy).
+    # NULL follows KB_WRITE_POLICY_DEFAULT_SURFACE; set it with
+    # `kb-service set-key-surface`.
+    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS surface TEXT CHECK (surface IS NULL"
+    " OR surface IN ('interactive', 'headless', 'autonomous'))",
     """
     CREATE TABLE IF NOT EXISTS invites (
         token TEXT PRIMARY KEY,

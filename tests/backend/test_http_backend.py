@@ -1637,3 +1637,96 @@ async def test_search_body_carries_include_superseded(flag):
     backend = _make_backend(handler)
     await backend.search(SearchQuery(query="x", include_superseded=flag))
     assert captured["include_superseded"] is flag
+
+
+# ---------------------------------------------------------------------------
+# Write policy: queued responses, X-KB-Harness, write-policy 403 mapping
+# ---------------------------------------------------------------------------
+
+_WP_DETAIL = (
+    "write policy: deactivating an entry requires an interactive surface; this request is headless."
+)
+
+MAP_ERROR_LITERALS = [
+    (401, "x", "Error: KB service authentication failed (401). Check PERSONAL_KB_API_KEY."),
+    (403, _WP_DETAIL, f"Error: {_WP_DETAIL}"),
+    (403, "Admin only", "Error: admin privileges required (403): Admin only"),
+    (404, "x", "Error: x"),
+    (409, "x", "Error: x"),
+    (500, "x", "Error: KB service returned 500: x"),
+]
+
+
+@pytest.mark.parametrize(("status", "detail", "want"), MAP_ERROR_LITERALS)
+def test_map_error_literals(status: int, detail: str, want: str) -> None:
+    assert _map_error(BackendHttpError(status, detail), "http://kb.test") == want
+
+
+@pytest.mark.asyncio
+async def test_store_queued_returns_queued_store():
+    from personal_kb.backend.protocol import QueuedStore
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "queued",
+                "candidate_id": 4,
+                "surface": "headless",
+                "capture_mode": "shadow",
+            },
+        )
+
+    backend = _make_backend(handler)
+    res = await backend.store(short_title="t", long_title="l", knowledge_details="d")
+    assert res == QueuedStore(candidate_id=4, surface="headless", capture_mode="shadow")
+
+
+@pytest.mark.asyncio
+async def test_store_batch_queued_returns_queued_batch():
+    from personal_kb.backend.protocol import QueuedBatch
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "queued",
+                "requested": 2,
+                "candidate_ids": [5, 6],
+                "surface": "autonomous",
+                "capture_mode": "on",
+            },
+        )
+
+    backend = _make_backend(handler)
+    entry = {"short_title": "t", "long_title": "l", "knowledge_details": "d"}
+    res = await backend.store_batch([entry, entry])
+    assert res == QueuedBatch(candidate_ids=(5, 6), surface="autonomous", capture_mode="on")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("engine", "want"),
+    [
+        ("claude-code-sonnet", "claude-code-sonnet"),
+        (" talos ", "talos"),
+        (None, None),
+        ("  ", None),
+    ],
+)
+async def test_open_sends_harness_header_never_mode(
+    monkeypatch: pytest.MonkeyPatch, engine: str | None, want: str | None
+) -> None:
+    if engine is None:
+        monkeypatch.delenv("HEADLESS_BUILD_ENGINE", raising=False)
+    else:
+        monkeypatch.setenv("HEADLESS_BUILD_ENGINE", engine)
+    backend = HttpBackend(base_url="http://kb.test", api_key="k")
+    await backend.open()
+    try:
+        assert backend._client is not None
+        headers = backend._client.headers
+        assert headers.get("X-KB-Harness") == want
+        assert "X-KB-Mode" not in headers
+    finally:
+        await backend.close()

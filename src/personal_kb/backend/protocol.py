@@ -9,6 +9,7 @@ The Protocol is intentionally narrow: it only enumerates the operations the
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -17,6 +18,28 @@ if TYPE_CHECKING:
     from kb_core.ingest.ingester import FileResult
     from kb_core.models.entry import EntryType, KnowledgeEntry
     from kb_core.models.search import SearchQuery, SearchResult
+
+
+@dataclass(frozen=True)
+class QueuedStore:
+    """A create the KB service queued as a candidate instead of writing.
+
+    Returned by ``Backend.store`` when the server's write policy routed a
+    headless or autonomous ``kb_store`` to the candidate pipeline.
+    """
+
+    candidate_id: int
+    surface: str
+    capture_mode: str
+
+
+@dataclass(frozen=True)
+class QueuedBatch:
+    """A batch the KB service queued as candidates instead of writing."""
+
+    candidate_ids: tuple[int, ...]
+    surface: str
+    capture_mode: str
 
 
 class Backend(Protocol):
@@ -82,13 +105,15 @@ class Backend(Protocol):
         change_reason: str | None = None,
         supersedes: list[str] | Literal["none"] | None = None,
         distinct_from: list[str] | None = None,
-    ) -> tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None]:
+    ) -> tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None] | QueuedStore:
         """Create or update an entry.
 
         When *update_entry_id* is set the entry is updated and the action
         returned is ``'updated'``; otherwise a new entry is created and the
         action is ``'created'``.  The third element is the server-reported
         ``superseded_ids`` (None when the server did not report the key).
+        A :class:`QueuedStore` means the server's write policy queued the
+        create as a candidate instead of writing it.
         """
         ...
 
@@ -113,7 +138,7 @@ class Backend(Protocol):
     async def store_batch(
         self,
         entries: list[dict[str, Any]],
-    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]]:
+    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]] | QueuedBatch:
         """Create multiple entries.
 
         Returns ``(created, failed, superseded_ids)`` where *superseded_ids*
@@ -122,6 +147,7 @@ class Backend(Protocol):
         ``(index, short_title, error)`` tuples for per-entry failures.
         HttpBackend returns an empty *failed* list; the tool renders the
         aggregate failure count from ``len(created) < len(entries)``.
+        A :class:`QueuedBatch` means the server queued every entry.
         """
         ...
 

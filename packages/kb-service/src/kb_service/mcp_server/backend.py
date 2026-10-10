@@ -16,6 +16,7 @@ this class does not replicate.
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Literal, TypeVar, cast
 
 from fastapi import FastAPI
@@ -92,6 +93,28 @@ def _parse_file_result(data: dict[str, Any]) -> FileResult:
 def _parse_entry(data: dict[str, Any]) -> KnowledgeEntry:
     """Reconstruct a :class:`~kb_core.models.entry.KnowledgeEntry` from JSON."""
     return KnowledgeEntry.model_validate(data)
+
+
+@dataclass(frozen=True)
+class QueuedStore:
+    """A create the write policy queued as a candidate instead of writing.
+
+    Mirrors ``personal_kb.backend.protocol.QueuedStore`` (not shared: the
+    /mcp package must not import the stdio client).
+    """
+
+    candidate_id: int
+    surface: str
+    capture_mode: str
+
+
+@dataclass(frozen=True)
+class QueuedBatch:
+    """A batch the write policy queued as candidates instead of writing."""
+
+    candidate_ids: tuple[int, ...]
+    surface: str
+    capture_mode: str
 
 
 class InProcessBackend:
@@ -334,10 +357,14 @@ class InProcessBackend:
         change_reason: str | None = None,
         supersedes: list[str] | Literal["none"] | None = None,
         distinct_from: list[str] | None = None,
-    ) -> tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None]:
+    ) -> (
+        tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None]
+        | QueuedStore
+    ):
         """Create or update via ``kb_write_routes.store``.
 
-        Returns ``(action, entry, superseded_ids)``.
+        Returns ``(action, entry, superseded_ids)``, or a :class:`QueuedStore`
+        when the write policy queued the create.
         """
         body: dict[str, Any] = {
             "short_title": short_title,
@@ -381,7 +408,16 @@ class InProcessBackend:
 
         def parse(
             data: dict[str, Any],
-        ) -> tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None]:
+        ) -> (
+            tuple[Literal["created", "updated"], KnowledgeEntry, list[str] | None]
+            | QueuedStore
+        ):
+            if data.get("status") == "queued":
+                return QueuedStore(
+                    candidate_id=int(data["candidate_id"]),
+                    surface=str(data["surface"]),
+                    capture_mode=str(data["capture_mode"]),
+                )
             action: Literal["created", "updated"] = data["action"]
             entry = _parse_entry(data["entry"])
             raw_ids = data.get("superseded_ids")
@@ -435,7 +471,10 @@ class InProcessBackend:
     async def store_batch(
         self,
         entries: list[dict[str, Any]],
-    ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]]:
+    ) -> (
+        tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]]
+        | QueuedBatch
+    ):
         """Send all pre-validated entries in one ``kb_write_routes.store_batch``.
 
         The third element is the per-created-entry ``superseded_ids``.
@@ -482,7 +521,16 @@ class InProcessBackend:
 
         def parse(
             data: dict[str, Any],
-        ) -> tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]]:
+        ) -> (
+            tuple[list[KnowledgeEntry], list[tuple[int, str, str]], list[list[str]]]
+            | QueuedBatch
+        ):
+            if data.get("status") == "queued":
+                return QueuedBatch(
+                    candidate_ids=tuple(int(i) for i in data["candidate_ids"]),
+                    surface=str(data["surface"]),
+                    capture_mode=str(data["capture_mode"]),
+                )
             created = [_parse_entry(e) for e in data.get("created", [])]
             superseded = [
                 [str(i) for i in ids] for ids in data.get("superseded_ids") or []

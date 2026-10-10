@@ -16,8 +16,13 @@ import kb_service.auth as auth_module
 import kb_service.mcp_server.context as context_module
 from kb_service.auth import AuthPrincipal
 from kb_service.main import app
-from kb_service.mcp_server.backend import ADMIN_ONLY_METHODS, InProcessBackend
-from kb_service.mcp_server.errors import BackendHttpError
+from kb_service.mcp_server.backend import (
+    ADMIN_ONLY_METHODS,
+    InProcessBackend,
+    QueuedBatch,
+    QueuedStore,
+)
+from kb_service.mcp_server.errors import BackendHttpError, map_error
 from kb_service.mcp_server.observability import (
     MCP_BACKEND_MARKER,
     _backend_statuses,
@@ -369,3 +374,63 @@ def test_backend_for_request_builds_backend_for_principal(
     backend = context_module.backend_for_request()
     assert isinstance(backend, InProcessBackend)
     assert backend._principal is principal
+
+
+# ─── write policy: queued parsing and the 403 mapping ────────────────────────
+
+_WP_DETAIL = (
+    "write policy: deactivating an entry requires an interactive surface; this"
+    " request is headless."
+)
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "want"),
+    [
+        (
+            401,
+            "x",
+            "Error: KB service authentication failed (401). Check PERSONAL_KB_API_KEY.",
+        ),
+        (403, _WP_DETAIL, f"Error: {_WP_DETAIL}"),
+        (403, "Admin only", "Error: admin privileges required (403): Admin only"),
+        (404, "x", "Error: x"),
+        (409, "x", "Error: x"),
+        (500, "x", "Error: KB service returned 500: x"),
+    ],
+)
+def test_map_error_literals(status: int, detail: str, want: str) -> None:
+    assert map_error(BackendHttpError(status, detail)) == want
+
+
+async def test_store_parses_queued(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _queued(**kw: Any) -> Any:
+        return {
+            "status": "queued",
+            "candidate_id": 3,
+            "surface": "headless",
+            "capture_mode": "shadow",
+        }
+
+    monkeypatch.setattr(kb_write_routes, "store", _queued)
+    backend, _ = _backend()
+    res = await backend.store(short_title="s", long_title="l", knowledge_details="d")
+    assert res == QueuedStore(candidate_id=3, surface="headless", capture_mode="shadow")
+
+
+async def test_store_batch_parses_queued(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _queued(**kw: Any) -> Any:
+        return {
+            "status": "queued",
+            "requested": 2,
+            "candidate_ids": [4, 5],
+            "surface": "autonomous",
+            "capture_mode": "on",
+        }
+
+    monkeypatch.setattr(kb_write_routes, "store_batch", _queued)
+    backend, _ = _backend()
+    res = await backend.store_batch([_ENTRY, _ENTRY])
+    assert res == QueuedBatch(
+        candidate_ids=(4, 5), surface="autonomous", capture_mode="on"
+    )

@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from kb_service.auth import (
     authenticate_user,
@@ -31,6 +31,7 @@ from kb_service.models import (
     User,
     UserResponse,
 )
+from kb_service.write_policy import log_decision, resolve_write_context
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -106,21 +107,35 @@ async def reset_password(body: PasswordResetConsumeRequest) -> Response:
 @router.post("/api-keys", response_model=ApiKeyResponse, status_code=201)
 async def create_api_key(
     body: CreateApiKeyRequest,
+    request: Request,
     user: Annotated[User, Depends(get_current_user)],
 ) -> ApiKeyResponse:
-    """Generate a new API key. The plaintext key is returned only once."""
+    """Generate a new API key. The plaintext key is returned only once.
+
+    A key minted from a headless or autonomous surface inherits that surface,
+    so a non-interactive key cannot mint itself a trusted (NULL) key.
+    """
+    wctx = await resolve_write_context(request, user)
+    inherited = None if wctx.surface == "interactive" else wctx.surface
     db = await get_db()
     key = generate_api_key()
     h = hash_api_key(key)
     now = datetime.now(UTC).isoformat()
     await db.execute(
-        "INSERT INTO api_keys (id, user_id, key_hash, name, created_at)"
-        " VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO api_keys (id, user_id, key_hash, name, created_at, surface)"
+        " VALUES ($1, $2, $3, $4, $5, $6)",
         str(uuid.uuid4()),
         user.id,
         h,
         body.name,
         now,
+        inherited,
+    )
+    log_decision(
+        "mint_key",
+        "allowed",
+        wctx,
+        reason="inherited_surface" if inherited is not None else "",
     )
     return ApiKeyResponse(api_key=key, name=body.name)
 
