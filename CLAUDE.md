@@ -93,6 +93,8 @@ by the cross-package round-trip test in `tests/test_maps_index_writer.py`).
 
 **Replay experiment** (does the KB stop repeat mistakes? KB off vs session-start slice vs soft gate) lives in `scripts/replay/` — see `scripts/replay/README.md`. Its outputs go to a private eval repo, never this one.
 
+**Surprise detector eval** (precision/recall of the surprise-capture detector per shape on a private labelled set) lives in `scripts/surprise_eval/` — see `scripts/surprise_eval/README.md`. Its cases and outputs go to a private eval repo, never this one.
+
 **Search baseline** (MRR=0.85, NDCG=0.89) — run for any change to ranking, RRF weights, decay, or score normalization:
 
 1. Branch off main
