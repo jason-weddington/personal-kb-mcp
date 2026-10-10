@@ -223,6 +223,7 @@ def build_store_kwargs(
             "candidate_id": c.id,
             "surface": surface,
             "harness": c.detector_output.get("harness", ""),
+            "engine": c.detector_output.get("engine", ""),
             "api_key_id": c.detector_output.get("api_key_id"),
             "op": c.detector_output.get("op"),
             "lesson_class": verdict.lesson_class,

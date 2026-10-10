@@ -38,6 +38,7 @@ from kb_service.turn_digest import (
     surprise_capture_mode,
     turn_digest_anomalies,
 )
+from kb_service.write_policy import resolve_write_context
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
@@ -100,8 +101,16 @@ async def post_turn(
     request: Request,
     user: Annotated[User, Depends(get_current_user)],
 ) -> TurnDigestResponse:
-    """Record one per-turn digest (idempotent on ``event_id``)."""
-    del user  # auth gate only
+    """Record one per-turn digest (idempotent on ``event_id``).
+
+    ``mode`` is clamped to the caller's write-policy surface: a headless or
+    autonomous caller cannot record an interactive digest (it decides the
+    shape-1 first-sighting gate trust).
+    """
+    wctx = await resolve_write_context(request, user)
+    if wctx.surface != "interactive" and body.mode == "interactive":
+        logger.info("turn_event mode_clamped surface=%s from=interactive", wctx.surface)
+        body = body.model_copy(update={"mode": "headless"})
     nbytes = len(await request.body())
     n_calls = sum(1 for i in body.items if isinstance(i, TurnToolCallItem))
     n_reasoning = sum(1 for i in body.items if isinstance(i, TurnReasoningItem))

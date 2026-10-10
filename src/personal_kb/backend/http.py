@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import httpx
 
 from personal_kb.backend.protocol import QueuedBatch, QueuedStore
+from personal_kb.version_skew import client_version
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -106,6 +107,14 @@ def _parse_entry(data: dict[str, Any]) -> KnowledgeEntry:
     return KnowledgeEntry.model_validate(data)
 
 
+STDIO_HARNESS = "claude-code"
+
+
+def user_agent() -> str:
+    """``personal-kb/<installed version>`` (``unknown`` when not installed)."""
+    return f"personal-kb/{client_version() or 'unknown'}"
+
+
 class HttpBackend:
     """Backend that talks to a remote KB service over HTTP."""
 
@@ -123,14 +132,21 @@ class HttpBackend:
     async def open(self) -> None:
         """Open the shared httpx client.
 
-        Sends ``X-KB-Harness`` from ``HEADLESS_BUILD_ENGINE`` when it is set.
+        Sends ``User-Agent: personal-kb/<version>`` on every request. When
+        ``HEADLESS_BUILD_ENGINE`` is set it is sent as ``X-KB-Engine`` (an
+        engine string) and ``X-KB-Harness`` is the harness name
+        ``claude-code``; an engine string never goes in ``X-KB-Harness``.
         Never sends ``X-KB-Mode``: the stdio client does not self-declare a
         write-policy surface; the server resolves it from the API key.
         """
-        headers = {"Authorization": f"Bearer {self._api_key}"}
-        harness = os.environ.get("HEADLESS_BUILD_ENGINE", "").strip()
-        if harness:
-            headers["X-KB-Harness"] = harness
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "User-Agent": user_agent(),
+        }
+        engine = os.environ.get("HEADLESS_BUILD_ENGINE", "").strip()
+        if engine:
+            headers["X-KB-Engine"] = engine
+            headers["X-KB-Harness"] = STDIO_HARNESS
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers=headers,

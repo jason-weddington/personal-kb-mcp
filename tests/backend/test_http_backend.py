@@ -1706,16 +1706,19 @@ async def test_store_batch_queued_returns_queued_batch():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("engine", "want"),
+    ("engine", "want_engine", "want_harness"),
     [
-        ("claude-code-sonnet", "claude-code-sonnet"),
-        (" talos ", "talos"),
-        (None, None),
-        ("  ", None),
+        ("claude-code-sonnet", "claude-code-sonnet", "claude-code"),
+        (" talos ", "talos", "claude-code"),
+        (None, None, None),
+        ("  ", None, None),
     ],
 )
-async def test_open_sends_harness_header_never_mode(
-    monkeypatch: pytest.MonkeyPatch, engine: str | None, want: str | None
+async def test_open_sends_engine_and_harness_never_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    engine: str | None,
+    want_engine: str | None,
+    want_harness: str | None,
 ) -> None:
     if engine is None:
         monkeypatch.delenv("HEADLESS_BUILD_ENGINE", raising=False)
@@ -1726,7 +1729,39 @@ async def test_open_sends_harness_header_never_mode(
     try:
         assert backend._client is not None
         headers = backend._client.headers
-        assert headers.get("X-KB-Harness") == want
+        assert headers.get("X-KB-Engine") == want_engine
+        assert headers.get("X-KB-Harness") == want_harness
         assert "X-KB-Mode" not in headers
     finally:
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_open_sends_versioned_user_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.metadata
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("user-agent", ""))
+        return httpx.Response(200, json={})
+
+    backend = HttpBackend(base_url="http://kb.test", api_key="k")
+    await backend.open()
+    try:
+        assert backend._client is not None
+        backend._client._transport = httpx.MockTransport(handler)
+        await backend._client.get("/api/health")
+    finally:
+        await backend.close()
+    version = importlib.metadata.version("personal-kb")
+    assert seen == [f"personal-kb/{version}"]
+
+
+def test_user_agent_unknown_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    import personal_kb.backend.http as http_mod
+
+    monkeypatch.setattr(http_mod, "client_version", lambda: None)
+    assert http_mod.user_agent() == "personal-kb/unknown"

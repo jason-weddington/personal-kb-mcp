@@ -375,6 +375,7 @@ def test_write_context_fields() -> None:
         "user_id",
         "session_key",
         "user_agent",
+        "engine",
     ]
 
 
@@ -586,6 +587,7 @@ def test_capture_on_writes_after_distill(wp_client: WpClient, tmp_path: Path) ->
             "surface",
             "source",
             "harness",
+            "engine",
             "api_key_id",
             "user_id",
             "auth_method",
@@ -629,6 +631,7 @@ def test_capture_on_writes_after_distill(wp_client: WpClient, tmp_path: Path) ->
             "lesson-class:project_tooling",
         } <= set(entry["tags"])
         assert entry["hints"]["write_policy"]["candidate_id"] == 1
+        assert entry["hints"]["write_policy"]["engine"] == ""
         assert entry["contributor"] == "local@localhost"
         assert entry["confidence_level"] == pytest.approx(0.7)
         expires = datetime.fromisoformat(entry["expires_at"])
@@ -1639,3 +1642,91 @@ async def test_queue_store_interactive_raises(
             entry_type=EntryType.FACTUAL_REFERENCE,
             attr=Attribution(),
         )
+
+
+# --- follow-ups: engine header, user agent, turn mode clamp -------------------
+
+
+def test_engine_header_recorded_separately(
+    wp_client: WpClient, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    with wp_client("headless", "shadow") as (client, _llm, _critic):
+        new = client.post(
+            "/api/kb/store",
+            json=_store_body(),
+            headers={
+                "X-KB-Harness": "claude-code",
+                "X-KB-Engine": "claude-code sonnet!",
+                "User-Agent": "personal-kb/9.9.9",
+            },
+        )
+        assert new.json()["status"] == "queued"
+        old = client.post(
+            "/api/kb/store",
+            json=_store_body(short_title="Old client"),
+            headers={"X-KB-Harness": "claude-code-sonnet"},
+        )
+        assert old.json()["status"] == "queued"
+    queued = [ln for ln in _wp_lines(caplog) if "outcome=queued" in ln]
+    assert "harness='claude-code' engine='claude-codesonnet'" in queued[0]
+    assert "ua='personal-kb/9.9.9'" in queued[0]
+    assert "harness='claude-code-sonnet' engine=''" in queued[1]
+    rows = _candidates(tmp_path)
+    first = json.loads(rows[0]["detector_output"])
+    assert (first["harness"], first["engine"]) == ("claude-code", "claude-codesonnet")
+    second = json.loads(rows[1]["detector_output"])
+    assert (second["harness"], second["engine"]) == ("claude-code-sonnet", "")
+
+
+def _turn(mode: str | None) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "event_id": "s-1:0",
+        "session_id": "s-1",
+        "turn_index": 0,
+        "project": "p",
+        "user_prompt": "hello",
+        "items": [],
+    }
+    if mode is not None:
+        body["mode"] = mode
+    return body
+
+
+def _turn_mode(tmp_path: Path) -> str:
+    rows = _service_rows(tmp_path, "SELECT mode FROM turn_events")
+    assert len(rows) == 1
+    return str(rows[0]["mode"])
+
+
+@pytest.mark.parametrize(
+    ("default", "posted", "stored", "clamped"),
+    [
+        ("headless", "interactive", "headless", True),
+        ("headless", None, "headless", True),
+        ("autonomous", "interactive", "headless", True),
+        ("autonomous", "headless", "headless", False),
+        ("interactive", "interactive", "interactive", False),
+        ("interactive", "headless", "headless", False),
+    ],
+)
+def test_turn_mode_clamped_to_surface(
+    wp_client: WpClient,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    default: str,
+    posted: str | None,
+    stored: str,
+    clamped: bool,
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    with wp_client(default, "shadow") as (client, _llm, _critic):
+        resp = client.post("/api/kb/turn", json=_turn(posted))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["reason"] == "recorded"
+    assert _turn_mode(tmp_path) == stored
+    lines = [r.getMessage() for r in caplog.records if "mode_clamped" in r.getMessage()]
+    if clamped:
+        assert lines == [f"turn_event mode_clamped surface={default} from=interactive"]
+    else:
+        assert lines == []

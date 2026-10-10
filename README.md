@@ -547,15 +547,18 @@ An API key minted by a headless or autonomous caller inherits that surface, so a
 
 What happens to a queued create depends on `KB_SURPRISE_CAPTURE`. With `on`, the distiller and critic review it, and it may be written. With `shadow`, it gets a dry run only and nothing is written. With `off`, it is recorded for audit only. A written entry carries the `write-policy` tag and `surface:<surface>`, has confidence at most 0.7, and expires after the lesson TTL (`KB_SURPRISE_LESSON_TTL_DAYS`, 30 days).
 
-The stdio client sends `X-KB-Harness` from `HEADLESS_BUILD_ENGINE` when that is set, but never sends `X-KB-Mode`: its surface comes from its API key. For an unattended agent that connects to `/mcp` directly, add `--header "X-KB-Mode: headless"` and `--header "X-KB-Harness: <name>"` to its MCP config.
+The stdio client sends `User-Agent: personal-kb/<version>` on every request and never sends `X-KB-Mode`: its surface comes from its API key. When `HEADLESS_BUILD_ENGINE` is set, it sends that engine string as `X-KB-Engine` and the harness name `claude-code` as `X-KB-Harness`. The write-policy log line records `harness`, `engine` and `ua` separately; an older client that still puts the engine string in `X-KB-Harness` is logged with it as the harness. For an unattended agent that connects to `/mcp` directly, add `--header "X-KB-Mode: headless"` and `--header "X-KB-Harness: <name>"` to its MCP config.
+
+`POST /api/kb/turn` clamps a digest's `mode` to the caller's surface: a headless or autonomous caller that posts `mode: interactive` (or omits it) is recorded as `headless`, and the service logs `turn_event mode_clamped surface=<surface> from=interactive`.
 
 Rollout order for a fail-closed instance:
 
 1. Deploy kb-service.
 2. Upgrade personal-kb on every client whose key will be non-interactive. An older client renders a queued response as `Error: 'action'` and a write-policy 403 as `admin privileges required`.
-3. Run `kb-service list-keys`, then `kb-service set-key-surface --key-id <id> --surface interactive` for each interactive machine's key AND the machine-principal key (seed_resolutions.py updates and the nightly map maintenance run as the machine principal).
-4. Only then set `KB_WRITE_POLICY_DEFAULT_SURFACE=headless`.
-5. Set `KB_SURPRISE_CAPTURE` to `shadow` or `on`. On a SQLite KB, drain with `POST /api/kb/surprise/drain`, since the background worker needs Postgres.
+3. Verify every such client is upgraded before changing any surface: have each one make a write (a store from an interactive surface logs an `outcome=allowed` line), then check that the `write-policy` log lines for its `key_id` show `ua='personal-kb/<new version>'`. A line with an `httpx` user agent, or no line at all, means that client is not verified yet.
+4. Run `kb-service list-keys`, then `kb-service set-key-surface --key-id <id> --surface interactive` for each interactive machine's key AND the machine-principal key (seed_resolutions.py updates and the nightly map maintenance run as the machine principal).
+5. Only then set `KB_WRITE_POLICY_DEFAULT_SURFACE=headless`, and mark keys `headless` or `autonomous` with `kb-service set-key-surface`.
+6. Set `KB_SURPRISE_CAPTURE` to `shadow` or `on`. On a SQLite KB, drain with `POST /api/kb/surprise/drain`, since the background worker needs Postgres.
 
 ### Trust model and limitations
 

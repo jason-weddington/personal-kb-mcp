@@ -70,6 +70,7 @@ WriteOp = Literal[
 WRITE_POLICY_DEFAULT_SURFACE_ENV = "KB_WRITE_POLICY_DEFAULT_SURFACE"
 MODE_HEADER = "X-KB-Mode"
 HARNESS_HEADER = "X-KB-Harness"
+ENGINE_HEADER = "X-KB-Engine"
 HARNESS_MAX = 64
 USER_AGENT_MAX = 80
 WRITE_POLICY_MARKER = "write-policy"
@@ -107,7 +108,7 @@ def downgrade(base: Surface, header: Surface | None) -> Surface:
 
 
 def sanitize_harness(raw: str | None) -> str:
-    """The ``X-KB-Harness`` value reduced to a safe, bounded token."""
+    """An ``X-KB-Harness`` or ``X-KB-Engine`` value as a safe, bounded token."""
     return re.sub(r"[^A-Za-z0-9._:/-]", "", (raw or "").strip())[:HARNESS_MAX]
 
 
@@ -150,6 +151,7 @@ class WriteContext:
     user_id: str
     session_key: str
     user_agent: str
+    engine: str = ""
 
 
 async def resolve_write_context(request: Request, user: User) -> WriteContext:
@@ -195,6 +197,7 @@ async def resolve_write_context(request: Request, user: User) -> WriteContext:
         user_id=user.id,
         session_key=f"key:{api_key_id}" if api_key_id else f"user:{user.id}",
         user_agent=(request.headers.get("user-agent") or "")[:USER_AGENT_MAX],
+        engine=sanitize_harness(request.headers.get(ENGINE_HEADER)),
     )
 
 
@@ -217,7 +220,7 @@ def log_decision(
     """Emit the one INFO line for a write-policy decision (no entry text)."""
     logger.info(
         "%s op=%s outcome=%s surface=%s source=%s key_surface=%s header_mode=%s"
-        " header_mode_coerced=%d harness=%r key_id=%s user_id=%s auth=%s"
+        " header_mode_coerced=%d harness=%r engine=%r key_id=%s user_id=%s auth=%s"
         " capture_mode=%s candidate_ids=%s reason=%s ua=%r",
         WRITE_POLICY_MARKER,
         op,
@@ -228,6 +231,7 @@ def log_decision(
         _dash(wctx.header_mode),
         int(wctx.header_mode_coerced),
         wctx.harness,
+        wctx.engine,
         _dash(wctx.api_key_id),
         wctx.user_id,
         wctx.auth_method,
@@ -391,6 +395,7 @@ def _detector_output(
         "surface": wctx.surface,
         "source": wctx.source,
         "harness": wctx.harness,
+        "engine": wctx.engine,
         "api_key_id": wctx.api_key_id,
         "user_id": wctx.user_id,
         "auth_method": wctx.auth_method,
