@@ -90,7 +90,7 @@ by the cross-package round-trip test in `tests/test_maps_index_writer.py`).
 
 ## Search Quality Eval
 
-`tests/eval/` contains a regression framework with a controlled corpus (32 entries, 15 golden queries) and a `ControlledEmbedder` that makes vector search deterministic. Two baselines track quality at different layers:
+`tests/eval/` contains a regression framework with a controlled corpus (58 entries, 36 queries; the committed search baseline scores 28 of them and the agent baseline 13) and a `ControlledEmbedder` that makes vector search deterministic. Two baselines track quality at different layers:
 
 | Baseline | File | Deterministic? | What it measures |
 |----------|------|---------------|------------------|
@@ -101,7 +101,7 @@ by the cross-package round-trip test in `tests/test_maps_index_writer.py`).
 
 **Surprise detector eval** (precision/recall of the surprise-capture detector per shape on a private labelled set) lives in `scripts/surprise_eval/` — see `scripts/surprise_eval/README.md`. Its cases and outputs go to a private eval repo, never this one.
 
-**Search baseline** (MRR=0.85, NDCG=0.89) — run for any change to ranking, RRF weights, decay, or score normalization:
+**Search baseline** (MRR=0.91, NDCG=0.93 as of 2026-06-27) — run for any change to ranking, RRF weights, decay, or score normalization:
 
 1. Branch off main
 2. Make your change
