@@ -1,6 +1,6 @@
 [project]
 name = "personal-kb"
-version = "1.7.0"
+version = "1.8.0"
 description = "Personal Knowledge MCP Server — structured retrieval, knowledge graph, and multi-granularity summaries"
 requires-python = ">=3.13"
 dependencies = [
@@ -18,13 +18,13 @@ dependencies = [
     # The channel-agnostic engine. MUST be a real runtime dependency (not just
     # a dev-group dep) so `uvx`-from-git installs it — the server imports
     # kb_core directly. Resolved from the workspace via [tool.uv.sources] below.
-    "kb-core==1.7.0",
+    "kb-core==1.8.0",
     # The local kb-service daemon. A BASE dependency (not an extra) so the
     # plain `uvx --from git+...` install work users already run puts the
     # ``kb-service`` console script on PATH and local mode just works.
     # Workspace member at packages/kb-service (merged from the former
     # personal-kb-web-service repo).
-    "personal-kb-web-service==1.7.0",
+    "personal-kb-web-service==1.8.0",
 ]
 
 [project.scripts]
@@ -47,9 +47,9 @@ aws = [
 ]
 postgres = [
     "asyncpg>=0.29",
-    "kb-core[postgres]==1.7.0",
+    "kb-core[postgres]==1.8.0",
     # Hosted Pis: the kb-service service-auth DB is Postgres too.
-    "personal-kb-web-service[postgres]==1.7.0",
+    "personal-kb-web-service[postgres]==1.8.0",
 ]
 iam = [
     "boto3>=1.28",

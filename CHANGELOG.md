@@ -2,6 +2,112 @@
 
 <!-- version list -->
 
+## v1.8.0 (2026-10-10)
+
+### Bug Fixes
+
+- Test fixtures scrub KB_DB_PATH (the ambiguous-config guard turned an exported path into hundreds
+  of errors); docs sweep from the release review
+  ([`19544e8`](https://github.com/jason-weddington/personal-kb-mcp/commit/19544e8748fdbdf94322bb0db4cd32e8305ea522))
+
+- **576b4864**: Refuse to start when KB_DB_PATH is set alongside a Postgres URL (ambiguous; the URL
+  silently won and a test daemon wrote to a live KB)
+  ([`3100192`](https://github.com/jason-weddington/personal-kb-mcp/commit/31001920d2c0fefa6f2743568c359e24a641b34e))
+
+- **90ec54ec**: Repeat_failure_context_pairs invariant is re-arm aware (failure context legitimately
+  repeats after rearm_hours and compact/resume/clear)
+  ([`12fcddf`](https://github.com/jason-weddington/personal-kb-mcp/commit/12fcddf29b3beea2eec63e43a6b78cfebccab397))
+
+- **ee76119f**: Gate: an autonomous lesson needs observed grounding to gate, even at first sighting
+  (fail closed)
+  ([`3ba02b4`](https://github.com/jason-weddington/personal-kb-mcp/commit/3ba02b4ebc4bc24a1ddf3f43f53ee24c3d329a42))
+
+- **f2331adc**: Recent, Conventions and Related sections exclude expired entries (expired autonomous
+  lessons leaked into kb_preflight)
+  ([`e75dfbf`](https://github.com/jason-weddington/personal-kb-mcp/commit/e75dfbf2c7a6685d10c6e7dd3a2db302445af429))
+
+- **write-policy**: Clamp turn-digest mode to the key surface, split X-KB-Engine from X-KB-Harness,
+  versioned stdio User-Agent, safer rollout order
+  ([`be5b050`](https://github.com/jason-weddington/personal-kb-mcp/commit/be5b05030b1be1a1c1ef0943a66465eae3b0c92f))
+
+### Chores
+
+- **3a6d256b**: Contract fixtures: golden request/response JSON for GET /api/kb/prevention and POST
+  /api/kb/turn under contracts/
+  ([`d9804d2`](https://github.com/jason-weddington/personal-kb-mcp/commit/d9804d238bb39e1415e4a20b6de393ff4150889d))
+
+- **c91b7468**: Kb-service serves the MCP tool set over streamable HTTP at /mcp (bearer auth,
+  stateless, AuthPrincipal); stdio server deprecated for one release of overlap
+  ([`bc1b37d`](https://github.com/jason-weddington/personal-kb-mcp/commit/bc1b37ddeb2a693790eb976dde842e78f5262966))
+
+### Documentation
+
+- Eval-coverage audit (which KB memory features have kb-bench proof); fix stale eval numbers in
+  CLAUDE.md
+  ([`1d23d0f`](https://github.com/jason-weddington/personal-kb-mcp/commit/1d23d0f2f5e8daafffc0353145a7a718157c56e0))
+
+- Experience-loop roadmap, why agent memory matters (north-star framing)
+  ([`3bd9131`](https://github.com/jason-weddington/personal-kb-mcp/commit/3bd91311e4aae213794599035f2e583b81c50c59))
+
+- KB memory work follows the applied-science loop (roadmap and CLAUDE.md pointers)
+  ([`3ff64b4`](https://github.com/jason-weddington/personal-kb-mcp/commit/3ff64b470f1c452831e28d48607eeafcf82b6977))
+
+- No homelab host names in proposals (generic hardware wording)
+  ([`1beff3f`](https://github.com/jason-weddington/personal-kb-mcp/commit/1beff3f53a9f057d67f243e73e6dbaf47359f5d7))
+
+- North star and standing rules in CLAUDE.md; roadmap: capture on, eval coverage before more memory
+  features, standing guidance parked
+  ([`6cd8efa`](https://github.com/jason-weddington/personal-kb-mcp/commit/6cd8efac36748d7387b9d815d46278a54609a6ce))
+
+### Features
+
+- **043c8dd3**: Surprise capture shape 4: harness_correction TurnItem as deterministic headless
+  ground truth
+  ([`844ced3`](https://github.com/jason-weddington/personal-kb-mcp/commit/844ced386006a22b3231f510574bb8d09817d483))
+
+- **36aa2bd1**: Hook: roster 'Maps in other domains' line off by default (opt-in
+  KB_ROSTER_OTHER_DOMAINS), paused pending a kb-bench arm
+  ([`be0af83`](https://github.com/jason-weddington/personal-kb-mcp/commit/be0af83b559ec93b134654300e5acb354f1038dc))
+
+- **6edfa051**: Hook: failure context re-arms like the gate (rearm_hours window plus
+  compact/resume/clear), replacing once-per-session
+  ([`41b1c63`](https://github.com/jason-weddington/personal-kb-mcp/commit/41b1c6390b66d1da44e2caa2c481509d741a16cc))
+
+- **709d52fa**: Web UI Settings shows the /mcp HTTP config instead of the deprecated stdio snippet
+  ([`9b34f90`](https://github.com/jason-weddington/personal-kb-mcp/commit/9b34f9009e0c2f5ef225cbf775b860623b521ac2))
+
+- **839064fe**: Harness-neutral cues: KB-owned tool-name normalization (talos
+  bash/edit_file/write_file/read_file/list_files/run_checks to canonical Claude Code names)
+  ([`d09a3bb`](https://github.com/jason-weddington/personal-kb-mcp/commit/d09a3bb255f9cd55dd65a410fdf496d8df74f82e))
+
+- **8a9aefbb**: Turn digest: optional reasoning item {kind: reasoning, text, truncated}; shape-3
+  detector may read it
+  ([`6141835`](https://github.com/jason-weddington/personal-kb-mcp/commit/6141835f30f89de16a52eceff6c2860043effb95))
+
+- **da491dc4**: Server-side write policy: kb_store from headless/autonomous surfaces routes to the
+  candidate pipeline (per-surface API keys; X-KB-Mode/X-KB-Harness headers can only downgrade trust)
+  ([`b1666c2`](https://github.com/jason-weddington/personal-kb-mcp/commit/b1666c28f42161ff81f50621dfe918951b5fa597))
+
+- **f860a9e8**: /prevention takes the harness from X-KB-Harness when ?harness= is absent; contracts
+  encode the mapped-harness index rule
+  ([`f36c942`](https://github.com/jason-weddington/personal-kb-mcp/commit/f36c9428d74af169de23d96b180f55d358f67eab))
+
+- **gate**: Rate limits and re-arming replace the per-session deny budget, so weeks-long lead
+  sessions keep the gate
+  ([`3df3252`](https://github.com/jason-weddington/personal-kb-mcp/commit/3df32527c2d1f028cb2e51e778fbf35240651b4b))
+
+- **kb-service**: Admin-only observe API for raw turn digests, failure events and detector decisions
+  (feeds the applied-science failure observatory)
+  ([`373a566`](https://github.com/jason-weddington/personal-kb-mcp/commit/373a5668cc5d63287f9c84d41ee7f241518d0bcb))
+
+- **surprise**: Tag every autonomous lesson with a lesson class (metadata, no filtering)
+  ([`e1905cc`](https://github.com/jason-weddington/personal-kb-mcp/commit/e1905cc36d235f9877abf462ed7289538379e7ba))
+
+- **turn-digests**: Keep turn digests 90 days (was 30) for the failure observatory; hook keeps
+  session counters 91 days so a resumed session cannot reuse a retained event_id
+  ([`622ffd0`](https://github.com/jason-weddington/personal-kb-mcp/commit/622ffd0a54efece299d2787966987bb88055f1ee))
+
+
 ## v1.7.0 (2026-10-10)
 
 ### Documentation
