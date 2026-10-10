@@ -12,7 +12,7 @@ Deliver (v1.2.0 and v1.3.0): resolutions (`hints.resolution`: corrected fact, wr
 
 Measure: kb-bench (Harbor scenarios with a seeded offline KB per attempt, arms compared pairwise, single-session and two-session learning trials), the replay harness in `scripts/replay/`, and the failure-cue index that records every failed tool call with a normalised cue.
 
-Notice and write (on main, unreleased as of this update): surprise capture. The hook sends a turn digest at Stop when the server's `KB_SURPRISE_CAPTURE` is shadow or on. kb-service stores digests (`turn_events`, secrets redacted) and detects three shapes: (1) a failed Bash command later corrected in the same session, deterministic; (2) the user's next prompt corrects the previous assistant turn, one model call; (3) a tool output contradicts a claim earlier in the turn, one model call. In mode on, a distiller writes autonomous, observed resolutions and merges repeat sightings by bumping `observed_sessions`. Observed-once captures reach the slice with a hedged label and become gate-eligible at two sightings. The default is off. `POST /api/kb/surprise/drain` processes everything pending synchronously, for evals. Detector eval harness: `scripts/surprise_eval/`.
+Notice and write (released in v1.4.0, enabled on Jason's KB 2026-10-10 with the soft gate live): surprise capture. The hook sends a turn digest at Stop when the server's `KB_SURPRISE_CAPTURE` is shadow or on. kb-service stores digests (`turn_events`, secrets redacted) and detects three shapes: (1) a failed Bash command later corrected in the same session, deterministic; (2) the user's next prompt corrects the previous assistant turn, one model call; (3) a tool output contradicts a claim earlier in the turn, one model call. In mode on, a distiller writes autonomous, observed resolutions and merges repeat sightings by bumping `observed_sessions`. Observed-once captures reach the slice with a hedged label and become gate-eligible at two sightings. The default is off. `POST /api/kb/surprise/drain` processes everything pending synchronously, for evals. Detector eval harness: `scripts/surprise_eval/`.
 
 ## What the evals say so far
 
@@ -46,7 +46,23 @@ What the table shows:
 - Opus often suspected the problem itself in session 1 (for example, the truncated context on ollama), so the user's follow-up confirmed rather than corrected and nothing was captured, yet a fresh Opus fell for the trap again in session 2. Knowledge the agent arrives at on its own is lost; that is the case for automatic capture beyond corrections.
 - caddy-apt-learn does not trap Opus at all, and wireguard-reachability-learn is not rescued by either model; check its capture and lesson quality before reading more into it.
 
-Jobs: learn-matrix-opus-5-5-k3 and learn-matrix-sonnet-5-5-k3 in the kb-bench jobs dir; detector eval in the private evals repo (surprise/run-2026-10-10).
+Second round, on v1.4.0 (shape-1 compound fix and first-sighting gate eligibility in), four scenarios mined from Jason's transcripts plus review-push-learn again. Session-2 passes out of 3, learn_off → learn_on:
+
+| scenario | shape | Sonnet 5.5 | Opus 5.5 |
+|---|---|---|---|
+| review-push-learn | 1 | 0 → 0 | 0 → 3 |
+| removed-remote-learn | 2 | 0 → 3 | 0 → 2 |
+| uv-stale-install-learn | 3 | 0 → 0 | 2 → 3 |
+| gateway-bearer-learn | 3 | 0 → 0 | 0 → 0 |
+| tail-masks-failure-learn | 3 | 3 → 3 | 3 → 3 |
+
+- Opus review-push went 0 → 3: the shape-1 fix plus the gate catch a habitual wrong push that the slice alone could not.
+- Sonnet got the same correct deny 3/3 and retried the identical command each time. The deny reason still said "observed once, unconfirmed", contradicting the step-3 decision that first-sighting shape-1 and shape-2 captures are trusted. Fix dispatched as GTD 6fe0b2c7: trusted wording for shapes 1 and 2.
+- Shape 2 keeps working on a mined episode (removed-remote-learn).
+- Shape 3 as defined misses discovered knowledge. On gateway-bearer, Opus fixed the problem in session 1 and wrote "Root cause: ... That was wrong", but it never made a wrong claim for a tool output to contradict, so nothing was captured and session 2 fell for the trap. This matches the 0.09 detector recall; the redesign is GTD 13079367, overlapping 78a2997a.
+- tail-masks-failure-learn does not trap either model and serves as a regression check.
+
+Jobs: learn-matrix-*-k3 and learn-mined-*-k3 in the kb-bench jobs dir; detector eval in the private evals repo (surprise/run-2026-10-10).
 
 ## Next, in order
 
