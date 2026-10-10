@@ -145,8 +145,13 @@ async def list_surprise_candidates(
     for row, event_ids in parsed:
         turn = turns.get(event_ids[-1]) if event_ids else None
         dry_run = None
+        lesson_class = None
         if row["dry_run_id"] is not None:
             payload = _json_value(row["payload"], {})
+            raw_class = (
+                payload.get("lesson_class") if isinstance(payload, dict) else None
+            )
+            lesson_class = raw_class if isinstance(raw_class, str) else None
             dry_run = SurpriseDryRunOut(
                 would_outcome=row["would_outcome"],
                 reason=row["reason"],
@@ -170,6 +175,7 @@ async def list_surprise_candidates(
                 host=turn["host"] if turn is not None else None,
                 dry_run=dry_run,
                 entry_id=row["entry_id"],
+                lesson_class=lesson_class,
             )
         )
     return SurpriseCandidatesResponse(candidates=out)

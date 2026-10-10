@@ -24,11 +24,12 @@ from kb_service.prevention import Resolution
 from kb_service.surprise import SurpriseCandidate
 
 # bump on ANY change to SURPRISE_DISTILLER_SYSTEM, DISTILLER_INSTRUCTIONS,
-# DISTILLER_SCHEMA_LINE, SHAPE_DESCRIPTIONS, build_distill_prompt,
+# DISTILLER_SCHEMA_LINE, LESSON_CLASSES, LESSON_CLASS_DEFINITIONS,
+# LESSON_CLASS_PROMPT, SHAPE_DESCRIPTIONS, build_distill_prompt,
 # parse_distill_response, build_resolution, build_knowledge_details,
 # shape1_cue, find_exact_match, merge_block_reason, known_sessions,
 # merged_surprise_hint or the S0-S13 order
-SURPRISE_DISTILLER_VERSION: int = 5
+SURPRISE_DISTILLER_VERSION: int = 6
 
 # bump on ANY change to SURPRISE_CRITIC_SYSTEM, CRITIC_INSTRUCTIONS,
 # CRITIC_SCHEMA_LINE, build_critic_prompt or parse_critic_response
@@ -123,9 +124,62 @@ DISTILLER_INSTRUCTIONS = (
     " secrets, tokens, passwords or credentials in any field."
 )
 
+LESSON_CLASSES: tuple[str, ...] = (
+    "agent_harness",
+    "project_architecture",
+    "superseded_prior",
+    "product_guidance",
+    "homelab_infra",
+    "quality_gates",
+    "project_tooling",
+    "none",
+)
+
+LESSON_CLASS_DEFINITIONS: dict[str, str] = {
+    "agent_harness": (
+        "durable behaviour of the agent tooling stack used across projects (the"
+        " coding-agent harness and its hooks and background tasks, the task and"
+        " dispatch system, the headless worker fleet and its runtime)"
+    ),
+    "project_architecture": (
+        "a durable conceptual fact about how one project's own system or domain"
+        " model works, where docs, comments, names or priors would mislead (not"
+        " line numbers or call-graph snapshots)"
+    ),
+    "superseded_prior": (
+        "a fact about a public third-party technology (tool, library, service,"
+        " API, model, format) that general training knowledge gets wrong because"
+        " it changed, is newer, or is commonly misremembered"
+    ),
+    "product_guidance": (
+        "intent, principles, scope decisions and working conventions the user"
+        " has set or a project has recorded as decided"
+    ),
+    "homelab_infra": (
+        "a durable fact about the user's own machines, network, DNS, VPN or"
+        " personal setup that would change only if re-provisioned"
+    ),
+    "quality_gates": (
+        "what a specific project's deterministic gates actually run and enforce,"
+        " and where they can pass falsely"
+    ),
+    "project_tooling": (
+        "how one specific project is built, tested, released or deployed"
+    ),
+    "none": "fits no class above",
+}
+
+LESSON_CLASS_PROMPT = (
+    "Also set lesson_class to exactly one of these classes: "
+    + "; ".join(f"{k}: {LESSON_CLASS_DEFINITIONS[k]}" for k in LESSON_CLASSES)
+    + "."
+)
+
 DISTILLER_SCHEMA_LINE = (
     '{"durable": true|false, "why": str, "short_title": str, "long_title": str,'
-    ' "corrected_fact": str, "lesson": str}'
+    ' "corrected_fact": str, "lesson": str, "lesson_class": '
+    + "|".join(f'"{c}"' for c in LESSON_CLASSES)
+    + "}"
 )
 
 SHAPE_DESCRIPTIONS: dict[int, str] = {
@@ -209,6 +263,7 @@ class DistillVerdict:
     long_title: str
     corrected_fact: str
     lesson: str
+    lesson_class: str = "none"
 
 
 # --- prompt and parser -------------------------------------------------------
@@ -228,6 +283,7 @@ def build_distill_prompt(candidate: SurpriseCandidate) -> str:
             f"Corrected fact: {_output_str(candidate, 'corrected_fact')}",
             f"Evidence: {_output_str(candidate, 'evidence_excerpt')}",
             DISTILLER_INSTRUCTIONS,
+            LESSON_CLASS_PROMPT,
             DISTILLER_SCHEMA_LINE,
         ]
     )
@@ -251,12 +307,16 @@ def parse_distill_response(
             return None, "invalid_fields"
         fields.append(value.strip())
     short_title, long_title, corrected_fact, lesson = fields
+    lesson_class = obj.get("lesson_class")
+    if not isinstance(lesson_class, str) or lesson_class not in LESSON_CLASSES:
+        return None, "invalid_fields"
     return (
         DistillVerdict(
             short_title=short_title[:DISTILL_SHORT_TITLE_MAX],
             long_title=long_title[:DISTILL_LONG_TITLE_MAX],
             corrected_fact=corrected_fact[:DISTILL_CORRECTED_FACT_MAX],
             lesson=lesson[:DISTILL_LESSON_MAX],
+            lesson_class=lesson_class,
         ),
         None,
     )
@@ -613,24 +673,30 @@ def merged_surprise_hint(
     *,
     new: bool = False,
     mode: str | None = None,
+    lesson_class: str | None = None,
 ) -> dict[str, Any]:
     """The ``hints.surprise_capture`` value after folding in *candidate*.
 
     The shape and the session *mode* (``interactive``/``headless``, from the
     ``turn_events`` row of the candidate's last turn event) are written only
     for a *new* entry; a merge keeps the stored values (or their absence) and
-    never overwrites or adds them. An unknown or missing mode is left absent.
+    never overwrites or adds them. The *lesson_class* follows the same rule (the
+    first-written class is kept). An unknown or missing mode is left absent.
     """
     sessions, ids, event_ids = surprise_hint(hints)
     block = hints.get(SURPRISE_HINT_KEY)
     shape_part: dict[str, Any] = {}
     if new:
         shape_part = {"shape": candidate.shape}
+        if lesson_class in LESSON_CLASSES:
+            shape_part["lesson_class"] = lesson_class
         if mode in SURPRISE_MODES:
             shape_part["mode"] = mode
     else:
         if isinstance(block, dict) and "shape" in block:
             shape_part = {"shape": block["shape"]}
+        if isinstance(block, dict) and block.get("lesson_class") in LESSON_CLASSES:
+            shape_part["lesson_class"] = block["lesson_class"]
         kept = stored_mode(hints)
         if kept is not None:
             shape_part["mode"] = kept

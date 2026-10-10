@@ -878,6 +878,7 @@ def dry_run_payload(c: SurpriseCandidate, d: _Decision) -> dict[str, Any]:
         "long_title": v.long_title if v else "",
         "corrected_fact": v.corrected_fact if v else "",
         "lesson": v.lesson if v else "",
+        "lesson_class": v.lesson_class if v else None,
         "wrong_belief": str(c.detector_output.get("wrong_belief") or "").strip()[
             :RESOLUTION_WRONG_BELIEF_MAX
         ],
@@ -1092,10 +1093,20 @@ async def _decide_one(
             f"surprise_capture candidate {c.id} shape {c.shape} session {c.session_id}"
         ),
         "confidence_level": DISTILL_CONFIDENCE_LEVEL,
-        "tags": [SURPRISE_TAG, f"shape-{c.shape}"],
+        "tags": [
+            SURPRISE_TAG,
+            f"shape-{c.shape}",
+            f"lesson-class:{verdict.lesson_class}",
+        ],
         "hints": {
             **stamped,
-            SURPRISE_HINT_KEY: merged_surprise_hint({}, c, new=True, mode=turn_mode),
+            SURPRISE_HINT_KEY: merged_surprise_hint(
+                {},
+                c,
+                new=True,
+                mode=turn_mode,
+                lesson_class=verdict.lesson_class,
+            ),
         },
         "contributor": SURPRISE_CONTRIBUTOR,
         "expires_at": lesson_expires_at(),

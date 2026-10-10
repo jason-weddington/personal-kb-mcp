@@ -81,6 +81,7 @@ _D_OBJ: dict[str, Any] = {
     "long_title": "Push the current branch with git push origin HEAD:main",
     "corrected_fact": "Push with git push origin HEAD:main",
     "lesson": "git push origin main is rejected as non-fast-forward here.",
+    "lesson_class": "none",
 }
 D = json.dumps(_D_OBJ)
 _D_FIELDS = {k: v for k, v in _D_OBJ.items() if k != "durable"}
@@ -403,7 +404,12 @@ async def test_write_merge_same_session_sequence(
     assert entry.project_ref == "p"
     assert entry.contributor == "surprise-capture"
     assert entry.confidence_level == 0.7
-    assert sorted(entry.tags) == ["shape-1", "surprise-capture"]
+    assert sorted(entry.tags) == [
+        "lesson-class:none",
+        "shape-1",
+        "surprise-capture",
+    ]
+    assert entry.hints["surprise_capture"]["lesson_class"] == "none"
     assert (
         entry.source_context == f"surprise_capture candidate {c1.id} shape 1 session s1"
     )
@@ -432,6 +438,7 @@ async def test_write_merge_same_session_sequence(
         },
         "surprise_capture": {
             "shape": 1,
+            "lesson_class": "none",
             "sessions": ["s1"],
             "candidate_ids": [c1.id],
             "event_ids": ["s1:0"],
@@ -481,6 +488,7 @@ async def test_write_merge_same_session_sequence(
     assert _res_of(entry)["evidence"] == "rejected"
     assert entry.hints["surprise_capture"] == {
         "shape": 1,
+        "lesson_class": "none",
         "sessions": ["s1", "s2"],
         "candidate_ids": [c1.id, c2.id],
         "event_ids": ["s1:0", "s2:0"],
@@ -861,6 +869,7 @@ D_SECRET = json.dumps(
     {
         **_D_OBJ,
         "lesson": "Fetch it with curl https://user:s3cretpass@example.com/x first.",
+        "lesson_class": "none",
     }
 )
 

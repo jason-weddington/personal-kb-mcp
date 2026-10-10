@@ -221,6 +221,7 @@ async def test_shadow_would_write_records_and_writes_nothing(
         "long_title": "Push the current branch with git push origin HEAD:main",
         "corrected_fact": "Push with git push origin HEAD:main",
         "lesson": "git push origin main is rejected as non-fast-forward here.",
+        "lesson_class": "none",
         "wrong_belief": "git push origin main",
         "cue": {
             "tool": "Bash",
@@ -247,6 +248,7 @@ async def test_shadow_not_durable(pool: SqlitePool, kb: Any, llm: FakeLLM) -> No
     payload = json.loads(r["payload"])
     assert payload["short_title"] == payload["lesson"] == ""
     assert payload["wrong_belief"] == "git push origin main"
+    assert payload["lesson_class"] is None
     assert await _lessons(kb) == 0
 
 
@@ -599,6 +601,7 @@ async def test_shadow_critic_rejection_records_critic_rejected(
     assert payload["critic_version"] == SURPRISE_CRITIC_VERSION
     assert payload["critic"]["durable"] is False
     assert payload["short_title"] == "Push to HEAD:main"
+    assert payload["lesson_class"] == "none"
     assert await _distillations(pool) == []
     assert await _lessons(kb) == 0
     assert len(critic.generate_calls) == 1

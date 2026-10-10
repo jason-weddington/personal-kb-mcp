@@ -962,6 +962,7 @@ class SurpriseCandidateAudit(BaseModel):
     host: str | None
     dry_run: SurpriseDryRunOut | None
     entry_id: str | None
+    lesson_class: str | None = None
 
 
 class SurpriseCandidatesResponse(BaseModel):

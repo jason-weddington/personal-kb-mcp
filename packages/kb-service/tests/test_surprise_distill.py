@@ -85,6 +85,7 @@ def _valid(**kw: Any) -> str:
         "long_title": "long t",
         "corrected_fact": "fact",
         "lesson": "lesson",
+        "lesson_class": "none",
     }
     obj.update(kw)
     return json.dumps(obj)
@@ -109,7 +110,10 @@ def test_pinned_literals() -> None:
     assert "  " not in DISTILLER_INSTRUCTIONS
     assert DISTILLER_SCHEMA_LINE == (
         '{"durable": true|false, "why": str, "short_title": str, '
-        '"long_title": str, "corrected_fact": str, "lesson": str}'
+        '"long_title": str, "corrected_fact": str, "lesson": str, '
+        '"lesson_class": "agent_harness"|"project_architecture"|'
+        '"superseded_prior"|"product_guidance"|"homelab_infra"|"quality_gates"|'
+        '"project_tooling"|"none"}'
     )
     assert SHAPE_DESCRIPTIONS[2] == (
         "The human's next message corrected a claim or assumption from the "
@@ -120,7 +124,7 @@ def test_pinned_literals() -> None:
         "backed by tool output, that contradicts what it, the code, a comment, a "
         "doc, a config or the environment had indicated before."
     )
-    assert sd.SURPRISE_DISTILLER_VERSION == 5
+    assert sd.SURPRISE_DISTILLER_VERSION == 6
     assert sd.SURPRISE_EVENT_IDS_CAP == 20
     assert sd.SURPRISE_HINT_LIST_CAP == 100
 
@@ -160,7 +164,7 @@ def test_parse_valid_in_fence() -> None:
         "```json\n" + _valid(why="x", scope="global") + "\n```"
     )
     assert reject is None
-    assert verdict == DistillVerdict("t", "long t", "fact", "lesson")
+    assert verdict == DistillVerdict("t", "long t", "fact", "lesson", "none")
 
 
 @pytest.mark.parametrize(
@@ -174,6 +178,8 @@ def test_parse_valid_in_fence() -> None:
         (_valid(short_title=""), "invalid_fields"),
         (_valid(short_title="   "), "invalid_fields"),
         (_valid(lesson=5), "invalid_fields"),
+        (_valid(lesson_class="bogus"), "invalid_fields"),
+        (_valid(lesson_class=None), "invalid_fields"),
     ],
 )
 def test_parse_rejects(raw: str | None, reject: str) -> None:
@@ -346,7 +352,7 @@ def test_distiller_instructions_durability_test() -> None:
     ) in DISTILLER_INSTRUCTIONS
     examples_end = DISTILLER_INSTRUCTIONS.index("leave the other fields empty.")
     assert DISTILLER_INSTRUCTIONS.index("Also set durable to false") > examples_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 5
+    assert sd.SURPRISE_DISTILLER_VERSION == 6
 
 
 _SCOPE_RULE = (
@@ -367,7 +373,7 @@ def test_distiller_instructions_scope_rule() -> None:
         "would plausibly hold the same wrong belief."
     )
     assert DISTILLER_INSTRUCTIONS.index(_SCOPE_RULE) > durability_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 5
+    assert sd.SURPRISE_DISTILLER_VERSION == 6
     assert _SCOPE_RULE in build_distill_prompt(_cand())
 
 
@@ -685,3 +691,50 @@ def test_merge_block_reason() -> None:
         "resolution": {"corrected_fact": "f", "provenance": {"capture": "deliberate"}}
     }
     assert merge_block_reason(deliberate, None) == "deliberate"
+
+
+def test_lesson_classes_pinned() -> None:
+    assert sd.LESSON_CLASSES == (
+        "agent_harness",
+        "project_architecture",
+        "superseded_prior",
+        "product_guidance",
+        "homelab_infra",
+        "quality_gates",
+        "project_tooling",
+        "none",
+    )
+    assert set(sd.LESSON_CLASS_DEFINITIONS) == set(sd.LESSON_CLASSES)
+    assert sd.LESSON_CLASS_DEFINITIONS["none"] == "fits no class above"
+    assert sd.LESSON_CLASS_DEFINITIONS["quality_gates"] == (
+        "what a specific project's deterministic gates actually run and enforce,"
+        " and where they can pass falsely"
+    )
+    assert sd.LESSON_CLASS_DEFINITIONS["project_tooling"] == (
+        "how one specific project is built, tested, released or deployed"
+    )
+    prompt = build_distill_prompt(_cand())
+    for name, definition in sd.LESSON_CLASS_DEFINITIONS.items():
+        assert f"{name}: {definition}" in prompt
+
+
+def test_parse_accepts_each_class() -> None:
+    for name in sd.LESSON_CLASSES:
+        verdict, reject = parse_distill_response(_valid(lesson_class=name))
+        assert reject is None and verdict is not None
+        assert verdict.lesson_class == name
+
+
+def test_merge_keeps_first_lesson_class() -> None:
+    first = merged_surprise_hint(
+        {}, _cand(cid=1, session_id="s1"), new=True, lesson_class="quality_gates"
+    )
+    assert first["lesson_class"] == "quality_gates"
+    again = merged_surprise_hint(
+        {"surprise_capture": first},
+        _cand(cid=2, session_id="s2"),
+        lesson_class="none",
+    )
+    assert again["lesson_class"] == "quality_gates"
+    legacy = merged_surprise_hint({"surprise_capture": {"sessions": ["a"]}}, _cand())
+    assert "lesson_class" not in legacy
