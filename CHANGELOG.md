@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.6.0 (2026-10-10)
+
+### Features
+
+- **surprise**: Shadow mode dry-runs the distiller; GET /api/kb/surprise/candidates for agent audits
+  ([`808baa3`](https://github.com/jason-weddington/personal-kb-mcp/commit/808baa35ffe0ef70ea42052dad04b1969acb3729))
+
+
 ## v1.5.0 (2026-10-10)
 
 ### Bug Fixes
