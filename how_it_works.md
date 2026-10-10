@@ -624,6 +624,10 @@ Two channels deliver known corrections back into a session before the mistake re
 
 **`GET /api/kb/prevention/stats`.** Reports decision counts, armed sessions per host (a host absent here has a dead or unwired gate), pre_tool error totals and invariant violations (sessions over the cap, repeated denies of one resolution, repeated failure-context deliveries of one resolution). The kill criterion is `retry_changed_share` = changed retries / non-abandoned retries: kill the gate if it is below 0.30. It is measured from real denies only, so it is None in shadow mode. `would_deny_precision` is the share of `would_deny` rows followed, in the same session, by a non-interrupt `failure_events` row with the same tool and target_class at or after the decision's ts.
 
+## Wire contracts (contracts/)
+
+`contracts/` holds golden request/response fixtures for `GET /api/kb/prevention` and `POST /api/kb/turn`, written only by `packages/kb-service/scripts/gen_contracts.py` from the live pydantic models, the FastAPI OpenAPI query parameters and the server's own builders (so no env value leaks in). The generator also compares the models against the committed fixture and, on a detectable breaking change (removed property, newly required field, removed enum member or TurnItem kind, tightened limit, changed path), refuses to write until `CONTRACT_VERSIONS` is bumped. `packages/kb-service/tests/test_contracts_service.py` checks the fixtures are fresh and drives the real routes with them, and `packages/personal-kb-hook/tests/test_contracts_hook.py` feeds the same files to the hook's prevention client and turn-digest sender without importing the service. Harnesses such as talos vendor the directory verbatim; the format, invariants and the `contract_version` bump rule are in `contracts/README.md`.
+
 ## Surprise capture
 
 The feature turns per-turn digests sent by the hook into detected surprises and distilled lessons. `KB_SURPRISE_CAPTURE` takes `off|shadow|on`, default `off`; any other value means `off`, and it is read on every call. The current value at processing time decides shadow vs on, and the stored per-row `capture_mode` is informational only.

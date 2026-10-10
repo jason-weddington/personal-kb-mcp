@@ -279,3 +279,15 @@ Two layers close the feedback loop between agents and the KB maintainer:
 - `list_feedback` — list recent feedback, filterable by `feedback_type` and `since`
 - `summarize_feedback` — pipe feedback to query LLM for theme clustering, falls back to raw list
 - `search_stats` — search telemetry overview: total queries, zero-result rate, avg top score, top missed queries
+
+## Wire contracts (contracts/)
+
+`contracts/` holds golden fixtures for `GET /api/kb/prevention` and `POST /api/kb/turn` that other harnesses vendor.
+
+Any change to `PreventionResponse` or its nested models, `TurnDigestRequest`, the `TurnItem` union or its item models, `TurnDigestResponse`, the `/api/kb/prevention` query params, `TURN_DIGEST_MAX_BYTES` or `harness_tools.HARNESS_TOOL_MAPS`, including a docstring edit on any of these models, fails `test_contracts_service.py` until you run `uv run python packages/kb-service/scripts/gen_contracts.py`.
+
+A new `TurnItem` kind also needs an example item in `_CLAUDE_CODE_ITEMS` or `_TALOS_ITEMS`.
+
+A breaking change makes the generator refuse to write until you bump `CONTRACT_VERSIONS` (rule in `contracts/README.md`).
+
+Never hand-edit the JSON.

@@ -851,7 +851,7 @@ class TurnHarnessCorrectionItem(BaseModel):
     resolved: bool
 
 
-# To add a new item kind, do all six steps:
+# To add a new item kind, do all seven steps:
 # (1) add its model to this union;
 # (2) add an isinstance branch before assert_never in
 #     turn_digest.redact_turn_digest;
@@ -859,7 +859,9 @@ class TurnHarnessCorrectionItem(BaseModel):
 # (4) add its kind to test_turn_item_kinds_pinned;
 # (5) add its keys to DIGEST_ITEM_KEYS in scripts/surprise_eval/surprise_eval.py;
 # (6) decide whether surprise.render_items renders it, since unknown kinds are
-#     skipped.
+#     skipped;
+# (7) add an example item to _CLAUDE_CODE_ITEMS or _TALOS_ITEMS in
+#     packages/kb-service/scripts/gen_contracts.py and run it.
 TurnItem = Annotated[
     TurnAssistantTextItem
     | TurnToolCallItem

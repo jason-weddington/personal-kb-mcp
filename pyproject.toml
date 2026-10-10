@@ -80,6 +80,7 @@ dev = [
     # KbConfig + the import-purity guard.
     "kb-core[postgres,iam,aws,anthropic,ingest,safety]",
     "vulture>=2.15",
+    "jsonschema>=4.26,<5",
 ]
 
 [tool.uv.workspace]

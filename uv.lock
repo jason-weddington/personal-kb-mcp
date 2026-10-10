@@ -1697,6 +1697,7 @@ postgres = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "jsonschema" },
     { name = "kb-core", extra = ["anthropic", "aws", "iam", "ingest", "postgres", "safety"] },
     { name = "mypy" },
     { name = "personal-kb", extra = ["aws", "iam", "postgres"] },
@@ -1736,6 +1737,7 @@ provides-extras = ["aws", "postgres", "iam", "safety", "local"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "jsonschema", specifier = ">=4.26,<5" },
     { name = "kb-core", extras = ["postgres", "iam", "aws", "anthropic", "ingest", "safety"], editable = "packages/kb-core" },
     { name = "mypy", specifier = ">=1.14" },
     { name = "personal-kb", extras = ["aws", "postgres", "iam"] },
