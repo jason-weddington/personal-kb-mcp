@@ -219,7 +219,7 @@ Format: `type(optional-scope): description`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KB_DB_PATH` | `~/.local/share/personal_kb/knowledge.db` | Database file |
+| `KB_DB_PATH` | `~/.local/share/personal_kb/knowledge.db` | Database file. kb-service refuses to start if this is set together with `KB_DATABASE_URL` or `KB_SERVICE_DATABASE_URL` (ambiguous config) |
 | `KB_OLLAMA_URL` | `http://localhost:11434` | Ollama API URL |
 | `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Embedding model |
 | `KB_EMBEDDING_DIM` | `1024` | Embedding vector dimensions |

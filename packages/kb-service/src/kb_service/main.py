@@ -25,7 +25,7 @@ from kb_service.config import (
     build_ingest_config,
     build_provider_config,
 )
-from kb_service.database import close_db, init_db
+from kb_service.database import check_database_config, close_db, init_db
 from kb_service.routes.admin_routes import router as admin_router
 from kb_service.routes.auth_routes import router as auth_router
 from kb_service.routes.chat_routes import router as chat_router
@@ -150,6 +150,7 @@ async def _open_kb() -> "KnowledgeBase":
     lifespan via ``TestClient`` would otherwise reach an un-patched
     factory on whichever branch the env happens to take.
     """
+    check_database_config()
     database_url = os.environ.get("KB_DATABASE_URL")
     if database_url:
         return await create_postgres(
@@ -215,6 +216,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     them. A failure constructing ``app.state.kb`` itself (before the
     ``try``) still fails app startup outright, same as before.
     """
+    check_database_config()
     await init_db()
 
     app.state.kb = await _open_kb()

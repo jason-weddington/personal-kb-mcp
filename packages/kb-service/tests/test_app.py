@@ -434,3 +434,114 @@ def test_surprise_drain_creates_lock_when_missing(
     resp = client.post("/api/kb/surprise/drain")
     assert resp.status_code == 200
     assert app.state.surprise_drain_lock is not None
+
+
+# --- ambiguous database config ---------------------------------------------
+
+
+def _record_factories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[Any], list[Any]]:
+    pg: list[Any] = []
+    lite: list[Any] = []
+
+    async def _pg(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        pg.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    async def _lite(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        lite.append((args, kwargs))
+        return FakeKnowledgeBase(results=[], filtered_count=0)
+
+    monkeypatch.setattr(main_module, "create_postgres", _pg)
+    monkeypatch.setattr(main_module, "create_sqlite", _lite)
+    return pg, lite
+
+
+async def test_open_kb_refuses_db_path_with_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg, lite = _record_factories(monkeypatch)
+    monkeypatch.setenv("KB_DB_PATH", "/data/throwaway.db")
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://secret-host/db")
+    monkeypatch.delenv("KB_SERVICE_DATABASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError) as exc:
+        await main_module._open_kb()
+
+    msg = str(exc.value)
+    assert "KB_DB_PATH" in msg
+    assert "KB_DATABASE_URL" in msg
+    assert "secret-host" not in msg
+    assert pg == []
+    assert lite == []
+
+
+async def test_open_kb_refuses_db_path_with_service_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg, lite = _record_factories(monkeypatch)
+    monkeypatch.setenv("KB_DB_PATH", "/data/throwaway.db")
+    monkeypatch.delenv("KB_DATABASE_URL", raising=False)
+    monkeypatch.setenv("KB_SERVICE_DATABASE_URL", "postgresql://secret-host/svc")
+
+    with pytest.raises(RuntimeError, match="KB_SERVICE_DATABASE_URL") as exc:
+        await main_module._open_kb()
+
+    assert "secret-host" not in str(exc.value)
+    assert pg == []
+    assert lite == []
+
+
+async def test_get_db_refuses_ambiguous_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kb_service import database
+
+    monkeypatch.setattr(database, "_pool", None)
+    monkeypatch.setenv("KB_DB_PATH", "/data/throwaway.db")
+    monkeypatch.setenv("KB_SERVICE_DATABASE_URL", "postgresql://h/svc")
+
+    with pytest.raises(RuntimeError, match="ambiguous database config"):
+        await database.get_db()
+
+
+async def test_open_kb_db_path_with_empty_database_url_is_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg, lite = _record_factories(monkeypatch)
+    monkeypatch.setenv("KB_DB_PATH", "/data/throwaway.db")
+    monkeypatch.setenv("KB_DATABASE_URL", "")
+    monkeypatch.setenv("KB_SERVICE_DATABASE_URL", "  ")
+
+    await main_module._open_kb()
+
+    assert [c[0] for c in lite] == [("/data/throwaway.db",)]
+    assert pg == []
+
+
+async def test_open_kb_database_url_alone_is_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg, lite = _record_factories(monkeypatch)
+    monkeypatch.delenv("KB_DB_PATH", raising=False)
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://x/y")
+
+    await main_module._open_kb()
+
+    assert len(pg) == 1
+    assert lite == []
+
+
+async def test_open_kb_neither_is_default_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg, lite = _record_factories(monkeypatch)
+    monkeypatch.delenv("KB_DB_PATH", raising=False)
+    monkeypatch.delenv("KB_DATABASE_URL", raising=False)
+    monkeypatch.delenv("KB_SERVICE_DATABASE_URL", raising=False)
+
+    await main_module._open_kb()
+
+    assert [c[0] for c in lite] == [("~/.local/share/personal_kb/knowledge.db",)]
+    assert pg == []

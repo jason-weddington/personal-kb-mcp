@@ -47,6 +47,7 @@ Configure the service with environment variables (see `.env.example` for the ful
 - `JWT_SECRET` — long random string used to sign sessions.
 - `KB_SERVICE_DATABASE_URL` — DSN of the service's auth/app-config database.
 - `KB_DATABASE_URL` — DSN of the kb-core data database.
+- Setting `KB_DB_PATH` together with `KB_DATABASE_URL` or `KB_SERVICE_DATABASE_URL` is a startup error; unset one.
 - `KB_SERVICE_PUBLIC_URL` — public base URL, used in invite and password-reset links.
 - `KB_OLLAMA_URL`, `KB_EMBEDDING_MODEL`, `KB_EMBEDDING_DIM` — embeddings.
 - `KB_LOG_LEVEL` — log level for the `kb_service`/`kb_core` loggers (default `INFO`; unknown values fall back to `INFO` with a warning). Third-party libraries stay at `WARNING`. Logs go to stderr (the journal under systemd).

@@ -503,6 +503,32 @@ def is_sqlite_pool(pool: Any) -> bool:
     return isinstance(pool, SqlitePool)
 
 
+def check_database_config() -> None:
+    """Fail closed when ``KB_DB_PATH`` is set alongside a Postgres URL.
+
+    A Postgres URL silently wins over ``KB_DB_PATH``, so a throwaway-SQLite
+    intent could write to a live KB. Empty values count as unset. Only the
+    variable names are reported, never their values.
+
+    Raises:
+        RuntimeError: If ``KB_DB_PATH`` and ``KB_DATABASE_URL`` and/or
+            ``KB_SERVICE_DATABASE_URL`` are all non-empty.
+    """
+    if not os.environ.get("KB_DB_PATH", "").strip():
+        return
+    conflicts = [
+        name
+        for name in ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL")
+        if os.environ.get(name, "").strip()
+    ]
+    if conflicts:
+        names = " and ".join(conflicts)
+        raise RuntimeError(
+            f"ambiguous database config: KB_DB_PATH is set together with {names}; "
+            f"unset {names} to use the SQLite file, or unset KB_DB_PATH to use Postgres"
+        )
+
+
 async def get_db() -> DbPool:
     """Return the service-auth connection pool, creating it lazily if needed.
 
@@ -517,6 +543,7 @@ async def get_db() -> DbPool:
     """
     global _pool
     if _pool is None:
+        check_database_config()
         # Local import: kb_service.auth imports this module at load time.
         from kb_service.auth import _auth_mode
 
