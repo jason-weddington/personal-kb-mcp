@@ -196,8 +196,42 @@ function buildMcpSnippet(
   )
 }
 
+const MCP_SERVER_NAME = 'personal-kb'
+
+/** `<base URL>/mcp` — the streamable-HTTP MCP endpoint served by this instance. */
+function mcpUrl(): string {
+  return `${window.location.origin}/mcp`
+}
+
+/** Primary option: `claude mcp add --transport http` one-liner. */
+function buildHttpCommand(apiKey: string): string {
+  return `claude mcp add --transport http ${MCP_SERVER_NAME} ${mcpUrl()} --header "Authorization: Bearer ${apiKey}"`
+}
+
+/** Primary option: the equivalent `mcpServers` JSON block. */
+function buildHttpJson(apiKey: string): string {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        [MCP_SERVER_NAME]: {
+          type: 'http',
+          url: mcpUrl(),
+          headers: { Authorization: `Bearer ${apiKey}` },
+        },
+      },
+    },
+    null,
+    2,
+  )
+}
+
 // Exposed for unit tests.
-export const __testing = { buildMcpSnippet, DEFAULT_MCP_CLIENT_FROM }
+export const __testing = {
+  buildMcpSnippet,
+  buildHttpCommand,
+  buildHttpJson,
+  DEFAULT_MCP_CLIENT_FROM,
+}
 
 function ApiAccessCard() {
   const [keys, setKeys] = useState<ApiKeyInfo[]>([])
@@ -297,6 +331,8 @@ function ApiAccessCard() {
     }
   }, [deleteTarget])
 
+  const httpCommand = createdKey ? buildHttpCommand(createdKey.apiKey) : ''
+  const httpJson = createdKey ? buildHttpJson(createdKey.apiKey) : ''
   const mcpSnippet = createdKey ? buildMcpSnippet(createdKey.apiKey, team, installSpec) : ''
 
   return (
@@ -447,7 +483,51 @@ function ApiAccessCard() {
             </Box>
 
             <Typography variant="subtitle2" gutterBottom>
-              MCP Config Snippet
+              MCP over HTTP (recommended)
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
+              <TextField
+                value={httpCommand}
+                inputProps={{ readOnly: true, style: { fontFamily: 'monospace' } }}
+                fullWidth
+                size="small"
+                multiline
+              />
+              <IconButton
+                size="small"
+                aria-label="copy mcp command"
+                onClick={() => {
+                  void navigator.clipboard.writeText(httpCommand)
+                }}
+              >
+                <ContentCopyIcon fontSize="small" />
+              </IconButton>
+            </Box>
+            <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1 }}>
+              Or add this JSON under <code>mcpServers</code> in <code>~/.claude.json</code>:
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 3 }}>
+              <TextField
+                value={httpJson}
+                inputProps={{ readOnly: true, style: { fontFamily: 'monospace' } }}
+                fullWidth
+                size="small"
+                multiline
+                rows={8}
+              />
+              <IconButton
+                size="small"
+                aria-label="copy mcp json"
+                onClick={() => {
+                  void navigator.clipboard.writeText(httpJson)
+                }}
+              >
+                <ContentCopyIcon fontSize="small" />
+              </IconButton>
+            </Box>
+
+            <Typography variant="subtitle2" gutterBottom>
+              Local stdio (deprecated)
             </Typography>
             <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
               <TextField
@@ -469,8 +549,9 @@ function ApiAccessCard() {
               </IconButton>
             </Box>
             <Typography variant="caption" color="text.secondary">
+              The stdio server is deprecated in favour of the HTTP endpoint above.
               Paste this into <code>~/.claude.json</code> under{' '}
-              <code>mcpServers</code>. The thin client is pulled via{' '}
+              <code>mcpServers</code> only if you still need it. The thin client is pulled via{' '}
               <code>uvx --from</code> using the install spec configured on the
               server.{installSpec.includes('git+ssh://') &&
                 ' SSH access to the git host is required.'}

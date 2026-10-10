@@ -150,6 +150,18 @@ describe('Settings page — API Access card (create-key flow)', () => {
     expect(snippetValue).not.toContain('MCP_TOOL_PREFIX')
     // team=null default → KB_INSTANCE_ROLE must be absent (kb_* tools).
     expect(snippetValue).not.toContain('KB_INSTANCE_ROLE')
+
+    // Primary: /mcp HTTP command + JSON, stdio labelled deprecated.
+    const mcp = `${window.location.origin}/mcp`
+    const values = inputs.map((el) => (el as HTMLInputElement).value)
+    expect(values).toContain(
+      `claude mcp add --transport http personal-kb ${mcp} --header "Authorization: Bearer ${plainKey}"`,
+    )
+    const jsonVal = values.find((v) => v.includes('"type": "http"'))
+    expect(jsonVal).toBeDefined()
+    expect(jsonVal).toContain(`"url": "${mcp}"`)
+    expect(jsonVal).toContain(`"Authorization": "Bearer ${plainKey}"`)
+    expect(within(createdDialog).getByText(/local stdio \(deprecated\)/i)).toBeInTheDocument()
   })
 
   it('team set → KB_INSTANCE_ROLE=team is emitted in the snippet', async () => {
