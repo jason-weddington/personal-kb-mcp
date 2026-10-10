@@ -222,7 +222,11 @@ def parse_resolution(entry_id: str, updated_at: str, hints_raw: object) -> Resol
         capture=capture,
         grounding=grounding,
         observed_sessions=observed,
-        observed_once=capture == "autonomous" and observed < 2,
+        observed_once=(
+            capture == "autonomous"
+            and observed < 2
+            and shape not in FIRST_SIGHTING_SHAPES
+        ),
         scope=str(scope),
         cue_args_prefix=args_prefix,
         shape=shape,
@@ -315,12 +319,19 @@ def _gate_trusted(r: Resolution) -> bool:
     reaches the slice labelled 'observed once, unconfirmed', and only while
     ``KB_DELIVER_OBSERVED_ONCE`` is on; it is gate-eligible at first sighting
     only when ``hints.surprise_capture.shape`` is 1 or 2 (unknown or 3 stays
-    out). An autonomous + observed
+    out). Shape 1 and 2 first sightings are not ``observed_once``: they are
+    delivered without the hedge. An autonomous + observed
     resolution becomes gate-eligible at ``observed_sessions >= 2`` (recurrence
     promotion); autonomous + asserted stays untrusted at any count.
     """
     if r.observed_once:
-        return r.shape in FIRST_SIGHTING_SHAPES
+        return False
+    if (
+        r.capture == "autonomous"
+        and r.observed_sessions < 2
+        and r.shape in FIRST_SIGHTING_SHAPES
+    ):
+        return True
     return r.capture == "deliberate" or r.grounding == "observed"
 
 
@@ -332,7 +343,6 @@ def count_index_excluded_observed_once(resolutions: list[Resolution]) -> int:
         if r.cue_tool == "Bash"
         and " " in r.cue_target_class
         and r.observed_once
-        and r.shape not in FIRST_SIGHTING_SHAPES
         and r.grounding == "observed"
     )
 

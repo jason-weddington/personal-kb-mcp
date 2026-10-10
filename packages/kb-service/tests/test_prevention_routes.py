@@ -871,11 +871,18 @@ async def test_observed_once_gate_admission_by_shape(
     )
     resolutions, _ = await load_resolutions(kb.db, "p", True)
     (r,) = [x for x in resolutions if x.entry_id == str(entry.id)]
-    assert r.observed_once is True
+    assert r.observed_once is (not admitted)
     assert r.shape == (shape if shape in (1, 2, 3) else None)
     index, _ = build_gate_index(resolutions)
     assert (str(entry.id) in [c.resolution_id for c in index]) is admitted
     assert count_index_excluded_observed_once(resolutions) == (0 if admitted else 1)
+    label = provenance_label(r)
+    assert ("observed once" not in label) is admitted
+    entries = [c for c in index if c.resolution_id == str(entry.id)]
+    assert [c.observed_once for c in entries] == ([False] if admitted else [])
+    items, _ = build_slice(resolutions, [])
+    text = render_slice("p", items)
+    assert ("observed once" not in text) is admitted
 
 
 async def test_shape_does_not_change_other_resolutions(kb: Any) -> None:

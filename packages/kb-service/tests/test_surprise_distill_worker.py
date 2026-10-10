@@ -1209,8 +1209,9 @@ def test_end_to_end_recurrence_promotion(
     )
     prev = _prevention(client)
     labels = {s["entry_id"]: s["provenance_label"] for s in prev["slice"]}
-    assert labels[x] == "autonomous/observed, observed once, unconfirmed"
+    assert labels[x] == "autonomous/observed"
     assert [c["resolution_id"] for c in prev["index"]] == [x]
+    assert [c["observed_once"] for c in prev["index"]] == [False]
     assert prev["diagnostics"]["index_excluded_observed_once"] == 0
 
     _seed_push(client, "s2")
