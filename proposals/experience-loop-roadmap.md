@@ -134,6 +134,10 @@ Also shipped overnight:
 
 kb-bench qwen lane (Claude Code on qwen3.8:27b-256k on a local GPU): two-session trials on removed-remote, stop-hook, ollama-num-ctx and review-push, k=2, running overnight.
 
+## Shipped 2026-10-10: v1.8.0
+
+Talos wiring (tool-name map with the index served to mapped harnesses, reasoning and harness_correction digest items, shape-4 capture), MCP over streamable HTTP at `/mcp` (stdio deprecated for one release), the server-side write policy (key surfaces, header downgrade, non-interactive creates queued as candidates, digest mode clamped to the surface, per-surface MCP tool allow-list), contract fixtures for `/prevention` and `/turn`, the admin observe API for the failure observatory, 90-day digest retention, and fixes (fail-closed gate grounding, failure context re-arms, preflight hides expired entries, roster cross-project line opt-in, ambiguous DB config refused). Deployed to all three KBs; the release review (review-against-intent) found two seams and both were fixed before release. On Jason's KB the interactive keys are marked interactive and the new talos and observatory keys autonomous; the shared dispatch-hosts key stays on the default until the fleet's MCP client moves from a pinned pre-1.8 commit to v1.8.0.
+
 ## Next: eval coverage before more memory features (Jason, 2026-10-10)
 
 **Process change (Jason, 2026-10-10): this is a science project now, not an engineering one.** Memory features come out of a loop of failure modes, hypotheses, pre-registered lab tests in kb-bench, and building only the winners; engineering implements winners and no longer originates memory features. The general machinery lives in the applied-science repo (`docs/design.md`); this work is its study 001 (`studies/001-kb-delivery-coverage`). Order: expand kb-bench so uncovered features can be evaluated, build and run those evals, present formal findings (kills and dedupes), remediate to a clean state, then continue toward the north star through the science loop. Decision record: kb-03739.
