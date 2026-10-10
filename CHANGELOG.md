@@ -30,16 +30,6 @@
   versioned stdio User-Agent, safer rollout order
   ([`be5b050`](https://github.com/jason-weddington/personal-kb-mcp/commit/be5b05030b1be1a1c1ef0943a66465eae3b0c92f))
 
-### Chores
-
-- **3a6d256b**: Contract fixtures: golden request/response JSON for GET /api/kb/prevention and POST
-  /api/kb/turn under contracts/
-  ([`d9804d2`](https://github.com/jason-weddington/personal-kb-mcp/commit/d9804d238bb39e1415e4a20b6de393ff4150889d))
-
-- **c91b7468**: Kb-service serves the MCP tool set over streamable HTTP at /mcp (bearer auth,
-  stateless, AuthPrincipal); stdio server deprecated for one release of overlap
-  ([`bc1b37d`](https://github.com/jason-weddington/personal-kb-mcp/commit/bc1b37ddeb2a693790eb976dde842e78f5262966))
-
 ### Documentation
 
 - Eval-coverage audit (which KB memory features have kb-bench proof); fix stale eval numbers in
@@ -61,6 +51,14 @@
 
 ### Features
 
+- **3a6d256b**: Contract fixtures: golden request/response JSON for GET /api/kb/prevention and POST
+  /api/kb/turn under contracts/
+  ([`d9804d2`](https://github.com/jason-weddington/personal-kb-mcp/commit/d9804d238bb39e1415e4a20b6de393ff4150889d))
+
+- **c91b7468**: Kb-service serves the MCP tool set over streamable HTTP at /mcp (bearer auth,
+  stateless, AuthPrincipal); stdio server deprecated for one release of overlap
+  ([`bc1b37d`](https://github.com/jason-weddington/personal-kb-mcp/commit/bc1b37ddeb2a693790eb976dde842e78f5262966))
+
 - **043c8dd3**: Surprise capture shape 4: harness_correction TurnItem as deterministic headless
   ground truth
   ([`844ced3`](https://github.com/jason-weddington/personal-kb-mcp/commit/844ced386006a22b3231f510574bb8d09817d483))
@@ -77,7 +75,8 @@
   ([`9b34f90`](https://github.com/jason-weddington/personal-kb-mcp/commit/9b34f9009e0c2f5ef225cbf775b860623b521ac2))
 
 - **839064fe**: Harness-neutral cues: KB-owned tool-name normalization (talos
-  bash/edit_file/write_file/read_file/list_files/run_checks to canonical Claude Code names)
+  bash, edit_file, read_file, list_files->LS, run_checks and finish to canonical Claude Code names; talos
+  has no write_file)
   ([`d09a3bb`](https://github.com/jason-weddington/personal-kb-mcp/commit/d09a3bb255f9cd55dd65a410fdf496d8df74f82e))
 
 - **8a9aefbb**: Turn digest: optional reasoning item {kind: reasoning, text, truncated}; shape-3
