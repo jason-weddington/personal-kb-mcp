@@ -966,7 +966,7 @@ def test_drain_prunes_first(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     _seed_f(local_client)
-    old = (datetime.now(UTC) - timedelta(days=31)).isoformat(timespec="seconds")
+    old = (datetime.now(UTC) - timedelta(days=91)).isoformat(timespec="seconds")
     _exec("UPDATE turn_events SET received_ts = ? WHERE event_id = 's1:0'", old)
     order: list[str] = []
     real_prune = surprise_worker.prune_turn_events

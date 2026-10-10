@@ -37,7 +37,7 @@ from kb_service.routes.event_routes import _normalize_ts
 logger = logging.getLogger(__name__)
 
 TURN_DIGEST_MAX_BYTES = 65536
-TURN_EVENTS_RETENTION_DAYS = 30
+TURN_EVENTS_RETENTION_DAYS = 90
 
 _INSERT_SQL = (
     "INSERT INTO turn_events (event_id, session_id, harness, mode, engine, host,"

@@ -917,14 +917,16 @@ def test_orphan_sweep_gcs_turn_files(server: _Server, tmp_path: Path) -> None:
         os.utime(p, (now - age_days * 86400, now - age_days * 86400))
         return p
 
-    old_state = make("turn-state-other.json", 32)
+    old_state = make("turn-state-other.json", 92)
     young_state = make("turn-state-young.json", 8)
-    own_state = make(f"turn-state-{_SID}.json", 32)
+    month_state = make("turn-state-month.json", 32)
+    own_state = make(f"turn-state-{_SID}.json", 92)
     old_log = make("turn-digest-log-other.jsonl", 8)
     young_log = make("turn-digest-log-young.jsonl", 1)
     prevention.orphan_sweep(_SID)
     assert not old_state.exists()
     assert young_state.exists()
+    assert month_state.exists()  # outlives the server's 90-day digest retention
     assert own_state.exists()
     assert not old_log.exists()
     assert young_log.exists()

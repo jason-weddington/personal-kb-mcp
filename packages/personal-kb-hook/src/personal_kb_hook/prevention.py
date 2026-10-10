@@ -78,7 +78,7 @@ _ORPHAN_MIN_AGE_SECONDS = 3600.0
 _CACHE_GC_AGE_SECONDS = 7 * 24 * 3600.0
 # Longer than the server's 30-day turn_events retention, so a counter removed
 # by GC cannot restart and reuse an event_id the server still retains.
-_TURN_STATE_GC_AGE_SECONDS = 31 * 24 * 3600.0
+_TURN_STATE_GC_AGE_SECONDS = 91 * 24 * 3600.0
 # Server surprise-capture modes; lives here (not turn_digest) to avoid a cycle.
 SURPRISE_CAPTURE_MODES: tuple[str, ...] = ("off", "shadow", "on")
 _REASON_CAP = 1000
@@ -931,7 +931,7 @@ def orphan_sweep(current_session_id: str) -> None:
     and :data:`telemetry._ORPHAN_SWEEP_BUDGET_SECONDS` of wall time. Prevention
     caches older than seven days are unlinked, as are ``turn-digest-log-*``
     files older than seven days, other sessions' ``turn-state-*`` files
-    older than 31 days, and failure-context-* state files older than seven days.
+    older than 91 days, and failure-context-* state files older than seven days.
     """
     try:
         cache_dir = get_gate_log_path("placeholder").parent

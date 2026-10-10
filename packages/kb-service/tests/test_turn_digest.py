@@ -108,12 +108,12 @@ async def test_pending_mark_and_claim(pool: SqlitePool) -> None:
 
 async def test_prune_strict_cutoff(pool: SqlitePool) -> None:
     now = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
-    for turn, days in enumerate((31, 30, 1)):
+    for turn, days in enumerate((91, 90, 31, 1)):
         received = (now - timedelta(days=days)).isoformat(timespec="seconds")
         await _insert(pool, _body("s1", turn), received)
     assert await prune_turn_events(pool, now=now) == 1
     remaining = await get_session_turn_digests(pool, "s1")
-    assert [r.turn_index for r in remaining] == [1, 2]
+    assert [r.turn_index for r in remaining] == [1, 2, 3]
 
 
 async def test_retruncation_after_redaction(
