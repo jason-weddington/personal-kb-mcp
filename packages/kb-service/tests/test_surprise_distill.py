@@ -114,7 +114,7 @@ def test_pinned_literals() -> None:
         "backed by tool output, that contradicts what it, the code, a comment, a "
         "doc, a config or the environment had indicated before."
     )
-    assert sd.SURPRISE_DISTILLER_VERSION == 3
+    assert sd.SURPRISE_DISTILLER_VERSION == 4
     assert sd.SURPRISE_EVENT_IDS_CAP == 20
     assert sd.SURPRISE_HINT_LIST_CAP == 100
 
@@ -213,7 +213,11 @@ def test_build_resolution_shape1() -> None:
         },
         "observed_sessions": 1,
         "scope": "project",
-        "cue": {"tool": "Bash", "target_class": "git push"},
+        "cue": {
+            "tool": "Bash",
+            "target_class": "git push",
+            "args_prefix": "origin main",
+        },
     }
     assert validate_and_stamp_resolution(
         {"resolution": res}, is_machine=True, entry_type="lesson_learned"
@@ -234,17 +238,18 @@ def test_build_resolution_caps_evidence() -> None:
 
 
 def test_shape1_cue_fixed_point(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert shape1_cue("git push origin main") == {
+    assert shape1_cue("git push origin main", "git push origin HEAD:main") == {
         "tool": "Bash",
         "target_class": "git push",
+        "args_prefix": "origin main",
     }
-    assert shape1_cue("") is None
+    assert shape1_cue("", "git push origin main") is None
 
     def fake(tool: str, target: str) -> str:
         return {"weird cmd": "Weird", "Weird": "weird"}.get(target, "")
 
     monkeypatch.setattr(sd, "target_class", fake)
-    assert shape1_cue("weird cmd") is None
+    assert shape1_cue("weird cmd", "weird other") is None
     res = build_resolution(
         _cand(output={**_OUTPUT1, "wrong_belief": "weird cmd"}), _VERDICT
     )
@@ -253,14 +258,89 @@ def test_shape1_cue_fixed_point(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_shape1_cue_uses_cue_target_class() -> None:
     wb = "git show HEAD | tail -8; git push origin main"
-    assert shape1_cue(wb, "git push") == {"tool": "Bash", "target_class": "git push"}
-    assert shape1_cue(wb, "git push origin") is None
-    assert shape1_cue(wb, None) == {"tool": "Bash", "target_class": "git show"}
+    ok = "git show HEAD~1 && git push origin HEAD:main"
+    push = {"tool": "Bash", "target_class": "git push", "args_prefix": "origin main"}
+    assert shape1_cue(wb, ok, "git push") == push
+    assert shape1_cue(wb, ok, "git push origin") is None
+    assert shape1_cue(wb, ok, None) == {
+        "tool": "Bash",
+        "target_class": "git show",
+        "args_prefix": "HEAD",
+    }
     res = build_resolution(
-        _cand(output={**_OUTPUT1, "wrong_belief": wb, "cue_target_class": "git push"}),
+        _cand(
+            output={
+                **_OUTPUT1,
+                "wrong_belief": wb,
+                "corrected_fact": ok,
+                "cue_target_class": "git push",
+            }
+        ),
         _VERDICT,
     )
-    assert res["cue"] == {"tool": "Bash", "target_class": "git push"}
+    assert res["cue"] == push
+
+
+@pytest.mark.parametrize(
+    ("failed", "success", "expected"),
+    [
+        (
+            "git push origin main",
+            "git push origin HEAD:refs/for/main",
+            {"tool": "Bash", "target_class": "git push", "args_prefix": "origin main"},
+        ),
+        (
+            "cd /x && uv run --frozen ruff check . && uv run --frozen ruff format .",
+            "uv run --frozen ruff check pkg/a.py",
+            {"tool": "Bash", "target_class": "uv run", "args_prefix": "ruff check ."},
+        ),
+        (
+            "git checkout origin/feat-x",
+            "git checkout -b feat-x FETCH_HEAD",
+            {
+                "tool": "Bash",
+                "target_class": "git checkout",
+                "args_prefix": "origin/feat-x",
+            },
+        ),
+        ("make test", "make test", None),
+        ("npm run build", "npm run build -- --mode prod", None),
+        # F empty: no args to narrow on.
+        ("git push", "git push origin main", None),
+        # The success command has no segment of the cue class.
+        ("git push origin main", "ls", None),
+        # Identical first three args: the prefix cannot tell them apart.
+        ("uv run a b c d", "uv run a b c e", None),
+    ],
+)
+def test_shape1_cue_pinned(
+    failed: str, success: str, expected: dict[str, str] | None
+) -> None:
+    cue = shape1_cue(failed, success)
+    assert cue == expected
+    if cue is not None:
+        res = {"corrected_fact": "f", "cue": cue}
+        stamped = validate_and_stamp_resolution(
+            {"resolution": res}, is_machine=True, entry_type="lesson_learned"
+        )
+        assert stamped is not None
+        assert stamped["resolution"]["cue"] == cue
+
+
+def test_distiller_instructions_durability_test() -> None:
+    assert (
+        "Also set durable to false when the failure was caused by this session's"
+        " own in-progress changes or by a transient state of this checkout or"
+        " environment (for example lint or test errors present only at that"
+        " moment, a branch not yet fetched, a file not yet created, a service"
+        " that was briefly down), or when the successful command only narrowed"
+        " the scope of the same check for this task. A durable lesson states a"
+        " fact about the project, its tools or its environment that will still be"
+        " true for a fresh session tomorrow."
+    ) in DISTILLER_INSTRUCTIONS
+    examples_end = DISTILLER_INSTRUCTIONS.index("leave the other fields empty.")
+    assert DISTILLER_INSTRUCTIONS.index("Also set durable to false") > examples_end
+    assert sd.SURPRISE_DISTILLER_VERSION == 4
 
 
 def test_build_knowledge_details() -> None:
@@ -389,6 +469,30 @@ def test_merge_keeps_first_shape() -> None:
         {"surprise_capture": {"sessions": ["a"]}}, _cand(cid=3, shape=1)
     )
     assert "shape" not in legacy
+
+
+def test_merge_records_and_keeps_first_mode() -> None:
+    c1 = _cand(cid=1, session_id="s1")
+    assert "mode" not in merged_surprise_hint({}, c1, new=True)
+    assert "mode" not in merged_surprise_hint({}, c1, new=True, mode="batch")
+    first = merged_surprise_hint({}, c1, new=True, mode="headless")
+    assert first["mode"] == "headless"
+    again = merged_surprise_hint(
+        {"surprise_capture": first},
+        _cand(cid=2, session_id="s2"),
+        mode="interactive",
+    )
+    assert again["mode"] == "headless"
+    legacy = merged_surprise_hint(
+        {"surprise_capture": {"sessions": ["a"]}},
+        _cand(cid=3, session_id="s3"),
+        mode="interactive",
+    )
+    assert "mode" not in legacy
+    bad = merged_surprise_hint(
+        {"surprise_capture": {"mode": "weird"}}, _cand(cid=4, session_id="s4")
+    )
+    assert "mode" not in bad
 
 
 def test_known_sessions() -> None:

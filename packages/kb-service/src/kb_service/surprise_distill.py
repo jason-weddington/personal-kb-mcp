@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from kb_core.cues import target_class
+from kb_core.cues import bash_segments, target_class
 from kb_core.llm.json_parser import parse_json_object
 
 from kb_service.prevention import Resolution
@@ -22,14 +22,18 @@ from kb_service.surprise import SurpriseCandidate
 # bump on ANY change to SURPRISE_DISTILLER_SYSTEM, DISTILLER_INSTRUCTIONS,
 # DISTILLER_SCHEMA_LINE, SHAPE_DESCRIPTIONS, build_distill_prompt,
 # parse_distill_response, build_resolution, build_knowledge_details,
-# find_exact_match, merge_block_reason, known_sessions or the S0-S13 order
-SURPRISE_DISTILLER_VERSION: int = 3
+# shape1_cue, find_exact_match, merge_block_reason, known_sessions,
+# merged_surprise_hint or the S0-S13 order
+SURPRISE_DISTILLER_VERSION: int = 4
 
 SURPRISE_CONTRIBUTOR = "surprise-capture"
 SURPRISE_HINT_KEY = "surprise_capture"
 SURPRISE_TAG = "surprise-capture"
 REDACTION_MARKER = "[REDACTED:"
 GATE_DENY_MARKER = "KB soft gate (deny once"
+
+SURPRISE_MODES = frozenset({"interactive", "headless"})
+SHAPE1_ARGS_PREFIX_MAX_TOKENS = 3
 
 DISTILL_CONFIDENCE_LEVEL = 0.7
 DISTILL_SHORT_TITLE_MAX = 80
@@ -53,7 +57,15 @@ DISTILLER_INSTRUCTIONS = (
     " this project. Set durable to false when the correction only applies to"
     " this one moment: a typo, a transient network or service error, a file or"
     " resource that did not exist yet, or a one-off preference; then set why to"
-    " a short reason and leave the other fields empty. Set durable to true only"
+    " a short reason and leave the other fields empty. Also set durable to false"
+    " when the failure was caused by this session's own in-progress changes or"
+    " by a transient state of this checkout or environment (for example lint or"
+    " test errors present only at that moment, a branch not yet fetched, a file"
+    " not yet created, a service that was briefly down), or when the successful"
+    " command only narrowed the scope of the same check for this task. A"
+    " durable lesson states a fact about the project, its tools or its"
+    " environment that will still be true for a fresh session tomorrow. Set"
+    " durable to true only"
     " when a future session in this project would plausibly hold the same wrong"
     " belief. corrected_fact is one self-contained sentence a future agent can"
     " act on, at most 300 characters. short_title is at most 80 characters and"
@@ -180,18 +192,54 @@ def not_durable_reason(raw: str | None) -> str:
 # --- resolution builders -----------------------------------------------------
 
 
-def shape1_cue(
-    wrong_belief: str, cue_target_class: str | None = None
-) -> dict[str, str] | None:
-    """The Bash cue for a shape-1 wrong belief, when its class is a fixed point.
+def _segment_args(command: str, cls: str) -> list[str] | None:
+    """Args-after-class of the first segment of *command* classed *cls*."""
+    for seg_class, seg_args in bash_segments(command):
+        if seg_class == cls:
+            return seg_args
+    return None
 
+
+def shape1_args_prefix(failed: str, success: str, cls: str) -> str | None:
+    """The shortest args prefix of *failed* that *success* does not share.
+
+    F and S are the args after *cls* (flags dropped) of the first segment of
+    each command classed *cls*. The prefix is ``' '.join(F[:k])`` for the
+    smallest k in 1..min(3, len(F)) with ``F[:k] != S[:k]``. None when either
+    segment is missing, F is empty, or no such k exists (the success command
+    would match the prefix too, so the cue could not tell them apart).
+    """
+    f_args = _segment_args(failed, cls)
+    s_args = _segment_args(success, cls)
+    if not f_args or s_args is None:
+        return None
+    for k in range(1, min(SHAPE1_ARGS_PREFIX_MAX_TOKENS, len(f_args)) + 1):
+        if f_args[:k] != s_args[:k]:
+            return " ".join(f_args[:k])
+    return None
+
+
+def shape1_cue(
+    wrong_belief: str,
+    success_command: str,
+    cue_target_class: str | None = None,
+) -> dict[str, str] | None:
+    """The precise Bash cue for a shape-1 failure, or None.
+
+    *wrong_belief* is the failed command and *success_command* the later
+    command of the same class that succeeded (shape 1's ``corrected_fact``).
     *cue_target_class* is the class the detector paired on; when absent the
-    class of the whole wrong belief is used.
+    class of the whole wrong belief is used. The class must be a fixed point,
+    and the cue carries the ``args_prefix`` from :func:`shape1_args_prefix`;
+    without one there is no cue, so the lesson reaches the slice only.
     """
     tc = cue_target_class or target_class("Bash", wrong_belief)
-    if tc != "" and target_class("Bash", tc) == tc:
-        return {"tool": "Bash", "target_class": tc}
-    return None
+    if tc == "" or target_class("Bash", tc) != tc:
+        return None
+    prefix = shape1_args_prefix(wrong_belief, success_command, tc)
+    if not prefix:
+        return None
+    return {"tool": "Bash", "target_class": tc, "args_prefix": prefix}
 
 
 def build_resolution(
@@ -222,7 +270,11 @@ def build_resolution(
         "scope": "project",
     }
     if candidate.shape == 1:
-        cue = shape1_cue(wrong_belief, _output_str(candidate, "cue_target_class"))
+        cue = shape1_cue(
+            wrong_belief,
+            _output_str(candidate, "corrected_fact"),
+            _output_str(candidate, "cue_target_class"),
+        )
         if cue is not None:
             resolution["cue"] = cue
     return resolution
@@ -252,9 +304,13 @@ def normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().casefold()
 
 
-def _cue_tuple(cue: Mapping[str, str] | None) -> tuple[str, str]:
+def _cue_tuple(cue: Mapping[str, Any] | None) -> tuple[str, str, str]:
     c = cue or {}
-    return c.get("tool", ""), c.get("target_class", "")
+    out = []
+    for key in ("tool", "target_class", "args_prefix"):
+        value = c.get(key, "")
+        out.append(value if isinstance(value, str) else "")
+    return out[0], out[1], out[2]
 
 
 def find_exact_match(
@@ -270,7 +326,7 @@ def find_exact_match(
     for r in resolutions:
         if (
             normalize_text(r.wrong_belief) == wanted
-            and (r.cue_tool, r.cue_target_class) == key
+            and (r.cue_tool, r.cue_target_class, r.cue_args_prefix) == key
         ):
             return r
     return None
@@ -347,33 +403,47 @@ def merge_block_reason(
     if res.get("scope", "project") != "project":
         return "global"
     rc = res.get("cue")
-    rc_d: dict[str, Any] = rc if isinstance(rc, dict) else {}
-    tool = rc_d.get("tool")
-    tc = rc_d.get("target_class")
-    stored = (
-        tool if isinstance(tool, str) else "",
-        tc if isinstance(tc, str) else "",
-    )
-    if stored != _cue_tuple(cue):
+    if _cue_tuple(rc if isinstance(rc, dict) else None) != _cue_tuple(cue):
         return "cue_mismatch"
     return None
 
 
+def stored_mode(hints: Mapping[str, object]) -> str | None:
+    """``hints.surprise_capture.mode`` when it is a known session mode."""
+    block = hints.get(SURPRISE_HINT_KEY)
+    if not isinstance(block, dict):
+        return None
+    mode = block.get("mode")
+    return mode if isinstance(mode, str) and mode in SURPRISE_MODES else None
+
+
 def merged_surprise_hint(
-    hints: Mapping[str, object], candidate: SurpriseCandidate, *, new: bool = False
+    hints: Mapping[str, object],
+    candidate: SurpriseCandidate,
+    *,
+    new: bool = False,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     """The ``hints.surprise_capture`` value after folding in *candidate*.
 
-    The shape is written only for a *new* entry; a merge keeps the stored value
-    (or its absence) and never overwrites or adds it.
+    The shape and the session *mode* (``interactive``/``headless``, from the
+    ``turn_events`` row of the candidate's last turn event) are written only
+    for a *new* entry; a merge keeps the stored values (or their absence) and
+    never overwrites or adds them. An unknown or missing mode is left absent.
     """
     sessions, ids, event_ids = surprise_hint(hints)
     block = hints.get(SURPRISE_HINT_KEY)
     shape_part: dict[str, Any] = {}
     if new:
         shape_part = {"shape": candidate.shape}
-    elif isinstance(block, dict) and "shape" in block:
-        shape_part = {"shape": block["shape"]}
+        if mode in SURPRISE_MODES:
+            shape_part["mode"] = mode
+    else:
+        if isinstance(block, dict) and "shape" in block:
+            shape_part = {"shape": block["shape"]}
+        kept = stored_mode(hints)
+        if kept is not None:
+            shape_part["mode"] = kept
     return {
         **shape_part,
         "sessions": [*sessions, candidate.session_id][-SURPRISE_HINT_LIST_CAP:],

@@ -854,16 +854,30 @@ async def test_prevention_observed_once_in_index_tripwire(
 
 
 @pytest.mark.parametrize(
-    ("shape", "admitted"),
-    [(1, True), (2, True), (3, False), (None, False), ("x", False), (4, False)],
+    ("shape", "mode", "admitted"),
+    [
+        (1, "interactive", True),
+        (1, "headless", False),
+        (1, None, False),
+        (1, "batch", False),
+        (2, None, True),
+        (2, "headless", True),
+        (2, "interactive", True),
+        (3, "interactive", False),
+        (None, "interactive", False),
+        ("x", None, False),
+        (4, None, False),
+    ],
 )
 async def test_observed_once_gate_admission_by_shape(
-    kb: Any, shape: Any, admitted: bool
+    kb: Any, shape: Any, mode: Any, admitted: bool
 ) -> None:
     prov = {"capture": "autonomous", "grounding": "observed"}
     hints: dict[str, Any] = {"resolution": _res(provenance=prov)}
     if shape is not None:
         hints["surprise_capture"] = {"shape": shape}
+        if mode is not None:
+            hints["surprise_capture"]["mode"] = mode
     entry = await kb.store(
         short_title="s",
         long_title="shape case",
@@ -876,6 +890,8 @@ async def test_observed_once_gate_admission_by_shape(
     (r,) = [x for x in resolutions if x.entry_id == str(entry.id)]
     assert r.observed_once is (not admitted)
     assert r.shape == (shape if shape in (1, 2, 3) else None)
+    expected_mode = mode if mode in ("interactive", "headless") else None
+    assert r.mode == (expected_mode if shape is not None else None)
     index, _ = build_gate_index(resolutions)
     assert (str(entry.id) in [c.resolution_id for c in index]) is admitted
     assert count_index_excluded_observed_once(resolutions) == (0 if admitted else 1)
@@ -886,6 +902,33 @@ async def test_observed_once_gate_admission_by_shape(
     items, _ = build_slice(resolutions, [])
     text = render_slice("p", items)
     assert ("observed once" not in text) is admitted
+
+
+@pytest.mark.parametrize("mode", ["headless", None])
+async def test_headless_shape1_promoted_at_second_sighting(
+    kb: Any, mode: str | None
+) -> None:
+    prov = {"capture": "autonomous", "grounding": "observed"}
+    sc: dict[str, Any] = {"shape": 1}
+    if mode is not None:
+        sc["mode"] = mode
+    entry = await kb.store(
+        short_title="s",
+        long_title="headless shape 1 seen twice",
+        knowledge_details="d",
+        project_ref="p",
+        hints={
+            "resolution": _res(provenance=prov, observed_sessions=2),
+            "surprise_capture": sc,
+        },
+        enrich=False,
+    )
+    resolutions, _ = await load_resolutions(kb.db, "p", True)
+    (r,) = [x for x in resolutions if x.entry_id == str(entry.id)]
+    assert r.observed_once is False
+    index, _ = build_gate_index(resolutions)
+    assert str(entry.id) in [c.resolution_id for c in index]
+    assert "observed once" not in provenance_label(r)
 
 
 async def test_shape_does_not_change_other_resolutions(kb: Any) -> None:

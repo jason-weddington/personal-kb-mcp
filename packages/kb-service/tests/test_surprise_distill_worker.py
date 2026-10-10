@@ -248,7 +248,11 @@ async def _w(kb: Any, hint: Any = None, project: str = "p", **kw: Any) -> str:
     res: dict[str, Any] = {
         "corrected_fact": "f",
         "wrong_belief": "git push origin main",
-        "cue": {"tool": "Bash", "target_class": "git push"},
+        "cue": {
+            "tool": "Bash",
+            "target_class": "git push",
+            "args_prefix": "origin main",
+        },
         "provenance": {
             "capture": "autonomous",
             "grounding": "observed",
@@ -401,7 +405,11 @@ async def test_write_merge_same_session_sequence(
             "corrected_fact": "Push with git push origin HEAD:main",
             "wrong_belief": "git push origin main",
             "evidence": "rejected",
-            "cue": {"tool": "Bash", "target_class": "git push"},
+            "cue": {
+                "tool": "Bash",
+                "target_class": "git push",
+                "args_prefix": "origin main",
+            },
             "provenance": {
                 "capture": "autonomous",
                 "grounding": "observed",
@@ -1341,3 +1349,39 @@ async def test_failure_context_lineage_does_not_corroborate(
     assert (row["outcome"], row["reason"]) == ("gate_induced", "failure_context")
     entry = await kb.get(x)
     assert _res_of(entry)["observed_sessions"] == 1
+
+
+# --- session mode recorded from the last turn event ---------------------------
+
+_TURN_MODE_INSERT = (
+    "INSERT INTO turn_events (event_id, session_id, harness, mode, turn_index,"
+    " ts, capture_mode, received_ts) VALUES ($1, $2, 'claude-code', $3, 0, $4,"
+    " 'on', $4)"
+)
+
+
+@pytest.mark.parametrize("mode", ["headless", "interactive", None])
+async def test_new_entry_records_turn_mode(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, mode: str | None
+) -> None:
+    c1 = await _insert(
+        pool, 1, "s1", "p", ["s1:0", "s1:1"], "rule:shape1", _s1_output()
+    )
+    if mode is not None:
+        # only the LAST turn event's mode counts
+        other = "interactive" if mode == "headless" else "headless"
+        await pool.execute(_TURN_MODE_INSERT, "s1:0", "s1", other, _CREATED_AT)
+        await pool.execute(_TURN_MODE_INSERT, "s1:1", "s1", mode, _CREATED_AT)
+    llm.enqueue(D)
+    result = await distill_candidates(pool, kb, [c1], "on")
+    (x,) = result.entries_written
+    entry = await kb.get(x)
+    sc = entry.hints["surprise_capture"]
+    if mode is None:
+        assert "mode" not in sc
+    else:
+        assert sc["mode"] == mode
+    resolutions, _ = await load_resolutions(kb.db, "p", True)
+    (r,) = [r for r in resolutions if r.entry_id == x]
+    assert r.mode == mode
+    assert r.observed_once is (mode != "interactive")

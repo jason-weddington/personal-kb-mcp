@@ -42,7 +42,11 @@ entry — counted in :attr:`LoadStats.skipped_malformed`, never raised:
 Unknown keys in ``resolution`` and ``provenance`` are ignored.
 
 A resolution is OBSERVED-ONCE iff ``provenance.capture == 'autonomous'`` AND
-``observed_sessions < 2``.
+``observed_sessions < 2`` AND it is not a first-sighting-trusted surprise
+capture: shape 2 (``hints.surprise_capture.shape``), or shape 1 captured in
+an interactive session (``hints.surprise_capture.mode == 'interactive'``).
+Headless shape 1, or shape 1 with an absent or unknown mode, waits for a
+second sighting (fail closed).
 
 Only Bash cues with a two-word ``target_class`` (``'git push'``) are admitted
 to the gate index; every other resolution still reaches the slice.
@@ -90,7 +94,24 @@ _CORRECTIONS_SQL = (
 
 # Shapes trusted at first sighting: 1 is detected from tool output, 2 from the
 # user's own correction. Shape 3 (a model judgment) waits for a second sighting.
+# Shape 1 is trusted at first sighting only when captured in an interactive
+# session (see _first_sighting_trusted).
 FIRST_SIGHTING_SHAPES = frozenset({1, 2})
+FIRST_SIGHTING_SHAPE1_MODES = frozenset({"interactive"})
+_SURPRISE_MODES = frozenset({"interactive", "headless"})
+
+
+def _first_sighting_trusted(shape: int | None, mode: str | None) -> bool:
+    """Whether a surprise capture is trusted at its first sighting.
+
+    Shape 2 always; shape 1 only from an interactive session (a headless run's
+    transient state generalises badly), unknown mode failing closed.
+    """
+    if shape not in FIRST_SIGHTING_SHAPES:
+        return False
+    if shape == 1:
+        return mode in FIRST_SIGHTING_SHAPE1_MODES
+    return True
 
 
 @dataclass(frozen=True)
@@ -111,6 +132,7 @@ class Resolution:
     scope: str = "project"
     cue_args_prefix: str = ""
     shape: int | None = None
+    mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -201,8 +223,12 @@ def parse_resolution(entry_id: str, updated_at: str, hints_raw: object) -> Resol
         raise _SkipError("scope")
 
     shape: int | None = None
+    mode: str | None = None
     sc = hints.get("surprise_capture")
     if isinstance(sc, dict):
+        raw_mode = sc.get("mode")
+        if isinstance(raw_mode, str) and raw_mode in _SURPRISE_MODES:
+            mode = raw_mode
         raw_shape = sc.get("shape")
         if (
             isinstance(raw_shape, int)
@@ -225,11 +251,12 @@ def parse_resolution(entry_id: str, updated_at: str, hints_raw: object) -> Resol
         observed_once=(
             capture == "autonomous"
             and observed < 2
-            and shape not in FIRST_SIGHTING_SHAPES
+            and not _first_sighting_trusted(shape, mode)
         ),
         scope=str(scope),
         cue_args_prefix=args_prefix,
         shape=shape,
+        mode=mode,
     )
 
 
@@ -318,9 +345,10 @@ def _gate_trusted(r: Resolution) -> bool:
     An autonomous resolution observed in a single session (observed-once)
     reaches the slice labelled 'observed once, unconfirmed', and only while
     ``KB_DELIVER_OBSERVED_ONCE`` is on; it is gate-eligible at first sighting
-    only when ``hints.surprise_capture.shape`` is 1 or 2 (unknown or 3 stays
-    out). Shape 1 and 2 first sightings are not ``observed_once``: they are
-    delivered without the hedge. An autonomous + observed
+    only for shape 2, or shape 1 with ``hints.surprise_capture.mode ==
+    'interactive'`` (headless, unknown mode, unknown shape or 3 stays out).
+    Those first sightings are not ``observed_once``: they are delivered
+    without the hedge. An autonomous + observed
     resolution becomes gate-eligible at ``observed_sessions >= 2`` (recurrence
     promotion); autonomous + asserted stays untrusted at any count.
     """
@@ -329,7 +357,7 @@ def _gate_trusted(r: Resolution) -> bool:
     if (
         r.capture == "autonomous"
         and r.observed_sessions < 2
-        and r.shape in FIRST_SIGHTING_SHAPES
+        and _first_sighting_trusted(r.shape, r.mode)
     ):
         return True
     return r.capture == "deliberate" or r.grounding == "observed"

@@ -533,6 +533,11 @@ async def distill_candidates(
                 if cand.shape == 1
                 else frozenset()
             )
+            turn_mode: str | None = None
+            if cand.turn_event_ids:
+                mode_row = await pool.fetchrow(_TURN_MODE_SQL, cand.turn_event_ids[-1])
+                if mode_row is not None:
+                    turn_mode = str(mode_row["mode"] or "") or None
             decision = _Decision()
             try:
                 distilled = await _distill_one(
@@ -544,6 +549,7 @@ async def distill_candidates(
                     result,
                     counts,
                     kb_answered_targets=kb_answered,
+                    turn_mode=turn_mode,
                 )
             except Exception as exc:
                 decision.outcome = "kb_error"
@@ -602,6 +608,7 @@ async def distill_candidates(
 # --- distillation internals --------------------------------------------------
 
 _CANDIDATE_STATUS_SQL = "SELECT status FROM surprise_candidates WHERE id = $1"
+_TURN_MODE_SQL = "SELECT mode FROM turn_events WHERE event_id = $1"
 _FAILURE_CONTEXT_TARGETS_SQL = (
     "SELECT target FROM gate_decisions WHERE session_id = $1"
     " AND decision IN ('failure_context', 'failure_context_repeat')"
@@ -671,6 +678,7 @@ async def _distill_one(
     counts: Counter[str],
     *,
     kb_answered_targets: frozenset[str] = frozenset(),
+    turn_mode: str | None = None,
 ) -> bool:
     """Run S1-S13 for one candidate, filling *d*; False means a no_llm skip."""
     if c.project.strip() == "":
@@ -689,7 +697,11 @@ async def _distill_one(
         d.outcome, d.reason = "gate_induced", "failure_context"
         return True
     cue = (
-        shape1_cue(wrong_belief, str(c.detector_output.get("cue_target_class") or ""))
+        shape1_cue(
+            wrong_belief,
+            str(c.detector_output.get("corrected_fact") or ""),
+            str(c.detector_output.get("cue_target_class") or ""),
+        )
         if c.shape == 1
         else None
     )
@@ -799,7 +811,10 @@ async def _distill_one(
         ),
         confidence_level=DISTILL_CONFIDENCE_LEVEL,
         tags=[SURPRISE_TAG, f"shape-{c.shape}"],
-        hints={**stamped, SURPRISE_HINT_KEY: merged_surprise_hint({}, c, new=True)},
+        hints={
+            **stamped,
+            SURPRISE_HINT_KEY: merged_surprise_hint({}, c, new=True, mode=turn_mode),
+        },
         contributor=SURPRISE_CONTRIBUTOR,
         enrich=False,
     )
