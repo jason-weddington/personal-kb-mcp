@@ -2,6 +2,10 @@
 
 Living document, last updated 2026-10-10. Tracking item: GTD 45e54c5b. This is the place to resume from: what has shipped toward "an agent that learns from experience", what the evals say, and what comes next, in order. Every open item carries a GTD id on the Personal-KB board (or the kb-bench board where noted). The design sources are `experience-loop.md` (Jason's ideas and the amendment that the KB is an agent tool) and `experience-loop-debate-synthesis.md` (the multi-angle debate); where they disagree with this file, this file reflects later decisions.
 
+## Why this matters (Jason, 2026-10-10)
+
+Agent memory is one of the most important unsolved problems. In the two-failure-mode model (context failure vs orchestration failure), many context failures are prevented by a memory system that puts the right experience in front of the agent at the right moment. Claude Code's project memory is the harness's basic attempt at this: steered weakly, project-local, Claude-Code-only, one machine. The KB does the same thing at scale and agnostic on three axes: model, harness and machine. Harness-native memory is a capture channel and a delivery cache for the KB, never the store (harness-memory bridge, GTD ae89d2ea). The hard remaining problem is write quality: which experiences become durable memory. KB: the north-star decision entry.
+
 ## Where we are
 
 The loop is notice, write, correct, deliver, measure.
