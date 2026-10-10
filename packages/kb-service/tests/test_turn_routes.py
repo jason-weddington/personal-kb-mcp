@@ -118,6 +118,8 @@ def test_shadow_records(
         "tool_calls=1",
         "tool_results=1",
         "bytes=",
+        "harness=claude-code",
+        "reasoning=0",
     ):
         assert frag in caplog.text
 
@@ -230,9 +232,12 @@ def test_redaction_unavailable(
 
 
 def test_write_failed(
-    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    caplog.set_level(logging.WARNING)
 
     async def boom() -> Any:
         raise RuntimeError("db down")
@@ -245,6 +250,8 @@ def test_write_failed(
         "reason": "write-failed",
         "redactions": [],
     }
+    assert "turn_event write_failed" in caplog.text
+    assert "harness=claude-code" in caplog.text
 
 
 def test_invalid_mode_value_is_off(
@@ -294,3 +301,73 @@ def test_ignores_listener_switches(
     monkeypatch.setenv("PERSONAL_KB_LISTENER", "0")
     assert _post(local_client, _digest()).json()["reason"] == "recorded"
     assert len(_rows()) == 1
+
+
+def _reasoning(text: str, **kw: Any) -> dict[str, Any]:
+    return {"kind": "reasoning", "text": text, "truncated": False, **kw}
+
+
+def test_reasoning_item_recorded(
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    caplog.set_level(logging.INFO)
+    resp = _post(
+        local_client,
+        _digest(harness="talos", mode="headless", items=[*ITEMS, _reasoning("r")]),
+    )
+    assert resp.json()["reason"] == "recorded"
+    (row,) = _rows()
+    assert json.loads(row["items"])[3] == _reasoning("r")
+    assert row["harness"] == "talos"
+    assert "harness=talos" in caplog.text
+    assert "reasoning=1" in caplog.text
+
+
+def test_reasoning_text_over_cap_422(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _digest(items=[_reasoning("r" * 2001)]))
+    assert resp.status_code == 422
+    assert _rows("SELECT COUNT(*) FROM turn_events")[0][0] == 0
+
+
+def test_reasoning_missing_truncated_422(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _digest(items=[{"kind": "reasoning", "text": "r"}]))
+    assert resp.status_code == 422
+    assert _rows("SELECT COUNT(*) FROM turn_events")[0][0] == 0
+
+
+def test_reasoning_redacted(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _digest(items=[_reasoning(_AWS_LINE)]))
+    assert resp.json()["reason"] == "recorded"
+    assert resp.json()["redactions"] == ["Secret Keyword", "AWS Access Key"]
+    (row,) = _rows()
+    assert "wJalrXUtnFEMI" not in row["items"]
+    assert "[REDACTED:Secret Keyword]" in row["items"]
+
+
+def test_too_large_reasoning(
+    local_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    raw = json.dumps(
+        _digest(harness="talos", mode="headless", items=[_reasoning("r" * 2000)] * 33)
+    ).encode()
+    resp = local_client.post(
+        "/api/kb/turn", content=raw, headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 413
+    assert _rows("SELECT COUNT(*) FROM turn_events")[0][0] == 0
+    assert "reason=too-large" in caplog.text
+    assert "harness=talos" in caplog.text
+    assert "reasoning=33" in caplog.text
+    assert f"bytes={len(raw)}" in caplog.text

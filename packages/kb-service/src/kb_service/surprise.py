@@ -33,13 +33,13 @@ DetectionOutcome = Literal[
 ParseReject = Literal["llm_error", "unparseable", "invalid_fields", "no_surprise"]
 
 # bump on ANY change to SURPRISE_DETECTOR_SYSTEM, DETECTOR_SCHEMA_LINE,
-# build_shape2_prompt, build_shape3_prompt, SHAPE3_INSTRUCTIONS, SHAPE3_FIELDS,
-# shape3_skip_reason, shape3_prompt_details, parse_detector_response,
+# build_shape2_prompt, build_shape3_prompt, render_items, SHAPE3_INSTRUCTIONS,
+# SHAPE3_FIELDS, shape3_skip_reason, shape3_prompt_details, parse_detector_response,
 # evidence_grounded, the DETECTOR_MIN_CONFIDENCE default, SHAPE1_IGNORED_CLASSES
 # or the shape-1 pairing rule; the effective KB_SURPRISE_MIN_CONFIDENCE
 # threshold is recorded per row in surprise_detections.details.min_confidence
 # instead
-SURPRISE_DETECTOR_VERSION: int = 2
+SURPRISE_DETECTOR_VERSION: int = 3
 SHAPE1_DETECTOR_MODEL = "rule:shape1"
 DETECTOR_MIN_CONFIDENCE = 0.7
 # per-shape defaults (shape 2 recall gain; shape 3 must not drop)
@@ -381,6 +381,29 @@ def shape3_prompt_details(cur: TurnDigest) -> dict[str, Any]:
     }
 
 
+def shape3_reasoning_details(cur: TurnDigest) -> dict[str, Any]:
+    """Return reasoning-item counts for *cur*; never affects a verdict."""
+    reasoning = [i for i in cur.items if i.get("kind") == "reasoning"]
+    first: int | None = None
+    after = False
+    for idx, item in enumerate(cur.items):
+        kind = item.get("kind")
+        if kind == "tool_result" and first is None:
+            first = idx
+        elif (
+            kind == "reasoning"
+            and first is not None
+            and str(item.get("text") or "").strip()
+        ):
+            after = True
+            break
+    return {
+        "reasoning_items": len(reasoning),
+        "reasoning_chars": sum(len(str(i.get("text") or "")) for i in reasoning),
+        "reasoning_after_result": after,
+    }
+
+
 def render_items(items: list[dict[str, Any]]) -> str:
     """Render a turn's items one line each; unknown kinds are skipped."""
     lines: list[str] = []
@@ -393,6 +416,8 @@ def render_items(items: list[dict[str, Any]]) -> str:
         elif kind == "tool_result":
             err = "true" if item.get("is_error") is True else "false"
             lines.append(f"[tool_result error={err}] {item.get('excerpt') or ''}")
+        elif kind == "reasoning":
+            lines.append(f"[reasoning] {item.get('text') or ''}")
     return "\n".join(lines)
 
 

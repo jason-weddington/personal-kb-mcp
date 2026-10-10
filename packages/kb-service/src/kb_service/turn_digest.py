@@ -10,7 +10,7 @@ import logging
 import os
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, assert_never
 
 from kb_core.cues import resolve_cue_project
 from kb_core.ingest.safety import redact_secrets
@@ -26,6 +26,7 @@ from kb_service.models import (
     SurpriseCaptureMode,
     TurnAssistantTextItem,
     TurnDigestRequest,
+    TurnReasoningItem,
     TurnToolCallItem,
     TurnToolResultItem,
 )
@@ -94,7 +95,8 @@ def redact_turn_digest(
 ) -> tuple[TurnDigestRequest, list[str]] | None:
     """Redact secrets from the free-text fields; None if redaction unavailable.
 
-    Only user_prompt, item text/target/excerpt and final_message are scanned.
+    Only user_prompt, final_message and the item fields text (assistant_text and
+    reasoning), target and excerpt are scanned.
     """
     red = _Redactor()
     user_prompt = red(body.user_prompt, TURN_USER_PROMPT_MAX)
@@ -106,9 +108,22 @@ def redact_turn_digest(
         elif isinstance(item, TurnToolCallItem):
             target = red(item.target, TURN_TARGET_MAX)
             items.append(item.model_copy(update={"target": target}))
-        else:
+        elif isinstance(item, TurnToolResultItem):
             excerpt = red(item.excerpt, TURN_EXCERPT_MAX)
             items.append(item.model_copy(update={"excerpt": excerpt}))
+        elif isinstance(item, TurnReasoningItem):
+            before = red.fields_cut
+            text = red(item.text, TURN_TEXT_MAX)
+            items.append(
+                item.model_copy(
+                    update={
+                        "text": text,
+                        "truncated": item.truncated or red.fields_cut > before,
+                    }
+                )
+            )
+        else:  # pragma: no cover
+            assert_never(item)
     final_message = red(body.final_message, TURN_FINAL_MESSAGE_MAX)
     if red.unavailable:
         return None

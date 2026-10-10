@@ -806,8 +806,25 @@ class TurnToolResultItem(BaseModel):
     excerpt: str = Field(default="", max_length=TURN_EXCERPT_MAX)
 
 
+class TurnReasoningItem(BaseModel):
+    """Agent reasoning within a turn, sent only by harnesses that record it (talos)."""
+
+    kind: Literal["reasoning"]
+    text: str = Field(max_length=TURN_TEXT_MAX)
+    truncated: bool
+
+
+# To add a new item kind, do all six steps:
+# (1) add its model to this union;
+# (2) add an isinstance branch before assert_never in
+#     turn_digest.redact_turn_digest;
+# (3) classify its str fields in test_str_field_partition_drift_guard;
+# (4) add its kind to test_turn_item_kinds_pinned;
+# (5) add its keys to DIGEST_ITEM_KEYS in scripts/surprise_eval/surprise_eval.py;
+# (6) decide whether surprise.render_items renders it, since unknown kinds are
+#     skipped.
 TurnItem = Annotated[
-    TurnAssistantTextItem | TurnToolCallItem | TurnToolResultItem,
+    TurnAssistantTextItem | TurnToolCallItem | TurnToolResultItem | TurnReasoningItem,
     Field(discriminator="kind"),
 ]
 

@@ -19,6 +19,7 @@ from kb_service.surprise import (
     render_items,
     shape2_skip_reason,
     shape3_prompt_details,
+    shape3_reasoning_details,
     shape3_skip_reason,
 )
 
@@ -296,8 +297,8 @@ def _text(t: str | None) -> dict[str, Any]:
     return {"kind": "assistant_text", "text": t}
 
 
-def test_detector_version_is_two() -> None:
-    assert SURPRISE_DETECTOR_VERSION == 2
+def test_detector_version_is_three() -> None:
+    assert SURPRISE_DETECTOR_VERSION == 3
 
 
 def test_shape3_skip_reasons() -> None:
@@ -489,3 +490,71 @@ def test_evidence_grounded() -> None:
     assert evidence_grounded("taken by caddy", ["no, 8080 is free"]) is False
     assert evidence_grounded("Taken  BY\ncaddy", ["8080 is taken by caddy"]) is True
     assert evidence_grounded("   ", ["anything"]) is False
+
+
+# --- reasoning items ---------------------------------------------------------
+
+
+def _reasoning(t: str, truncated: bool = False) -> dict[str, Any]:
+    return {"kind": "reasoning", "text": t, "truncated": truncated}
+
+
+def _mixed_items() -> list[dict[str, Any]]:
+    return [
+        {"kind": "assistant_text", "text": "a"},
+        _reasoning("the port is 8000"),
+        {"kind": "tool_call", "tool_use_id": "t", "tool": "Bash", "target": "ls"},
+        {"kind": "tool_result", "tool_use_id": "t", "is_error": False, "excerpt": "ok"},
+        {"kind": "mystery"},
+    ]
+
+
+def test_render_items_reasoning() -> None:
+    assert render_items(_mixed_items()).splitlines() == [
+        "[assistant] a",
+        "[reasoning] the port is 8000",
+        "[tool_call Bash] ls",
+        "[tool_result error=false] ok",
+    ]
+    assert render_items([_reasoning("t", True)]) == "[reasoning] t"
+    prompt = build_shape3_prompt(_digest(0, _mixed_items()))
+    assert prompt.index("[reasoning] the port is 8000") < prompt.index(
+        SHAPE3_INSTRUCTIONS
+    )
+
+
+def test_shape3_reasoning_does_not_admit() -> None:
+    call, result = _bash("ls", error=False)
+    items = [call, result, _reasoning("Root cause: x")]
+    assert shape3_skip_reason(_digest(0, items)) == "no_text_after_result"
+    d = _digest(0, items, final_message="Done.")
+    assert shape3_skip_reason(d) is None
+    assert shape3_prompt_details(d) == {
+        "shape3_scope": "final_message_only",
+        "final_rendered": True,
+    }
+
+
+def test_shape2_ignores_reasoning() -> None:
+    prompt = build_shape2_prompt(
+        _digest(0, [_text("port 8080 is free"), _reasoning("SECRET-REASONING")]),
+        _digest(1, user_prompt="no, 8080 is taken"),
+    )
+    assert "SECRET-REASONING" not in prompt
+    assert (
+        shape2_skip_reason(
+            _digest(0, [_reasoning("port 8080 is free")], final_message=None),
+            _digest(1, [], user_prompt="no, 8080 is taken"),
+        )
+        == "no_prev_text"
+    )
+
+
+def test_shape3_reasoning_details() -> None:
+    call, result = _bash("ls", error=False)
+    blank = shape3_reasoning_details(_digest(0, [call, result, _reasoning("  ")]))
+    assert blank["reasoning_after_result"] is False
+    assert blank["reasoning_items"] == 1
+    assert blank["reasoning_chars"] == 2
+    d = _digest(0, [call, result, _reasoning("x")])
+    assert shape3_reasoning_details(d)["reasoning_after_result"] is True

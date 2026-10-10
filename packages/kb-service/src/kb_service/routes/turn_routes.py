@@ -24,6 +24,7 @@ from kb_service.models import (
     TurnDigestResponse,
     TurnHeartbeatResponse,
     TurnHeartbeatRow,
+    TurnReasoningItem,
     TurnToolCallItem,
     TurnToolResultItem,
     User,
@@ -95,6 +96,7 @@ async def post_turn(
     del user  # auth gate only
     nbytes = len(await request.body())
     n_calls = sum(1 for i in body.items if isinstance(i, TurnToolCallItem))
+    n_reasoning = sum(1 for i in body.items if isinstance(i, TurnReasoningItem))
     n_results = sum(1 for i in body.items if isinstance(i, TurnToolResultItem))
     n_errors = sum(
         1 for i in body.items if isinstance(i, TurnToolResultItem) and i.is_error
@@ -102,13 +104,15 @@ async def post_turn(
     if nbytes > TURN_DIGEST_MAX_BYTES:
         logger.warning(
             "turn_event reason=too-large session_id=%s turn_index=%d bytes=%d"
-            " items=%d truncated=%s hook_version=%s",
+            " items=%d truncated=%s hook_version=%s harness=%s reasoning=%d",
             body.session_id,
             body.turn_index,
             nbytes,
             len(body.items),
             body.truncated,
             body.hook_version,
+            body.harness,
+            n_reasoning,
         )
         _OUTCOMES["too-large"] = _OUTCOMES.get("too-large", 0) + 1
         raise HTTPException(413, detail="turn digest exceeds 65536 bytes")
@@ -145,10 +149,11 @@ async def post_turn(
                 types = found
         except Exception as exc:
             logger.warning(
-                "turn_event write_failed event_id=%s session_id=%s exc=%s",
+                "turn_event write_failed event_id=%s session_id=%s exc=%s harness=%s",
                 body.event_id,
                 body.session_id,
                 type(exc).__name__,
+                body.harness,
             )
             reason = "write-failed"
             types = []
@@ -161,7 +166,8 @@ async def post_turn(
     logger.info(
         "turn_event reason=%s capture_mode=%s session_id=%s turn_index=%d"
         " project=%s host=%s hook_version=%s bytes=%d items=%d tool_calls=%d"
-        " tool_results=%d result_errors=%d truncated=%s anomaly=%s redactions=%s",
+        " tool_results=%d result_errors=%d truncated=%s anomaly=%s redactions=%s"
+        " harness=%s reasoning=%d",
         reason,
         mode,
         body.session_id,
@@ -177,6 +183,8 @@ async def post_turn(
         body.truncated,
         anomaly or None,
         types,
+        body.harness,
+        n_reasoning,
     )
     return response
 

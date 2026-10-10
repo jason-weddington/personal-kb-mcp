@@ -66,6 +66,7 @@ from kb_service.surprise import (
     parse_detector_response,
     shape2_skip_reason,
     shape3_prompt_details,
+    shape3_reasoning_details,
     shape3_skip_reason,
 )
 from kb_service.surprise_distill import (
@@ -335,6 +336,7 @@ async def _model_record(
     threshold: float,
     *,
     extra_details: dict[str, Any] | None = None,
+    reasoning_sources: list[str] | None = None,
 ) -> DetectionRecord:
     model = detector_model_name(llm)
     details: dict[str, Any] = {"min_confidence": threshold, **(extra_details or {})}
@@ -376,6 +378,10 @@ async def _model_record(
             **common,
         )
     if not evidence_grounded(verdict.evidence_excerpt, sources):
+        if reasoning_sources is not None:
+            details["evidence_in_reasoning"] = evidence_grounded(
+                verdict.evidence_excerpt, reasoning_sources
+            )
         return DetectionRecord(
             outcome="ungrounded", reason="", confidence=verdict.confidence, **common
         )
@@ -461,9 +467,21 @@ async def detect_digest(
 
     reason3 = shape3_skip_reason(cur)
     if reason3 is not None:
-        records.append(DetectionRecord(3, "not_applicable", reason3, model))
+        records.append(
+            DetectionRecord(
+                3,
+                "not_applicable",
+                reason3,
+                model,
+                details=shape3_reasoning_details(cur),
+            )
+        )
     elif llm is None:
-        records.append(DetectionRecord(3, "no_llm", "", model))
+        records.append(
+            DetectionRecord(
+                3, "no_llm", "", model, details=shape3_reasoning_details(cur)
+            )
+        )
     else:
         sources = [
             str(i.get("excerpt") or "")
@@ -478,7 +496,15 @@ async def detect_digest(
                 sources,
                 [cur.event_id],
                 floor(3),
-                extra_details=shape3_prompt_details(cur),
+                extra_details={
+                    **shape3_prompt_details(cur),
+                    **shape3_reasoning_details(cur),
+                },
+                reasoning_sources=[
+                    str(i.get("text") or "")
+                    for i in cur.items
+                    if i.get("kind") == "reasoning"
+                ],
             )
         )
     return records

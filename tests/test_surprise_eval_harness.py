@@ -22,6 +22,7 @@ import pytest
 from kb_core.llm import anthropic as anthropic_llm
 from kb_service import config as service_config
 from kb_service import surprise, surprise_worker, turn_digest
+from kb_service.models import TurnItem
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVAL_DIR = REPO_ROOT / "scripts" / "surprise_eval"
@@ -950,3 +951,25 @@ def test_z_wilson(k, n, expected):
 )
 def test_z_precision_bar_status(args, expected):
     assert se.precision_bar_status(*args) == expected
+
+
+def test_z_digest_item_keys_match_server_union():
+    assert {k: set(v) for k, v in se.DIGEST_ITEM_KEYS.items()} == {
+        typing.get_args(c.model_fields["kind"].annotation)[0]: set(c.model_fields)
+        for c in typing.get_args(typing.get_args(TurnItem)[0])
+    }
+
+
+def test_validate_accepts_reasoning_item(tmp_path, capsys):
+    case = _shape3_case(
+        "syn-r1",
+        False,
+        [
+            _call("t1", "ls", "ls"),
+            _res("t1", False, "ok"),
+            {"kind": "reasoning", "text": "r", "truncated": False},
+        ],
+    )
+    path = _write_cases(tmp_path / "cases.jsonl", [case])
+    assert se.main(["validate", "--cases", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["cases"] == 1

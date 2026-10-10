@@ -17,6 +17,8 @@ from kb_service.models import (
     StoredTurnDigest,
     TurnAssistantTextItem,
     TurnDigestRequest,
+    TurnItem,
+    TurnReasoningItem,
     TurnToolCallItem,
     TurnToolResultItem,
 )
@@ -288,3 +290,80 @@ def test_str_field_partition_drift_guard() -> None:
         "target_class",
     }
     assert str_fields(TurnToolResultItem) == {"tool_use_id", "excerpt"}
+    assert str_fields(TurnReasoningItem) == {"text"}
+
+
+def _reasoning(text: str, truncated: bool = False) -> dict[str, Any]:
+    return {"kind": "reasoning", "text": text, "truncated": truncated}
+
+
+def test_reasoning_redacted() -> None:
+    result = redact_turn_digest(
+        _body(items=[_reasoning('password = "hunter2hunter2"')])
+    )
+    assert result is not None
+    red, types = result
+    assert types == ["Secret Keyword"]
+    item = red.items[0]
+    assert isinstance(item, TurnReasoningItem)
+    assert item.text == "[REDACTED:Secret Keyword]"
+    assert item.truncated is False
+
+
+def test_reasoning_retruncation_sets_flag(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    text = 'pwd="hunter2hunter2"\n' + "x" * 1979
+    assert len(text) == 2000
+    result = redact_turn_digest(_body(items=[_reasoning(text)]))
+    assert result is not None
+    item = result[0].items[0]
+    assert isinstance(item, TurnReasoningItem)
+    assert item.text == "[REDACTED:Secret Keyword]\n" + "x" * 1974
+    assert item.truncated is True
+    assert (
+        "turn_event retruncated event_id=s1:0 fields=1 chars_dropped=5" in caplog.text
+    )
+
+
+def test_reasoning_at_cap_and_passthrough() -> None:
+    result = redact_turn_digest(_body(items=[_reasoning("y" * 2000)]))
+    assert result is not None
+    item = result[0].items[0]
+    assert isinstance(item, TurnReasoningItem)
+    assert item.truncated is False
+    assert item.text == "y" * 2000
+    result = redact_turn_digest(_body(items=[_reasoning("short", True)]))
+    assert result is not None
+    item = result[0].items[0]
+    assert isinstance(item, TurnReasoningItem)
+    assert item.truncated is True
+    assert item.text == "short"
+
+
+async def test_reasoning_storage_round_trip(pool: SqlitePool) -> None:
+    body = _body(
+        items=[
+            {"kind": "tool_call", "tool_use_id": "t1", "tool": "Bash"},
+            {"kind": "tool_result", "tool_use_id": "t1", "is_error": False},
+            _reasoning("thinking about ports", True),
+        ]
+    )
+    await _insert(pool, body)
+    (d,) = await get_session_turn_digests(pool, "s1")
+    assert isinstance(d.items[2], TurnReasoningItem)
+    assert d.items[2].text == "thinking about ports"
+    assert d.items[2].truncated is True
+    row = await pool.fetchrow(
+        "SELECT items FROM turn_events WHERE event_id = $1", "s1:0"
+    )
+    assert row is not None
+    assert json.loads(row["items"])[2] == _reasoning("thinking about ports", True)
+
+
+def test_turn_item_kinds_pinned() -> None:
+    u = typing.get_args(TurnItem)[0]
+    kinds = {
+        typing.get_args(c.model_fields["kind"].annotation)[0]
+        for c in typing.get_args(u)
+    }
+    assert kinds == {"assistant_text", "tool_call", "tool_result", "reasoning"}

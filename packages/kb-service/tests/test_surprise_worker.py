@@ -375,12 +375,14 @@ def _seed(
     user_prompt: str | None = None,
     final_message: str | None = None,
     items: list[dict[str, Any]] | None = None,
+    harness: str = "claude-code",
+    mode: str = "interactive",
 ) -> None:
     body = {
         "event_id": f"{session}:{turn}",
         "session_id": session,
-        "harness": "claude-code",
-        "mode": "interactive",
+        "harness": harness,
+        "mode": mode,
         "engine": None,
         "host": "h",
         "hook_version": "1.3.0",
@@ -784,6 +786,86 @@ def test_drain_shape3_assistant_text_evidence_ungrounded(
     assert len(rows) == 1
     assert rows[0]["outcome"] == "ungrounded"
     assert rows[0]["candidate_id"] is None
+    assert json.loads(rows[0]["details"])["evidence_in_reasoning"] is False
+
+
+_BELIEF = "I believed the config lives in /etc/foo.conf all along"
+
+
+def test_drain_shape3_reasoning_evidence_ungrounded(
+    local_client: TestClient, ctx: _Ctx
+) -> None:
+    _seed(
+        local_client,
+        "s3",
+        0,
+        user_prompt="where is it",
+        harness="talos",
+        mode="headless",
+        items=[
+            _S3_ITEMS[0],
+            {"kind": "reasoning", "text": _BELIEF, "truncated": False},
+            *_S3_ITEMS[1:],
+        ],
+    )
+    ctx.llm.enqueue(_s3_verdict(_BELIEF, 0.9))
+    _drain(local_client)
+    rows = [r for r in _detections("s3:0") if r["shape"] == 3]
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "ungrounded"
+    assert rows[0]["candidate_id"] is None
+    assert rows[0]["detector_version"] == 3
+    details = json.loads(rows[0]["details"])
+    assert details["evidence_in_reasoning"] is True
+    assert details["reasoning_items"] == 1
+    assert details["reasoning_chars"] == len(_BELIEF) == 54
+    assert details["reasoning_after_result"] is False
+    assert f"[reasoning] {_BELIEF}" in ctx.llm.generate_calls[0][0]
+
+
+_CALL_RESULT = [_S3_ITEMS[1], _S3_ITEMS[2]]
+
+
+async def test_detect_digest_shape3_not_applicable_reasoning_details() -> None:
+    cur = surprise_worker.digest_from_row(
+        _row(
+            items=[
+                *_CALL_RESULT,
+                {"kind": "reasoning", "text": "Root cause: x", "truncated": False},
+            ]
+        )
+    )
+    llm = FakeLLM()
+    records = await surprise_worker.detect_digest(llm, cur, [cur])
+    r3 = next(r for r in records if r.shape == 3)
+    assert r3.outcome == "not_applicable"
+    assert r3.reason == "no_text_after_result"
+    assert r3.details == {
+        "reasoning_items": 1,
+        "reasoning_chars": 13,
+        "reasoning_after_result": True,
+    }
+    assert llm.generate_calls == []
+
+
+async def test_detect_digest_shape3_no_llm_reasoning_details() -> None:
+    cur = surprise_worker.digest_from_row(
+        _row(
+            items=[
+                *_CALL_RESULT,
+                {"kind": "reasoning", "text": "x", "truncated": False},
+                {"kind": "assistant_text", "text": "Root cause: y"},
+            ]
+        )
+    )
+    records = await surprise_worker.detect_digest(None, cur, [cur])
+    r3 = next(r for r in records if r.shape == 3)
+    assert r3.outcome == "no_llm"
+    assert r3.details == {
+        "reasoning_items": 1,
+        "reasoning_chars": 1,
+        "reasoning_after_result": True,
+    }
 
 
 def test_drain_shape3_details_scope(local_client: TestClient, ctx: _Ctx) -> None:
@@ -809,6 +891,10 @@ def test_drain_shape3_details_scope(local_client: TestClient, ctx: _Ctx) -> None
         assert details["shape3_scope"] == scope
         assert details["final_rendered"] is rendered
         assert details["min_confidence"] == 0.7
+        assert details["reasoning_items"] == 0
+        assert details["reasoning_chars"] == 0
+        assert details["reasoning_after_result"] is False
+        assert "evidence_in_reasoning" not in details
 
 
 def test_drain_claim_race(

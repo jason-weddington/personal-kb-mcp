@@ -80,6 +80,32 @@ def test_prevention_response_carries_mode() -> None:
     assert field.default == "off"
 
 
+HOOK_ITEM_KINDS = frozenset({"assistant_text", "tool_call", "tool_result"})
+
+
+def _server_item_models() -> dict[str, Any]:
+    return {
+        typing.get_args(c.model_fields["kind"].annotation)[0]: c
+        for c in typing.get_args(typing.get_args(m.TurnItem)[0])
+    }
+
+
+def test_thinking_block_emits_no_reasoning_item(tmp_path: Path) -> None:
+    rec = {
+        "type": "assistant",
+        "uuid": "th",
+        "message": {
+            "content": [
+                {"type": "thinking", "thinking": "plan"},
+                {"type": "text", "text": "hi"},
+            ]
+        },
+    }
+    raw = _build(tmp_path / "d.jsonl", [_prompt("go"), rec])
+    m.TurnDigestRequest.model_validate_json(raw)
+    assert json.loads(raw)["items"] == [{"kind": "assistant_text", "text": "hi"}]
+
+
 def test_body_validates_with_exact_keys(tmp_path: Path) -> None:
     raw = _build(
         tmp_path / "a.jsonl",
@@ -90,14 +116,10 @@ def test_body_validates_with_exact_keys(tmp_path: Path) -> None:
     assert len(raw) <= server_digest.TURN_DIGEST_MAX_BYTES
     body = json.loads(raw)
     assert set(body) == set(m.TurnDigestRequest.model_fields)
-    models = {
-        "assistant_text": m.TurnAssistantTextItem,
-        "tool_call": m.TurnToolCallItem,
-        "tool_result": m.TurnToolResultItem,
-    }
-    assert {i["kind"] for i in body["items"]} == set(models)
+    assert {i["kind"] for i in body["items"]} == HOOK_ITEM_KINDS
+    assert set(_server_item_models()) >= HOOK_ITEM_KINDS
     for item in body["items"]:
-        assert set(item) == set(models[item["kind"]].model_fields)
+        assert set(item) == set(_server_item_models()[item["kind"]].model_fields)
     assert v.model_dump(mode="json")["items"] == body["items"]
 
 
