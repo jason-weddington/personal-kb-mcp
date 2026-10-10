@@ -60,6 +60,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from kb_service.models import IndexCue, SliceItem
@@ -80,6 +81,7 @@ _RESOLUTIONS_SQL = (
     "SELECT id, updated_at, hints, project_ref FROM knowledge_entries"
     " WHERE is_active = 1 AND superseded_by IS NULL"
     " AND entry_type != 'mental_map'"
+    " AND (expires_at IS NULL OR expires_at > ?)"
     " AND hints LIKE '%\"resolution\"%'"
     " ORDER BY updated_at DESC, id DESC"
 )
@@ -88,6 +90,7 @@ _CORRECTIONS_SQL = (
     "SELECT s.id, s.short_title, t.short_title FROM knowledge_entries t"
     " JOIN knowledge_entries s ON s.id = t.superseded_by"
     " WHERE t.project_ref = ? AND s.is_active = 1"
+    " AND (s.expires_at IS NULL OR s.expires_at > ?)"
     " ORDER BY s.created_at DESC, s.id DESC LIMIT ?"
 )
 
@@ -260,6 +263,11 @@ def parse_resolution(entry_id: str, updated_at: str, hints_raw: object) -> Resol
     )
 
 
+def _now_iso() -> str:
+    """Current UTC time in the ISO form ``expires_at`` is stored in."""
+    return datetime.now(UTC).isoformat()
+
+
 async def load_resolutions(
     db: Any, project: str, include_observed_once: bool
 ) -> tuple[list[Resolution], LoadStats]:
@@ -269,7 +277,7 @@ async def load_resolutions(
     group, newest first), so project knowledge wins the caps.
     """
     stats = LoadStats()
-    cursor = await db.execute(_RESOLUTIONS_SQL)
+    cursor = await db.execute(_RESOLUTIONS_SQL, (_now_iso(),))
     rows = await cursor.fetchall()
     own: list[Resolution] = []
     global_: list[Resolution] = []
@@ -308,7 +316,7 @@ async def load_resolutions(
 
 async def load_corrections(db: Any, project: str, limit: int) -> list[Correction]:
     """Return the newest supersedes corrections for *project*'s superseded entries."""
-    cursor = await db.execute(_CORRECTIONS_SQL, (project, limit))
+    cursor = await db.execute(_CORRECTIONS_SQL, (project, _now_iso(), limit))
     rows = await cursor.fetchall()
     return [
         Correction(

@@ -387,7 +387,7 @@ def _critic_reply(**kw: Any) -> str:
 
 
 def test_critic_pinned() -> None:
-    assert sd.SURPRISE_CRITIC_VERSION == 1
+    assert sd.SURPRISE_CRITIC_VERSION == 2
     assert SURPRISE_CRITIC_SYSTEM.endswith(
         "Reply with exactly one JSON object and nothing else."
     )
@@ -396,6 +396,12 @@ def test_critic_pinned() -> None:
         ' "misleading": true|false, "reason": str}'
     )
     assert "  " not in CRITIC_INSTRUCTIONS
+    assert (
+        "A claim the user states hedged or speculatively (for example 'I think',"
+        " 'maybe', 'not sure', 'probably', or a question) is not evidence of a"
+        " fact: treat such a claim as unsupported unless a tool result confirms"
+        " it." in CRITIC_INSTRUCTIONS
+    )
 
 
 def test_build_critic_prompt_shape2_has_evidence_and_draft() -> None:

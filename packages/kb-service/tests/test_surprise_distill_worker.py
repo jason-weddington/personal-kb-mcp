@@ -11,6 +11,7 @@ import logging
 import sqlite3
 import sys
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ import kb_service.database as database
 from kb_service import surprise_worker
 from kb_service.db_sqlite import SqlitePool
 from kb_service.main import app
-from kb_service.prevention import build_gate_index, load_resolutions
+from kb_service.prevention import build_gate_index, build_slice, load_resolutions
 from kb_service.surprise import (
     SURPRISE_DETECTOR_SYSTEM,
     DistillResult,
@@ -37,6 +38,7 @@ from kb_service.surprise_distill import (
     SURPRISE_HINT_KEY,
     build_knowledge_details,
     build_resolution,
+    lesson_ttl_days,
     parse_distill_response,
 )
 from kb_service.surprise_worker import candidate_from_row, distill_candidates
@@ -55,6 +57,7 @@ _HERMETIC_ENV = (
     "KB_NEAR_DUPLICATE_FLOOR",
     "KB_SKIP_SAFETY",
     "KB_SURPRISE_CAPTURE",
+    "KB_SURPRISE_LESSON_TTL_DAYS",
     "KB_SURPRISE_DETECTOR_MODEL",
     "KB_SURPRISE_DISTILL_MODEL",
     "KB_SURPRISE_CRITIC_MODEL",
@@ -1667,3 +1670,116 @@ def test_get_critic_llm_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "kb_core.llm.anthropic", None)
     assert _REAL_GET_CRITIC_LLM() is None
     assert surprise_worker._CRITIC_LLM_CACHE == {}
+
+
+# --- lesson expiry ------------------------------------------------------------
+
+
+def _days_ahead(entry: Any) -> float:
+    assert entry.expires_at is not None
+    exp = entry.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=UTC)
+    return (exp - datetime.now(UTC)).total_seconds() / 86400
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, 30), ("7", 7), ("3650", 3650), ("0", 30), ("3651", 30), ("abc", 30)],
+)
+def test_lesson_ttl_env(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: int
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("KB_SURPRISE_LESSON_TTL_DAYS", raising=False)
+    else:
+        monkeypatch.setenv("KB_SURPRISE_LESSON_TTL_DAYS", raw)
+    assert lesson_ttl_days() == expected
+
+
+async def test_autonomous_lesson_expiry_write_renew_permanent(
+    pool: SqlitePool,
+    kb: Any,
+    llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("KB_SURPRISE_LESSON_TTL_DAYS", raising=False)
+    c1 = await _s(pool, "s1")
+    llm.enqueue(D)
+    result = await distill_candidates(pool, kb, [c1], "on")
+    x = result.entries_written[0]
+    assert 29.9 < _days_ahead(await kb.get(x)) < 30.1
+
+    # age the expiry, then a second session renews it
+    await kb.update(x, expires_at=datetime.now(UTC) + timedelta(days=1), enrich=False)
+    monkeypatch.setenv("KB_SURPRISE_LESSON_TTL_DAYS", "10")
+    await distill_candidates(pool, kb, [await _s(pool, "s2")], "on")
+    entry = await kb.get(x)
+    assert _res_of(entry)["observed_sessions"] == 2
+    assert 9.9 < _days_ahead(entry) < 10.1
+
+    # the third distinct session makes it permanent
+    await distill_candidates(pool, kb, [await _s(pool, "s3")], "on")
+    entry = await kb.get(x)
+    assert _res_of(entry)["observed_sessions"] == 3
+    assert entry.expires_at is None
+
+
+async def test_lesson_ttl_env_invalid_falls_back_on_write(
+    pool: SqlitePool,
+    kb: Any,
+    llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_LESSON_TTL_DAYS", "nope")
+    llm.enqueue(D)
+    result = await distill_candidates(pool, kb, [await _s(pool, "s1")], "on")
+    assert 29.9 < _days_ahead(await kb.get(result.entries_written[0])) < 30.1
+    assert any("bad_lesson_ttl" in r.getMessage() for r in caplog.records)
+
+
+async def test_deliberate_entry_never_given_expiry(
+    pool: SqlitePool, kb: Any, llm: FakeLLM
+) -> None:
+    x = await _w(
+        kb,
+        provenance={"capture": "deliberate", "grounding": "asserted"},
+    )
+    await distill_candidates(pool, kb, [await _s(pool, "s1")], "on")
+    entry = await kb.get(x)
+    assert entry.expires_at is None
+    assert entry.version == 1
+
+
+async def test_expired_autonomous_resolution_excluded(kb: Any) -> None:
+    prov = {"capture": "autonomous", "grounding": "observed", "event_id": "e:0"}
+
+    async def _store_res(tc: str, exp: datetime | None) -> str:
+        entry = await kb.store(
+            short_title=f"R {tc}",
+            long_title=f"R long {tc}",
+            knowledge_details="d",
+            project_ref="p",
+            hints={
+                "resolution": {
+                    "corrected_fact": f"fact {tc}",
+                    "wrong_belief": "w",
+                    "cue": {"tool": "Bash", "target_class": tc},
+                    "provenance": prov,
+                }
+            },
+            expires_at=exp,
+            enrich=False,
+        )
+        return str(entry.id)
+
+    now = datetime.now(UTC)
+    live = await _store_res("git push", now + timedelta(days=5))
+    permanent = await _store_res("git pull", None)
+    dead = await _store_res("git fetch", now - timedelta(days=1))
+    rs, _ = await load_resolutions(kb.db, "p", True)
+    ids = {r.entry_id for r in rs}
+    assert ids == {live, permanent}
+    assert dead not in {c.resolution_id for c in build_gate_index(rs)[0]}
+    assert dead not in {i.entry_id for i in build_slice(rs, [])[0]}

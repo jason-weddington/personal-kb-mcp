@@ -251,6 +251,7 @@ Format: `type(optional-scope): description`
 | `KB_SURPRISE_MIN_CONFIDENCE_SHAPE2` | `0.5` | Surprise-detector confidence floor for shape 2 (overrides the global value) |
 | `KB_SURPRISE_MIN_CONFIDENCE_SHAPE3` | `0.7` | Surprise-detector confidence floor for shape 3 (overrides the global value) |
 | `KB_SURPRISE_CRITIC_MODEL` | `claude-sonnet-5-5` | Model for the surprise-capture critic pass, which checks each drafted lesson against its evidence before any autonomous write or merge |
+| `KB_SURPRISE_LESSON_TTL_DAYS` | `30` | Days an autonomous surprise-capture lesson lives after its last observation (integer 1..3650, anything else falls back to 30); a merge from a new session renews it and the third distinct session makes it permanent |
 | `KB_SURPRISE_MIN_CONFIDENCE` | (unset) | Global surprise-detector floor override for both shapes; unset uses the per-shape defaults |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
 

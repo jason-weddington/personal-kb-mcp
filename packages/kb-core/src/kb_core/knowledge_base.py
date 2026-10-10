@@ -737,6 +737,7 @@ class KnowledgeBase:
         entry_type: EntryType | None = None,
         project_ref: str | None = None,
         source_context: str | None = None,
+        clear_expiry: bool = False,
         enrich: bool = True,
     ) -> KnowledgeEntry:
         """Update an existing entry and refresh embedding/graph.
@@ -762,6 +763,7 @@ class KnowledgeBase:
             entry_type=entry_type,
             project_ref=project_ref,
             source_context=source_context,
+            clear_expiry=clear_expiry,
         )
 
         # Re-embed only when the embedding text actually changed.

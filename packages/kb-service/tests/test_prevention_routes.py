@@ -1044,3 +1044,25 @@ def test_repeat_failure_context_pairs(
     assert body["invariant_violations"]["over_cap_sessions"] == 0
     assert body["invariant_violations"]["repeat_deny_pairs"] == 0
     assert any("gate_invariant_violation" in r.getMessage() for r in caplog.records)
+
+
+async def test_expired_correction_excluded(kb: Any) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    old = await kb.store(
+        short_title="Old belief",
+        long_title="Old",
+        knowledge_details="old",
+        project_ref="p",
+        enrich=False,
+    )
+    await kb.store(
+        short_title="Expired fact",
+        long_title="New",
+        knowledge_details="new",
+        project_ref="p",
+        hints={"supersedes": [old.id]},
+        expires_at=datetime.now(UTC) - timedelta(days=1),
+        enrich=False,
+    )
+    assert await load_corrections(kb.db, "p", 20) == []

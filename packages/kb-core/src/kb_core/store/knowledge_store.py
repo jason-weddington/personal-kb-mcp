@@ -129,8 +129,13 @@ class KnowledgeStore:
         entry_type: EntryType | None = None,
         project_ref: str | None = None,
         source_context: str | None = None,
+        clear_expiry: bool = False,
     ) -> KnowledgeEntry:
-        """Update an existing entry, creating a new version."""
+        """Update an existing entry, creating a new version.
+
+        ``clear_expiry=True`` removes ``expires_at`` (the entry becomes
+        permanent); it wins over ``expires_at``.
+        """
         async with self.db.transaction():
             existing = await get_entry(self.db, entry_id)
             if existing is None:
@@ -170,6 +175,8 @@ class KnowledgeStore:
                 update_fields["sensitivity"] = sensitivity
             if expires_at is not None:
                 update_fields["expires_at"] = expires_at
+            if clear_expiry:
+                update_fields["expires_at"] = None
             if short_title is not None:
                 update_fields["short_title"] = short_title
             if long_title is not None:

@@ -9,9 +9,12 @@ entry details, and decides whether a candidate matches (and may merge into)
 an existing resolution.
 """
 
+import logging
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from kb_core.cues import bash_segments, target_class
@@ -29,7 +32,40 @@ SURPRISE_DISTILLER_VERSION: int = 5
 
 # bump on ANY change to SURPRISE_CRITIC_SYSTEM, CRITIC_INSTRUCTIONS,
 # CRITIC_SCHEMA_LINE, build_critic_prompt or parse_critic_response
-SURPRISE_CRITIC_VERSION: int = 1
+SURPRISE_CRITIC_VERSION: int = 2
+
+logger = logging.getLogger(__name__)
+
+# Autonomous lessons expire this many days after the last observation unless
+# they reach PERMANENT_OBSERVED_SESSIONS distinct sessions.
+SURPRISE_LESSON_TTL_DAYS: int = 30
+SURPRISE_LESSON_TTL_ENV = "KB_SURPRISE_LESSON_TTL_DAYS"
+PERMANENT_OBSERVED_SESSIONS = 3
+
+
+def lesson_ttl_days() -> int:
+    """TTL in days: env override when an int in 1..3650, else the default."""
+    raw = os.environ.get(SURPRISE_LESSON_TTL_ENV, "").strip()
+    if raw == "":
+        return SURPRISE_LESSON_TTL_DAYS
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if 1 <= value <= 3650:
+        return value
+    logger.warning(
+        "surprise_distill bad_lesson_ttl value=%r fallback=%d",
+        raw,
+        SURPRISE_LESSON_TTL_DAYS,
+    )
+    return SURPRISE_LESSON_TTL_DAYS
+
+
+def lesson_expires_at(now: datetime | None = None) -> datetime:
+    """``now`` + the lesson TTL (UTC)."""
+    return (now or datetime.now(UTC)) + timedelta(days=lesson_ttl_days())
+
 
 SURPRISE_CONTRIBUTOR = "surprise-capture"
 SURPRISE_HINT_KEY = "surprise_capture"
@@ -127,7 +163,12 @@ CRITIC_INSTRUCTIONS = (
     " will change, or a priority or preference for the current task makes it"
     " false. misleading is true when a future agent acting on the draft would"
     " plausibly do the wrong thing, for example because the cause is misplaced"
-    " or the rule is overstated. reason is one short sentence explaining the"
+    " or the rule is overstated. "
+    "A claim the user states hedged or speculatively (for example 'I think',"
+    " 'maybe', 'not sure', 'probably', or a question) is not evidence of a"
+    " fact: treat such a claim as unsupported unless a tool result confirms"
+    " it."
+    " reason is one short sentence explaining the"
     " judgement."
 )
 

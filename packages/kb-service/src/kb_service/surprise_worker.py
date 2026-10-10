@@ -71,6 +71,7 @@ from kb_service.surprise import (
 from kb_service.surprise_distill import (
     DISTILL_CONFIDENCE_LEVEL,
     GATE_DENY_MARKER,
+    PERMANENT_OBSERVED_SESSIONS,
     REDACTION_MARKER,
     RESOLUTION_WRONG_BELIEF_MAX,
     SURPRISE_CONTRIBUTOR,
@@ -88,6 +89,7 @@ from kb_service.surprise_distill import (
     build_resolution,
     find_exact_match,
     known_sessions,
+    lesson_expires_at,
     merge_block_reason,
     merged_surprise_hint,
     not_durable_reason,
@@ -1096,6 +1098,7 @@ async def _decide_one(
             SURPRISE_HINT_KEY: merged_surprise_hint({}, c, new=True, mode=turn_mode),
         },
         "contributor": SURPRISE_CONTRIBUTOR,
+        "expires_at": lesson_expires_at(),
         "enrich": False,
     }
     return True
@@ -1209,7 +1212,13 @@ async def _decide_match(c: SurpriseCandidate, kb: Any, d: _Decision) -> None:
         return
     d.outcome, d.entry_id = "would_merge", entry.id
     d.before, d.after = before, before + 1
+    renewal: dict[str, Any] = (
+        {"clear_expiry": True}
+        if before + 1 >= PERMANENT_OBSERVED_SESSIONS
+        else {"expires_at": lesson_expires_at()}
+    )
     d.update_kwargs = {
+        **renewal,
         "hints": {**stamped, SURPRISE_HINT_KEY: merged_surprise_hint(entry.hints, c)},
         "change_reason": (
             f"surprise_capture: merged candidate {c.id} from session"

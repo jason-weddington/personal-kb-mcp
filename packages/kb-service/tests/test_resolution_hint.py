@@ -509,10 +509,11 @@ async def test_round_trip_load_resolutions() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE knowledge_entries (id TEXT, updated_at TEXT, hints TEXT,"
-        " project_ref TEXT, is_active INTEGER, superseded_by TEXT, entry_type TEXT)"
+        " project_ref TEXT, is_active INTEGER, superseded_by TEXT, entry_type TEXT,"
+        " expires_at TEXT)"
     )
     conn.execute(
-        "INSERT INTO knowledge_entries VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO knowledge_entries VALUES (?,?,?,?,?,?,?,?)",
         (
             "kb-00001",
             "2026-01-01",
@@ -521,6 +522,7 @@ async def test_round_trip_load_resolutions() -> None:
             1,
             None,
             "pattern_convention",
+            None,
         ),
     )
 
