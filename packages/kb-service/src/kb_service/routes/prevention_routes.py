@@ -324,6 +324,20 @@ async def get_prevention(
                 effective,
                 leaked,
             )
+        untrusted_asserted = {
+            r.entry_id
+            for r in resolutions
+            if r.capture == "autonomous" and r.grounding != "observed"
+        }
+        asserted_leaked = [
+            c.resolution_id for c in index if c.resolution_id in untrusted_asserted
+        ]
+        if asserted_leaked:
+            logger.warning(
+                "prevention tripwire=asserted_in_index project=%s resolution_ids=%s",
+                effective,
+                asserted_leaked,
+            )
         items, slice_truncated = build_slice(resolutions, corrections)
         slice_text = render_slice(effective, items)
         diagnostics = PreventionDiagnostics(

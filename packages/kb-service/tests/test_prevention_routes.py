@@ -1060,6 +1060,89 @@ async def test_prevention_observed_once_in_index_tripwire(
     assert o1 in warnings[0]
 
 
+async def test_prevention_asserted_in_index_tripwire(
+    kb: Any,
+    real_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import kb_service.prevention as prevention
+
+    monkeypatch.setenv("KB_SOFT_GATE_ENABLED", "TRUE")
+    monkeypatch.setattr(prevention, "_gate_trusted", lambda r: True)
+    a1 = await _store(
+        kb,
+        **_res(
+            provenance={"capture": "autonomous", "grounding": "asserted"},
+            observed_sessions=2,
+        ),
+    )
+    d1 = await _store(kb, **_res())
+    with caplog.at_level(logging.WARNING, logger=prevention_routes.logger.name):
+        real_client.get("/api/kb/prevention", params={"project": "p"})
+    assert not [
+        r for r in caplog.records if "tripwire=observed_once_in_index" in r.message
+    ]
+    warnings = [
+        r.message for r in caplog.records if "tripwire=asserted_in_index" in r.message
+    ]
+    assert len(warnings) == 1
+    assert a1 in warnings[0]
+    assert d1 not in warnings[0]
+
+
+async def test_autonomous_asserted_never_gates(kb: Any) -> None:
+    ids: list[str] = []
+    cases = [
+        (1, "interactive"),
+        (1, "headless"),
+        (2, "headless"),
+        (2, "interactive"),
+        (3, "interactive"),
+    ]
+    for shape, mode in cases:
+        for n in (1, 2, 3):
+            entry = await kb.store(
+                short_title=f"asserted {shape} {mode} {n}",
+                long_title=f"asserted case {shape} {mode} {n}",
+                knowledge_details="d",
+                project_ref="p",
+                hints={
+                    "resolution": _res(
+                        corrected_fact=f"fact {shape} {mode} {n}",
+                        provenance={"capture": "autonomous", "grounding": "asserted"},
+                        observed_sessions=n,
+                    ),
+                    "surprise_capture": {"shape": shape, "mode": mode},
+                },
+                enrich=False,
+            )
+            ids.append(str(entry.id))
+    control_entry = await kb.store(
+        short_title="control",
+        long_title="control case",
+        knowledge_details="d",
+        project_ref="p",
+        hints={
+            "resolution": _res(
+                corrected_fact="control fact",
+                provenance={
+                    "capture": "autonomous",
+                    "grounding": "observed",
+                    "event_id": "c:0",
+                },
+                observed_sessions=1,
+            ),
+            "surprise_capture": {"shape": 2, "mode": "headless"},
+        },
+        enrich=False,
+    )
+    control = str(control_entry.id)
+    rs, _ = await load_resolutions(kb.db, "p", True)
+    assert [c.resolution_id for c in build_gate_index(rs)[0]] == [control]
+    assert {i.entry_id for i in build_slice(rs, [])[0]} == {*ids, control}
+
+
 # ─── first-sighting admission by shape ──────────────────────────────────────
 
 

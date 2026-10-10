@@ -358,12 +358,15 @@ def _gate_trusted(r: Resolution) -> bool:
     Those first sightings are not ``observed_once``: they are delivered
     without the hedge. An autonomous + observed
     resolution becomes gate-eligible at ``observed_sessions >= 2`` (recurrence
-    promotion); autonomous + asserted stays untrusted at any count.
+    promotion). First-sighting trust and recurrence promotion both require
+    observed grounding, so an autonomous resolution with asserted or missing
+    grounding is never gate-trusted, at any count and any shape.
     """
     if r.observed_once:
         return False
     if (
         r.capture == "autonomous"
+        and r.grounding == "observed"
         and r.observed_sessions < 2
         and _first_sighting_trusted(r.shape, r.mode)
     ):
