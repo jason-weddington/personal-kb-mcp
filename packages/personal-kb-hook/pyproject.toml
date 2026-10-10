@@ -64,4 +64,4 @@ addopts = "--strict-markers -v"
 source = ["personal_kb_hook"]
 
 [tool.coverage.report]
-fail_under = 80.0
+fail_under = 93.6

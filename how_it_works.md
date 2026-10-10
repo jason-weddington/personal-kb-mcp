@@ -429,6 +429,15 @@ The runtime package lives at `packages/personal-kb-hook/src/personal_kb_hook/`. 
 | `paths.py` | Cache and config path helpers |
 | `listener.py` | Listener env gate, transcript extraction, cache helpers, worker spawn |
 | `listener_worker.py` | Detached multi-KB fan-out worker for the listener gate |
+| `events.py` | Harness-event forwarding: `PostToolUseFailure` to `POST /api/kb/event` |
+| `prevention.py` | Prevention channels: SessionStart gotcha slice and PreToolUse soft gate |
+| `cues_lite.py` | Vendored lexical cue functions (stdlib-only copy of `kb_core.cues`) |
+| `telemetry.py` | Whisper-efficacy telemetry helpers (stdlib-only, silent-on-failure) |
+| `tool_inventory.py` | SessionStart inventory of personal script directories |
+| `defaults.py` | Local-mode defaults for the hook's service URL and API key |
+| `whisper_debug.py` | Ephemeral local whisper-decision debug log |
+| `turn_digest.py` | Stop-time turn digest: window, items, body, per-session counter, spawn |
+| `turn_sender.py` | Detached sender that POSTs a digest body to `/api/kb/turn` |
 
 The runtime package imports **only the Python standard library**. A test in the runtime package's own suite (`packages/personal-kb-hook/tests/test_hook_cli.py::test_hook_package_is_stdlib_only_and_does_not_import_main_package`) walks every `.py` file in the package, parses the AST, and asserts every `import` / `from ... import` resolves to either a `sys.stdlib_module_names` root or the package's own `personal_kb_hook` namespace.
 
@@ -584,7 +593,15 @@ Secrets are redacted before storage with `kb_core.ingest.safety.redact_secrets` 
 
 Rows go to the service-DB `turn_events` table. `anomaly` holds a comma-joined subset of `empty_bash_target_class`, `orphan_tool_result` (only when the digest is not truncated) and `empty_turn`. `processed_at` NULL is the single pending marker; `mark_turn_digests_processed` is the only writer, and a single-id call returns 1 only to the caller that flipped the row, so consumers can use it as an atomic claim. `capture_mode` is informational only.
 
-`kb_service.turn_digest` exposes the consumer helpers: `surprise_capture_mode`, `list_pending_turn_digests`, `mark_turn_digests_processed`, `get_session_turn_digests` and `prune_turn_events`. Pruning deletes rows (pending or processed) received more than `TURN_EVENTS_RETENTION_DAYS` = 30 days ago (a constant, no env override). It schedules nothing itself; the drain's call to it is documented under `### Detection`.
+`kb_service.turn_digest` exposes the consumer helpers: `surprise_capture_mode`, `list_pending_turn_digests`, `mark_turn_digests_processed`, `get_session_turn_digests` and `prune_turn_events`. Pruning deletes rows (pending or processed) received more than `TURN_EVENTS_RETENTION_DAYS` = 30 days ago (a constant, no env override). It schedules nothing itself; the drain's call to it is documented under `### Hook digest sender
+
+At every `Stop` the hook calls `turn_digest.stop(payload)`, directly after `prevention.refresh(payload)` and before the listener gate and the headless listener skip. The only gate is the `surprise_capture` mode cached from the top level of `GET /api/kb/prevention` (`shadow` or `on`); `PERSONAL_KB_LISTENER` and `KB_LISTENER_HEADLESS` do not matter. The per-session counter in `turn-state-<session>.json` (`next_turn_index`, `last_uuid`) advances on every Stop whatever the mode, and `event_id` is `<session_id>:<turn_index>`. Other sessions' state files are removed after 31 days, longer than the server's 30-day `turn_events` retention, so a removed counter cannot reuse a retained `event_id`.
+
+The window is read synchronously from the last 8 MiB of the transcript, walking newest to oldest until the first record that is either the previous digest's `last_uuid` or a human prompt. A human prompt is a `user` record that is not sidechain, meta or a compact summary, whose `origin.kind` (when present) is `human`, with no `tool_result` blocks and text not starting with a slash-command echo, `local-command-` or `[Request interrupted by user` prefix. Items are built in file order: non-empty assistant text (2000 chars), `tool_use` calls (target 500 chars, `target_class` from the full target via `cues_lite`) and `tool_result` blocks (a 746-char head, `\n[...]\n` and a 747-char tail when over 1500 chars). The final message comes only from `last_assistant_message`, since the transcript can lag.
+
+The body has 14 keys and is limited to 64 KiB: items are dropped oldest first (`truncated` true), and when even an empty list does not fit the digest is dropped as `too_large`. The body goes to a temp file and a detached `python -m personal_kb_hook.turn_sender` POSTs it once with a 10 s timeout and no retry, then deletes the file. Failures land in `event-drops.jsonl` with op `turn_digest`; the local `turn-digest-log-<session>.jsonl` records one `stop` row per Stop and one `send` row per send, and is never POSTed. See `packages/personal-kb-hook/README.md` for the reasons and the heartbeat reconciliation.
+
+### Detection`.
 
 `GET /api/kb/turn/heartbeat` returns counts by (harness, mode, host) with truncated, redacted, anomaly and empty-project counts, the pending count and oldest pending `received_ts`, `sessions_with_gaps` (window-relative) and the per-process route outcomes. A 422 on `/api/kb/turn` is logged as `turn_event reason=invalid` with only the error location and type, never the input.
 

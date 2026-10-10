@@ -13,8 +13,8 @@
 * **Stop** — :func:`stop` records an abandoned pending retry and a summary
   row, :func:`flush_gate_log` POSTs the decision log to
   ``/api/kb/prevention/decisions`` in chunks of 500, and :func:`refresh`
-  re-fetches the settings so a server switch flip reaches a live session at
-  its next turn end.
+  re-fetches the settings (including the top-level ``surprise_capture`` mode)
+  so a server switch flip reaches a live session at its next turn end.
 
 Every decision is appended to ``gate-log-<session>.jsonl``; every failed
 fetch / flush lands in the shared ``event-drops.jsonl`` drop log. Every public
@@ -55,6 +55,11 @@ _CHUNK = 500
 _LOG_MAX_BYTES = 262144
 _ORPHAN_MIN_AGE_SECONDS = 3600.0
 _CACHE_GC_AGE_SECONDS = 7 * 24 * 3600.0
+# Longer than the server's 30-day turn_events retention, so a counter removed
+# by GC cannot restart and reuse an event_id the server still retains.
+_TURN_STATE_GC_AGE_SECONDS = 31 * 24 * 3600.0
+# Server surprise-capture modes; lives here (not turn_digest) to avoid a cycle.
+SURPRISE_CAPTURE_MODES: tuple[str, ...] = ("off", "shadow", "on")
 _REASON_CAP = 1000
 _TARGET_CAP = 500
 
@@ -205,6 +210,10 @@ def _apply_fetch(session_id: str, data: dict[str, Any]) -> dict[str, Any]:
         "max_denies": max_denies if isinstance(max_denies, int) else 0,
     }
     cache["index"] = [e for e in data["index"] if isinstance(e, dict)]
+    mode = data.get("surprise_capture")
+    cache["surprise_capture"] = (
+        mode if isinstance(mode, str) and mode in SURPRISE_CAPTURE_MODES else "off"
+    )
     cache["fetched_ts"] = telemetry.now_ts()
     _write_cache(session_id, cache)
     return cache
@@ -582,7 +591,9 @@ def orphan_sweep(current_session_id: str) -> None:
     Only files untouched for an hour are flushed (a live parallel session's
     log is left alone), bounded by :data:`telemetry._ORPHAN_SWEEP_CAP` files
     and :data:`telemetry._ORPHAN_SWEEP_BUDGET_SECONDS` of wall time. Prevention
-    caches older than seven days are unlinked.
+    caches older than seven days are unlinked, as are ``turn-digest-log-*``
+    files older than seven days and other sessions' ``turn-state-*`` files
+    older than 31 days.
     """
     try:
         cache_dir = get_gate_log_path("placeholder").parent
@@ -593,6 +604,17 @@ def orphan_sweep(current_session_id: str) -> None:
             with contextlib.suppress(OSError):
                 if now - cache_file.stat().st_mtime > _CACHE_GC_AGE_SECONDS:
                     cache_file.unlink(missing_ok=True)
+        own_state = f"turn-state-{current_session_id}.json"
+        for state_file in cache_dir.glob("turn-state-*.json"):
+            if state_file.name == own_state:
+                continue
+            with contextlib.suppress(OSError):
+                if now - state_file.stat().st_mtime > _TURN_STATE_GC_AGE_SECONDS:
+                    state_file.unlink(missing_ok=True)
+        for log_file in cache_dir.glob("turn-digest-log-*.jsonl"):
+            with contextlib.suppress(OSError):
+                if now - log_file.stat().st_mtime > _CACHE_GC_AGE_SECONDS:
+                    log_file.unlink(missing_ok=True)
         swept = 0
         deadline = time.monotonic() + telemetry._ORPHAN_SWEEP_BUDGET_SECONDS
         for path in sorted(cache_dir.glob("gate-log-*.jsonl")):

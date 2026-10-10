@@ -340,12 +340,22 @@ Add the hook to `~/.claude/settings.json` (or your project-level `.claude/settin
           { "type": "command", "command": "personal-kb-hook --format=claude-json", "timeout": 5 }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "personal-kb-hook --format=claude-json" }
+        ]
+      }
     ]
   }
 }
 ```
 
 The `PreToolUse` entry is the prevention soft gate. It runs synchronously so it can deny a call, and it matches `Bash` only because only Bash cues are gated. It never touches the network and stays inert until the service enables the gate (see `packages/personal-kb-hook/README.md`).
+
+Stop flushes the gate log, refreshes the prevention settings and, when the service enables KB_SURPRISE_CAPTURE, ships the turn digest, and it prints nothing.
 
 If you'd rather inject the bare directory string into the model context yourself, use `--format=text`:
 

@@ -828,3 +828,78 @@ def test_gotcha_slice_off_keeps_tool_inventory(
     out = _run(monkeypatch, _ss(tmp_path), ["--format=text"])
     assert "mytool" in out
     assert "SLICE-X" not in out
+
+
+# ─── surprise_capture caching + turn GC ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("shadow", "shadow"), ("on", "on"), (None, "off"), ("ON", "off"), ("off", "off")],
+)
+def test_surprise_capture_cached_top_level(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: Any, expected: str
+) -> None:
+    body = _prevention_body()
+    if value is not None:
+        body["surprise_capture"] = value
+    server.prevention = body
+    _run(monkeypatch, _ss(tmp_path), ["--format=claude-json"])
+    assert _cache()["surprise_capture"] == expected
+
+
+def test_surprise_capture_ignores_gate_key(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = _prevention_body()
+    body["gate"]["surprise_capture"] = "on"
+    server.prevention = body
+    _run(monkeypatch, _ss(tmp_path), ["--format=claude-json"])
+    assert _cache()["surprise_capture"] == "off"
+
+
+def test_surprise_capture_flip_on_stop_and_failed_refresh_keeps_value(
+    server: _Server,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), ["--format=claude-json"])
+    assert _cache()["surprise_capture"] == "off"
+    body = _prevention_body()
+    body["surprise_capture"] = "shadow"
+    server.prevention = body
+    _run(monkeypatch, _stop(tmp_path), ["--format=claude-json"])
+    assert _cache()["surprise_capture"] == "shadow"
+    assert len(turn_spawns) == 1
+    server.prevention = urllib.error.URLError("x")
+    _run(monkeypatch, _stop(tmp_path), ["--format=claude-json"])
+    assert _cache()["surprise_capture"] == "shadow"
+    drops = _drops()
+    assert len([d for d in drops if d["op"] == "prevention_fetch"]) == 1
+    digest = [d for d in drops if d["op"] == "turn_digest"]
+    assert len(digest) == 2
+    assert {d["reason"] for d in digest} == {"transcript_unreadable"}
+
+
+def test_orphan_sweep_gcs_turn_files(server: _Server, tmp_path: Path) -> None:
+    cache_dir = get_gate_log_path("x").parent
+    now = time.time()
+
+    def make(name: str, age_days: float) -> Path:
+        p = cache_dir / name
+        p.write_text("{}")
+        os.utime(p, (now - age_days * 86400, now - age_days * 86400))
+        return p
+
+    old_state = make("turn-state-other.json", 32)
+    young_state = make("turn-state-young.json", 8)
+    own_state = make(f"turn-state-{_SID}.json", 32)
+    old_log = make("turn-digest-log-other.jsonl", 8)
+    young_log = make("turn-digest-log-young.jsonl", 1)
+    prevention.orphan_sweep(_SID)
+    assert not old_state.exists()
+    assert young_state.exists()
+    assert own_state.exists()
+    assert not old_log.exists()
+    assert young_log.exists()

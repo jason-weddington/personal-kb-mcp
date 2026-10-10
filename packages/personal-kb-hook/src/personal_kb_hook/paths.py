@@ -105,3 +105,21 @@ def get_tool_inventory_log_path() -> Path:
     sent over the network.
     """
     return Path("~/.cache/personal_kb/tool-inventory.jsonl").expanduser()
+
+
+def get_turn_state_path(session_id: str) -> Path:
+    """Return the per-session turn-state file path (hook-only, no drift-guard twin).
+
+    Holds the per-session Stop counter (``next_turn_index``) and the uuid of
+    the newest transcript record the last digest saw (``last_uuid``).
+    """
+    return Path(f"~/.cache/personal_kb/turn-state-{session_id}.json").expanduser()
+
+
+def get_turn_digest_log_path(session_id: str) -> Path:
+    """Return the per-session local turn-digest decision log path (hook-only).
+
+    Local decision log of Stop digests and sender outcomes; it is never POSTed
+    anywhere, is capped at 256 KiB and is removed after 7 days.
+    """
+    return Path(f"~/.cache/personal_kb/turn-digest-log-{session_id}.jsonl").expanduser()

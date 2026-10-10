@@ -21,9 +21,11 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
 * **PostToolUse** — whisper-telemetry consume on ``kb_get``. Never produces
   stdout.
 * **Stop** — records/flushes the soft-gate decision log and refreshes the
-  prevention cache (unconditionally); then, when the listener gate is
-  enabled, extracts the assistant manifest from the transcript and spawns a detached listener-worker
-  subprocess. Never produces stdout; never calls :func:`http_index.load_index`.
+  prevention cache (unconditionally); ships a turn digest when the cached
+  ``surprise_capture`` is shadow or on (independent of the listener gate); then,
+  when the listener gate is enabled, extracts the assistant manifest from the
+  transcript and spawns a detached listener-worker subprocess. Never produces
+  stdout; never calls :func:`http_index.load_index`.
 
 SessionStart additionally appends a tool inventory of the personal script
 directories (``KB_TOOL_DIRS``, opt-in with no default; see
@@ -58,6 +60,7 @@ from personal_kb_hook import (
     prevention,
     telemetry,
     tool_inventory,
+    turn_digest,
     whisper_debug,
 )
 from personal_kb_hook.index_reader import MapKey
@@ -246,6 +249,9 @@ def main(argv: list[str] | None = None) -> None:
                 prevention.stop(payload)
                 prevention.flush_gate_log(session_id_stop_raw)
                 prevention.refresh(payload)
+                # Turn digest: gated only by the cached surprise_capture mode,
+                # independent of the listener gates below (decision R10).
+                turn_digest.stop(payload)
 
             if not listener.is_listener_enabled():
                 return
