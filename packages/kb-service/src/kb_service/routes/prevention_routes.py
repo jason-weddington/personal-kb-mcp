@@ -107,9 +107,9 @@ _INSERT_SQL = (
     " target, target_class, decision, shadow, reason_excerpt,"
     " retry_changed_command, prior_target, observed_once, index_len, slice_len,"
     " pre_tool_calls, pre_tool_errors, last_error_type, tool_use_id, ts,"
-    " received_ts)"
+    " received_ts, cleared, failure_context_cleared)"
     " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,"
-    " $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)"
+    " $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)"
     " ON CONFLICT (decision_id) DO NOTHING"
 )
 
@@ -166,10 +166,10 @@ _DENY_ROWS_SQL = (
 )
 
 
-_REPEAT_FAILURE_CONTEXT_SQL = (
-    "SELECT COUNT(*) AS n FROM (SELECT session_id, resolution_id FROM gate_decisions"
-    " WHERE received_ts >= $1 AND decision = 'failure_context' AND resolution_id != ''"
-    " GROUP BY session_id, resolution_id HAVING COUNT(*) > 1) AS repeats"
+# failure_context + rearmed rows, for the re-arm-aware repeat invariant.
+_FAILURE_CONTEXT_ROWS_SQL = (
+    "SELECT id, session_id, resolution_id, decision, ts FROM gate_decisions"
+    " WHERE received_ts >= $1 AND decision IN ('failure_context', 'rearmed')"
 )
 
 
@@ -425,6 +425,38 @@ def _max_in_hour(stamps: Iterable[datetime | None]) -> int:
     return best
 
 
+def _repeat_pairs(records: list[Any], rearm: int, decision: str) -> int:
+    """(session, resolution) pairs with *decision* repeated inside the window.
+
+    A pair repeats when its *decision* row follows its previous one by less
+    than *rearm* hours with no ``rearmed`` row for the session in between.
+    """
+    by_session: dict[str, list[tuple[datetime, int, str, str]]] = {}
+    for r in records:
+        ts = _parse_ts(r["ts"])
+        if ts is None:
+            continue
+        by_session.setdefault(str(r["session_id"]), []).append(
+            (ts, int(r["id"]), str(r["decision"]), str(r["resolution_id"]))
+        )
+    repeats: set[tuple[str, str]] = set()
+    window = timedelta(hours=rearm)
+    for sid, rows in by_session.items():
+        rows.sort()
+        last: dict[str, datetime] = {}
+        for ts, _, row_decision, rid in rows:
+            if row_decision == "rearmed":
+                last.clear()
+                continue
+            if row_decision != decision or not rid:
+                continue
+            prev = last.get(rid)
+            if prev is not None and ts - prev < window:
+                repeats.add((sid, rid))
+            last[rid] = ts
+    return len(repeats)
+
+
 def _deny_invariants(records: list[Any], per_hour: int, rearm: int) -> tuple[int, int]:
     """(sessions over the per-hour cap, repeat-deny pairs) from deny/rearmed rows.
 
@@ -505,6 +537,8 @@ def _insert_args(row: GateDecisionRow, received_ts: str) -> tuple[Any, ...]:
         row.tool_use_id,
         _normalize_ts(row.ts, received_ts),
         received_ts,
+        row.cleared,
+        row.failure_context_cleared,
     )
 
 
@@ -640,7 +674,11 @@ async def prevention_stats(
             max_denies_per_hour(),
             rearm_hours(),
         )
-        repeat_fc = await _count(pool, _REPEAT_FAILURE_CONTEXT_SQL, since)
+        repeat_fc = _repeat_pairs(
+            list(await pool.fetch(_FAILURE_CONTEXT_ROWS_SQL, since)),
+            rearm_hours(),
+            "failure_context",
+        )
     except Exception as exc:
         logger.warning("prevention_stats failed exc=%s", type(exc).__name__)
         return _empty_stats(since)

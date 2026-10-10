@@ -326,13 +326,18 @@ _SCHEMA_STATEMENTS: list[str] = [
     "last_error_type TEXT, "
     "tool_use_id TEXT, "
     "ts TEXT NOT NULL, "
-    "received_ts TEXT NOT NULL)",
+    "received_ts TEXT NOT NULL, "
+    "cleared INTEGER, "
+    "failure_context_cleared INTEGER)",
     "CREATE INDEX IF NOT EXISTS idx_gate_decisions_session"
     " ON gate_decisions(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_gate_decisions_resolution_ts"
     " ON gate_decisions(resolution_id, ts)",
     "CREATE INDEX IF NOT EXISTS idx_gate_decisions_received_ts"
     " ON gate_decisions(received_ts)",
+    "ALTER TABLE gate_decisions ADD COLUMN IF NOT EXISTS cleared INTEGER",
+    "ALTER TABLE gate_decisions ADD COLUMN IF NOT EXISTS"
+    " failure_context_cleared INTEGER",
     # Widen an ALREADY-DEPLOYED Postgres gate_decisions decision CHECK with the
     # PostToolUseFailure failure-context decisions and the soft gate's
     # rearmed / overridden decisions, mirroring the

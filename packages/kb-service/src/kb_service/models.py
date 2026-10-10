@@ -1771,6 +1771,9 @@ class GateDecisionRow(BaseModel):
     reason: str | None = None
     # rearmed: the SessionStart source (compact | resume | clear).
     source: str | None = None
+    # rearmed: lessons' deny state / failure-context ids the re-arm cleared.
+    cleared: int | None = None
+    failure_context_cleared: int | None = None
 
 
 class GateDecisionBatch(BaseModel):
@@ -1814,7 +1817,8 @@ class GateInvariantViolations(BaseModel):
     ``over_cap_sessions`` counts sessions with more denied + would_deny rows
     in some rolling hour than ``max_denies_per_hour``; ``repeat_deny_pairs``
     counts (session, resolution) pairs denied again within ``rearm_hours``
-    without an intervening ``rearmed`` row.
+    without an intervening ``rearmed`` row. ``repeat_failure_context_pairs``
+    applies the same rule to ``failure_context`` rows.
     """
 
     over_cap_sessions: int

@@ -1329,9 +1329,15 @@ def test_repeat_failure_context_pairs(
         "repeat_deny_pairs": 0,
         "repeat_failure_context_pairs": 0,
     }
+    # Intended behaviour change: a repeat only counts inside the re-arm window.
     _post(
         local_client,
-        _fc_row(4, session_id="s9", decision_id="cc:s9:t4:failure_context"),
+        _fc_row(
+            4,
+            session_id="s9",
+            decision_id="cc:s9:t4:failure_context",
+            ts="2026-10-07T13:00:00+00:00",
+        ),
     )
     with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
         body = local_client.get("/api/kb/prevention/stats").json()
@@ -1339,6 +1345,42 @@ def test_repeat_failure_context_pairs(
     assert body["invariant_violations"]["over_cap_sessions"] == 0
     assert body["invariant_violations"]["repeat_deny_pairs"] == 0
     assert any("gate_invariant_violation" in r.getMessage() for r in caplog.records)
+
+
+def test_repeat_failure_context_respects_rearm(local_client: TestClient) -> None:
+    def fc(n: int, sid: str, ts: str) -> dict[str, Any]:
+        return _fc_row(n, session_id=sid, decision_id=f"{sid}:fc{n}", ts=ts)
+
+    rows = [
+        # sA: 1h apart, no re-arm -> counted
+        fc(1, "sA", "2026-10-01T00:00:00+00:00"),
+        fc(2, "sA", "2026-10-01T01:00:00+00:00"),
+        # sB: 25h apart (rearm_hours=24) -> re-armed by time, not counted
+        fc(3, "sB", "2026-10-01T00:00:00+00:00"),
+        fc(4, "sB", "2026-10-02T01:00:00+00:00"),
+        # sC: 1h apart with a rearmed row between -> not counted
+        fc(5, "sC", "2026-10-01T00:00:00+00:00"),
+        _fc_row(
+            6,
+            "rearmed",
+            session_id="sC",
+            decision_id="sC:r6",
+            tool="SessionStart",
+            resolution_id="",
+            ts="2026-10-01T00:30:00+00:00",
+            cleared=0,
+            failure_context_cleared=2,
+        ),
+        fc(7, "sC", "2026-10-01T01:00:00+00:00"),
+    ]
+    _post(local_client, *rows)
+    body = local_client.get("/api/kb/prevention/stats").json()
+    assert body["invariant_violations"]["repeat_failure_context_pairs"] == 1
+    stored = _query(
+        "SELECT cleared, failure_context_cleared FROM gate_decisions"
+        " WHERE decision = 'rearmed'"
+    )
+    assert [(r["cleared"], r["failure_context_cleared"]) for r in stored] == [(0, 2)]
 
 
 async def test_expired_correction_excluded(kb: Any) -> None:
