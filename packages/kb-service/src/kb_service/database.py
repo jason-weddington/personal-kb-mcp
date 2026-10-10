@@ -441,6 +441,30 @@ _SCHEMA_STATEMENTS: list[str] = [
     " ON surprise_distillations(candidate_id)",
     "CREATE INDEX IF NOT EXISTS idx_surprise_distillations_ts"
     " ON surprise_distillations(ts)",
+    # surprise_dry_runs: one row per shadow candidate, recording what the
+    # mode-'on' distill path WOULD have done (see
+    # surprise_worker.dry_run_candidates). No KB write ever backs a row. No
+    # CHECK on would_outcome: the on-path outcome names with written/merged
+    # replaced by would_write/would_merge. payload holds json.dumps() TEXT.
+    # mode is the candidate's last turn event's interactive|headless ('' when
+    # unknown). The unique candidate_id index enforces one dry run each.
+    "CREATE TABLE IF NOT EXISTS surprise_dry_runs ("
+    "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+    "candidate_id BIGINT NOT NULL, "
+    "session_id TEXT NOT NULL, "
+    "project TEXT NOT NULL DEFAULT '', "
+    "shape INTEGER NOT NULL, "
+    "distiller_model TEXT NOT NULL DEFAULT '', "
+    "distiller_version INTEGER NOT NULL, "
+    "would_outcome TEXT NOT NULL, "
+    "reason TEXT NOT NULL DEFAULT '', "
+    "payload TEXT NOT NULL DEFAULT '{}', "
+    "mode TEXT NOT NULL DEFAULT '', "
+    "created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_surprise_dry_runs_created_at"
+    " ON surprise_dry_runs(created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_surprise_dry_runs_candidate"
+    " ON surprise_dry_runs(candidate_id)",
 ]
 
 

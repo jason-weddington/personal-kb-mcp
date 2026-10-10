@@ -929,6 +929,47 @@ class SurpriseDrainResponse(BaseModel):
     entries_merged: list[str]
 
 
+SurpriseCandidateStatus = Literal["pending", "shadow", "rejected", "written", "merged"]
+
+
+class SurpriseDryRunOut(BaseModel):
+    """A candidate's ``surprise_dry_runs`` row: what mode 'on' WOULD have done."""
+
+    would_outcome: str
+    reason: str
+    payload: dict[str, Any]
+    distiller_model: str
+    distiller_version: int
+
+
+class SurpriseCandidateAudit(BaseModel):
+    """One candidate for ``GET /api/kb/surprise/candidates``.
+
+    ``mode`` and ``host`` come from the candidate's last ``turn_events`` row
+    (None once pruned); ``dry_run`` is None without a dry run.
+    """
+
+    id: int
+    shape: Literal[1, 2, 3]
+    status: SurpriseCandidateStatus
+    session_id: str
+    project: str
+    created_at: str
+    detector_model: str
+    detector_output: dict[str, Any]
+    turn_event_ids: list[str]
+    mode: str | None
+    host: str | None
+    dry_run: SurpriseDryRunOut | None
+    entry_id: str | None
+
+
+class SurpriseCandidatesResponse(BaseModel):
+    """Response for ``GET /api/kb/surprise/candidates`` (newest first)."""
+
+    candidates: list[SurpriseCandidateAudit]
+
+
 class IngestFileResult(BaseModel):
     """Lossless mirror of kb-core's ``FileResult`` dataclass for P5 round-trip.
 

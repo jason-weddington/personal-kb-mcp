@@ -1270,6 +1270,18 @@ def test_end_to_end_recurrence_promotion(
         SURPRISE_DETECTOR_SYSTEM,
         SURPRISE_DETECTOR_SYSTEM,
     ]
+    # the shadow candidate got a dry run: an exact match from another
+    # session WOULD merge into x, and nothing was written.
+    conn = sqlite3.connect(database.sqlite_service_db_path())
+    conn.row_factory = sqlite3.Row
+    try:
+        dry = conn.execute("SELECT * FROM surprise_dry_runs").fetchall()
+    finally:
+        conn.close()
+    assert [(r["would_outcome"], r["mode"]) for r in dry] == [
+        ("would_merge", "interactive")
+    ]
+    assert json.loads(dry[0]["payload"])["matched_entry_id"] == x
 
 
 # --- failure-context lineage --------------------------------------------------

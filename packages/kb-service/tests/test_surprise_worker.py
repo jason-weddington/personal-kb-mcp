@@ -298,6 +298,7 @@ class _Ctx:
         self.llm = llm
         self.distill_calls: list[tuple[list[int], str]] = []
         self.distill_result = DistillResult()
+        self.dry_run_calls: list[list[int]] = []
 
 
 @contextmanager
@@ -330,6 +331,12 @@ def ctx(monkeypatch: pytest.MonkeyPatch) -> _Ctx:
         return c.distill_result
 
     monkeypatch.setattr(surprise_worker, "distill_candidates", _distill)
+
+    async def _dry_run(pool: Any, kb: Any, candidates: list[SurpriseCandidate]) -> int:
+        c.dry_run_calls.append([cand.id for cand in candidates])
+        return 0
+
+    monkeypatch.setattr(surprise_worker, "dry_run_candidates", _dry_run)
     return c
 
 
@@ -560,6 +567,8 @@ def test_drain_shadow_then_idempotent(
     assert "min_confidence_s2=0.50 min_confidence_s3=0.70" in line
     assert "distill_input=0" in line
     assert "new_candidates=2" in line
+    assert "dry_run_input=2" in line
+    assert ctx.dry_run_calls == [sorted(r["candidate_id"] for r in rows[3:5])]
 
     # (c) a second shadow drain is a no-op.
     body2 = _drain(local_client)
@@ -592,6 +601,7 @@ def test_drain_on_distills(
     assert body["entries_written"] == ["kb-00001"]
     assert body["entries_merged"] == ["kb-00002"]
     assert "distill_input=2" in _info_line(caplog)
+    assert ctx.dry_run_calls == []
     assert all(r["mode"] == "on" for r in _detections())
 
 

@@ -5,9 +5,11 @@
 ``kb_service.surprise`` on each, claims each digest (``processed_at``) and
 records every decision in ``surprise_detections`` and every hit in
 ``surprise_candidates``. In mode ``on`` it then hands pending candidates to
-``distill_candidates`` (the distillation hook). ``KB_SURPRISE_CAPTURE``, read
-from the current environment at processing time, is the only switch on this
-path.
+``distill_candidates`` (the distillation hook); in mode ``shadow`` it hands
+shadow candidates without a dry run to ``dry_run_candidates``, which runs the
+same decision but records it in ``surprise_dry_runs`` instead of writing.
+``KB_SURPRISE_CAPTURE``, read from the current environment at processing
+time, is the only switch on this path.
 
 ``SurpriseCaptureWorker`` runs ``drain_once`` on a poll interval, but only
 against a Postgres kb-core backend; local SQLite installs process digests
@@ -474,7 +476,10 @@ async def distill_candidates(
     candidates) it returns ``DistillResult()`` with no DB write, no KB write
     and no LLM call. Candidates detected in shadow have status 'shadow', are
     never passed and are never distilled, so flipping shadow to on does not
-    replay them; S0 also skips any non-pending candidate that is passed.
+    replay them (shadow gets a dry run instead: ``dry_run_candidates``); S0
+    also skips any non-pending candidate that is passed. The decision itself
+    is :func:`_decide_one`, shared with the dry run; this function then
+    performs its KB write via :func:`_execute_decision`.
 
     Each candidate runs S0-S13 in order: the S0 claim pre-check; no_project;
     the redaction-marker and gate-deny-marker rejects; the failure-context
@@ -507,13 +512,7 @@ async def distill_candidates(
     counts: Counter[str] = Counter()
     aborted = 0
     try:
-        try:
-            floor = get_near_duplicate_floor()
-        except ValueError:
-            floor = NEAR_DUPLICATE_FLOOR_DEFAULT
-            logger.warning(
-                "surprise_distill bad_near_duplicate_floor fallback=%s", floor
-            )
+        floor = _near_duplicate_floor()
         for cand in candidates:
             row = await pool.fetchrow(_CANDIDATE_STATUS_SQL, cand.id)
             if row is None or row["status"] != "pending":
@@ -523,34 +522,21 @@ async def distill_candidates(
                 )
                 counts["double_distill"] += 1
                 continue
-            kb_answered = (
-                frozenset(
-                    str(r["target"]).strip()
-                    for r in await pool.fetch(
-                        _FAILURE_CONTEXT_TARGETS_SQL, cand.session_id
-                    )
-                )
-                if cand.shape == 1
-                else frozenset()
-            )
-            turn_mode: str | None = None
-            if cand.turn_event_ids:
-                mode_row = await pool.fetchrow(_TURN_MODE_SQL, cand.turn_event_ids[-1])
-                if mode_row is not None:
-                    turn_mode = str(mode_row["mode"] or "") or None
+            kb_answered, turn_mode = await _candidate_context(pool, cand)
             decision = _Decision()
             try:
-                distilled = await _distill_one(
+                distilled = await _decide_one(
                     cand,
                     kb,
                     llm,
                     floor,
                     decision,
-                    result,
                     counts,
                     kb_answered_targets=kb_answered,
                     turn_mode=turn_mode,
                 )
+                if distilled:
+                    await _execute_decision(kb, decision, result)
             except Exception as exc:
                 decision.outcome = "kb_error"
                 decision.reason = type(exc).__name__
@@ -605,6 +591,87 @@ async def distill_candidates(
     return result
 
 
+async def dry_run_candidates(
+    pool: DbPool, kb: Any, candidates: list[SurpriseCandidate]
+) -> int:
+    """Shadow mode: record what mode 'on' WOULD do with each shadow candidate.
+
+    Runs the very same decision as :func:`distill_candidates`
+    (:func:`_decide_one`: exact match, the distiller call, the resolution and
+    shape-1 cue build, every validation and secret check, the near-duplicate
+    lookup) but performs NO KB write and NO merge and never changes the
+    candidate's status. Each decision becomes one ``surprise_dry_runs`` row,
+    with ``would_write`` / ``would_merge`` in place of written / merged and
+    every other outcome under its on-path name. A candidate that is not
+    'shadow' or already has a dry run is skipped (tripwire), so each shadow
+    candidate gets exactly one dry run; with no distiller LLM a candidate
+    without an exact match gets no row and is retried on the next drain.
+    Returns the number of rows recorded. DB exceptions propagate.
+    """
+    if not candidates:
+        return 0
+    llm = get_distiller_llm()
+    counts: Counter[str] = Counter()
+    recorded = 0
+    floor = _near_duplicate_floor()
+    try:
+        for cand in candidates:
+            row = await pool.fetchrow(_DRY_RUN_PRECHECK_SQL, cand.id)
+            if row is None or row["status"] != "shadow" or int(row["dry_runs"]):
+                logger.warning(
+                    "surprise_dry_run tripwire=double_dry_run candidate_id=%d",
+                    cand.id,
+                )
+                counts["double_dry_run"] += 1
+                continue
+            kb_answered, turn_mode = await _candidate_context(pool, cand)
+            decision = _Decision()
+            try:
+                decided = await _decide_one(
+                    cand,
+                    kb,
+                    llm,
+                    floor,
+                    decision,
+                    counts,
+                    kb_answered_targets=kb_answered,
+                    turn_mode=turn_mode,
+                )
+            except Exception as exc:
+                decision.outcome = "kb_error"
+                decision.reason = type(exc).__name__
+                decided = True
+            if not decided:
+                counts["no_llm"] += 1
+                continue
+            if await _persist_dry_run(pool, cand, decision, turn_mode):
+                recorded += 1
+                counts[decision.outcome] += 1
+            else:
+                counts["double_dry_run"] += 1
+    finally:
+        logger.info(
+            "surprise_dry_run summary distiller_version=%d distiller_model=%s"
+            " input=%d recorded=%d llm_calls=%d would_write=%d would_merge=%d"
+            " outcomes=%s no_llm=%d double_dry_run=%d",
+            SURPRISE_DISTILLER_VERSION,
+            detector_model_name(llm) if llm is not None else "",
+            len(candidates),
+            recorded,
+            counts["llm_calls"],
+            counts["would_write"],
+            counts["would_merge"],
+            ",".join(
+                f"{k}:{v}"
+                for k, v in sorted(counts.items())
+                if k in _DRY_RUN_OUTCOME_KEYS
+            ),
+            counts["no_llm"],
+            counts["double_dry_run"],
+        )
+    return recorded
+
+
 # --- distillation internals --------------------------------------------------
 
 _CANDIDATE_STATUS_SQL = "SELECT status FROM surprise_candidates WHERE id = $1"
@@ -644,6 +711,81 @@ _DISTILL_FAILED_OUTCOMES = frozenset(
 _CANDIDATE_STATUS = {"written": "written", "merged": "merged", "same_session": "merged"}
 
 
+_DRY_RUN_PRECHECK_SQL = (
+    "SELECT c.status, (SELECT COUNT(*) FROM surprise_dry_runs r"
+    " WHERE r.candidate_id = c.id) AS dry_runs"
+    " FROM surprise_candidates c WHERE c.id = $1"
+)
+
+# Shadow candidates still owed a dry run, oldest first. The created_at bound
+# keeps a first deploy (or a long-unreachable distiller) from replaying an
+# unbounded backlog of old shadow candidates through the LLM in one drain.
+_DRY_RUN_PENDING_SQL = (
+    f"SELECT {_CANDIDATE_COLUMNS} FROM surprise_candidates c"  # noqa: S608
+    " WHERE c.status = 'shadow' AND c.created_at >= $1"
+    " AND NOT EXISTS (SELECT 1 FROM surprise_dry_runs r"
+    " WHERE r.candidate_id = c.id) ORDER BY c.id"
+)
+
+DRY_RUN_LOOKBACK_SECONDS = 24 * 3600
+
+_INSERT_DRY_RUN_SQL = (
+    "INSERT INTO surprise_dry_runs (candidate_id, session_id, project, shape,"
+    " distiller_model, distiller_version, would_outcome, reason, payload, mode,"
+    " created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+    " ON CONFLICT (candidate_id) DO NOTHING"
+)
+
+_DRY_RUN_OUTCOME_KEYS = frozenset(
+    {
+        "would_write",
+        "would_merge",
+        "same_session",
+        "covered",
+        "not_durable",
+        "redacted",
+        "gate_induced",
+        "llm_error",
+        "unparseable",
+        "invalid_fields",
+        "invalid_resolution",
+        "secret_detected",
+        "no_project",
+        "kb_error",
+    }
+)
+
+
+def _near_duplicate_floor() -> float:
+    """``KB_NEAR_DUPLICATE_FLOOR``, falling back to the default when invalid."""
+    try:
+        return get_near_duplicate_floor()
+    except ValueError:
+        floor = NEAR_DUPLICATE_FLOOR_DEFAULT
+        logger.warning("surprise_distill bad_near_duplicate_floor fallback=%s", floor)
+        return floor
+
+
+async def _candidate_context(
+    pool: DbPool, cand: SurpriseCandidate
+) -> tuple[frozenset[str], str | None]:
+    """The session's failure-context targets (shape 1) and the turn mode."""
+    kb_answered = (
+        frozenset(
+            str(r["target"]).strip()
+            for r in await pool.fetch(_FAILURE_CONTEXT_TARGETS_SQL, cand.session_id)
+        )
+        if cand.shape == 1
+        else frozenset()
+    )
+    turn_mode: str | None = None
+    if cand.turn_event_ids:
+        mode_row = await pool.fetchrow(_TURN_MODE_SQL, cand.turn_event_ids[-1])
+        if mode_row is not None:
+            turn_mode = str(mode_row["mode"] or "") or None
+    return kb_answered, turn_mode
+
+
 @dataclass
 class _Decision:
     """One candidate's distill decision: the ``surprise_distillations`` row."""
@@ -666,21 +808,90 @@ class _Decision:
     prompt_chars: int | None = None
     response_chars: int | None = None
     latency_ms: int | None = None
+    store_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
+    update_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
-async def _distill_one(
+def dry_run_payload(c: SurpriseCandidate, d: _Decision) -> dict[str, Any]:
+    """The ``surprise_dry_runs.payload`` object for decision *d*.
+
+    The verdict fields are empty strings when there is no verdict, and for
+    ``secret_detected`` (mirroring ``surprise_distillations.verdict``).
+    """
+    v = d.verdict if d.outcome != "secret_detected" else None
+    return {
+        "short_title": v.short_title if v else "",
+        "long_title": v.long_title if v else "",
+        "corrected_fact": v.corrected_fact if v else "",
+        "lesson": v.lesson if v else "",
+        "wrong_belief": str(c.detector_output.get("wrong_belief") or "").strip()[
+            :RESOLUTION_WRONG_BELIEF_MAX
+        ],
+        "cue": d.cue,
+        "matched_entry_id": d.matched_id,
+        "similarity": d.similarity,
+    }
+
+
+async def _persist_dry_run(
+    pool: DbPool, c: SurpriseCandidate, d: _Decision, turn_mode: str | None
+) -> bool:
+    """Insert *c*'s dry-run row; False when one already existed."""
+    status = await pool.execute(
+        _INSERT_DRY_RUN_SQL,
+        c.id,
+        c.session_id,
+        c.project,
+        c.shape,
+        d.distiller_model,
+        SURPRISE_DISTILLER_VERSION,
+        d.outcome,
+        d.reason,
+        json.dumps(dry_run_payload(c, d)),
+        turn_mode or "",
+        _now(),
+    )
+    inserted = int(status.split()[-1]) != 0
+    if inserted:
+        logger.info(
+            "surprise_dry_run decision candidate_id=%d shape=%d session_id=%s"
+            " project=%s would_outcome=%s reason=%s match_kind=%s"
+            " matched_entry_id=%s similarity=%s cue=%s",
+            c.id,
+            c.shape,
+            c.session_id,
+            c.project,
+            d.outcome,
+            d.reason,
+            d.match_kind,
+            d.matched_id,
+            d.similarity,
+            d.cue_target_class,
+        )
+    else:
+        logger.warning("surprise_dry_run tripwire=double_dry_run candidate_id=%d", c.id)
+    return inserted
+
+
+async def _decide_one(
     c: SurpriseCandidate,
     kb: Any,
     llm: LLMProvider | None,
     floor: float,
     d: _Decision,
-    result: DistillResult,
     counts: Counter[str],
     *,
     kb_answered_targets: frozenset[str] = frozenset(),
     turn_mode: str | None = None,
 ) -> bool:
-    """Run S1-S13 for one candidate, filling *d*; False means a no_llm skip."""
+    """Run S1-S13 for one candidate, filling *d*; False means a no_llm skip.
+
+    Reads the KB and calls the distiller but never writes: the KB-writing
+    outcomes are left as ``would_write`` (``d.store_kwargs``) or
+    ``would_merge`` (``d.update_kwargs``). Mode 'on' then runs
+    :func:`_execute_decision`; mode 'shadow' records the decision as a dry
+    run. Both modes share this one function so they cannot drift.
+    """
     if c.project.strip() == "":
         d.outcome = "no_project"
         return True
@@ -713,7 +924,7 @@ async def _distill_one(
     if match is not None:
         d.matched_id, d.match_kind = match.entry_id, "exact"
         counts["exact_matches"] += 1
-        await _apply_match(c, kb, d, result)
+        await _decide_match(c, kb, d)
         return True
 
     if llm is None:
@@ -797,36 +1008,33 @@ async def _distill_one(
         top = check.candidates[0]
         d.matched_id, d.match_kind, d.similarity = top.id, "cosine", top.similarity
         counts["cosine_matches"] += 1
-        await _apply_match(c, kb, d, result)
+        await _decide_match(c, kb, d)
         return True
 
-    entry = await kb.store(
-        short_title=verdict.short_title,
-        long_title=verdict.long_title,
-        knowledge_details=details,
-        entry_type=EntryType.LESSON_LEARNED,
-        project_ref=c.project,
-        source_context=(
+    d.outcome, d.after = "would_write", 1
+    d.store_kwargs = {
+        "short_title": verdict.short_title,
+        "long_title": verdict.long_title,
+        "knowledge_details": details,
+        "entry_type": EntryType.LESSON_LEARNED,
+        "project_ref": c.project,
+        "source_context": (
             f"surprise_capture candidate {c.id} shape {c.shape} session {c.session_id}"
         ),
-        confidence_level=DISTILL_CONFIDENCE_LEVEL,
-        tags=[SURPRISE_TAG, f"shape-{c.shape}"],
-        hints={
+        "confidence_level": DISTILL_CONFIDENCE_LEVEL,
+        "tags": [SURPRISE_TAG, f"shape-{c.shape}"],
+        "hints": {
             **stamped,
             SURPRISE_HINT_KEY: merged_surprise_hint({}, c, new=True, mode=turn_mode),
         },
-        contributor=SURPRISE_CONTRIBUTOR,
-        enrich=False,
-    )
-    result.entries_written.append(entry.id)
-    d.outcome, d.entry_id, d.after = "written", entry.id, 1
+        "contributor": SURPRISE_CONTRIBUTOR,
+        "enrich": False,
+    }
     return True
 
 
-async def _apply_match(
-    c: SurpriseCandidate, kb: Any, d: _Decision, result: DistillResult
-) -> None:
-    """S12: merge into the matched entry, or record why it is not written."""
+async def _decide_match(c: SurpriseCandidate, kb: Any, d: _Decision) -> None:
+    """S12: decide a merge into the matched entry, or why it is not written."""
     entry = await kb.get(d.matched_id)
     if entry is None:
         d.outcome, d.reason = "covered", "missing"
@@ -859,20 +1067,34 @@ async def _apply_match(
     if stamped is None:
         d.outcome, d.reason = "invalid_resolution", "no_resolution"
         return
-    await kb.update(
-        entry.id,
-        hints={**stamped, SURPRISE_HINT_KEY: merged_surprise_hint(entry.hints, c)},
-        change_reason=(
+    d.outcome, d.entry_id = "would_merge", entry.id
+    d.before, d.after = before, before + 1
+    d.update_kwargs = {
+        "hints": {**stamped, SURPRISE_HINT_KEY: merged_surprise_hint(entry.hints, c)},
+        "change_reason": (
             f"surprise_capture: merged candidate {c.id} from session"
             f" {c.session_id}; observed_sessions {before}->{before + 1}"
         ),
-        updated_by=SURPRISE_CONTRIBUTOR,
-        enrich=False,
-    )
-    if entry.id not in result.entries_merged:
-        result.entries_merged.append(entry.id)
-    d.outcome, d.entry_id = "merged", entry.id
-    d.before, d.after = before, before + 1
+        "updated_by": SURPRISE_CONTRIBUTOR,
+        "enrich": False,
+    }
+
+
+async def _execute_decision(kb: Any, d: _Decision, result: DistillResult) -> None:
+    """Mode 'on' only: perform a would_write / would_merge decision's KB write.
+
+    Turns ``would_write`` into ``written`` (a new entry) and ``would_merge``
+    into ``merged``; every other outcome has no KB write and is left as is.
+    """
+    if d.outcome == "would_write":
+        entry = await kb.store(**d.store_kwargs)
+        result.entries_written.append(entry.id)
+        d.outcome, d.entry_id = "written", entry.id
+    elif d.outcome == "would_merge":
+        await kb.update(d.entry_id, **d.update_kwargs)
+        if d.entry_id not in result.entries_merged:
+            result.entries_merged.append(str(d.entry_id))
+        d.outcome = "merged"
 
 
 async def _persist_decision(
@@ -1042,6 +1264,10 @@ async def _insert_records(
 async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
     """Detect, claim and record every pending digest; distill in mode 'on'.
 
+    In mode 'shadow' it dry-runs the distiller (``dry_run_candidates``) on
+    shadow candidates from the last ``DRY_RUN_LOOKBACK_SECONDS`` that have no
+    ``surprise_dry_runs`` row yet; the response never lists them.
+
     Mode 'off' returns zeros without touching the DB. Otherwise: prune old
     digests first, then for each pending digest (by session, turn) run the
     detectors, claim it via ``mark_turn_digests_processed`` (the atomic
@@ -1157,6 +1383,16 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         if to_distill:
             distilled_ids = [cand.id for cand in to_distill]
             dres = await distill_candidates(pool, kb, to_distill, mode)
+    dry_run_input = 0
+    if mode == "shadow":
+        since = datetime.fromtimestamp(
+            time.time() - DRY_RUN_LOOKBACK_SECONDS, UTC
+        ).isoformat(timespec="seconds")
+        rows = await pool.fetch(_DRY_RUN_PENDING_SQL, since)
+        to_dry_run = [candidate_from_row(r) for r in rows]
+        dry_run_input = len(to_dry_run)
+        if to_dry_run:
+            await dry_run_candidates(pool, kb, to_dry_run)
 
     ids = sorted(set(inserted_ids) | set(distilled_ids))
     candidates = await _fetch_candidates(pool, ids)
@@ -1168,7 +1404,8 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         " shape2=%d shape3=%d llm_calls=%d llm_errors=%d unparseable=%d"
         " invalid=%d no_surprise=%d low_confidence=%d ungrounded=%d no_llm=%d"
         " truncated=%d out_of_order=%d turn_gaps=%d llm_ms=%d prompt_chars=%d"
-        " response_chars=%d distill_input=%d written=%d merged=%d",
+        " response_chars=%d distill_input=%d written=%d merged=%d"
+        " dry_run_input=%d",
         mode,
         SURPRISE_DETECTOR_VERSION,
         floor2,
@@ -1198,6 +1435,7 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         len(distilled_ids),
         len(dres.entries_written),
         len(dres.entries_merged),
+        dry_run_input,
     )
     return DrainResult(
         digests_processed=c["digests"],

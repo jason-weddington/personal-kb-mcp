@@ -24,6 +24,7 @@ agent sessions.
   one pointer per KB into the next agent turn. Multi-KB whisper is gated on
   **0 union false-injections**; the evaluation harnesses are maintained outside
   this repo.
+- **Surprise-capture audit**: `GET /api/kb/surprise/candidates` lists recent surprise candidates (filters `since`, `status`, `shape`, `project`, `limit`) with each one's shadow dry run (what mode `on` WOULD have written or merged) and its session mode and host, so an agent can audit shadow output before capture is switched on.
 - **Experience-loop metric**: `GET /api/kb/metrics/repeat-rate` and `kb-service metrics repeat-rate [--json]` report the weekly cross-session repeat-mistake rate from `failure_events`, cut by harness, mode, engine and host, with resolution coverage.
 
 ## Topology
