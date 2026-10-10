@@ -219,3 +219,23 @@ async def test_generate_chat_skips_leading_thinking_block(mock_anthropic_class):
 async def test_generate_chat_only_thinking_returns_none(mock_anthropic_class):
     mock_anthropic_class.messages.create.return_value = _resp(_block("thinking"))
     assert await _client().generate_chat([{"role": "user", "content": "hi"}]) is None
+
+
+@pytest.mark.asyncio
+async def test_no_text_block_logs_stop_reason(mock_anthropic_class, caplog):
+    resp = _resp()
+    resp.stop_reason = "refusal"
+    mock_anthropic_class.messages.create.return_value = resp
+    with caplog.at_level("WARNING"):
+        assert await _client().generate("p") is None
+    assert "stop_reason=refusal" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_no_text_block_without_stop_reason_attr(mock_anthropic_class, caplog):
+    resp = MagicMock(spec=["content"])
+    resp.content = []
+    mock_anthropic_class.messages.create.return_value = resp
+    with caplog.at_level("WARNING"):
+        assert await _client().generate("p") is None
+    assert "stop_reason=None" in caplog.text

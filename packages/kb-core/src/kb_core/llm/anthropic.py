@@ -37,7 +37,8 @@ def _extract_text(response: Any) -> str | None:
     ]
     if not texts:
         logger.warning(
-            "Anthropic response had no text block (block types: %s)",
+            "Anthropic response had no text block (stop_reason=%s, block types: %s)",
+            getattr(response, "stop_reason", None),
             [getattr(b, "type", type(b).__name__) for b in blocks],
         )
         return None
