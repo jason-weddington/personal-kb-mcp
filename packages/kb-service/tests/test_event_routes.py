@@ -341,3 +341,21 @@ def test_claude_code_lowercase_tool_untouched(local_client: TestClient) -> None:
     [row] = _rows()
     assert (row["tool"], row["target"], row["target_class"]) == ("bash", "", "")
     assert row["anomaly"] is None
+
+
+def test_talos_edit_file_argument_names_mapped(local_client: TestClient) -> None:
+    body = _event(
+        event_id="talos:sess-1:toolu_2",
+        harness="talos",
+        tool_name="edit_file",
+        tool_input={"path": "src/a.py"},
+        error="old_string not found in src/a.py",
+    )
+    assert local_client.post("/api/kb/event", json=body).json()["reason"] == "recorded"
+    [row] = _rows()
+    assert (row["tool"], row["target"], row["target_class"]) == (
+        "Edit",
+        "src/a.py",
+        "ext:py",
+    )
+    assert body["tool_input"] == {"path": "src/a.py"}

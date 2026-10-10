@@ -4,6 +4,7 @@ import copy
 import json
 import re
 import socket
+import sqlite3
 import sys
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -18,7 +19,13 @@ from kb_core import create_sqlite
 import kb_service.database as database
 from kb_service.auth import get_current_user
 from kb_service.main import app
-from kb_service.models import PreventionResponse, TurnDigestRequest, TurnDigestResponse
+from kb_service.models import (
+    EventRequest,
+    EventResponse,
+    PreventionResponse,
+    TurnDigestRequest,
+    TurnDigestResponse,
+)
 from kb_service.routes import turn_routes
 from tests.conftest import FakeKnowledgeBase, fake_user
 
@@ -519,6 +526,7 @@ def test_readme_documents_the_contract() -> None:
     for needle in (
         "prevention.json",
         "turn.json",
+        "event.json",
         "contract_version",
         "gen_contracts.py",
         "turn_event reason=invalid",
@@ -730,3 +738,67 @@ async def test_prevention_talos_gate_switch_off_matches_fixture(
     assert len(body["index"]) == 1
     assert set(body["index"][0]) == set(ex["index"][0])
     assert body["tool_map"] == ex["tool_map"]
+
+
+# --- POST /api/kb/event against the committed fixture --------------------------
+
+
+def _event() -> dict[str, Any]:
+    return _load("event.json")
+
+
+def _stored_rows() -> list[sqlite3.Row]:
+    conn = sqlite3.connect(database.sqlite_service_db_path())
+    conn.row_factory = sqlite3.Row
+    try:
+        return conn.execute("SELECT * FROM failure_events ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+
+def test_event_fixture_schemas_and_examples() -> None:
+    event = _event()
+    Draft202012Validator.check_schema(event["request"]["schema"])
+    Draft202012Validator.check_schema(event["response"]["schema"])
+    req_v = Draft202012Validator(event["request"]["schema"])
+    resp_v = Draft202012Validator(event["response"]["schema"])
+    for ex in event["request"]["examples"]:
+        assert req_v.is_valid(ex["body"]), ex["name"]
+        assert (
+            EventRequest.model_validate(ex["body"]).model_dump(mode="json")
+            == (ex["body"])
+        )
+    for ex in event["response"]["examples"]:
+        assert resp_v.is_valid(ex["body"]), ex["name"]
+        assert (
+            EventResponse.model_validate(ex["body"]).model_dump(mode="json")
+            == (ex["body"])
+        )
+    assert event["fields"]["client_supplied"] == list(EventRequest.model_fields)
+    assert set(event["stored"]) == {e["name"] for e in event["request"]["examples"]}
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["claude_code_bash_failure", "talos_bash_failure", "talos_edit_file_failure"],
+)
+def test_event_examples_match_live_route(turn_client: TestClient, name: str) -> None:
+    event = _event()
+    body = _examples(event["request"]["examples"])[name]
+    resp = turn_client.post("/api/kb/event", json=body)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == _examples(event["response"]["examples"])[name]
+    assert Draft202012Validator(event["response"]["schema"]).is_valid(resp.json())
+    [row] = _stored_rows()
+    want = event["stored"][name]
+    for key, value in want.items():
+        assert row[key] == value, key
+    assert row["tool"] != "" and row["error_rule"] != ""
+    assert row["event_id"] == body["event_id"]
+    # a repeat of the same event_id is a duplicate
+    again = turn_client.post("/api/kb/event", json=body).json()
+    assert again["reason"] == "duplicate"
+    assert again == _examples(event["response"]["examples"])["duplicate"] | {
+        "cue_key": want["cue_key"],
+        "normalizer_version": want["normalizer_version"],
+    }

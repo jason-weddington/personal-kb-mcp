@@ -5,8 +5,10 @@ from typing import Any
 import pytest
 
 from kb_service.harness_tools import (
+    HARNESS_ARG_MAPS,
     HARNESS_TOOL_MAPS,
     canonical_tool,
+    canonical_tool_input,
     normalize_turn_tools,
     tool_map,
 )
@@ -137,3 +139,37 @@ def test_other_harness_untouched() -> None:
     call = out.items[1]
     assert isinstance(call, TurnToolCallItem)
     assert (call.tool, call.target_class) == ("bash", "x")
+
+
+def test_arg_map_table() -> None:
+    assert HARNESS_ARG_MAPS == {
+        "talos": {
+            "bash": {"command": "command"},
+            "edit_file": {"path": "file_path"},
+            "read_file": {"path": "file_path"},
+            "list_files": {"path": "path"},
+        }
+    }
+
+
+def test_canonical_tool_input_renames_without_mutating() -> None:
+    original = {"path": "src/a.py", "extra": 1}
+    out = canonical_tool_input("talos", "edit_file", original)
+    assert out == {"file_path": "src/a.py", "extra": 1}
+    assert out is not original
+    assert original == {"path": "src/a.py", "extra": 1}
+
+
+@pytest.mark.parametrize(
+    ("harness", "tool"),
+    [
+        ("claude-code", "edit_file"),
+        (None, "edit_file"),
+        ("other", "edit_file"),
+        ("talos", "finish"),
+        ("talos", "Edit"),
+    ],
+)
+def test_canonical_tool_input_passthrough(harness: str | None, tool: str) -> None:
+    original = {"path": "src/a.py"}
+    assert canonical_tool_input(harness, tool, original) is original

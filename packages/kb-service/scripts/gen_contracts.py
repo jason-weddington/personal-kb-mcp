@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate the wire-contract fixtures under ``contracts/``.
 
-The fixtures are golden request/response JSON for ``GET /api/kb/prevention`` and
-``POST /api/kb/turn``. They are written only by this script and never edited by
-hand; see ``contracts/README.md``.
+The fixtures are golden request/response JSON for ``GET /api/kb/prevention``,
+``POST /api/kb/turn`` and ``POST /api/kb/event``. They are written only by this
+script and never edited by hand; see ``contracts/README.md``.
 
 A breaking change to a contract (see :func:`breaking_changes`) makes this script
 refuse to write until ``CONTRACT_VERSIONS`` is bumped.
@@ -19,9 +19,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from kb_core.cues import build_cue
+
 from kb_service import harness_tools
 from kb_service.main import app
 from kb_service.models import (
+    EventRequest,
+    EventResponse,
     GateSettings,
     IndexCue,
     PreventionDiagnostics,
@@ -42,7 +46,7 @@ from kb_service.turn_digest import TURN_DIGEST_MAX_BYTES
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTRACTS_DIR = REPO_ROOT / "contracts"
 GENERATED_BY = "packages/kb-service/scripts/gen_contracts.py"
-CONTRACT_VERSIONS: dict[str, int] = {"prevention": 1, "turn": 1}
+CONTRACT_VERSIONS: dict[str, int] = {"prevention": 1, "turn": 1, "event": 1}
 
 _CLAUDE_CODE_ITEMS: list[dict[str, Any]] = [
     {"kind": "assistant_text", "text": "Pushing the branch now."},
@@ -371,9 +375,168 @@ def build_turn() -> dict[str, Any]:
     }
 
 
+# Fields the server computes (via ``build_cue`` and the route) and stores in
+# ``failure_events``; none is accepted from the client.
+_EVENT_SERVER_COMPUTED = [
+    "cue_key",
+    "normalizer_version",
+    "host_class",
+    "project_source",
+    "target",
+    "target_class",
+    "normalized_error",
+    "error_rule",
+    "anomaly",
+    "raw_error_excerpt",
+    "received_ts",
+]
+
+_EVENT_RAWS: list[tuple[str, dict[str, Any]]] = [
+    (
+        "claude_code_bash_failure",
+        {
+            "type": "post_tool",
+            "event_id": "contract-session-1:toolu_contract_1",
+            "session_id": "contract-session-1",
+            "harness": "claude-code",
+            "mode": "interactive",
+            "engine": None,
+            "host": "contract-host",
+            "hook_version": "0.0.0-contract",
+            "cwd": "/home/dev/git/personal_kb",
+            "project": "personal-kb",
+            "ts": "2026-10-10T12:00:00+00:00",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push mirror feat/x"},
+            "tool_use_id": "toolu_contract_1",
+            "error": "Exit code 1\nremote: Permission to mirror denied",
+            "is_error": True,
+            "is_interrupt": False,
+            "duration_ms": 120,
+        },
+    ),
+    (
+        "talos_bash_failure",
+        {
+            "type": "post_tool",
+            "event_id": "contract-session-2:toolu_contract_t1",
+            "session_id": "contract-session-2",
+            "harness": "talos",
+            "mode": "headless",
+            "engine": "talos-glm-flash",
+            "host": "contract-host",
+            "cwd": "/home/dev/git/personal_kb",
+            "project": "personal-kb",
+            "ts": "2026-10-10T12:05:00+00:00",
+            "tool_name": "bash",
+            "tool_input": {"command": "git push mirror feat/x"},
+            "tool_use_id": "toolu_contract_t1",
+            "error": "Exit code 1\nremote: Permission to mirror denied",
+            "is_error": True,
+            "duration_ms": 95,
+        },
+    ),
+    (
+        "talos_edit_file_failure",
+        {
+            "type": "post_tool",
+            "event_id": "contract-session-2:toolu_contract_t2",
+            "session_id": "contract-session-2",
+            "harness": "talos",
+            "mode": "headless",
+            "engine": "talos-glm-flash",
+            "host": "contract-host",
+            "cwd": "/home/dev/git/personal_kb",
+            "project": "personal-kb",
+            "ts": "2026-10-10T12:06:00+00:00",
+            "tool_name": "edit_file",
+            "tool_input": {"path": "src/a.py"},
+            "tool_use_id": "toolu_contract_t2",
+            "error": "old_string not found in src/a.py",
+            "is_error": True,
+        },
+    ),
+]
+
+
+def event_stored(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return the computed ``failure_events`` fields the route stores for *raw*."""
+    body = EventRequest.model_validate(raw)
+    name, error = body.tool_name or "", body.error or ""
+    tool = harness_tools.canonical_tool(body.harness, name)
+    tool_input = harness_tools.canonical_tool_input(body.harness, name, body.tool_input)
+    cue = build_cue(tool, tool_input, error, body.project, body.cwd)
+    return {
+        "cue_key": cue.cue_key,
+        "normalizer_version": cue.normalizer_version,
+        "host_class": cue.host_class,
+        "project_source": cue.project_source,
+        "tool": cue.tool,
+        "target": cue.target,
+        "target_class": cue.target_class,
+        "normalized_error": cue.normalized_error,
+        "error_rule": cue.error_rule,
+        "anomaly": None,
+        "raw_error_excerpt": error[:2000],
+    }
+
+
+def build_event() -> dict[str, Any]:
+    """Build the ``event.json`` document."""
+    request_schema = EventRequest.model_json_schema()
+    response_schema = EventResponse.model_json_schema()
+    reasons = response_schema["properties"]["reason"]["enum"]
+    examples = []
+    for name, raw in _EVENT_RAWS:
+        stored = event_stored(raw)
+        examples.append(
+            {
+                "name": name,
+                "body": EventRequest.model_validate(raw).model_dump(mode="json"),
+                "stored": stored,
+                "response": EventResponse(
+                    recorded=True,
+                    cue_key=stored["cue_key"],
+                    normalizer_version=stored["normalizer_version"],
+                    reason="recorded",
+                ).model_dump(mode="json"),
+            }
+        )
+    return {
+        **_header("event", "POST", "/api/kb/event"),
+        "fields": {
+            "client_supplied": list(request_schema["properties"]),
+            "server_computed": _EVENT_SERVER_COMPUTED,
+        },
+        "request": {
+            "schema": request_schema,
+            "examples": [{"name": e["name"], "body": e["body"]} for e in examples],
+        },
+        "stored": {e["name"]: e["stored"] for e in examples},
+        "response": {
+            "schema": response_schema,
+            "examples": [{"name": e["name"], "body": e["response"]} for e in examples]
+            + [
+                {
+                    "name": r,
+                    "body": EventResponse(recorded=False, reason=r).model_dump(
+                        mode="json"
+                    ),
+                }
+                for r in reasons
+                if r in ("duplicate", "not-failure", "unsupported-type")
+            ],
+        },
+    }
+
+
 def build_contracts() -> dict[str, dict[str, Any]]:
     """Return every generated document, keyed by file name."""
-    return {"prevention.json": build_prevention(), "turn.json": build_turn()}
+    return {
+        "prevention.json": build_prevention(),
+        "turn.json": build_turn(),
+        "event.json": build_event(),
+    }
 
 
 def render(doc: dict[str, Any]) -> str:

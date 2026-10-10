@@ -23,7 +23,7 @@ the hook's ``event-drops.jsonl`` drop log as the cross-check.
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from kb_core.cues import FailureCue, build_cue
@@ -87,11 +87,11 @@ def _anomaly(tool_name: str, cue: FailureCue) -> str | None:
 
 
 async def _record(
-    body: EventRequest, tool_name: str, error: str
+    body: EventRequest, tool_name: str, tool_input: dict[str, Any], error: str
 ) -> tuple[EventResponse, FailureCue | None]:
     """Normalize and insert one failure; never raises."""
     try:
-        cue = build_cue(tool_name, body.tool_input, error, body.project, body.cwd)
+        cue = build_cue(tool_name, tool_input, error, body.project, body.cwd)
         anomaly = _anomaly(tool_name, cue)
         if anomaly is not None:
             logger.warning(
@@ -156,7 +156,10 @@ async def _decide(body: EventRequest) -> tuple[EventResponse, FailureCue | None]
     if tool_name is None or error is None or not tool_name.strip() or not error.strip():
         return EventResponse(recorded=False, reason="missing-fields"), None
     return await _record(
-        body, harness_tools.canonical_tool(body.harness, tool_name), error
+        body,
+        harness_tools.canonical_tool(body.harness, tool_name),
+        harness_tools.canonical_tool_input(body.harness, tool_name, body.tool_input),
+        error,
     )
 
 

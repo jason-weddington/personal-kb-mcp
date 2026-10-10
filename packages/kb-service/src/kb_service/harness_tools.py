@@ -27,6 +27,8 @@ Contract:
    HARNESS_TOOL_MAPS are never remapped.
 """
 
+from typing import Any
+
 from kb_core.cues import target_class
 
 from kb_service.models import TurnDigestRequest, TurnToolCallItem
@@ -41,6 +43,33 @@ HARNESS_TOOL_MAPS: dict[str, dict[str, str]] = {
         "finish": "finish",
     }
 }
+
+# Native argument name -> Claude Code argument name, per harness and native
+# tool, for the keys ``kb_core.cues.extract_target`` reads from ``tool_input``.
+HARNESS_ARG_MAPS: dict[str, dict[str, dict[str, str]]] = {
+    "talos": {
+        "bash": {"command": "command"},
+        "edit_file": {"path": "file_path"},
+        "read_file": {"path": "file_path"},
+        "list_files": {"path": "path"},
+    }
+}
+
+
+def canonical_tool_input(
+    harness: str | None, tool: str, tool_input: dict[str, Any]
+) -> dict[str, Any]:
+    """Return *tool_input* with native argument names renamed to canonical ones.
+
+    A mapped harness gets a new dict (unmapped keys kept, *tool_input* never
+    mutated); claude-code and unknown harnesses get *tool_input* itself.
+    """
+    if harness is None:
+        return tool_input
+    mapping = HARNESS_ARG_MAPS.get(harness, {}).get(tool)
+    if mapping is None:
+        return tool_input
+    return {mapping.get(k, k): v for k, v in tool_input.items()}
 
 
 def canonical_tool(harness: str | None, tool: str) -> str:
