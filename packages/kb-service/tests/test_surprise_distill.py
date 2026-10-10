@@ -246,6 +246,18 @@ def test_shape1_cue_fixed_point(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "cue" not in res
 
 
+def test_shape1_cue_uses_cue_target_class() -> None:
+    wb = "git show HEAD | tail -8; git push origin main"
+    assert shape1_cue(wb, "git push") == {"tool": "Bash", "target_class": "git push"}
+    assert shape1_cue(wb, "git push origin") is None
+    assert shape1_cue(wb, None) == {"tool": "Bash", "target_class": "git show"}
+    res = build_resolution(
+        _cand(output={**_OUTPUT1, "wrong_belief": wb, "cue_target_class": "git push"}),
+        _VERDICT,
+    )
+    assert res["cue"] == {"tool": "Bash", "target_class": "git push"}
+
+
 def test_build_knowledge_details() -> None:
     cand = _cand(cid=7, turn_event_ids=["s1:0", "s1:1"])
     res = build_resolution(cand, _VERDICT)

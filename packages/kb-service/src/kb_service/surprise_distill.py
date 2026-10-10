@@ -179,9 +179,15 @@ def not_durable_reason(raw: str | None) -> str:
 # --- resolution builders -----------------------------------------------------
 
 
-def shape1_cue(wrong_belief: str) -> dict[str, str] | None:
-    """The Bash cue for a shape-1 wrong belief, when its class is a fixed point."""
-    tc = target_class("Bash", wrong_belief)
+def shape1_cue(
+    wrong_belief: str, cue_target_class: str | None = None
+) -> dict[str, str] | None:
+    """The Bash cue for a shape-1 wrong belief, when its class is a fixed point.
+
+    *cue_target_class* is the class the detector paired on; when absent the
+    class of the whole wrong belief is used.
+    """
+    tc = cue_target_class or target_class("Bash", wrong_belief)
     if tc != "" and target_class("Bash", tc) == tc:
         return {"tool": "Bash", "target_class": tc}
     return None
@@ -215,7 +221,7 @@ def build_resolution(
         "scope": "project",
     }
     if candidate.shape == 1:
-        cue = shape1_cue(wrong_belief)
+        cue = shape1_cue(wrong_belief, _output_str(candidate, "cue_target_class"))
         if cue is not None:
             resolution["cue"] = cue
     return resolution

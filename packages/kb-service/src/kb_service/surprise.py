@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeGuard
 
-from kb_core.cues import target_class
+from kb_core.cues import bash_segments, target_class
 from kb_core.llm.json_parser import parse_json_object
 
 DetectionOutcome = Literal[
@@ -172,7 +172,7 @@ class DetectionRecord:
 class _Call:
     event_id: str
     target: str
-    cls: str
+    classes: tuple[str, ...]
     is_error: bool
     excerpt: str
 
@@ -218,8 +218,16 @@ def detect_shape1(
                 stats["bash_calls"] += 1
                 if is_error:
                     stats["failures"] += 1
-            cls = item.get("target_class") or target_class("Bash", target)
-            if cls == "" or cls in SHAPE1_IGNORED_CLASSES:
+            segment_classes = [c for c, _ in bash_segments(target)]
+            if not segment_classes:
+                fallback = item.get("target_class") or target_class("Bash", target)
+                segment_classes = [fallback] if fallback else []
+            classes = tuple(
+                dict.fromkeys(
+                    c for c in segment_classes if c not in SHAPE1_IGNORED_CLASSES
+                )
+            )
+            if not classes:
                 if is_current:
                     stats["dropped_ignored_class"] += 1
                 continue
@@ -227,7 +235,7 @@ def detect_shape1(
                 _Call(
                     event_id=digest.event_id,
                     target=target,
-                    cls=cls,
+                    classes=classes,
                     is_error=is_error,
                     excerpt=result.get("excerpt") or "",
                 )
@@ -237,27 +245,38 @@ def detect_shape1(
     pending_failure: dict[str, _Call] = {}
     for call in calls:
         if call.is_error:
-            pending_failure[call.cls] = call
+            for cls in call.classes:
+                pending_failure[cls] = call
             continue
-        failure = pending_failure.pop(call.cls, None)
-        if failure is None or call.event_id != current_event_id:
+        shared = next((c for c in call.classes if c in pending_failure), None)
+        if shared is None:
+            continue
+        failure = pending_failure[shared]
+        for cls in failure.classes:
+            if pending_failure.get(cls) is failure:
+                del pending_failure[cls]
+        if call.event_id != current_event_id:
             continue
         stats["pairs"] += 1
         if failure.target.strip() == call.target.strip():
             stats["dropped_identical"] += 1
             continue
         event_ids = list(dict.fromkeys([failure.event_id, call.event_id]))
+        output: dict[str, Any] = {
+            "wrong_belief": failure.target[:WRONG_BELIEF_MAX],
+            "corrected_fact": call.target[:CORRECTED_FACT_MAX],
+            "evidence_excerpt": failure.excerpt[:EVIDENCE_EXCERPT_MAX],
+            "confidence": 1.0,
+        }
+        # Only recorded when the cue cannot be re-derived from wrong_belief.
+        if shared != target_class("Bash", output["wrong_belief"]):
+            output["cue_target_class"] = shared
         candidates.append(
             NewCandidate(
                 shape=1,
                 turn_event_ids=event_ids,
                 detector_model=SHAPE1_DETECTOR_MODEL,
-                detector_output={
-                    "wrong_belief": failure.target[:WRONG_BELIEF_MAX],
-                    "corrected_fact": call.target[:CORRECTED_FACT_MAX],
-                    "evidence_excerpt": failure.excerpt[:EVIDENCE_EXCERPT_MAX],
-                    "confidence": 1.0,
-                },
+                detector_output=output,
             )
         )
     return Shape1Result(candidates=candidates, stats=stats)

@@ -31,6 +31,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 __all__ = [
     "CUE_NORMALIZER_VERSION",
     "FailureCue",
+    "bash_segments",
     "build_cue",
     "cue_key",
     "extract_target",
@@ -74,6 +75,7 @@ _TWO_WORD_PROGRAMS = frozenset(
 )
 
 _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\|")
+_NEWLINE_SPLIT = re.compile(r"&&|\|\||;|\||\n")
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -154,8 +156,8 @@ def extract_target(tool: str, tool_input: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _bash_class(command: str) -> str:
-    """Classify a shell command by its program (and subcommand for known CLIs)."""
+def _bash_tokens(command: str) -> list[str]:
+    """Tokens of the first non-``cd`` segment, env assigns and sudo stripped."""
     segment: str | None = None
     for candidate in _SEGMENT_SPLIT.split(command):
         parts = candidate.split()
@@ -163,7 +165,7 @@ def _bash_class(command: str) -> str:
             segment = candidate
             break
     if segment is None:
-        return ""
+        return []
     tokens = segment.split()
     while tokens and _ENV_ASSIGN.match(tokens[0]):
         tokens.pop(0)
@@ -173,12 +175,51 @@ def _bash_class(command: str) -> str:
             flag = tokens.pop(0)
             if flag in {"-u", "-g"} and tokens:
                 tokens.pop(0)
+    return tokens
+
+
+def _is_two_word(tokens: list[str]) -> bool:
+    word = PurePosixPath(tokens[0]).name
+    return word in _TWO_WORD_PROGRAMS and len(tokens) > 1 and not tokens[1].startswith("-")
+
+
+def _bash_class(command: str) -> str:
+    """Classify a shell command by its program (and subcommand for known CLIs)."""
+    tokens = _bash_tokens(command)
     if not tokens:
         return ""
     word = PurePosixPath(tokens[0]).name
-    if word in _TWO_WORD_PROGRAMS and len(tokens) > 1 and not tokens[1].startswith("-"):
+    if _is_two_word(tokens):
         return f"{word} {tokens[1]}"
     return word
+
+
+def bash_args_after_class(command: str) -> list[str]:
+    """Tokens after those that produced the Bash ``target_class``, flags dropped."""
+    tokens = _bash_tokens(command)
+    if not tokens:
+        return []
+    rest = tokens[2:] if _is_two_word(tokens) else tokens[1:]
+    return [t for t in rest if not t.startswith("-")]
+
+
+def bash_segments(command: str) -> list[tuple[str, list[str]]]:
+    """``(target_class, args_after_class)`` for every segment of ``command``.
+
+    Splits on ``&&``, ``||``, ``;``, ``|`` and newlines; ``cd`` segments and
+    segments that classify to ``''`` are skipped. Mirrors
+    ``personal_kb_hook.cues_lite.bash_segments`` (drift-guarded).
+    """
+    out: list[tuple[str, list[str]]] = []
+    for segment in _NEWLINE_SPLIT.split(command):
+        cls = _bash_class(segment)
+        if not cls:
+            continue
+        parts = segment.split()
+        if parts and parts[0] == "cd":
+            continue
+        out.append((cls, bash_args_after_class(segment)))
+    return out
 
 
 def target_class(tool: str, target: str) -> str:

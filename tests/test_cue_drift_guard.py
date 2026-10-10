@@ -79,3 +79,20 @@ def test_other_target_class_agrees(tool: str, target: str) -> None:
 def test_pinned_vectors(command: str, expected: str) -> None:
     assert cues.target_class("Bash", command) == expected
     assert cues_lite.target_class("Bash", command) == expected
+
+
+_SEGMENT_VECTORS = [
+    "git show HEAD -- README.md | tail -8; git push origin main",
+    "cd /app\nmake smoke 2>&1 | tail -5",
+    "FOO=1 sudo systemctl restart caddy; echo ok",
+    "git commit -qam x && git push github main",
+    "cd /x",
+    "",
+    "FOO=1",
+    "cd /x && npm run build -- --mode prod || echo failed",
+]
+
+
+@pytest.mark.parametrize("command", _SEGMENT_VECTORS)
+def test_bash_segments_agrees(command: str) -> None:
+    assert cues_lite.bash_segments(command) == cues.bash_segments(command)

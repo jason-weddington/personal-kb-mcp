@@ -23,6 +23,7 @@ def test_all_is_exact() -> None:
     assert set(cues.__all__) == {
         "CUE_NORMALIZER_VERSION",
         "FailureCue",
+        "bash_segments",
         "build_cue",
         "cue_key",
         "extract_target",

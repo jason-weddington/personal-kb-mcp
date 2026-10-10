@@ -611,7 +611,11 @@ async def _distill_one(
     if GATE_DENY_MARKER in str(c.detector_output.get("evidence_excerpt") or ""):
         d.outcome = "gate_induced"
         return True
-    cue = shape1_cue(wrong_belief) if c.shape == 1 else None
+    cue = (
+        shape1_cue(wrong_belief, str(c.detector_output.get("cue_target_class") or ""))
+        if c.shape == 1
+        else None
+    )
     d.cue = cue
     d.cue_target_class = (cue or {}).get("target_class", "")
 

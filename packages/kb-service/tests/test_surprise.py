@@ -210,6 +210,51 @@ def test_shape1_missing_is_error_is_success() -> None:
     assert res.stats["failures"] == 1
 
 
+def test_shape1_compound_command_pairs_on_any_segment() -> None:
+    d0 = _digest(
+        0,
+        _bash("git show HEAD -- README.md | tail -8; git push origin main", error=True)
+        + _bash("git push origin HEAD:refs/for/main", error=False),
+    )
+    res = detect_shape1([d0], d0.event_id)
+    assert len(res.candidates) == 1
+    assert res.candidates[0].detector_output["cue_target_class"] == "git push"
+
+
+def test_shape1_no_shared_segment_class() -> None:
+    d0 = _digest(
+        0,
+        _bash("make test 2>&1 | tail -3", error=True)
+        + _bash("uv run pytest", error=False),
+    )
+    assert detect_shape1([d0], d0.event_id).candidates == []
+
+
+def test_shape1_cd_prefixed_pairs_on_npm_run() -> None:
+    d0 = _digest(
+        0,
+        _bash("cd /app && npm run build", error=True)
+        + _bash("npm run build -- --mode prod", error=False),
+    )
+    res = detect_shape1([d0], d0.event_id)
+    assert len(res.candidates) == 1
+    out = res.candidates[0].detector_output
+    # the whole-command class is already "npm run", so no override is stored
+    assert "cue_target_class" not in out
+    assert target_class("Bash", out["wrong_belief"]) == "npm run"
+
+
+def test_shape1_pair_pops_failure_from_every_class() -> None:
+    d0 = _digest(
+        0,
+        _bash("git add . && git push origin main", error=True)
+        + _bash("git push origin HEAD:main", error=False)
+        + _bash("git add -A", error=False),
+    )
+    res = detect_shape1([d0], d0.event_id)
+    assert len(res.candidates) == 1
+
+
 # --- shape 2 -------------------------------------------------------------------
 
 
