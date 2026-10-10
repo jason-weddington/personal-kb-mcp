@@ -12,6 +12,8 @@ attribution defaults to ``Attribution()``.
 import os
 from typing import TYPE_CHECKING
 
+from starlette.requests import Request
+
 if TYPE_CHECKING:
     from kb_core.config import (
         AgenticConfig,
@@ -204,6 +206,35 @@ def get_near_duplicate_floor() -> float:
 def is_safety_skip() -> bool:
     """Return True if KB_SKIP_SAFETY is set to TRUE."""
     return os.environ.get("KB_SKIP_SAFETY", "").upper() == "TRUE"
+
+
+def is_manager_mode() -> bool:
+    """Return True if KB_MANAGER is TRUE (registers maintenance MCP tools)."""
+    return os.environ.get("KB_MANAGER", "").upper() == "TRUE"
+
+
+def get_contributor() -> str | None:
+    """Return KB_CONTRIBUTOR, or None when unset/empty."""
+    return os.environ.get("KB_CONTRIBUTOR") or None
+
+
+def get_instance_role() -> str:
+    """Return KB_INSTANCE_ROLE lower-cased ('' when unset)."""
+    return os.environ.get("KB_INSTANCE_ROLE", "").lower()
+
+
+def public_base_url(request: Request) -> str:
+    """Public-facing base URL for issued links (invites, password resets).
+
+    Behind a reverse proxy that doesn't forward the original Host header,
+    ``request.url.netloc`` reports the inner bind address (e.g. ``localhost:8000``)
+    which is useless for sharing. Set ``KB_SERVICE_PUBLIC_URL`` (e.g.
+    ``https://kb-service``) to override.
+    """
+    override = os.environ.get("KB_SERVICE_PUBLIC_URL", "").rstrip("/")
+    if override:
+        return override
+    return f"{request.url.scheme}://{request.url.netloc}"
 
 
 def is_agentic_query() -> bool:

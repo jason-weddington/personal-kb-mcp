@@ -1,11 +1,14 @@
-"""kb_preflight MCP tool — project context primer."""
+"""kb_preflight MCP tool (HTTP twin of ``personal_kb.tools.kb_preflight``)."""
 
 import logging
 from typing import Annotated
 
 from fastmcp import FastMCP
-from fastmcp.server.context import Context
+from kb_core.ttl import parse_ttl
 from pydantic import Field
+
+from kb_service.mcp_server import context
+from kb_service.mcp_server.errors import BackendHttpError, map_error
 
 logger = logging.getLogger(__name__)
 
@@ -43,37 +46,19 @@ def register_kb_preflight(mcp: FastMCP, prefix: str = "kb_") -> None:
                 "Examples: 7d, 2w, 24h. Omit for all recent entries."
             ),
         ] = None,
-        ctx: Context | None = None,
     ) -> str:
         """Get a project context primer."""
-        from personal_kb.tools._lifespan import backend_from_lifespan
-        from personal_kb.tools.ttl import parse_ttl
-
-        if ctx is None:
-            raise RuntimeError("Context not injected")
-
-        # Parse since before dispatching — same early error in both modes
         if since is not None:
             try:
                 parse_ttl(since)  # validate only
             except ValueError as exc:
                 return f"Error: {exc}"
 
-        backend = backend_from_lifespan(ctx.lifespan_context)
+        backend = context.backend_for_request()
 
         try:
-            result = await backend.preflight(project_ref, since)
+            return await backend.preflight(project_ref, since)
         except Exception as exc:
-            from personal_kb.backend.http import BackendHttpError, _map_error
-
             if isinstance(exc, BackendHttpError):
-                return _map_error(exc, "")
+                return map_error(exc)
             return f"Error: {exc}"
-
-        note = ctx.lifespan_context.get("version_skew_note")
-        if note:
-            result = f"{result}\n\n{note}"
-        deprecation = ctx.lifespan_context.get("deprecation_note")
-        if deprecation:
-            result = f"{result}\n\n{deprecation}"
-        return result

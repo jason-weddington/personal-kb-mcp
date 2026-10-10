@@ -299,3 +299,78 @@ def test_instructions_supersedes_is_a_parameter_not_a_hint():
 def test_build_instructions_mentions_resolution_hint():
     """The hints section documents the resolution hint."""
     assert "resolution" in _build_instructions("kb_")
+
+
+# --- stdio deprecation note (MCP over HTTP overlap) --------------------------
+
+
+def test_stdio_deprecation_note_silent_for_loopback():
+    from personal_kb.server import stdio_deprecation_note
+
+    assert stdio_deprecation_note("http://127.0.0.1:8765") is None
+
+
+def test_stdio_deprecation_note_for_hosted_url(monkeypatch):
+    from personal_kb.server import stdio_deprecation_note
+
+    monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret-k")
+    note = stdio_deprecation_note("https://kb.example.com/")
+    assert note is not None
+    assert "https://kb.example.com/mcp" in note
+    assert "--transport http" in note
+    assert "personal-kb" in note
+    assert "$PERSONAL_KB_API_KEY" in note
+    assert "secret-k" not in note
+
+
+def test_stdio_deprecation_note_team_server_name(monkeypatch):
+    from personal_kb.server import stdio_deprecation_note
+
+    monkeypatch.setenv("KB_INSTANCE_ROLE", "team")
+    note = stdio_deprecation_note("https://team.example.com")
+    assert note is not None
+    assert "claude mcp add --transport http team-kb https://team.example.com/mcp" in note
+
+
+async def test_lifespan_yields_and_logs_deprecation_note(monkeypatch, tmp_path, caplog):
+    import logging
+    from unittest.mock import MagicMock
+
+    from personal_kb import version_skew
+    from personal_kb.backend.http import HttpBackend
+    from personal_kb.server import lifespan, stdio_deprecation_note
+
+    async def _noop(self):
+        return None
+
+    async def _no_skew(_url):
+        return None
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret-k")
+    monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
+    monkeypatch.setattr(HttpBackend, "open", _noop)
+    monkeypatch.setattr(HttpBackend, "close", _noop)
+    monkeypatch.setattr(version_skew, "check_version_skew", _no_skew)
+
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    try:
+        with caplog.at_level(logging.WARNING, logger="personal_kb.server"):
+            async with lifespan(MagicMock()) as state:
+                assert state["deprecation_note"] == stdio_deprecation_note("https://kb.example.com")
+        warnings = [
+            r
+            for r in caplog.records
+            if r.name == "personal_kb.server" and r.levelno == logging.WARNING
+        ]
+        assert [r.getMessage() for r in warnings] == [state["deprecation_note"]]
+    finally:
+        for handler in root.handlers:
+            if handler not in saved_handlers:
+                handler.close()
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)

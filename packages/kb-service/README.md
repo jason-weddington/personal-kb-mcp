@@ -8,6 +8,7 @@ agent sessions.
 
 ## What it is
 
+- **MCP over streamable HTTP** at `/mcp`: the same MCP tool set as the stdio `personal-kb` server (except `kb_ingest`), stateless, authenticated with the same bearer API keys as `/api/*`. Tools call the route handlers in-process. Connect with `claude mcp add --transport http personal-kb https://<host>/mcp --header "Authorization: Bearer <key>"`.
 - **FastAPI service** over a singleton `kb_core.KnowledgeBase`: the full KB
   surface under `/api/kb/*` (search/get/store/ask/summarize/ingest/preflight/
   graph/maps-index), SSE-streamed queries and chat, JWT-or-API-key auth with

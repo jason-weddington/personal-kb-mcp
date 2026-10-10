@@ -107,3 +107,11 @@ async def test_preflight_appends_skew_line() -> None:
     assert out == "CTX\n\nSKEW NOTE"
     ctx.lifespan_context = {"backend": backend}
     assert await tools["kb_preflight"](project_ref="p", ctx=ctx) == "CTX"
+    ctx.lifespan_context = {
+        "backend": backend,
+        "version_skew_note": "SKEW NOTE",
+        "deprecation_note": "DEP",
+    }
+    assert await tools["kb_preflight"](project_ref="p", ctx=ctx) == "CTX\n\nSKEW NOTE\n\nDEP"
+    ctx.lifespan_context = {"backend": backend, "deprecation_note": "DEP"}
+    assert await tools["kb_preflight"](project_ref="p", ctx=ctx) == "CTX\n\nDEP"

@@ -73,6 +73,9 @@ src/kb_service/
   db_types.py        # DbPool Protocol
   models.py          # Pydantic models (auth/admin/invite + Search request/response)
   config.py          # kb-core engine-config adapters (env -> dataclasses)
+  mcp_server/        # MCP tool set over streamable HTTP at /mcp (stateless):
+                     #   endpoint.py (bearer auth), server.py (tool registration),
+                     #   backend.py (InProcessBackend -> route handlers), tools/
   cli.py             # `kb-service` admin bootstrap CLI
   routes/
     auth_routes.py   # /api/auth (register, login, me, password, api-keys)

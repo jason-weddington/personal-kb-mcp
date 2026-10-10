@@ -28,6 +28,7 @@
 - SQLite + sqlite-vec (vector search) + FTS5 (full-text search)
 - Ollama for local embeddings (graceful fallback when unavailable)
 - All logging goes to stderr (stdout is reserved for MCP stdio transport)
+- kb-service serves the same MCP tool set over streamable HTTP at `/mcp` (stateless, bearer API keys; `kb_ingest` is stdio-only). The stdio server is deprecated for one release of overlap.
 
 ## Key Conventions
 
@@ -36,6 +37,7 @@
 - Pydantic models in `src/personal_kb/models/`
 - MCP tools in `src/personal_kb/tools/` (one file per tool)
 - Tests mirror source structure under `tests/`
+- During the stdio overlap every MCP tool exists twice (src/personal_kb/tools/ and packages/kb-service/src/kb_service/mcp_server/tools/); tests/test_mcp_http_parity.py enforces parity; change both together.
 
 ## `personal-kb-hook` (CLI hook for mental_map surfacing)
 

@@ -1,145 +1,40 @@
-"""FastMCP server with lifespan management and tool registration."""
+"""FastMCP server factory for the /mcp endpoint.
 
-import logging
-import os
-import sys
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from typing import Any
+The tool set, names, schemas and instructions are twins of
+``personal_kb.server.create_server`` (``tests/test_mcp_http_parity.py``
+enforces it), except that ``{prefix}ingest`` is never registered: it reads
+files on the machine running the tool, which over /mcp is the service host.
+Use ``{prefix}ingest_url`` with ``content`` instead.
+
+No lifespan: the kb-service lifespan owns every resource; tools reach it
+through the per-request ``InProcessBackend`` (``context.backend_for_request``).
+"""
 
 from fastmcp import FastMCP
 
-from personal_kb.config import (
-    get_contributor,
-    get_log_level,
-    get_personal_kb_url,
-    is_manager_mode,
-)
-from personal_kb.tools.kb_ask import register_kb_ask
-from personal_kb.tools.kb_bulk_update import register_kb_bulk_update
-from personal_kb.tools.kb_explore import register_kb_explore
-from personal_kb.tools.kb_feedback import register_kb_feedback
-from personal_kb.tools.kb_get import register_kb_get
-from personal_kb.tools.kb_ingest import register_kb_ingest
-from personal_kb.tools.kb_ingest_url import register_kb_ingest_url
-from personal_kb.tools.kb_list import (
+from kb_service.config import get_contributor, get_instance_role, is_manager_mode
+from kb_service.mcp_server.observability import McpCallLogMiddleware
+from kb_service.mcp_server.tools.kb_ask import register_kb_ask
+from kb_service.mcp_server.tools.kb_bulk_update import register_kb_bulk_update
+from kb_service.mcp_server.tools.kb_explore import register_kb_explore
+from kb_service.mcp_server.tools.kb_feedback import register_kb_feedback
+from kb_service.mcp_server.tools.kb_get import register_kb_get
+from kb_service.mcp_server.tools.kb_ingest_url import register_kb_ingest_url
+from kb_service.mcp_server.tools.kb_list import (
     register_kb_list_contributors,
     register_kb_list_projects,
     register_kb_list_teams,
 )
-from personal_kb.tools.kb_maintain import register_kb_maintain
-from personal_kb.tools.kb_map_eligibility import (
+from kb_service.mcp_server.tools.kb_maintain import register_kb_maintain
+from kb_service.mcp_server.tools.kb_map_eligibility import (
     register_kb_map_eligibility,
     register_kb_map_eligibility_override,
 )
-from personal_kb.tools.kb_preflight import register_kb_preflight
-from personal_kb.tools.kb_search import register_kb_search
-from personal_kb.tools.kb_store import register_kb_store
-from personal_kb.tools.kb_store_batch import register_kb_store_batch
-from personal_kb.tools.kb_summarize import register_kb_summarize
-
-
-def stdio_deprecation_note(kb_service_url: str) -> str | None:
-    """Return the stdio-server deprecation note for a hosted KB, else None.
-
-    Local (loopback) installs get no note: HTTP has no daemon auto-start yet,
-    so the stdio server is still their only zero-setup path. The note names
-    the ``$PERSONAL_KB_API_KEY`` variable literally and never its value.
-    """
-    from personal_kb.daemon import is_loopback_url
-
-    if is_loopback_url(kb_service_url):
-        return None
-    url = kb_service_url.rstrip("/")
-    name = "team-kb" if os.environ.get("KB_INSTANCE_ROLE", "").lower() == "team" else "personal-kb"
-    return (
-        "DEPRECATED: the personal-kb stdio MCP server will be removed in a future "
-        "release. Connect Claude Code to kb-service over HTTP instead: "
-        f"claude mcp add --transport http {name} {url}/mcp "
-        '--header "Authorization: Bearer $PERSONAL_KB_API_KEY"'
-    )
-
-
-@asynccontextmanager
-async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-    """Manage the backend lifecycle — HTTP-only path with optional local daemon.
-
-    An unset/empty ``PERSONAL_KB_URL`` means local mode (``LOCAL_KB_URL``).
-    The MCP server opens an :class:`HttpBackend` against that URL in every mode. When the
-    URL targets a loopback host (``127.0.0.1`` / ``localhost``), the
-    lifespan runs :func:`ensure_daemon` as a pre-step — spawning a
-    detached, singleton ``kb-service`` daemon if ``/api/health`` is
-    unhealthy. For a remote (non-loopback) URL, no spawn occurs.
-
-    The daemon outlives the MCP session: the ``finally`` block closes
-    ONLY the HTTP client, never the daemon process.
-    """
-    # Configure logging to stderr (stdout is MCP stdio transport)
-    log_level = getattr(logging, get_log_level())
-    log_fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
-    logging.basicConfig(level=log_level, format=log_fmt, stream=sys.stderr)
-
-    # Also log to file (overwrite on each server start)
-    log_dir = os.path.join(os.path.expanduser("~"), ".local", "share", "personal_kb")
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "log.txt")
-    file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-    file_handler.setLevel(log_level)
-    file_handler.setFormatter(logging.Formatter(log_fmt))
-    logging.getLogger().addHandler(file_handler)
-
-    logger = logging.getLogger(__name__)
-
-    kb_service_url = get_personal_kb_url()
-    if not os.environ.get("PERSONAL_KB_URL"):
-        logger.info("PERSONAL_KB_URL not set; using local default %s", kb_service_url)
-
-    from personal_kb.backend import HttpBackend
-    from personal_kb.config import get_personal_kb_api_key
-    from personal_kb.daemon import ensure_daemon, is_loopback_url
-
-    api_key = get_personal_kb_api_key()
-    if api_key is None:
-        msg = (
-            f"PERSONAL_KB_API_KEY is not set but PERSONAL_KB_URL {kb_service_url!r} "
-            "is not a local URL. Set PERSONAL_KB_API_KEY for the hosted KB."
-        )
-        raise RuntimeError(msg)
-
-    # Loopback URLs trigger the spawn pre-step.  Remote URLs go straight
-    # to HttpBackend.open() — no daemon, no pidfile, no health poll.
-    if is_loopback_url(kb_service_url):
-        logger.info(
-            "Local mode — ensuring kb-service daemon at %s before connecting",
-            kb_service_url,
-        )
-        await ensure_daemon(kb_service_url)
-
-    logger.info("Opening HttpBackend at %s", kb_service_url)
-    backend = HttpBackend(base_url=kb_service_url, api_key=api_key)
-    await backend.open()
-    skew_note: str | None = None
-    try:
-        from personal_kb.version_skew import check_version_skew
-
-        skew_note = await check_version_skew(kb_service_url)
-    except Exception:
-        logger.debug("version skew check failed", exc_info=True)
-    note = stdio_deprecation_note(kb_service_url)
-    if note is not None:
-        logger.warning("%s", note)
-    try:
-        # No 'kb' object — every backend operation goes through HTTP.
-        yield {
-            "backend": backend,
-            "version_skew_note": skew_note,
-            "deprecation_note": note,
-        }
-    finally:
-        # Close ONLY the backend.  The daemon (if we spawned one) outlives
-        # this session — it serves future MCP processes too.
-        await backend.close()
-
+from kb_service.mcp_server.tools.kb_preflight import register_kb_preflight
+from kb_service.mcp_server.tools.kb_search import register_kb_search
+from kb_service.mcp_server.tools.kb_store import register_kb_store
+from kb_service.mcp_server.tools.kb_store_batch import register_kb_store_batch
+from kb_service.mcp_server.tools.kb_summarize import register_kb_summarize
 
 _ROLE_PREFIXES = {
     "personal": (
@@ -199,10 +94,6 @@ DON'T capture trivial info, temporary session context, or duplicates. \
 SEARCH before storing — if a relevant entry exists, use update_entry_id.
 
 INGESTING — extend the KB from files or URLs:
-- kb_ingest: Intelligent extraction from local files. An LLM reads the source \
-and creates multiple properly structured KB entries (decisions, patterns, facts). \
-Deduplicates against existing entries — safe to ingest overlapping files. \
-Accepts file paths, directories, glob patterns (e.g. *.md, docs/**/*.txt).
 - kb_ingest_url: Fetch a URL, extract article content from HTML, and ingest it. \
 Handles boilerplate removal automatically — just provide the URL. \
 If you already have the page content (e.g. from authenticated sites or WebFetch), \
@@ -262,13 +153,13 @@ def _get_tool_prefix() -> str:
     - role=team     → "team_kb_"
     - unset/empty   → "kb_"  (backwards-compatible default)
     """
-    role = os.environ.get("KB_INSTANCE_ROLE", "").lower()
+    role = get_instance_role()
     return _ROLE_PREFIXES_TOOL.get(role, "kb_")
 
 
 def _build_instructions(prefix: str) -> str:
     """Build server instructions, optionally prefixed by instance role."""
-    role = os.environ.get("KB_INSTANCE_ROLE", "").lower()
+    role = get_instance_role()
     text = _ROLE_PREFIXES.get(role, "") + _INSTRUCTIONS
     if prefix != "kb_":
         for base in _TOOL_BASES:
@@ -276,14 +167,14 @@ def _build_instructions(prefix: str) -> str:
     return text
 
 
-def create_server() -> FastMCP:
-    """Create and configure the MCP server with all tools."""
+def create_mcp_server() -> FastMCP:
+    """Create the /mcp FastMCP server with the HTTP-served tool set."""
     prefix = _get_tool_prefix()
 
     mcp = FastMCP(
         "personal-kb",
         instructions=_build_instructions(prefix),
-        lifespan=lifespan,
+        middleware=[McpCallLogMiddleware()],
     )
 
     register_kb_store(mcp, prefix)
@@ -292,7 +183,6 @@ def create_server() -> FastMCP:
     register_kb_get(mcp, prefix)
     register_kb_ask(mcp, prefix)
     register_kb_summarize(mcp, prefix)
-    register_kb_ingest(mcp, prefix)
     register_kb_ingest_url(mcp, prefix)
     register_kb_feedback(mcp, prefix)
     register_kb_preflight(mcp, prefix)

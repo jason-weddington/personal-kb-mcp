@@ -852,9 +852,12 @@ class StatefulFakeDbPool(FakeDbPool):
         self,
         app_config: dict[str, str],
         users: dict[str, dict[str, Any]] | None = None,
+        api_keys: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._app_config = app_config
         self._users: dict[str, dict[str, Any]] = users or {}
+        # {key_hash: {"id": str, "user_id": str}} for API-key auth tests.
+        self._api_keys: dict[str, dict[str, Any]] = api_keys or {}
         # in-memory chat store: {chat_id: {id, user_id, title, mode, updated_at}}
         self._chats: dict[str, dict[str, Any]] = {}
         # {chat_id: [{role, content}]}
@@ -873,6 +876,8 @@ class StatefulFakeDbPool(FakeDbPool):
         return []
 
     async def fetchrow(self, sql: str, *args: Any) -> Any | None:
+        if "FROM api_keys WHERE key_hash" in sql:
+            return self._api_keys.get(args[0])
         if "app_config" in sql and "SELECT value" in sql:
             key = args[0]
             val = self._app_config.get(key)
@@ -1288,6 +1293,84 @@ def chat_client(
     app.dependency_overrides.clear()
 
 
+def _user_row(user: User) -> dict[str, Any]:
+    """The ``users`` row shape the fake pool returns for ``user``."""
+    return {
+        "id": user.id,
+        "email": user.email,
+        "hashed_password": user.hashed_password,
+        "is_admin": 1 if user.is_admin else 0,
+        "created_at": user.created_at.isoformat(),
+    }
+
+
+def install_mcp_fakes(
+    monkeypatch: pytest.MonkeyPatch, fake_kb: FakeKnowledgeBase
+) -> StatefulFakeDbPool:
+    """Apply the ``client`` hermetic patches plus seeded users and API keys.
+
+    Seeds ``fake_user()`` (bearer ``kb_test_user``, key id ``key-user``) and
+    ``fake_admin_user()`` (bearer ``kb_test_admin``, key id ``key-admin``),
+    and sets ``KB_MANAGER=TRUE`` / ``KB_CONTRIBUTOR=tester``. The caller
+    enters ``with TestClient(app)`` itself (after any further env changes).
+    """
+    user = fake_user()
+    admin = fake_admin_user()
+
+    async def _fake_init_db() -> None:
+        return None
+
+    async def _fake_close_db() -> None:
+        return None
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        return fake_kb
+
+    shared_pool = StatefulFakeDbPool(
+        {},
+        users={user.id: _user_row(user), admin.id: _user_row(admin)},
+        api_keys={
+            auth_module.hash_api_key("kb_test_user"): {
+                "id": "key-user",
+                "user_id": user.id,
+            },
+            auth_module.hash_api_key("kb_test_admin"): {
+                "id": "key-admin",
+                "user_id": admin.id,
+            },
+        },
+    )
+
+    async def _fake_get_db() -> StatefulFakeDbPool:
+        return shared_pool
+
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://test/test")
+    monkeypatch.setattr(main_module, "init_db", _fake_init_db)
+    monkeypatch.setattr(main_module, "close_db", _fake_close_db)
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+    monkeypatch.setattr(database, "get_db", _fake_get_db)
+    monkeypatch.setattr(auth_module, "get_db", _fake_get_db)
+    monkeypatch.setattr(attribution_module, "get_db", _fake_get_db)
+    monkeypatch.setenv("KB_MANAGER", "TRUE")
+    monkeypatch.setenv("KB_CONTRIBUTOR", "tester")
+    return shared_pool
+
+
+@pytest.fixture
+def mcp_client(
+    monkeypatch: pytest.MonkeyPatch, fake_kb: FakeKnowledgeBase
+) -> Iterator[TestClient]:
+    """A TestClient for ``/mcp`` with real API-key auth against seeded keys.
+
+    See ``install_mcp_fakes``. ``KB_AUTH_MODE`` stays unset (jwt mode).
+    """
+    install_mcp_fakes(monkeypatch, fake_kb)
+    with TestClient(app) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()
+
+
 # Production-DB URLs must never reach a test. A dispatch host or a developer
 # shell can carry a real KB_DATABASE_URL (it did: a daemon smoke test opened
 # the live KB and ran the startup reconcile, 2026-10-07). Tests that need one
@@ -1304,8 +1387,18 @@ _AMBIENT_SURPRISE_VARS = (
     "KB_SURPRISE_CRITIC_MODEL",
 )
 
+# MCP-facing env (tool prefix, manager/contributor gating, auth mode, public URL)
+# must not leak in from a developer shell.
+_AMBIENT_MCP_VARS = (
+    "KB_AUTH_MODE",
+    "KB_INSTANCE_ROLE",
+    "KB_MANAGER",
+    "KB_CONTRIBUTOR",
+    "KB_SERVICE_PUBLIC_URL",
+)
+
 
 @pytest.fixture(autouse=True)
 def _no_ambient_production_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in _AMBIENT_DB_VARS + _AMBIENT_SURPRISE_VARS:
+    for var in _AMBIENT_DB_VARS + _AMBIENT_SURPRISE_VARS + _AMBIENT_MCP_VARS:
         monkeypatch.delenv(var, raising=False)

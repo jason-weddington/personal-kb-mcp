@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from kb_core import Attribution, EmbeddingRetryConfig, create_postgres, create_sqlite
+from starlette.routing import Route
 
 from kb_service.config import (
     build_agentic_config,
@@ -26,6 +27,9 @@ from kb_service.config import (
     build_provider_config,
 )
 from kb_service.database import check_database_config, close_db, init_db
+from kb_service.mcp_server import McpEndpoint, create_mcp_server
+from kb_service.mcp_server.observability import MCP_ENDPOINT_MARKER
+from kb_service.mcp_server.server import _get_tool_prefix as _mcp_prefix
 from kb_service.routes.admin_routes import router as admin_router
 from kb_service.routes.auth_routes import router as auth_router
 from kb_service.routes.chat_routes import router as chat_router
@@ -110,7 +114,7 @@ def mount_frontend(app: FastAPI, dist_dir: Path) -> bool:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
-        if full_path.startswith("api/"):
+        if full_path.startswith("api/") or full_path.startswith(".well-known/"):
             raise HTTPException(status_code=404)
         candidate = (dist_dir / full_path).resolve()
         if candidate.is_file() and candidate.is_relative_to(resolved_dist):
@@ -223,6 +227,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _reconcile_supersession(app.state.kb)
     app.state.surprise_drain_lock = asyncio.Lock()
     app.state.surprise_worker = None
+    app.state.mcp_http_app = None
     try:
         await app.state.kb.start_embedding_worker()
         mode = surprise_capture_mode()
@@ -236,8 +241,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 " Postgres KB_DATABASE_URL; use POST /api/kb/surprise/drain)",
                 mode,
             )
-        yield
+        # A fresh MCP app per lifespan entry: the mcp session manager's run()
+        # can only be entered once per instance.
+        mcp = create_mcp_server()
+        names = sorted(t.name for t in await mcp.list_tools())
+        logger.info(
+            MCP_ENDPOINT_MARKER + " started path=/mcp prefix=%s tools=%d names=%s",
+            _mcp_prefix(),
+            len(names),
+            ",".join(names),
+        )
+        app.state.mcp_http_app = mcp.http_app(
+            path="/mcp", stateless_http=True, json_response=True
+        )
+        try:
+            async with app.state.mcp_http_app.lifespan(app.state.mcp_http_app):
+                yield
+        except BaseExceptionGroup as group:
+            # The MCP session manager's task group wraps an exception raised
+            # through the yield; re-raise the original so callers see it.
+            if len(group.exceptions) == 1:
+                raise group.exceptions[0] from None
+            raise
     finally:
+        app.state.mcp_http_app = None
         if app.state.surprise_worker is not None:
             await app.state.surprise_worker.stop()
         await app.state.kb.stop_embedding_worker()
@@ -298,6 +325,11 @@ app.include_router(nudge_router)
 app.include_router(map_loop_router)
 app.include_router(map_op_router)
 app.include_router(map_delete_router)
+# MCP over streamable HTTP. Appended as a raw Route (not app.add_route) so the
+# ASGI instance type-checks; it must precede the SPA catch-all mounted below.
+app.router.routes.append(
+    Route("/mcp", endpoint=McpEndpoint(), methods=["GET", "POST", "DELETE"])
+)
 
 
 @app.get("/api/health")

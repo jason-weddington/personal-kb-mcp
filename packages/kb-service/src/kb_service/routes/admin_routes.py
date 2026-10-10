@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from kb_service.auth import _auth_mode, require_admin
+from kb_service.config import public_base_url
 from kb_service.database import get_db
 from kb_service.models import (
     CreateInviteRequest,
@@ -23,20 +24,6 @@ from kb_service.models import (
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
-def _public_base_url(request: Request) -> str:
-    """Public-facing base URL for issued links (invites, password resets).
-
-    Behind a reverse proxy that doesn't forward the original Host header,
-    ``request.url.netloc`` reports the inner bind address (e.g. ``localhost:8000``)
-    which is useless for sharing. Set ``KB_SERVICE_PUBLIC_URL`` (e.g.
-    ``https://kb-service``) to override.
-    """
-    override = os.environ.get("KB_SERVICE_PUBLIC_URL", "").rstrip("/")
-    if override:
-        return override
-    return f"{request.url.scheme}://{request.url.netloc}"
-
-
 @router.post("/invites", response_model=InviteResponse, status_code=201)
 async def create_invite(
     request: Request,
@@ -47,7 +34,7 @@ async def create_invite(
     db = await get_db()
     token = secrets.token_urlsafe(32)
     now = datetime.now(UTC).isoformat()
-    base_url = _public_base_url(request)
+    base_url = public_base_url(request)
     invite_url = f"{base_url}/register?token={token}"
     await db.execute(
         "INSERT INTO invites (token, issued_by, note, created_at)"
@@ -112,7 +99,7 @@ async def issue_password_reset(
         now.isoformat(),
         expires_at.isoformat(),
     )
-    base_url = _public_base_url(request)
+    base_url = public_base_url(request)
     reset_url = f"{base_url}/reset-password?token={token}"
     return PasswordResetIssueResponse(
         token=token,

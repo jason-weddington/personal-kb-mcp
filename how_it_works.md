@@ -13,7 +13,10 @@ Claude Code `SessionStart` / `UserPromptSubmit` / `Stop` hook and surfaces
 mental-map orientation pointers into the model's context.
 
 This document covers what lives in **this repo** today: the MCP tool entry
-points under `src/personal_kb/tools/`, the project-preflight + mental-map
+points under `src/personal_kb/tools/` (with
+`packages/kb-service/src/kb_service/mcp_server/tools/` as the HTTP
+implementation served at `/mcp` during the stdio overlap; see
+[MCP over HTTP](#mcp-over-http-kb-service-mcp)), the project-preflight + mental-map
 orientation pull (`src/personal_kb/preflight.py`, `src/personal_kb/tools/kb_preflight.py`,
 `src/personal_kb/tools/map_lint.py`), the standalone hook package, and the
 anticipatory-listener whisper loop that the hook spawns. Engine internals —
@@ -52,6 +55,38 @@ module that used to live under `src/personal_kb/<module>` is now a thin
 
 The sections that follow document those server-side / hook-side concerns. For
 how the engine itself works underneath, follow the kb-core link above.
+
+## MCP over HTTP (kb-service /mcp)
+
+kb-service serves the same MCP tool set as the stdio server over MCP streamable HTTP at `/mcp`. The tool code lives in `packages/kb-service/src/kb_service/mcp_server/`, never imports `personal_kb`, and makes no HTTP call to itself: each tool calls the kb-service route handler in-process.
+
+**Endpoint.** `main.py` appends `Route("/mcp", endpoint=McpEndpoint(), methods=["GET", "POST", "DELETE"])` after the API routers and before the SPA catch-all (which now 404s `.well-known/*` as well as `api/*`). `McpEndpoint` (`mcp_server/endpoint.py`) is an ASGI class: it parses `Authorization: Bearer <token>` (any other scheme, or an empty token, counts as missing), resolves it with `resolve_principal`, and answers a failure with the same JSON `{"detail": ...}` as REST plus `WWW-Authenticate: Bearer` on 401. On success it writes `kb_principal` and `kb_app` into the ASGI scope state and delegates to `app.state.mcp_http_app`; if that is not set (no lifespan) it answers 503 `MCP endpoint not started`. The inner app is FastMCP's `http_app(path="/mcp", stateless_http=True, json_response=True)`: no MCP session ids, a fresh transport per request, JSON responses instead of SSE, and 405 for GET and DELETE.
+
+**Per-lifespan session manager.** The kb-service lifespan builds a new `create_mcp_server()` and `http_app` on every entry, logs the served tool names, and enters the app's own lifespan around the `yield`, because mcp 1.26's `StreamableHTTPSessionManager.run()` can only run once per instance. The first statement of the lifespan's `finally` resets `app.state.mcp_http_app` to None. A single exception raised through the yield comes back wrapped in an `ExceptionGroup` from the session manager's task group; the lifespan unwraps it so callers see the original exception.
+
+**Tool set.** `mcp_server/server.py` copies the stdio server's instructions, tool prefixes (`KB_INSTANCE_ROLE`) and registration gates (`KB_MANAGER`, `KB_CONTRIBUTOR`), all read from the kb-service environment. The one difference: `{prefix}ingest` is never registered, and its instructions bullet is removed, because it reads files on the machine running the tool, which over `/mcp` is the service host. Each tool keeps only the stdio tool's HTTP-mode behaviour (for example `kb_ask` supports only `strategy="auto"`, and `kb_maintain` runs only deactivate, reactivate and reconcile_supersession).
+
+**AuthPrincipal.** `kb_service.auth.AuthPrincipal` is a frozen dataclass of `user`, `api_key_id` (the `api_keys.id` row, or None) and `auth_method` (`api_key`, `jwt` or `none`). `resolve_principal(token)` is the one resolution path for both REST and `/mcp`: no-auth mode returns the synthetic local admin, a missing token is 401 `Not authenticated`, otherwise a JWT is tried first and then an API key (401 `Invalid API key` / `User not found`). The REST dependency `get_current_principal` stores the result on `request.state.kb_principal`, and `get_current_user` now depends on it.
+
+**InProcessBackend.** `mcp_server/context.backend_for_request()` reads the principal and app from the current request (via `fastmcp.server.dependencies.get_http_request`) and fails closed with a `RuntimeError` (and an ERROR `mcp-principal-missing` line) when either is absent. `mcp_server/backend.InProcessBackend` mirrors `HttpBackend` method for method: it builds the same request body dict, validates it into the route's request model, awaits the route handler with every parameter passed by keyword, then runs `jsonable_encoder` on the result and parses it with the same statements `HttpBackend` uses. Each call gets a fresh shim `Request` whose scope carries the app, the principal and the client's raw headers, so a handler sees `request.app.state` and `request.state.kb_principal` as on REST. FastAPI dependencies do not run on this path, so the admin gate is replicated: methods in `ADMIN_ONLY_METHODS` raise `BackendHttpError(403, "Admin only")` for a non-admin before the handler runs. Handler `HTTPException`s become `BackendHttpError(status, detail)`, request-model validation errors become 422, and anything else is logged and becomes 500 `Internal Server Error`; the tools render these with `map_error`, byte-identical to the stdio client.
+
+**Drift guards.** `packages/kb-service/tests/test_mcp_backend.py` spies on each of the 20 handlers and asserts the backend passes exactly the handler's parameters; walks the FastAPI dependency tree of each handler and fails if any handler gains a dependency other than `get_current_user`, `get_current_principal`, `_bearer` and (for the admin six) `require_admin`, because such a dependency would be bypassed on `/mcp`; and checks that the set of admin-gated handlers equals `ADMIN_ONLY_METHODS`. `test_mcp_import_purity.py` fails on any `personal_kb` import under `src/kb_service`.
+
+**Parity tests.** `tests/test_mcp_http_parity.py` (root suite) compares the stdio server and `/mcp` server tool by tool (description, parameters, output schema, annotations, title, tags, meta) for the default and the team/manager/contributor environments, and checks the instructions differ only by the `kb_ingest` bullet. It then runs the same 25-call sequence through both channels against fresh SQLite KBs (stdio tools over `HttpBackend` on an ASGI transport, and `/mcp` tool calls) and compares the outputs with timestamps masked, plus a table of client-side rejections that must not reach the backend at all. `tests/integration/test_mcp_http_smoke.py` starts a real `kb-service serve` and drives it with the official MCP client.
+
+Writes through `/mcp` go through the same route handlers as REST, so the existing `supersession-route`, `resolution-route` and `near-duplicate-guard` log lines and audit rows still fire for MCP writes.
+
+**Observability.** All lines are %-style `key=value` records under the `kb_service` logger (INFO by default via `configure_logging`); arguments, tokens and header values other than the User-Agent are never logged.
+
+- `mcp-endpoint started path=/mcp prefix= tools= names=` (INFO, once per lifespan) lists the served tools; `mcp-endpoint not_started method=` (WARNING) accompanies a 503.
+- `mcp-auth denied status= reason= key_fp= ua=` (INFO) for every rejected request: reason is `missing`, `invalid_key`, `user_not_found` or `other`; `key_fp` is the first 8 hex digits of the token's sha256, or `none`.
+- `mcp-call tool= outcome= worst_status= duration_ms= user_id= key_id= auth= ua=` (INFO), exactly one per tool call from `McpCallLogMiddleware`: outcome is `exception` when the tool raised, `tool_error` when any backend call returned 400 or above, else `ok`; `worst_status` is the highest backend status, or `none`.
+- `mcp-backend op= status=403 reason=admin_gate user_id= key_id=` (WARNING) for an admin-gate denial, and `mcp-backend op= status=500 user_id= key_id=` (ERROR, with traceback) for an unexpected handler exception.
+- `mcp-principal-missing has_principal= has_app=` (ERROR) when a tool call reaches `backend_for_request` without an authenticated principal.
+
+During the overlap every tool exists twice, in `src/personal_kb/tools/` and in `packages/kb-service/src/kb_service/mcp_server/tools/`; change both together. The stdio server logs a deprecation WARNING (and `kb_preflight` appends it) when `PERSONAL_KB_URL` is not a loopback URL.
+
+See: `packages/kb-service/src/kb_service/mcp_server/`, `packages/kb-service/src/kb_service/auth.py` (`AuthPrincipal`, `resolve_principal`), `packages/kb-service/src/kb_service/main.py` (lifespan, `/mcp` route), `src/personal_kb/server.py` (`stdio_deprecation_note`).
 
 ## Query Strategies (kb_ask)
 

@@ -7,8 +7,10 @@ dependencies = [
     "aiosqlite>=0.21",
     "bcrypt>=4.0",
     "fastapi>=0.115",
+    "fastmcp>=3.0,<4",
     "httpx>=0.28",
     "kb-core[postgres,ingest,anthropic,safety]==1.7.0",
+    "mcp>=1.26,<2",
     "pydantic>=2.10",
     "pyjwt>=2.9",
     "python-multipart>=0.0.9",
@@ -102,7 +104,7 @@ omit = [
 
 [tool.coverage.report]
 precision = 1
-fail_under = 94.9
+fail_under = 95.7
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]

@@ -4,12 +4,13 @@ import hashlib
 import os
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 import bcrypt as _bcrypt
 import jwt
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from kb_service.database import (
@@ -132,11 +133,18 @@ def decode_token(token: str) -> str:
         ) from None
 
 
-async def _authenticate_api_key(token: str) -> User:
-    """Try to authenticate via API key. Returns User or raises 401."""
+async def _authenticate_api_key(token: str) -> tuple[User, str]:
+    """Try to authenticate via API key.
+
+    Returns:
+        ``(user, api_key_id)`` for a known key.
+
+    Raises:
+        HTTPException: 401 for an unknown key or a key whose user is gone.
+    """
     db = await get_db()
     h = hash_api_key(token)
-    row = await db.fetchrow("SELECT user_id FROM api_keys WHERE key_hash = $1", h)
+    row = await db.fetchrow("SELECT id, user_id FROM api_keys WHERE key_hash = $1", h)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -148,31 +156,74 @@ async def _authenticate_api_key(token: str) -> User:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-    return User(**row_to_dict(user_row))
+    return User(**row_to_dict(user_row)), str(row["id"])
+
+
+@dataclass(frozen=True)
+class AuthPrincipal:
+    """Who is calling, and how they authenticated.
+
+    Attributes:
+        user: The authenticated user (the synthetic local admin in no-auth mode).
+        api_key_id: The ``api_keys.id`` row used, or ``None`` for JWT / no-auth.
+        auth_method: ``'api_key'``, ``'jwt'`` or ``'none'``.
+    """
+
+    user: User
+    api_key_id: str | None
+    auth_method: Literal["api_key", "jwt", "none"]
+
+
+async def resolve_principal(token: str | None) -> AuthPrincipal:
+    """Resolve a bearer token (or its absence) to an ``AuthPrincipal``.
+
+    Shared by the REST dependency and the ``/mcp`` endpoint so both paths
+    authenticate identically.
+
+    Raises:
+        HTTPException: 401 when the token is missing or invalid (jwt mode).
+    """
+    if _auth_mode() == "none":
+        return AuthPrincipal(_synthetic_user(), None, "none")
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    try:
+        user = await get_current_user_from_token(token)
+    except HTTPException:
+        api_user, key_id = await _authenticate_api_key(token)
+        return AuthPrincipal(api_user, key_id, "api_key")
+    return AuthPrincipal(user, None, "jwt")
+
+
+async def get_current_principal(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> AuthPrincipal:
+    """FastAPI dependency: resolve the caller and stash it on ``request.state``.
+
+    Sets ``request.state.kb_principal`` so route handlers (and later the
+    write-policy layer) can see the API key and auth method, not just the user.
+    """
+    principal = await resolve_principal(
+        credentials.credentials if credentials is not None else None
+    )
+    request.state.kb_principal = principal
+    return principal
 
 
 async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
 ) -> User:
     """FastAPI dependency: authenticate via JWT or API key.
 
     In ``'none'`` (no-auth) mode this returns the synthetic local admin user
     without any DB access. In ``'jwt'`` mode (the default) a missing credential
-    raises 401 and a present credential runs the unchanged JWT-then-API-key
-    path.
+    raises 401 and a present credential runs the JWT-then-API-key path.
     """
-    if _auth_mode() == "none":
-        return _synthetic_user()
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
-    token = credentials.credentials
-    try:
-        return await get_current_user_from_token(token)
-    except HTTPException:
-        return await _authenticate_api_key(token)
+    return principal.user
 
 
 async def get_current_user_from_token(token: str) -> User:

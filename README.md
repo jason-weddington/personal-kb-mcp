@@ -143,6 +143,48 @@ ollama pull qwen3-embedding:0.6b   # for vector search
 ollama pull qwen3:4b               # only if using Ollama as LLM provider
 ```
 
+## Connecting over HTTP (recommended for hosted KBs)
+
+kb-service serves the full MCP tool set over MCP streamable HTTP at `/mcp`, authenticated with the same bearer API keys as the REST API. Nothing runs on your machine: Claude Code talks to the service directly. The endpoint is stateless (no MCP session ids), so it works behind any load balancer.
+
+Connect Claude Code to a hosted personal KB:
+
+```bash
+claude mcp add --transport http personal-kb https://kb.example.com/mcp --header "Authorization: Bearer YOUR_API_KEY"
+```
+
+For a team KB, use the server name `team-kb`. The team kb-service must run with `KB_INSTANCE_ROLE=team` so its tools carry the `team_kb_` prefix, and `personal-kb-hook` matches the server names `personal-kb` and `team-kb`:
+
+```bash
+claude mcp add --transport http team-kb https://team.example.com/mcp --header "Authorization: Bearer YOUR_API_KEY"
+```
+
+The equivalent `.mcp.json` / `~/.claude.json` entry:
+
+```json
+{
+  "mcpServers": {
+    "personal-kb": {
+      "type": "http",
+      "url": "https://kb.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Local use works the same way against a kb-service you start yourself: run `KB_AUTH_MODE=none kb-service serve --port 8765`, then `claude mcp add --transport http personal-kb http://127.0.0.1:8765/mcp`. Over HTTP there is no daemon auto-start, so keep that service running yourself (for example as a user systemd unit). If an older install's stdio server already spawned a kb-service daemon on that port, stop it first and confirm `curl http://127.0.0.1:8765/api/health` reports the new version.
+
+The stdio server (`uvx ... personal-kb`) is deprecated and will be removed after one release; a stdio server pointed at a hosted KB logs a deprecation warning and appends the `claude mcp add` command to `kb_preflight` output.
+
+Over `/mcp`, `KB_INSTANCE_ROLE`, `KB_MANAGER`, `KB_CONTRIBUTOR` and `KB_SKIP_SAFETY` are read from the kb-service environment, not from your client config: they decide the tool prefix, whether `kb_maintain` / `kb_bulk_update` and the contributor/team listing tools are served, and secret scanning.
+
+`kb_ingest` is not served over HTTP, because it reads files on the machine running the tool, which for `/mcp` is the service host. During the overlap, use the stdio server for file ingestion, or call `kb_ingest_url` with the file's text in `content`.
+
+A reverse proxy in front of `/mcp` needs a read timeout of at least 300s: `kb_ask`, `kb_summarize` and `kb_ingest_url` run LLM calls inside a single request.
+
 ## Tools
 
 ### `kb_store`
