@@ -6,6 +6,7 @@ module-level pool so nothing leaks between tests or into the rest of the suite.
 """
 
 import json
+import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
@@ -193,6 +194,94 @@ async def test_gate_decisions_schema_is_idempotent(local_env: Path) -> None:
         )
         assert tables == 1
         assert indexes == 3
+    finally:
+        await database.close_db()
+
+
+_GATE_INSERT = (
+    "INSERT INTO gate_decisions (decision_id, session_id, harness, mode, tool,"
+    " decision, ts, received_ts) VALUES ($1, 's1', 'claude-code', 'interactive',"
+    " 'Bash', $2, '2026-10-07T12:00:00+00:00', '2026-10-07T12:00:00+00:00')"
+)
+
+
+async def test_gate_decisions_old_check_is_rebuilt(local_env: Path) -> None:
+    """An existing SQLite gate_decisions with the 7-member CHECK is widened."""
+    create = next(
+        s
+        for s in database._SCHEMA_STATEMENTS
+        if s.startswith("CREATE TABLE IF NOT EXISTS gate_decisions (")
+    )
+    old_ddl = create.replace(
+        "'summary', 'failure_context', 'failure_context_repeat',"
+        " 'failure_context_error'",
+        "'summary'",
+    ).replace(database._PG_IDENTITY, database._SQLITE_IDENTITY)
+    assert "'failure_context" not in old_ddl
+    indexes = [
+        s
+        for s in database._SCHEMA_STATEMENTS
+        if s.startswith("CREATE INDEX IF NOT EXISTS idx_gate_decisions_")
+    ]
+    assert len(indexes) == 3
+    raw = await SqlitePool.open(local_env)
+    try:
+        await raw.execute(old_ddl)
+        for stmt in indexes:
+            await raw.execute(stmt)
+        await raw.execute(_GATE_INSERT, "d-armed", "armed")
+        armed_id = await raw.fetchval(
+            "SELECT id FROM gate_decisions WHERE decision_id = 'd-armed'"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            await raw.execute(_GATE_INSERT, "d-fc0", "failure_context")
+    finally:
+        await raw.close()
+
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        assert (
+            await db.fetchval(
+                "SELECT id FROM gate_decisions WHERE decision_id = 'd-armed'"
+            )
+            == armed_id
+        )
+        await db.execute(_GATE_INSERT, "d-fc1", "failure_context")
+        sql = await db.fetchval(
+            "SELECT sql FROM sqlite_master"
+            " WHERE type = 'table' AND name = 'gate_decisions'"
+        )
+        assert database._GATE_DECISIONS_CHECK_MARKER in sql
+        assert (
+            await db.fetchval(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'"
+                " AND name LIKE 'idx_gate_decisions_%' AND tbl_name = 'gate_decisions'"
+            )
+            == 3
+        )
+        assert (
+            await db.fetchval(
+                "SELECT COUNT(*) FROM sqlite_master"
+                " WHERE name = 'gate_decisions_pre_failure_context'"
+            )
+            == 0
+        )
+        count = await db.fetchval("SELECT COUNT(*) FROM gate_decisions")
+    finally:
+        await database.close_db()
+
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        assert await db.fetchval("SELECT COUNT(*) FROM gate_decisions") == count
+        assert (
+            await db.fetchval(
+                "SELECT sql FROM sqlite_master"
+                " WHERE type = 'table' AND name = 'gate_decisions'"
+            )
+            == sql
+        )
     finally:
         await database.close_db()
 

@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from kb_service.db_sqlite import SqlitePool
+from kb_service.db_sqlite import SqliteConnection, SqlitePool
 from kb_service.db_types import DbPool
 
 _pool: DbPool | None = None
@@ -291,7 +291,8 @@ _SCHEMA_STATEMENTS: list[str] = [
     "target TEXT NOT NULL DEFAULT '', "
     "target_class TEXT NOT NULL DEFAULT '', "
     "decision TEXT NOT NULL CHECK (decision IN ('denied', 'would_deny', "
-    "'skipped_already_denied', 'skipped_cap', 'retry', 'armed', 'summary')), "
+    "'skipped_already_denied', 'skipped_cap', 'retry', 'armed', 'summary', "
+    "'failure_context', 'failure_context_repeat', 'failure_context_error')), "
     "shadow INTEGER NOT NULL DEFAULT 0, "
     "reason_excerpt TEXT, "
     "retry_changed_command INTEGER, "
@@ -311,6 +312,17 @@ _SCHEMA_STATEMENTS: list[str] = [
     " ON gate_decisions(resolution_id, ts)",
     "CREATE INDEX IF NOT EXISTS idx_gate_decisions_received_ts"
     " ON gate_decisions(received_ts)",
+    # Widen an ALREADY-DEPLOYED Postgres gate_decisions decision CHECK with the
+    # PostToolUseFailure failure-context decisions, mirroring the
+    # listener_decisions_reason_check DROP+ADD above (idempotent on re-run).
+    # SQLite skips these and rebuilds the table instead
+    # (_rebuild_sqlite_gate_decisions).
+    "ALTER TABLE gate_decisions"
+    " DROP CONSTRAINT IF EXISTS gate_decisions_decision_check",
+    "ALTER TABLE gate_decisions ADD CONSTRAINT gate_decisions_decision_check"
+    " CHECK (decision IN ('denied', 'would_deny', 'skipped_already_denied',"
+    " 'skipped_cap', 'retry', 'armed', 'summary', 'failure_context',"
+    " 'failure_context_repeat', 'failure_context_error'))",
     # turn_events: surprise-capture turn digests posted by the hook at Stop.
     # event_id is exactly '<session_id>:<turn_index>' (idempotency key, first
     # write wins). items and redactions hold json.dumps() TEXT. processed_at
@@ -441,6 +453,12 @@ _ADD_COLUMN_RE = re.compile(
 )
 _PG_IDENTITY = "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY"
 _SQLITE_IDENTITY = "INTEGER PRIMARY KEY AUTOINCREMENT"
+# Present in the stored SQLite gate_decisions DDL once its decision CHECK
+# carries the failure-context members. Any future CHECK widening must point
+# this at the new last member, or existing SQLite tables are never rebuilt.
+_GATE_DECISIONS_CHECK_MARKER = "'failure_context_error'"
+_GATE_DECISIONS_CREATE_PREFIX = "CREATE TABLE IF NOT EXISTS gate_decisions ("
+_GATE_DECISIONS_INDEX_PREFIX = "CREATE INDEX IF NOT EXISTS idx_gate_decisions_"
 
 
 def sqlite_service_db_path() -> Path:
@@ -497,9 +515,10 @@ async def _init_sqlite(pool: SqlitePool) -> None:
       AUTOINCREMENT``.
     * ``ADD COLUMN IF NOT EXISTS`` (unsupported in SQLite) -> checked against
       ``PRAGMA table_info`` first, so re-running is a no-op.
-    * ``DROP/ADD CONSTRAINT`` (unsupported in SQLite) are skipped: the fresh
-      ``CREATE TABLE`` already carries the full ``reason`` CHECK, and there is
-      no pre-existing SQLite table to migrate.
+    * ``DROP/ADD CONSTRAINT`` (unsupported in SQLite) are skipped: a fresh
+      ``CREATE TABLE`` already carries the full CHECK. A pre-existing
+      ``gate_decisions`` table with the older, narrower decision CHECK IS
+      migrated: :func:`_rebuild_sqlite_gate_decisions` rebuilds it last.
     """
     async with pool.acquire() as conn:
         for stmt in _SCHEMA_STATEMENTS:
@@ -516,6 +535,43 @@ async def _init_sqlite(pool: SqlitePool) -> None:
                 )
                 continue
             await conn.execute(stmt.replace(_PG_IDENTITY, _SQLITE_IDENTITY))
+        await _rebuild_sqlite_gate_decisions(conn)
+
+
+async def _rebuild_sqlite_gate_decisions(conn: SqliteConnection) -> None:
+    """Rebuild an old SQLite ``gate_decisions`` whose decision CHECK is too narrow.
+
+    SQLite cannot alter a CHECK, so the table is renamed, recreated from the
+    current DDL, refilled and dropped, then its indexes are recreated — all in
+    one transaction. Uses only *conn* (never the pool: ``SqlitePool.acquire``
+    holds a non-reentrant lock). A no-op when the stored DDL already carries
+    :data:`_GATE_DECISIONS_CHECK_MARKER`.
+    """
+    row = await conn.fetchrow(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gate_decisions'"
+    )
+    if row is None or row["sql"] is None or _GATE_DECISIONS_CHECK_MARKER in row["sql"]:
+        return
+    create = next(
+        s for s in _SCHEMA_STATEMENTS if s.startswith(_GATE_DECISIONS_CREATE_PREFIX)
+    )
+    indexes = [
+        s for s in _SCHEMA_STATEMENTS if s.startswith(_GATE_DECISIONS_INDEX_PREFIX)
+    ]
+    async with conn.transaction():
+        await conn.execute(
+            "ALTER TABLE gate_decisions RENAME TO gate_decisions_pre_failure_context"
+        )
+        await conn.execute(create.replace(_PG_IDENTITY, _SQLITE_IDENTITY))
+        info = await conn.fetch("PRAGMA table_info(gate_decisions_pre_failure_context)")
+        cols = ", ".join(str(c["name"]) for c in info)
+        await conn.execute(
+            f"INSERT INTO gate_decisions ({cols})"  # noqa: S608 - names from PRAGMA
+            f" SELECT {cols} FROM gate_decisions_pre_failure_context"
+        )
+        await conn.execute("DROP TABLE gate_decisions_pre_failure_context")
+        for stmt in indexes:
+            await conn.execute(stmt)
 
 
 async def init_db() -> None:

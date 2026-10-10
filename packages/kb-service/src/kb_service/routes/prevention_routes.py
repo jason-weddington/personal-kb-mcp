@@ -7,7 +7,12 @@
 * ``POST /api/kb/prevention/decisions`` — batch ingest of hook-recorded gate
   decisions into the SERVICE DB ``gate_decisions`` table. A batch endpoint,
   because PreToolUse must never touch the network: the hook logs locally and
-  flushes at Stop.
+  flushes at Stop. Besides the PreToolUse gate decisions, the hook records
+  three PostToolUseFailure failure-context decisions: ``failure_context``
+  (the corrected fact was delivered next to a failed Bash call),
+  ``failure_context_repeat`` (the same resolution matched a later failure in
+  a session that already got it) and ``failure_context_error``. They are
+  counted in ``counts`` but never as denies and never in ``by_resolution``.
 * ``GET /api/kb/prevention/stats`` — efficacy and health of the gate.
 
 Server switches are read per request from ``os.environ`` and fail closed:
@@ -72,6 +77,9 @@ _DECISIONS = (
     "retry",
     "armed",
     "summary",
+    "failure_context",
+    "failure_context_repeat",
+    "failure_context_error",
 )
 
 _INSERT_SQL = (
@@ -140,6 +148,13 @@ _OVER_CAP_SQL = (
 _REPEAT_PAIRS_SQL = (
     "SELECT COUNT(*) AS n FROM (SELECT session_id, resolution_id FROM gate_decisions"
     " WHERE received_ts >= $1 AND decision IN ('denied', 'would_deny')"
+    " GROUP BY session_id, resolution_id HAVING COUNT(*) > 1) AS repeats"
+)
+
+
+_REPEAT_FAILURE_CONTEXT_SQL = (
+    "SELECT COUNT(*) AS n FROM (SELECT session_id, resolution_id FROM gate_decisions"
+    " WHERE received_ts >= $1 AND decision = 'failure_context' AND resolution_id != ''"
     " GROUP BY session_id, resolution_id HAVING COUNT(*) > 1) AS repeats"
 )
 
@@ -397,7 +412,7 @@ def _empty_stats(since: str) -> GateStatsResponse:
         by_resolution=[],
         by_host=[],
         invariant_violations=GateInvariantViolations(
-            over_cap_sessions=0, repeat_deny_pairs=0
+            over_cap_sessions=0, repeat_deny_pairs=0, repeat_failure_context_pairs=0
         ),
     )
 
@@ -469,14 +484,17 @@ async def prevention_stats(
         ]
         over_cap = await _count(pool, _OVER_CAP_SQL, since, MAX_DENIES_PER_SESSION)
         repeats = await _count(pool, _REPEAT_PAIRS_SQL, since)
+        repeat_fc = await _count(pool, _REPEAT_FAILURE_CONTEXT_SQL, since)
     except Exception as exc:
         logger.warning("prevention_stats failed exc=%s", type(exc).__name__)
         return _empty_stats(since)
-    if over_cap or repeats:
+    if over_cap or repeats or repeat_fc:
         logger.warning(
-            "gate_invariant_violation over_cap_sessions=%d repeat_deny_pairs=%d",
+            "gate_invariant_violation over_cap_sessions=%d repeat_deny_pairs=%d"
+            " repeat_failure_context_pairs=%d",
             over_cap,
             repeats,
+            repeat_fc,
         )
     return GateStatsResponse(
         since=since,
@@ -493,6 +511,8 @@ async def prevention_stats(
         by_resolution=by_resolution,
         by_host=by_host,
         invariant_violations=GateInvariantViolations(
-            over_cap_sessions=over_cap, repeat_deny_pairs=repeats
+            over_cap_sessions=over_cap,
+            repeat_deny_pairs=repeats,
+            repeat_failure_context_pairs=repeat_fc,
         ),
     )

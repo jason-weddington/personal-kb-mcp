@@ -16,8 +16,12 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
   slice is emitted in the same single output, before the directory.
 * **PostToolUseFailure** — forwards the failed tool call as a record-only
   ``post_tool`` event to ``POST /api/kb/event`` (the failure-cue index) via
-  :func:`personal_kb_hook.events.post_failure`. Never produces stdout — no
-  additionalContext and no decision of any kind.
+  :func:`personal_kb_hook.events.post_failure` (unchanged, record-only).
+  Before that POST, the opt-in (``KB_FAILURE_CONTEXT``), cache-only failure
+  context (:func:`personal_kb_hook.prevention.failure_context`) checks a
+  failed Bash call against the session's cached gate index; on a match the
+  ``additionalContext`` envelope is printed verbatim (regardless of
+  ``--format``), at most once per resolution per session.
 * **PostToolUse** — whisper-telemetry consume on ``kb_get``. Never produces
   stdout.
 * **Stop** — records/flushes the soft-gate decision log and refreshes the
@@ -193,9 +197,12 @@ def main(argv: list[str] | None = None) -> None:
         cwd = payload.get("cwd")
         cwd_str = cwd if isinstance(cwd, str) else None
 
-        # PostToolUseFailure: record-only failure-cue event; ZERO stdout.
+        # PostToolUseFailure: cache-only failure context (stdout envelope on a match) + record-only POST.  # noqa: E501
         if event_name == "PostToolUseFailure":
+            context = prevention.failure_context(payload)
             events.post_failure(payload)
+            if context is not None:
+                sys.stdout.write(context)
             return
 
         # ------------------------------------------------------------------ #

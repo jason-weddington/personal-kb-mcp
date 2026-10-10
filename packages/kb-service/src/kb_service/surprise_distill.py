@@ -23,7 +23,7 @@ from kb_service.surprise import SurpriseCandidate
 # DISTILLER_SCHEMA_LINE, SHAPE_DESCRIPTIONS, build_distill_prompt,
 # parse_distill_response, build_resolution, build_knowledge_details,
 # find_exact_match, merge_block_reason, known_sessions or the S0-S13 order
-SURPRISE_DISTILLER_VERSION: int = 2
+SURPRISE_DISTILLER_VERSION: int = 3
 
 SURPRISE_CONTRIBUTOR = "surprise-capture"
 SURPRISE_HINT_KEY = "surprise_capture"

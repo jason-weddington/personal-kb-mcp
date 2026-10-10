@@ -114,7 +114,7 @@ def test_pinned_literals() -> None:
         "backed by tool output, that contradicts what it, the code, a comment, a "
         "doc, a config or the environment had indicated before."
     )
-    assert sd.SURPRISE_DISTILLER_VERSION == 2
+    assert sd.SURPRISE_DISTILLER_VERSION == 3
     assert sd.SURPRISE_EVENT_IDS_CAP == 20
     assert sd.SURPRISE_HINT_LIST_CAP == 100
 

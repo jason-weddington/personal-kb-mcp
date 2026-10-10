@@ -2,8 +2,9 @@
 
 Record-only feed for the server-side failure-cue index. :func:`post_failure`
 builds one ``post_tool`` event body from the Claude Code hook payload and
-sends it once (1.5 s timeout, no retry). It never writes stdout, never
-raises, and never delivers anything back into the session.
+sends it once (1.5 s timeout, no retry). It never raises. This module never
+writes stdout; the PostToolUseFailure failure context is produced separately
+by prevention.failure_context.
 
 Every event that could not be delivered is appended as one jsonl line to the
 bounded drop log (:func:`personal_kb_hook.paths.get_event_drop_log_path`), so

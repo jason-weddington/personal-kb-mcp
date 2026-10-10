@@ -1262,3 +1262,82 @@ def test_end_to_end_recurrence_promotion(
         SURPRISE_DETECTOR_SYSTEM,
         SURPRISE_DETECTOR_SYSTEM,
     ]
+
+
+# --- failure-context lineage --------------------------------------------------
+
+_GATE_ROW_SQL = (
+    "INSERT INTO gate_decisions (decision_id, session_id, harness, mode, tool,"
+    " target, target_class, decision, ts, received_ts) VALUES ($1, $2,"
+    " 'claude-code', 'interactive', 'Bash', $3, 'git push', $4, $5, $5)"
+)
+
+
+async def _gate_row(
+    pool: SqlitePool,
+    session: str,
+    target: str = "git push origin main",
+    decision: str = "failure_context",
+) -> None:
+    await pool.execute(
+        _GATE_ROW_SQL,
+        f"cc:{session}:toolu_{target}:{decision}",
+        session,
+        target,
+        decision,
+        _CREATED_AT,
+    )
+
+
+@pytest.mark.parametrize("decision", ["failure_context", "failure_context_repeat"])
+async def test_failure_context_lineage_suppresses(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, decision: str
+) -> None:
+    await _gate_row(pool, "s1", decision=decision)
+    c = await _s(pool, "s1")
+    llm.enqueue(D)
+    result = await distill_candidates(pool, kb, [c], "on")
+    assert result == DistillResult([], [])
+    row = (await _rows(pool))[0]
+    assert (row["outcome"], row["reason"]) == ("gate_induced", "failure_context")
+    assert llm.generate_calls == []
+    assert (await _cand_row(pool, c.id))["status"] == "rejected"
+
+
+async def test_failure_context_lineage_other_target(
+    pool: SqlitePool, kb: Any, llm: FakeLLM
+) -> None:
+    await _gate_row(pool, "s1", target="git push github main")
+    c = await _s(pool, "s1")
+    llm.enqueue(D)
+    result = await distill_candidates(pool, kb, [c], "on")
+    assert len(result.entries_written) == 1
+    assert (await _rows(pool))[0]["outcome"] == "written"
+
+
+async def test_failure_context_lineage_other_session(
+    pool: SqlitePool, kb: Any, llm: FakeLLM
+) -> None:
+    await _gate_row(pool, "s2")
+    c = await _s(pool, "s1")
+    llm.enqueue(D)
+    result = await distill_candidates(pool, kb, [c], "on")
+    assert len(result.entries_written) == 1
+
+
+async def test_failure_context_lineage_does_not_corroborate(
+    pool: SqlitePool, kb: Any, llm: FakeLLM
+) -> None:
+    c1 = await _s(pool, "s1")
+    llm.enqueue(D)
+    result = await distill_candidates(pool, kb, [c1], "on")
+    (x,) = result.entries_written
+    await _gate_row(pool, "s2")
+    c2 = await _s(pool, "s2")
+    llm.enqueue(D)
+    result2 = await distill_candidates(pool, kb, [c2], "on")
+    assert result2 == DistillResult([], [])
+    row = (await _rows(pool))[-1]
+    assert (row["outcome"], row["reason"]) == ("gate_induced", "failure_context")
+    entry = await kb.get(x)
+    assert _res_of(entry)["observed_sessions"] == 1

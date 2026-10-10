@@ -1613,6 +1613,9 @@ GateDecision = Literal[
     "retry",
     "armed",
     "summary",
+    "failure_context",
+    "failure_context_repeat",
+    "failure_context_error",
 ]
 
 
@@ -1687,6 +1690,7 @@ class GateInvariantViolations(BaseModel):
 
     over_cap_sessions: int
     repeat_deny_pairs: int
+    repeat_failure_context_pairs: int
 
 
 class GateStatsResponse(BaseModel):

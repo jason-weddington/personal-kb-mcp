@@ -123,3 +123,12 @@ def get_turn_digest_log_path(session_id: str) -> Path:
     anywhere, is capped at 256 KiB and is removed after 7 days.
     """
     return Path(f"~/.cache/personal_kb/turn-digest-log-{session_id}.jsonl").expanduser()
+
+
+def get_failure_context_state_path(session_id: str) -> Path:
+    """Per-session PostToolUseFailure failure-context delivery state (hook-only).
+
+    Holds ``delivered_resolution_ids`` so each resolution is delivered at most
+    once per session. Hook-only: it has no twin in ``personal_kb.config``.
+    """
+    return Path(f"~/.cache/personal_kb/failure-context-{session_id}.json").expanduser()

@@ -3,6 +3,7 @@
 import json
 import logging
 import sqlite3
+import typing
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 from kb_core import create_sqlite
 
 import kb_service.database as database
+from kb_service import models
 from kb_service.auth import get_current_user
 from kb_service.main import app
 from kb_service.models import SliceItem
@@ -707,6 +709,7 @@ def test_stats_aggregates(
     assert body["invariant_violations"] == {
         "over_cap_sessions": 1,
         "repeat_deny_pairs": 1,
+        "repeat_failure_context_pairs": 0,
     }
     assert any("gate_invariant_violation" in r.getMessage() for r in caplog.records)
 
@@ -892,3 +895,109 @@ async def test_shape_does_not_change_other_resolutions(kb: Any) -> None:
     resolutions, _ = await load_resolutions(kb.db, "p", True)
     index, _ = build_gate_index(resolutions)
     assert {c.resolution_id for c in index} == {deliberate, two}
+
+
+# ─── PostToolUseFailure failure-context decisions ───────────────────────────
+
+
+def _stmt(prefix: str) -> str:
+    return next(s for s in database._SCHEMA_STATEMENTS if s.startswith(prefix))
+
+
+_CREATE = "CREATE TABLE IF NOT EXISTS gate_decisions ("
+_DROP = (
+    "ALTER TABLE gate_decisions DROP CONSTRAINT IF EXISTS gate_decisions_decision_check"
+)
+_ADD = "ALTER TABLE gate_decisions ADD CONSTRAINT gate_decisions_decision_check"
+
+
+def test_gate_decisions_constraint_statement_order() -> None:
+    stmts = database._SCHEMA_STATEMENTS
+    create, drop, add = (stmts.index(_stmt(p)) for p in (_CREATE, _DROP, _ADD))
+    assert create < drop < add
+
+
+def test_gate_decision_enum_drift() -> None:
+    members = typing.get_args(models.GateDecision)
+    assert tuple(members) == prevention_routes._DECISIONS
+    create, add = _stmt(_CREATE), _stmt(_ADD)
+    for member in members:
+        assert f"'{member}'" in create
+        assert f"'{member}'" in add
+    marker = f"'{members[-1]}'"
+    assert marker == database._GATE_DECISIONS_CHECK_MARKER
+
+
+def _fc_row(n: int, decision: str = "failure_context", **kw: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "decision_id": f"cc:s1:toolu_f{n}:{decision}",
+        "session_id": "s1",
+        "tool": "Bash",
+        "target_class": "git push",
+        "resolution_id": "kb-00001",
+        "decision": decision,
+        "reason_excerpt": "KB: x",
+        "ts": "2026-10-07T12:00:00+00:00",
+    }
+    out.update(kw)
+    return out
+
+
+def _post(client: TestClient, *rows: dict[str, Any]) -> dict[str, Any]:
+    resp = client.post("/api/kb/prevention/decisions", json={"rows": list(rows)})
+    assert resp.status_code == 200
+    result: dict[str, Any] = resp.json()
+    return result
+
+
+def test_failure_context_decisions_ingest_and_stats(local_client: TestClient) -> None:
+    row = _fc_row(1)
+    assert _post(local_client, row) == {"inserted": 1, "duplicates": 0}
+    assert _post(local_client, row) == {"inserted": 0, "duplicates": 1}
+    repeat = _fc_row(2, "failure_context_repeat")
+    repeat.pop("reason_excerpt")
+    assert _post(local_client, repeat)["inserted"] == 1
+    error = _fc_row(
+        3,
+        "failure_context_error",
+        resolution_id="",
+        last_error_type="RuntimeError",
+        reason_excerpt=None,
+    )
+    assert _post(local_client, error)["inserted"] == 1
+    body = local_client.get("/api/kb/prevention/stats").json()
+    assert body["counts"]["failure_context"] == 1
+    assert body["counts"]["failure_context_repeat"] == 1
+    assert body["counts"]["failure_context_error"] == 1
+    assert body["by_resolution"] == []
+
+
+def test_repeat_failure_context_pairs(
+    local_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    rows = [
+        _fc_row(
+            i,
+            session_id="s9",
+            decision_id=f"cc:s9:t{i}:failure_context",
+            resolution_id=rid,
+        )
+        for i, rid in enumerate(("kb-00001", "kb-00002", "kb-00003"))
+    ]
+    _post(local_client, *rows)
+    body = local_client.get("/api/kb/prevention/stats").json()
+    assert body["invariant_violations"] == {
+        "over_cap_sessions": 0,
+        "repeat_deny_pairs": 0,
+        "repeat_failure_context_pairs": 0,
+    }
+    _post(
+        local_client,
+        _fc_row(4, session_id="s9", decision_id="cc:s9:t4:failure_context"),
+    )
+    with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
+        body = local_client.get("/api/kb/prevention/stats").json()
+    assert body["invariant_violations"]["repeat_failure_context_pairs"] == 1
+    assert body["invariant_violations"]["over_cap_sessions"] == 0
+    assert body["invariant_violations"]["repeat_deny_pairs"] == 0
+    assert any("gate_invariant_violation" in r.getMessage() for r in caplog.records)

@@ -11,6 +11,7 @@ def _isolate_tool_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the SessionStart tool inventory OFF unless a test opts in."""
     monkeypatch.delenv("KB_TOOL_DIRS", raising=False)
     monkeypatch.setenv("KB_TOOL_INVENTORY", "0")
+    monkeypatch.delenv("KB_FAILURE_CONTEXT", raising=False)
 
 
 @pytest.fixture(autouse=True)

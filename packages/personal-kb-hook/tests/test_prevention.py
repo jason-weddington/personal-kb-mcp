@@ -20,6 +20,7 @@ import pytest
 from personal_kb_hook import cli, prevention
 from personal_kb_hook.paths import (
     get_event_drop_log_path,
+    get_failure_context_state_path,
     get_gate_log_path,
     get_prevention_cache_path,
 )
@@ -58,11 +59,14 @@ class _Server:
         self.prevention: dict[str, Any] | BaseException = _prevention_body()
         self.decisions_status = 200
         self.maps: dict[str, Any] = {"projects": []}
+        self.event_exc: BaseException | None = None
 
     def __call__(self, req: Any, timeout: float = 30.0) -> _Resp:
         url = req.full_url
         body = json.loads(req.data.decode("utf-8")) if req.data else None
         self.calls.append({"url": url, "method": req.get_method(), "body": body})
+        if "/api/kb/event" in url and self.event_exc is not None:
+            raise self.event_exc
         if "/api/kb/prevention/decisions" in url:
             return _Resp(self.decisions_status)
         if "/api/kb/prevention?" in url:
@@ -76,6 +80,9 @@ class _Server:
 
     def gets(self) -> list[dict[str, Any]]:
         return [c for c in self.calls if "/api/kb/prevention?" in c["url"]]
+
+    def events(self) -> list[dict[str, Any]]:
+        return [c for c in self.calls if c["url"].endswith("/api/kb/event")]
 
 
 def _cue(rid: str = "kb-00001", tc: str = "git push", **kw: Any) -> dict[str, Any]:
@@ -903,3 +910,342 @@ def test_orphan_sweep_gcs_turn_files(server: _Server, tmp_path: Path) -> None:
     assert own_state.exists()
     assert not old_log.exists()
     assert young_log.exists()
+
+
+# ─── PostToolUseFailure: failure context ─────────────────────────────────────
+
+_COMPOUND = "git commit -qam x && git push github main"
+
+
+def _fail(command: str = "git push github main", tool_use_id: str = "toolu_f1") -> dict[str, Any]:
+    return {
+        "hook_event_name": "PostToolUseFailure",
+        "session_id": _SID,
+        "tool_name": "Bash",
+        "tool_use_id": tool_use_id,
+        "tool_input": {"command": command},
+        "error": "Exit code 1",
+    }
+
+
+def _fc_state() -> Path:
+    return get_failure_context_state_path(_SID)
+
+
+def _fc_rows(decision: str) -> list[dict[str, Any]]:
+    return [r for r in _rows() if r["decision"] == decision]
+
+
+@pytest.fixture
+def armed(server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Server:
+    monkeypatch.setenv("KB_FAILURE_CONTEXT", "1")
+    prevention.session_start(_ss(tmp_path))
+    return server
+
+
+def test_failure_context_state_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert get_failure_context_state_path("sess-1") == (
+        tmp_path / ".cache/personal_kb/failure-context-sess-1.json"
+    )
+
+
+def test_build_failure_context_text() -> None:
+    assert prevention.build_failure_context(_cue()) == (
+        "KB: this failure matches a known correction: Push to origin; github is release-only"
+        " Earlier wrong belief: push to github [deliberate/observed; kb-00001]"
+    )
+    capped = prevention.build_failure_context(_cue(corrected_fact="c" * 2000))
+    assert len(capped) == 1000
+    assert prevention.REASON_SUFFIX not in capped
+    assert prevention.build_failure_context(_cue(observed_once=True)).startswith(
+        prevention.FAILURE_CONTEXT_PREFIX_OBSERVED_ONCE
+    )
+
+
+def test_build_reason_uses_shared_body() -> None:
+    entry = _cue()
+    assert prevention.build_reason(entry) == (
+        prevention.REASON_PREFIX + prevention._reason_body(entry) + prevention.REASON_SUFFIX
+    )
+
+
+def test_find_match_order_and_miss() -> None:
+    entries = [_cue("kb-a", tc="git commit"), _cue("kb-b")]
+    match, tc = prevention._find_match("Bash", _COMPOUND, entries)
+    assert match is not None
+    assert (match["resolution_id"], tc) == ("kb-a", "git commit")
+    assert prevention._find_match("Bash", "ls -la", entries) == (None, "")
+    assert prevention._find_match("Read", "/x", entries) == (None, "")
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "false", "off", "maybe"])
+def test_failure_context_switch_off_is_silent(
+    armed: _Server, monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    if value is None:
+        monkeypatch.delenv("KB_FAILURE_CONTEXT", raising=False)
+    else:
+        monkeypatch.setenv("KB_FAILURE_CONTEXT", value)
+    before = _rows()
+    drops = _drops()
+    assert prevention.failure_context(_fail()) is None
+    assert _rows() == before
+    assert _drops() == drops
+    assert not _fc_state().exists()
+
+
+@pytest.mark.parametrize("value", ["1", "true", " YES ", "on"])
+def test_failure_context_switch_on_delivers(
+    armed: _Server, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("KB_FAILURE_CONTEXT", value)
+    assert prevention.failure_context(_fail()) is not None
+
+
+def _mutate_cache(**kw: Any) -> None:
+    cache = _cache()
+    cache.update(kw)
+    get_prevention_cache_path(_SID).write_text(json.dumps(cache))
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "no_sid",
+        "not_bash",
+        "no_tuid",
+        "interrupt",
+        "empty_target",
+        "no_cache",
+        "disabled",
+        "pending",
+        "no_match",
+    ],
+)
+def test_failure_context_silent_cases(armed: _Server, case: str) -> None:
+    payload = _fail()
+    if case == "no_sid":
+        payload["session_id"] = ""
+    elif case == "not_bash":
+        payload["tool_name"] = "Read"
+        payload["tool_input"] = {"file_path": "git push github main"}
+    elif case == "no_tuid":
+        payload["tool_use_id"] = ""
+    elif case == "interrupt":
+        payload["is_interrupt"] = True
+    elif case == "empty_target":
+        payload["tool_input"] = "nope"
+    elif case == "no_cache":
+        get_prevention_cache_path(_SID).unlink()
+    elif case == "disabled":
+        _mutate_cache(gate={"enabled": False, "shadow": False, "max_denies": 2})
+    elif case == "pending":
+        _mutate_cache(pending_retry={"tool": "Bash", "tool_use_id": "toolu_f1"})
+    elif case == "no_match":
+        payload["tool_input"] = {"command": "ls -la"}
+    before = _rows()
+    drops = _drops()
+    calls = len(armed.calls)
+    assert prevention.failure_context(payload) is None
+    assert _rows() == before
+    assert _drops() == drops
+    assert len(armed.calls) == calls
+    assert not _fc_state().exists()
+
+
+def test_failure_context_delivers_without_touching_cache(armed: _Server) -> None:
+    cache_before = get_prevention_cache_path(_SID).read_bytes()
+    calls = len(armed.calls)
+    out = prevention.failure_context(_fail())
+    assert out is not None
+    assert json.loads(out) == {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUseFailure",
+            "additionalContext": prevention.build_failure_context(_cue()),
+        }
+    }
+    assert get_prevention_cache_path(_SID).read_bytes() == cache_before
+    assert len(armed.calls) == calls
+    assert json.loads(_fc_state().read_text()) == {"delivered_resolution_ids": ["kb-00001"]}
+    (row,) = _fc_rows("failure_context")
+    assert row["decision_id"] == f"cc:{_SID}:toolu_f1:failure_context"
+    assert row["reason_excerpt"] == prevention.build_failure_context(_cue())
+    assert row["resolution_id"] == "kb-00001"
+    assert row["target_class"] == "git push"
+    assert row["tool"] == "Bash"
+    assert row["shadow"] is False
+
+
+def test_failure_context_ignores_shadow(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_FAILURE_CONTEXT", "1")
+    server.prevention = _prevention_body(shadow=True)
+    prevention.session_start(_ss(tmp_path))
+    assert prevention.failure_context(_fail()) is not None
+    assert _fc_rows("failure_context")[0]["shadow"] is False
+
+
+def test_failure_context_ignores_deny_budget(armed: _Server) -> None:
+    _mutate_cache(deny_count=2, denied_resolution_ids=["kb-00001"])
+    assert prevention.failure_context(_fail()) is not None
+
+
+def test_failure_context_repeat(armed: _Server) -> None:
+    assert prevention.failure_context(_fail()) is not None
+    state = _fc_state().read_bytes()
+    assert prevention.failure_context(_fail(tool_use_id="toolu_f2")) is None
+    assert _fc_state().read_bytes() == state
+    assert len(_fc_rows("failure_context")) == 1
+    (rep,) = _fc_rows("failure_context_repeat")
+    assert rep.get("reason_excerpt") is None
+    assert rep["decision_id"] == f"cc:{_SID}:toolu_f2:failure_context_repeat"
+    assert rep["resolution_id"] == "kb-00001"
+    assert rep["shadow"] is False
+
+
+@pytest.mark.parametrize("content", ["[]", '{"delivered_resolution_ids": "kb-00001"}', "{bad"])
+def test_failure_context_malformed_state_delivers(armed: _Server, content: str) -> None:
+    _fc_state().write_text(content)
+    assert prevention.failure_context(_fail()) is not None
+    assert json.loads(_fc_state().read_text()) == {"delivered_resolution_ids": ["kb-00001"]}
+
+
+def test_failure_context_state_keeps_str_members(armed: _Server) -> None:
+    _fc_state().write_text(json.dumps({"delivered_resolution_ids": ["kb-9", 3]}))
+    assert prevention._load_failure_state(_SID) == ["kb-9"]
+    assert prevention.failure_context(_fail()) is not None
+    assert json.loads(_fc_state().read_text()) == {"delivered_resolution_ids": ["kb-9", "kb-00001"]}
+
+
+def test_failure_context_state_write_failure(
+    armed: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*args: Any) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(prevention, "_atomic_write", _boom)
+    assert prevention.failure_context(_fail()) is None
+    assert _fc_rows("failure_context") == []
+    assert _drops()[-1]["op"] == "failure_context"
+    assert _drops()[-1]["reason"] == "state_write"
+
+
+def test_failure_context_record_failure_still_delivers(
+    armed: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = prevention._record
+
+    def _flaky(session_id: str, cache: dict[str, Any], decision: str, **kw: Any) -> Any:
+        if decision == "failure_context":
+            raise OSError("log")
+        return real(session_id, cache, decision, **kw)
+
+    monkeypatch.setattr(prevention, "_record", _flaky)
+    assert prevention.failure_context(_fail()) is not None
+    assert _fc_state().exists()
+    assert any(
+        d.get("op") == "failure_context" and d["reason"] == "record_failed" for d in _drops()
+    )
+
+
+def test_failure_context_error_row(armed: _Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*args: Any) -> Any:
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(prevention, "_find_match", _boom)
+    assert prevention.failure_context(_fail()) is None
+    (row,) = _fc_rows("failure_context_error")
+    assert row["last_error_type"] == "RuntimeError"
+    assert row["decision_id"] == f"cc:{_SID}:toolu_f1:failure_context_error"
+    assert row["shadow"] is False
+    assert not _fc_state().exists()
+    fc_drops = [d for d in _drops() if d.get("op") == "failure_context"]
+    assert len(fc_drops) == 1
+    assert fc_drops[0]["reason"] == "RuntimeError"
+
+
+def test_failure_context_error_and_record_failure(
+    armed: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*args: Any, **kw: Any) -> Any:
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(prevention, "_find_match", _boom)
+    monkeypatch.setattr(prevention, "_record", _boom)
+    assert prevention.failure_context(_fail()) is None
+    assert _drops()[-1]["op"] == "failure_context"
+    assert _drops()[-1]["reason"] == "RuntimeError"
+
+
+def _cli_fail(tmp_path: Path, tool_use_id: str = "toolu_f1") -> dict[str, Any]:
+    payload = _fail(_COMPOUND, tool_use_id)
+    payload["cwd"] = str(tmp_path / "repo")
+    return payload
+
+
+def _expected_envelope() -> dict[str, Any]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUseFailure",
+            "additionalContext": prevention.build_failure_context(_cue()),
+        }
+    }
+
+
+def test_cli_failure_context_delivery_and_repeat(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_FAILURE_CONTEXT", "1")
+    _run(monkeypatch, _ss(tmp_path), [])
+    out = _run(monkeypatch, _cli_fail(tmp_path), [])
+    assert json.loads(out) == _expected_envelope()
+    assert len(server.events()) == 1
+    assert _fc_rows("failure_context")[0]["target_class"] == "git push"
+    out2 = _run(monkeypatch, _cli_fail(tmp_path, "toolu_f2"), [])
+    assert out2 == ""
+    assert len(server.events()) == 2
+
+
+def test_cli_failure_context_event_post_failure(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_FAILURE_CONTEXT", "1")
+    _run(monkeypatch, _ss(tmp_path), [])
+    server.event_exc = urllib.error.URLError("down")
+    out = _run(monkeypatch, _cli_fail(tmp_path), [])
+    assert json.loads(out) == _expected_envelope()
+    last = _drops()[-1]
+    assert last["reason"] == "urlerror"
+    assert last["tool_use_id"] == "toolu_f1"
+    assert "op" not in last
+
+
+def test_cli_failure_context_off_by_default(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _run(monkeypatch, _cli_fail(tmp_path), []) == ""
+    assert len(server.events()) == 1
+
+
+def test_cli_failure_context_ignores_format(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_FAILURE_CONTEXT", "1")
+    _run(monkeypatch, _ss(tmp_path), [])
+    out = _run(monkeypatch, _cli_fail(tmp_path), ["--format=text"])
+    assert out == json.dumps(_expected_envelope())
+
+
+def test_orphan_sweep_gcs_failure_context_state(server: _Server) -> None:
+    old = get_failure_context_state_path("old")
+    old.write_text("{}")
+    _age(old, 8 * 86400)
+    young = get_failure_context_state_path(_SID)
+    young.write_text("{}")
+    _age(young, 86400)
+    prevention.orphan_sweep(_SID)
+    assert not old.exists()
+    assert young.exists()

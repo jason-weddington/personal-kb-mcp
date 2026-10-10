@@ -477,7 +477,11 @@ async def distill_candidates(
     replay them; S0 also skips any non-pending candidate that is passed.
 
     Each candidate runs S0-S13 in order: the S0 claim pre-check; no_project;
-    the redaction-marker and gate-deny-marker rejects; an exact match on
+    the redaction-marker and gate-deny-marker rejects; the failure-context
+    lineage reject (a shape-1 wrong belief equal to the target of a
+    ``failure_context`` / ``failure_context_repeat`` gate decision in the same
+    session is ``gate_induced`` with reason ``failure_context``: a KB-assisted
+    recovery must not corroborate the resolution it was handed); an exact match on
     (wrong belief, cue) against the project's resolutions, which merges
     without any LLM call; one distiller call (``get_distiller_llm``,
     ``KB_SURPRISE_DISTILL_MODEL``, default claude-sonnet-5-5, never
@@ -519,10 +523,27 @@ async def distill_candidates(
                 )
                 counts["double_distill"] += 1
                 continue
+            kb_answered = (
+                frozenset(
+                    str(r["target"]).strip()
+                    for r in await pool.fetch(
+                        _FAILURE_CONTEXT_TARGETS_SQL, cand.session_id
+                    )
+                )
+                if cand.shape == 1
+                else frozenset()
+            )
             decision = _Decision()
             try:
                 distilled = await _distill_one(
-                    cand, kb, llm, floor, decision, result, counts
+                    cand,
+                    kb,
+                    llm,
+                    floor,
+                    decision,
+                    result,
+                    counts,
+                    kb_answered_targets=kb_answered,
                 )
             except Exception as exc:
                 decision.outcome = "kb_error"
@@ -581,6 +602,10 @@ async def distill_candidates(
 # --- distillation internals --------------------------------------------------
 
 _CANDIDATE_STATUS_SQL = "SELECT status FROM surprise_candidates WHERE id = $1"
+_FAILURE_CONTEXT_TARGETS_SQL = (
+    "SELECT target FROM gate_decisions WHERE session_id = $1"
+    " AND decision IN ('failure_context', 'failure_context_repeat')"
+)
 
 _CLAIM_CANDIDATE_SQL = (
     "UPDATE surprise_candidates SET status = $1, entry_id = $2"
@@ -644,6 +669,8 @@ async def _distill_one(
     d: _Decision,
     result: DistillResult,
     counts: Counter[str],
+    *,
+    kb_answered_targets: frozenset[str] = frozenset(),
 ) -> bool:
     """Run S1-S13 for one candidate, filling *d*; False means a no_llm skip."""
     if c.project.strip() == "":
@@ -657,6 +684,9 @@ async def _distill_one(
         return True
     if GATE_DENY_MARKER in str(c.detector_output.get("evidence_excerpt") or ""):
         d.outcome = "gate_induced"
+        return True
+    if c.shape == 1 and wrong_belief != "" and wrong_belief in kb_answered_targets:
+        d.outcome, d.reason = "gate_induced", "failure_context"
         return True
     cue = (
         shape1_cue(wrong_belief, str(c.detector_output.get("cue_target_class") or ""))

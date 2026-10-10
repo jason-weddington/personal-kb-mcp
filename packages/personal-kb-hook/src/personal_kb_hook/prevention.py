@@ -15,6 +15,15 @@
   ``/api/kb/prevention/decisions`` in chunks of 500, and :func:`refresh`
   re-fetches the settings (including the top-level ``surprise_capture`` mode)
   so a server switch flip reaches a live session at its next turn end.
+* **PostToolUseFailure** (:func:`failure_context`) — opt-in via
+  ``KB_FAILURE_CONTEXT`` (off when unset), cache-only with NO network. A
+  failed Bash call is checked against the cached index with the same matcher
+  as the gate (:func:`_find_match`); on a match the corrected fact is returned
+  as same-turn ``additionalContext``, at most once per resolution per session
+  (tracked in ``failure-context-<session>.json``). It records
+  ``failure_context`` (delivered), ``failure_context_repeat`` (already
+  delivered this session, same failure again) and ``failure_context_error``
+  rows, and is independent of shadow mode and the deny budget.
 
 Every decision is appended to ``gate-log-<session>.jsonl``; every failed
 fetch / flush lands in the shared ``event-drops.jsonl`` drop log. Every public
@@ -38,6 +47,7 @@ from personal_kb_hook import cues_lite, telemetry
 from personal_kb_hook.defaults import resolve_url_key
 from personal_kb_hook.paths import (
     get_event_drop_log_path,
+    get_failure_context_state_path,
     get_gate_log_path,
     get_prevention_cache_path,
 )
@@ -68,6 +78,12 @@ REASON_PREFIX_OBSERVED_ONCE = (
     "KB soft gate (deny once; an earlier session observed this once, unconfirmed): "
 )
 REASON_SUFFIX = " If you still intend this exact call, retry it unchanged and it will be allowed."
+
+FAILURE_CONTEXT_PREFIX = "KB: this failure matches a known correction: "
+FAILURE_CONTEXT_PREFIX_OBSERVED_ONCE = (
+    "KB: this failure matches a correction an earlier session observed once (unconfirmed): "
+)
+_FAILURE_CONTEXT_ON_VALUES = frozenset({"1", "true", "yes", "on"})
 
 _STATE_DEFAULTS: dict[str, Any] = {
     "denied_resolution_ids": [],
@@ -300,17 +316,30 @@ def _record(session_id: str, cache: dict[str, Any], decision: str, **fields: Any
     return row
 
 
-def build_reason(entry: dict[str, Any]) -> str:
-    """The deny reason shown to the agent; at most 1000 chars, pinned suffix."""
-    prefix = REASON_PREFIX_OBSERVED_ONCE if entry.get("observed_once") else REASON_PREFIX
+def _reason_body(entry: dict[str, Any]) -> str:
+    """Corrected fact, earlier wrong belief and provenance — shared by both channels."""
     wrong = str(entry.get("wrong_belief") or "")
-    head = (
-        prefix
-        + str(entry.get("corrected_fact") or "")
+    return (
+        str(entry.get("corrected_fact") or "")
         + (" Earlier wrong belief: " + wrong if wrong else "")
         + f" [{entry.get('provenance_label', '')}; {entry.get('resolution_id', '')}]"
     )
-    return head[: _REASON_CAP - len(REASON_SUFFIX)] + REASON_SUFFIX
+
+
+def build_reason(entry: dict[str, Any]) -> str:
+    """The deny reason shown to the agent; at most 1000 chars, pinned suffix."""
+    prefix = REASON_PREFIX_OBSERVED_ONCE if entry.get("observed_once") else REASON_PREFIX
+    return (prefix + _reason_body(entry))[: _REASON_CAP - len(REASON_SUFFIX)] + REASON_SUFFIX
+
+
+def build_failure_context(entry: dict[str, Any]) -> str:
+    """The PostToolUseFailure context text; at most 1000 chars, no retry suffix."""
+    prefix = (
+        FAILURE_CONTEXT_PREFIX_OBSERVED_ONCE
+        if entry.get("observed_once")
+        else FAILURE_CONTEXT_PREFIX
+    )
+    return (prefix + _reason_body(entry))[:_REASON_CAP]
 
 
 # --- PreToolUse -------------------------------------------------------------
@@ -326,6 +355,22 @@ def _matches(entry: object, tool_name: str, tc: str, args: list[str]) -> bool:
         return True
     wanted = prefix.split()
     return args[: len(wanted)] == wanted
+
+
+def _find_match(
+    tool_name: str, target: str, entries: list[Any]
+) -> tuple[dict[str, Any] | None, str]:
+    """First index entry matching a candidate (segment order, then index order)."""
+    if tool_name == "Bash":
+        candidates = cues_lite.bash_segments(target)
+    else:
+        tc0 = cues_lite.target_class(tool_name, target)
+        candidates = [(tc0, cues_lite.bash_args_after_class(target))] if tc0 else []
+    for seg_class, seg_args in candidates:
+        found = next((e for e in entries if _matches(e, tool_name, seg_class, seg_args)), None)
+        if found is not None:
+            return found, seg_class
+    return None, ""
 
 
 def _gate(
@@ -355,20 +400,9 @@ def _gate(
         )
         cache["pending_retry"] = None
 
-    if tool_name == "Bash":
-        candidates = cues_lite.bash_segments(target)
-    else:
-        tc0 = cues_lite.target_class(tool_name, target)
-        candidates = [(tc0, cues_lite.bash_args_after_class(target))] if tc0 else []
     index = cache.get("index")
     entries = index if isinstance(index, list) else []
-    match: dict[str, Any] | None = None
-    tc = ""
-    for seg_class, seg_args in candidates:
-        found = next((e for e in entries if _matches(e, tool_name, seg_class, seg_args)), None)
-        if found is not None:
-            match, tc = found, seg_class
-            break
+    match, tc = _find_match(tool_name, target, entries)
     if match is None:
         return None
 
@@ -454,6 +488,135 @@ def pre_tool(payload: dict[str, Any]) -> str | None:
         _write_cache(session_id, cache)
         return result
     except Exception:
+        return None
+
+
+# --- PostToolUseFailure: failure context ------------------------------------
+
+
+def _load_failure_state(session_id: str) -> list[str]:
+    """Resolution ids already delivered as failure context this session."""
+    try:
+        data = json.loads(get_failure_context_state_path(session_id).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    ids = data.get("delivered_resolution_ids")
+    if not isinstance(ids, list):
+        return []
+    return [i for i in ids if isinstance(i, str)]
+
+
+def failure_context(payload: dict[str, Any]) -> str | None:
+    """PostToolUseFailure: an ``additionalContext`` envelope or ``None``. No network.
+
+    Opt-in via ``KB_FAILURE_CONTEXT``. A failed Bash call that matches the
+    session's cached gate index gets the corrected fact, at most once per
+    resolution per session, independent of shadow mode and the deny budget.
+    Never raises and never writes the prevention cache.
+    """
+    sid: str | None = None
+    tool_use_id: object = None
+    cache: dict[str, Any] | None = None
+    try:
+        if os.environ.get("KB_FAILURE_CONTEXT", "").strip().lower() not in (
+            _FAILURE_CONTEXT_ON_VALUES
+        ):
+            return None
+        sid = _session_id(payload)
+        if sid is None:
+            return None
+        if payload.get("tool_name") != "Bash":
+            return None
+        tool_use_id = payload.get("tool_use_id")
+        if not isinstance(tool_use_id, str) or not tool_use_id:
+            return None
+        if payload.get("is_interrupt") is True:
+            return None
+        raw_input = payload.get("tool_input")
+        tool_input = raw_input if isinstance(raw_input, dict) else {}
+        target = cues_lite.extract_target("Bash", tool_input)
+        if target == "":
+            return None
+        cache = _load_cache(sid)
+        if cache is None:
+            return None
+        if cache["gate"].get("enabled") is not True:
+            return None
+        pending = cache.get("pending_retry")
+        if isinstance(pending, dict) and pending.get("tool_use_id") == tool_use_id:
+            return None
+        index = cache.get("index")
+        entries = index if isinstance(index, list) else []
+        match, tc = _find_match("Bash", target, entries)
+        if match is None:
+            return None
+
+        rid = str(match.get("resolution_id", ""))
+        fields: dict[str, Any] = {
+            "tool": "Bash",
+            "tool_use_id": tool_use_id,
+            "target": target[:_TARGET_CAP],
+            "target_class": tc,
+            "resolution_id": rid,
+            "resolution_updated_at": match.get("updated_at"),
+            "observed_once": match.get("observed_once") is True,
+            "retry_changed_command": None,
+            "shadow": False,
+        }
+        if rid in _load_failure_state(sid):
+            _record(
+                sid,
+                cache,
+                "failure_context_repeat",
+                decision_id=f"cc:{sid}:{tool_use_id}:failure_context_repeat",
+                **fields,
+            )
+            return None
+
+        try:
+            _atomic_write(
+                get_failure_context_state_path(sid),
+                json.dumps({"delivered_resolution_ids": [*_load_failure_state(sid), rid]}),
+            )
+        except Exception:
+            _record_drop(sid, "failure_context", "state_write", 0)
+            return None
+        text = build_failure_context(match)
+        try:
+            _record(
+                sid,
+                cache,
+                "failure_context",
+                decision_id=f"cc:{sid}:{tool_use_id}:failure_context",
+                reason_excerpt=text,
+                **fields,
+            )
+        except Exception:
+            _record_drop(sid, "failure_context", "record_failed", 0)
+        return json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUseFailure",
+                    "additionalContext": text,
+                }
+            }
+        )
+    except Exception as exc:
+        _record_drop(sid, "failure_context", type(exc).__name__, 0)
+        if isinstance(sid, str) and sid and isinstance(tool_use_id, str) and tool_use_id:
+            with contextlib.suppress(Exception):
+                _record(
+                    sid,
+                    cache if cache is not None else {},
+                    "failure_context_error",
+                    decision_id=f"cc:{sid}:{tool_use_id}:failure_context_error",
+                    tool="Bash",
+                    tool_use_id=tool_use_id,
+                    last_error_type=type(exc).__name__,
+                    shadow=False,
+                )
         return None
 
 
@@ -592,8 +755,8 @@ def orphan_sweep(current_session_id: str) -> None:
     log is left alone), bounded by :data:`telemetry._ORPHAN_SWEEP_CAP` files
     and :data:`telemetry._ORPHAN_SWEEP_BUDGET_SECONDS` of wall time. Prevention
     caches older than seven days are unlinked, as are ``turn-digest-log-*``
-    files older than seven days and other sessions' ``turn-state-*`` files
-    older than 31 days.
+    files older than seven days, other sessions' ``turn-state-*`` files
+    older than 31 days, and failure-context-* state files older than seven days.
     """
     try:
         cache_dir = get_gate_log_path("placeholder").parent
@@ -604,6 +767,10 @@ def orphan_sweep(current_session_id: str) -> None:
             with contextlib.suppress(OSError):
                 if now - cache_file.stat().st_mtime > _CACHE_GC_AGE_SECONDS:
                     cache_file.unlink(missing_ok=True)
+        for fc_file in cache_dir.glob("failure-context-*.json"):
+            with contextlib.suppress(OSError):
+                if now - fc_file.stat().st_mtime > _CACHE_GC_AGE_SECONDS:
+                    fc_file.unlink(missing_ok=True)
         own_state = f"turn-state-{current_session_id}.json"
         for state_file in cache_dir.glob("turn-state-*.json"):
             if state_file.name == own_state:

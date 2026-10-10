@@ -12,6 +12,7 @@ and listener whispers. See the repo root `README.md` for install and wiring.
 | `KB_TOOL_DIRS` | Colon-separated directories scanned for the SessionStart tool inventory. Required to enable the inventory; there is no default, and when unset or blank nothing is scanned. Missing or relative entries are skipped; the first dir wins on duplicate names. |
 | `KB_TOOL_INVENTORY` | Default on. `0`/`false`/`no`/`off` disables the SessionStart tool inventory. |
 | `KB_GOTCHA_SLICE` | Default on. `0`/`false`/`no`/`off` suppresses the SessionStart gotcha slice text while the soft gate is still armed (gate index fetched and cached). |
+| `KB_FAILURE_CONTEXT` | Default off. `1`/`true`/`yes`/`on` enables the `PostToolUseFailure` failure context (the matching corrected fact delivered next to a failed Bash call). The record-only failure-cue POST runs either way. |
 
 ## SessionStart tool inventory
 
@@ -19,19 +20,25 @@ On every `SessionStart` the hook lists the executables found in `KB_TOOL_DIRS` a
 
 ## Failure-cue feed (`PostToolUseFailure`)
 
-The hook can forward every failed tool call to the KB service's failure-cue index (`POST /api/kb/event`). Wire it with no matcher, so every tool is covered, and with `async: true`, so it never blocks the agent:
+The hook forwards every failed tool call to the KB service's failure-cue index (`POST /api/kb/event`) and, when opted in, hands the agent the matching correction right next to the failure. Wire it with no matcher, so every tool is covered, as a synchronous entry with the opt-in:
 
 ```json
 {
   "hooks": {
     "PostToolUseFailure": [
-      {"hooks": [{"type": "command", "command": "personal-kb-hook --format=claude-json", "async": true}]}
+      {"hooks": [{"type": "command", "command": "KB_FAILURE_CONTEXT=1 personal-kb-hook --format=claude-json", "timeout": 5}]}
     ]
   }
 }
 ```
 
-This is **record-only**: no delivery yet. The hook writes nothing to stdout (no `additionalContext`, no decision); it sends one `post_tool` event per failure (1.5 s timeout, no retry) using the same `PERSONAL_KB_URL` / `PERSONAL_KB_API_KEY` resolution as the other surfaces. Claude Code does not fire `PostToolUseFailure` for validation rejections, permission denials or cancellations.
+**Failure context.** When a failed Bash call matches the session's cached gate index (the same two-word class and args-prefix matcher the `PreToolUse` soft gate uses), the hook prints the corrected fact as `additionalContext`, so it lands next to the tool error in the same turn. Each resolution is delivered at most once per session; a later failure that matches an already-delivered resolution is recorded as `failure_context_repeat` and prints nothing. Delivery is independent of the deny budget and of shadow mode. It reads only the local cache and makes no network call. The index is empty unless the service sets `KB_SOFT_GATE_ENABLED`, so nothing is ever delivered while the gate is off.
+
+**Put the opt-in only on a synchronous entry.** Under `async: true`, Claude Code delivers a hook's `additionalContext` on the next conversation turn (or at the next user interaction if the session is idle), detached from the failure it explains. Without `KB_FAILURE_CONTEXT`, an `async: true` entry remains the record-only feed.
+
+**Latency.** Synchronous wiring adds the record-only POST, at most 1.5 s, to every failed call's latency. A `timeout` drop line in `event-drops.jsonl` is the local sign that bound is being hit.
+
+The record-only POST sends one `post_tool` event per failure (1.5 s timeout, no retry) using the same `PERSONAL_KB_URL` / `PERSONAL_KB_API_KEY` resolution as the other surfaces, whether or not the failure context is enabled. Claude Code does not fire `PostToolUseFailure` for validation rejections, permission denials or cancellations.
 
 Any event that could not be delivered (missing fields, no URL/key, timeout, URL error, non-2xx response) is appended as one jsonl line to the drop log `~/.cache/personal_kb/event-drops.jsonl`. The log is reset once it exceeds 256 KB. The service's `GET /api/kb/event/heartbeat` counts recorded failures only, so a zero heartbeat must be checked against this drop log before you conclude that nothing failed.
 
@@ -53,7 +60,7 @@ Any event that could not be delivered (missing fields, no URL/key, timeout, URL 
 
 A switch flip reaches a live session at its next `Stop`, when the hook re-fetches the settings.
 
-**Files** under `~/.cache/personal_kb/`: `prevention-<session>.json` is the cached settings, index and deny-once state; caches older than 7 days are removed. `gate-log-<session>.jsonl` is the local decision log, flushed at `Stop` to `POST /api/kb/prevention/decisions` (stale logs from other sessions are swept at `SessionStart`). `event-drops.jsonl` is the drop log shared with the failure-cue feed, where failed fetches and flushes are recorded (`op` = `prevention_fetch`, `gate_flush`, `gate_log_rotated` or `turn_digest`). `turn-state-<session>.json` is the Stop counter and last digested record id (removed after 31 days). `turn-digest-log-<session>.jsonl` is the local digest decision log (capped at 256 KiB, removed after 7 days).
+**Files** under `~/.cache/personal_kb/`: `prevention-<session>.json` is the cached settings, index and deny-once state; caches older than 7 days are removed. `gate-log-<session>.jsonl` is the local decision log, flushed at `Stop` to `POST /api/kb/prevention/decisions` (stale logs from other sessions are swept at `SessionStart`). `event-drops.jsonl` is the drop log shared with the failure-cue feed, where failed fetches and flushes are recorded (`op` = `prevention_fetch`, `gate_flush`, `gate_log_rotated`, `turn_digest` or `failure_context`, the last with reason `state_write`, `record_failed` or an exception class name). `failure-context-<session>.json` holds the resolution ids already delivered as failure context this session (removed after 7 days). `turn-state-<session>.json` is the Stop counter and last digested record id (removed after 31 days). `turn-digest-log-<session>.jsonl` is the local digest decision log (capped at 256 KiB, removed after 7 days).
 
 The gate is inert until resolutions exist in the KB in the `hints.resolution` format documented in `packages/kb-service/src/kb_service/prevention.py`. Until then the slice is fed only by supersedes corrections.
 
