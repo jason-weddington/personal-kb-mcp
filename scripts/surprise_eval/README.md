@@ -1,6 +1,6 @@
 # Surprise detector eval harness
 
-How good is the surprise-capture detector? This harness measures the production detector, `kb_service.surprise_worker.detect_digest`, per shape (1: a failed Bash command later corrected, 2: the human corrects the assistant's previous turn, 3: a tool result contradicts an earlier claim in the same turn) on a labelled case set, and reports precision and recall with Wilson 95% intervals.
+How good is the surprise-capture detector? This harness measures the production detector, `kb_service.surprise_worker.detect_digest`, per shape (1: a failed Bash command later corrected, 2: the human corrects the assistant's previous turn, 3: within one turn the agent reaches a corrected understanding or a root cause backed by a tool result) on a labelled case set, and reports precision and recall with Wilson 95% intervals.
 
 Every case goes through the same path as a live digest before a model sees it: `TurnDigestRequest` validation and its field caps, the 64 KiB digest check, `redact_turn_digest` secret redaction, then `digest_from_row`. It skips project and ts normalisation and the DB JSON round trip, because the detector reads neither, and it re-implements nothing: prompts, parsing, the confidence floor and the grounding check all come from `kb_service.surprise` and `kb_service.surprise_worker`. It writes nothing to the KB, GTD or any database.
 
@@ -10,7 +10,7 @@ Private labelled cases and results contain real transcript text. They live in a 
 
 `run` takes a required `--out DIR` and refuses (exit 2, `refusing to write surprise eval data inside the repo`) when `DIR` is this repo or lies under it; nothing is created. Both `validate` and `run` refuse (exit 2, `refusing to read non-synthetic cases from inside the repo`) a cases file inside this repo when any of its ids does not start with `syn-`.
 
-This repo ships code and synthetic fixtures only: `fixtures/synthetic_cases.jsonl` (digests form, one positive and one negative per shape) and `fixtures/synthetic_mined_cases.jsonl` (mined form). Every id in them starts with `syn-`.
+This repo ships code and synthetic fixtures only: `fixtures/synthetic_cases.jsonl` (digests form, one positive and one negative per shape), `fixtures/synthetic_mined_cases.jsonl` (mined form) and `fixtures/synthetic_shape3_conclusion_cases.jsonl` (digests form, a shape-3 positive where the agent concludes without having voiced the wrong belief, and a routine-progress negative). Every id in them starts with `syn-`.
 
 ## Case formats
 
@@ -22,7 +22,7 @@ Common keys: `id` (required, `^[A-Za-z0-9._:-]{1,128}$`, unique), `shape` (requi
 
 Digests form: the case carries `digests`, a list of turn digests shaped like the hook's `POST /api/kb/turn` body (`session_id`, `turn_index` and `items` required; `event_id`, `project`, `user_prompt`, `final_message`, `truncated` and `ts` optional). `event_id` defaults to `<session_id>:<turn_index>`. All digests share one session and ascend in `turn_index`; the last digest is the one under test. Shape 2 needs exactly two consecutive turns with no tool_result in the second; shape 3 needs exactly one. Shape-1 cases are digests-form only.
 
-Example (digests form): `{"id": "syn-s3-pos", "shape": 3, "label": true, "label_source": "synthetic", "frame": "synthetic", "digests": [{"session_id": "syn-sess-5", "turn_index": 0, "project": "syn", "user_prompt": "fix the config", "items": [{"kind": "assistant_text", "text": "The config lives in /etc/foo.conf."}, {"kind": "tool_call", "tool_use_id": "t1", "tool": "Bash", "target": "cat /etc/foo.conf", "target_class": "cat"}, {"kind": "tool_result", "tool_use_id": "t1", "is_error": true, "excerpt": "No such file: /etc/foo.conf; config is at /etc/foo/main.conf"}]}]}`
+Example (digests form): `{"id": "syn-s3-pos", "shape": 3, "label": true, "label_source": "synthetic", "frame": "synthetic", "digests": [{"session_id": "syn-sess-5", "turn_index": 0, "project": "syn", "user_prompt": "fix the config", "items": [{"kind": "assistant_text", "text": "The config lives in /etc/foo.conf."}, {"kind": "tool_call", "tool_use_id": "t1", "tool": "Bash", "target": "cat /etc/foo.conf", "target_class": "cat"}, {"kind": "tool_result", "tool_use_id": "t1", "is_error": true, "excerpt": "No such file: /etc/foo.conf; config is at /etc/foo/main.conf"}, {"kind": "assistant_text", "text": "/etc/foo.conf does not exist; the config is at /etc/foo/main.conf."}]}]}`
 
 Mined form (shapes 2 and 3 only), the flat form a transcript miner writes. Shape 2 carries `prev_final_message` (str, required), `user_prompt` (str, required) and `prev_assistant_texts` (list of str, optional). Shape 3 carries `items`, a non-empty flat list of `{kind: assistant_text, text}`, `{kind: tool_call, tool, target}` and `{kind: tool_result, is_error, excerpt}` objects with exactly those keys. In shape 3, an `assistant_text` whose text starts with `[user] ` marks a human message, i.e. a turn boundary.
 
@@ -36,7 +36,7 @@ Example (mined form): `{"id": "syn-m2-pos", "shape": 2, "label": true, "hard_neg
 
 Run from the repo root, with `$CASES` and `$OUT` pointing into your private eval repo:
 
-1. `uv run python scripts/surprise_eval/surprise_eval.py validate --cases "$CASES"` — validates and redacts every case, makes no model call, writes no file, and prints one JSON line of counts (`by_label_source`, `by_shape`, `cases`, `redacted_cases`). Exit 0, or 2 with `validate: <reason>`.
+1. `uv run python scripts/surprise_eval/surprise_eval.py validate --cases "$CASES"` — validates and redacts every case, makes no model call, writes no file, and prints one JSON line of counts (`by_label_source`, `by_shape`, `cases`, `redacted_cases`, `shape3_scope`). Exit 0, or 2 with `validate: <reason>`. `shape3_scope` counts the shape-3 cases under the detector's scope rule: `no_tool_result` and `no_text_after_result` are skipped, `text_after_result` and `final_message_only` are in scope.
 2. `uv run python scripts/surprise_eval/surprise_eval.py run --cases "$CASES" --out "$OUT" --model claude-sonnet-4-6 --model claude-sonnet-5-5 --model claude-opus-5-5` — writes `results.jsonl`, `report.json` and `report.md` to `$OUT`.
 
 `run` flags: `--model M` (repeatable, distinct; required when any shape-2/3 case remains; shape-1 cases are rule-based and evaluated once as `rule:shape1`), `--shapes` (default `1,2,3`), `--limit N` (the first N cases after the shape filter, in file order; default no limit — shuffle a copy of the file for a quick random sample), `--concurrency` (default 4), `--timeout SECONDS` (default production's timeout) and `--force` (overwrite existing result files; without it `run` refuses to overwrite).
@@ -55,7 +55,7 @@ Every case is scored at case level. A shape-2/3 case is predicted positive when 
 
 Detector errors (`llm_error`, `unparseable`, `invalid_fields`) count as negatives, as they do in production, and are reported as `errors`.
 
-`not_applicable`: the detector's own skip rules (shape 2 needs a previous turn with text and a non-empty user prompt; shape 3 needs an assistant claim before a tool result) decide that no model call is made. `R applicable` is recall with those positives excluded from the denominator; plain recall keeps them. The gap is detector scope, not model quality.
+`not_applicable`: the detector's own skip rules decide that no model call is made. Shape 2 needs a previous turn with text and a non-empty user prompt. Shape 3 needs a tool result and then either a non-empty final message or a non-empty assistant text after the first tool result; otherwise it is skipped as `no_tool_result` or `no_text_after_result`. Each cell's `not_applicable_reasons` in `report.json` counts those rows by reason (`unknown` when a row has none). `R applicable` is recall with those positives excluded from the denominator; plain recall keeps them. The gap is detector scope, not model quality. Compare plain recall, not `R applicable`, across detector versions whose skip rules differ.
 
 Hard negatives are counted per cell (`hard_negatives`) with their false positives (`fp_hard_negative`). `recall_durable` is recall over positives whose `expected.durable` is true.
 

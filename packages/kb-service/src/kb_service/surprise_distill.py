@@ -23,7 +23,7 @@ from kb_service.surprise import SurpriseCandidate
 # DISTILLER_SCHEMA_LINE, SHAPE_DESCRIPTIONS, build_distill_prompt,
 # parse_distill_response, build_resolution, build_knowledge_details,
 # find_exact_match, merge_block_reason, known_sessions or the S0-S13 order
-SURPRISE_DISTILLER_VERSION: int = 1
+SURPRISE_DISTILLER_VERSION: int = 2
 
 SURPRISE_CONTRIBUTOR = "surprise-capture"
 SURPRISE_HINT_KEY = "surprise_capture"
@@ -77,8 +77,9 @@ SHAPE_DESCRIPTIONS: dict[int, str] = {
         " assistant's previous turn."
     ),
     3: (
-        "A tool result contradicted a claim the assistant had made earlier in"
-        " the same turn."
+        "In one turn the agent reached a corrected understanding or a root"
+        " cause, backed by tool output, that contradicts what it, the code, a"
+        " comment, a doc, a config or the environment had indicated before."
     ),
 }
 

@@ -25,9 +25,14 @@ from kb_service import surprise_worker
 from kb_service.db_sqlite import SqlitePool
 from kb_service.main import app
 from kb_service.prevention import build_gate_index, load_resolutions
-from kb_service.surprise import DistillResult, SurpriseCandidate
+from kb_service.surprise import (
+    SURPRISE_DETECTOR_SYSTEM,
+    DistillResult,
+    SurpriseCandidate,
+)
 from kb_service.surprise_distill import (
     SURPRISE_DISTILLER_SYSTEM,
+    SURPRISE_DISTILLER_VERSION,
     SURPRISE_HINT_KEY,
     build_knowledge_details,
     build_resolution,
@@ -425,13 +430,14 @@ async def test_write_merge_same_session_sequence(
     assert row["observed_sessions_after"] == 1
     assert json.loads(row["verdict"]) == _D_FIELDS
     assert row["distiller_model"] == "FakeLLM"
-    assert row["distiller_version"] == 1
+    assert row["distiller_version"] == SURPRISE_DISTILLER_VERSION
     assert row["raw_response_excerpt"] == D
     assert row["prompt_chars"] > 0
     assert llm.generate_calls[0][1] == SURPRISE_DISTILLER_SYSTEM
     summary = _summary(logs)
     assert summary.startswith(
-        "surprise_distill summary distiller_version=1 distiller_model=FakeLLM"
+        f"surprise_distill summary distiller_version={SURPRISE_DISTILLER_VERSION}"
+        " distiller_model=FakeLLM"
         " input=1 llm_calls=1 written=1 merged=0"
     )
     assert "exact_matches=0 cosine_matches=0 near_dup_unavailable=1" in summary
@@ -1191,6 +1197,7 @@ def test_end_to_end_recurrence_promotion(
 ) -> None:
     client, fake = e2e
     _seed_push(client, "s1")
+    fake.enqueue('{"surprise": false}')
     fake.enqueue(D)
     body = _drain(client)
     assert len(body["entries_written"]) == 1
@@ -1217,6 +1224,7 @@ def test_end_to_end_recurrence_promotion(
     assert prev["diagnostics"]["index_excluded_observed_once"] == 0
 
     _seed_push(client, "s2")
+    fake.enqueue('{"surprise": false}')
     body = _drain(client)
     assert body["entries_written"] == []
     assert body["entries_merged"] == [x]
@@ -1236,6 +1244,7 @@ def test_end_to_end_recurrence_promotion(
 
     monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
     _seed_push(client, "s3")
+    fake.enqueue('{"surprise": false}')
     body = _drain(client)
     assert body["entries_written"] == body["entries_merged"] == []
     assert len(body["candidates"]) == 1
@@ -1246,4 +1255,10 @@ def test_end_to_end_recurrence_promotion(
     hints = _hints(tmp_path, x)
     assert hints["resolution"]["observed_sessions"] == 2
     assert hints["surprise_capture"]["event_ids"] == ["s1:0", "s2:0"]
-    assert len(fake.generate_calls) == 1
+    assert len(fake.generate_calls) == 4
+    assert [c[1] for c in fake.generate_calls] == [
+        SURPRISE_DETECTOR_SYSTEM,
+        SURPRISE_DISTILLER_SYSTEM,
+        SURPRISE_DETECTOR_SYSTEM,
+        SURPRISE_DETECTOR_SYSTEM,
+    ]

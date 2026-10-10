@@ -6,6 +6,9 @@ from kb_core.cues import target_class
 
 from kb_service.surprise import (
     DETECTOR_SCHEMA_LINE,
+    SHAPE3_FIELDS,
+    SHAPE3_INSTRUCTIONS,
+    SURPRISE_DETECTOR_VERSION,
     DetectorVerdict,
     TurnDigest,
     build_shape2_prompt,
@@ -15,6 +18,7 @@ from kb_service.surprise import (
     parse_detector_response,
     render_items,
     shape2_skip_reason,
+    shape3_prompt_details,
     shape3_skip_reason,
 )
 
@@ -288,18 +292,127 @@ def test_shape2_prompt() -> None:
 # --- shape 3 -------------------------------------------------------------------
 
 
+def _text(t: str | None) -> dict[str, Any]:
+    return {"kind": "assistant_text", "text": t}
+
+
+def test_detector_version_is_two() -> None:
+    assert SURPRISE_DETECTOR_VERSION == 2
+
+
 def test_shape3_skip_reasons() -> None:
-    after = _digest(
+    assert shape3_skip_reason(_digest(0, [])) == "no_tool_result"
+    assert shape3_skip_reason(_digest(0, [_text("claim")])) == "no_tool_result"
+    items = [_text("x"), *_bash("ls", error=True)]
+    assert shape3_skip_reason(_digest(0, items)) == "no_text_after_result"
+    assert (
+        shape3_skip_reason(_digest(0, items, final_message="   "))
+        == "no_text_after_result"
+    )
+    for t in ("  ", None):
+        d = _digest(0, [*_bash("ls", error=False), _text(t)])
+        assert shape3_skip_reason(d) == "no_text_after_result"
+    d = _digest(0, [*_bash("ls", error=False), _text("Root cause: x")])
+    assert shape3_skip_reason(d) is None
+    d = _digest(0, [_text("x"), *_bash("ls", error=False)], final_message="Done.")
+    assert shape3_skip_reason(d) is None
+    d = _digest(
         0,
-        [*_bash("ls", error=False), {"kind": "assistant_text", "text": "claim"}],
+        [
+            *_bash("a", error=False),
+            _text("mid"),
+            *_bash("b", error=False),
+        ],
     )
-    assert shape3_skip_reason(after) == "no_claim_before_result"
-    blank = _digest(
-        0, [{"kind": "assistant_text", "text": "  "}, *_bash("ls", error=False)]
+    assert shape3_skip_reason(d) is None
+
+
+def test_shape3_constants_pinned() -> None:
+    assert SHAPE3_INSTRUCTIONS == (
+        "Set surprise to true only when, in this turn, the agent reached a corrected"
+        " understanding or a root cause, supported by a tool result in this turn,"
+        " that contradicts what had been believed or indicated before, whether by"
+        " the agent itself earlier, a code comment, documentation, a config file,"
+        " an error message or the apparent state of the environment. The agent's"
+        " own conclusion after investigating counts as the trigger (for example"
+        " 'Root cause: ...', 'that was wrong', 'it turns out', 'actually'), even"
+        " when the agent never stated the wrong belief itself. Set it to false for"
+        " routine progress where nothing that was believed or indicated turned out"
+        " to be wrong: a failing test fixed by an ordinary code change, a planned"
+        " edit, reading files to learn what they contain, or a retry after a"
+        " transient error."
     )
-    assert shape3_skip_reason(blank) == "no_claim_before_result"
-    ok = _digest(0, [{"kind": "assistant_text", "text": "x"}, *_bash("ls", error=True)])
-    assert shape3_skip_reason(ok) is None
+    assert SHAPE3_FIELDS == (
+        "wrong_belief is what was believed or indicated before, naming its source"
+        " (for example: the README says the service listens on port 8000)."
+        " corrected_fact is what this turn established is actually true, as one"
+        " self-contained sentence. evidence_excerpt is the tool output that shows"
+        " corrected_fact is true, copied verbatim from the text of one tool result"
+        " above without the bracketed label that starts its line, never from"
+        " assistant text, with no ellipses."
+    )
+    assert "  " not in SHAPE3_INSTRUCTIONS
+    assert "  " not in SHAPE3_FIELDS
+
+
+def _final_lines(prompt: str) -> list[str]:
+    return [x for x in prompt.splitlines() if x.startswith("[assistant final] ")]
+
+
+def test_shape3_final_line() -> None:
+    d = _digest(
+        0,
+        [_text("checking"), *_bash("ls", error=False, excerpt="a")],
+        final_message="Root cause: X",
+    )
+    lines = build_shape3_prompt(d).splitlines()
+    i = lines.index("[assistant final] Root cause: X")
+    assert i > lines.index("[tool_result error=false] a")
+    assert i < lines.index(SHAPE3_INSTRUCTIONS)
+    d = _digest(0, [_text("Root cause: X")], final_message="Root cause: X  ")
+    assert _final_lines(build_shape3_prompt(d)) == []
+    d = _digest(
+        0,
+        [_text("Root cause: the comment")],
+        final_message="Root cause: the comment is wrong.",
+    )
+    assert _final_lines(build_shape3_prompt(d)) == [
+        "[assistant final] Root cause: the comment is wrong."
+    ]
+    for fm in (None, "  "):
+        d = _digest(0, [_text("checking")], final_message=fm)
+        assert _final_lines(build_shape3_prompt(d)) == []
+
+
+def test_shape3_prompt_details() -> None:
+    d = _digest(0, [*_bash("ls", error=False), _text("Root cause: X")])
+    assert shape3_prompt_details(d) == {
+        "shape3_scope": "text_after_result",
+        "final_rendered": False,
+    }
+    d = _digest(0, [_text("x"), *_bash("ls", error=False)], final_message="Done.")
+    assert shape3_prompt_details(d) == {
+        "shape3_scope": "final_message_only",
+        "final_rendered": True,
+    }
+    d = _digest(
+        0,
+        [*_bash("ls", error=False), _text("Root cause: X")],
+        final_message="Root cause: X  ",
+    )
+    assert shape3_prompt_details(d) == {
+        "shape3_scope": "text_after_result",
+        "final_rendered": False,
+    }
+    d = _digest(
+        0,
+        [*_bash("ls", error=False), _text("Root cause: the comment")],
+        final_message="Root cause: the comment is wrong.",
+    )
+    assert shape3_prompt_details(d) == {
+        "shape3_scope": "text_after_result",
+        "final_rendered": True,
+    }
 
 
 def test_shape3_prompt_renders_items_in_order() -> None:
@@ -320,7 +433,9 @@ def test_shape3_prompt_renders_items_in_order() -> None:
     prompt = build_shape3_prompt(_digest(0, items))
     positions = [prompt.index(line) for line in rendered.splitlines()]
     assert positions == sorted(positions)
-    assert prompt.rstrip().endswith(DETECTOR_SCHEMA_LINE)
+    assert SHAPE3_INSTRUCTIONS in prompt
+    assert SHAPE3_FIELDS in prompt
+    assert prompt.endswith(DETECTOR_SCHEMA_LINE)
 
 
 # --- parser and grounding ------------------------------------------------------

@@ -63,6 +63,7 @@ from kb_service.surprise import (
     evidence_grounded,
     parse_detector_response,
     shape2_skip_reason,
+    shape3_prompt_details,
     shape3_skip_reason,
 )
 from kb_service.surprise_distill import (
@@ -296,9 +297,11 @@ async def _model_record(
     sources: list[str],
     turn_event_ids: list[str],
     threshold: float,
+    *,
+    extra_details: dict[str, Any] | None = None,
 ) -> DetectionRecord:
     model = detector_model_name(llm)
-    details: dict[str, Any] = {"min_confidence": threshold}
+    details: dict[str, Any] = {"min_confidence": threshold, **(extra_details or {})}
     prompt_chars = len(SURPRISE_DETECTOR_SYSTEM) + len(prompt)
     start = time.monotonic()
     try:
@@ -433,7 +436,13 @@ async def detect_digest(
         ]
         records.append(
             await _model_record(
-                llm, 3, build_shape3_prompt(cur), sources, [cur.event_id], floor(3)
+                llm,
+                3,
+                build_shape3_prompt(cur),
+                sources,
+                [cur.event_id],
+                floor(3),
+                extra_details=shape3_prompt_details(cur),
             )
         )
     return records

@@ -168,6 +168,7 @@ CELL_KEYS = (
     "errors",
     "lost_to_gates",
     "not_applicable_positives",
+    "not_applicable_reasons",
     "llm_calls",
     "latency_ms_mean",
     "latency_ms_p95",
@@ -860,6 +861,11 @@ def _build_cell(
         counts = by_source.setdefault(r["label_source"], {"fn": 0, "fp": 0, "tn": 0, "tp": 0})
         key = ("t" if r["label"] == r["predicted"] else "f") + ("p" if r["predicted"] else "n")
         counts[key] += 1
+    na_reasons: dict[str, int] = {}
+    for r in rows:
+        if r["outcome"] == "not_applicable":
+            key = r["reason"] if isinstance(r["reason"], str) and r["reason"] else "unknown"
+            na_reasons[key] = na_reasons.get(key, 0) + 1
     frames = sorted({r["frame"] for r in all_rows})
     label_sources = sorted({r["label_source"] for r in all_rows})
     cell: dict[str, Any] = {
@@ -888,6 +894,7 @@ def _build_cell(
         "errors": sum(outcomes[o] for o in ERROR_OUTCOMES),
         "lost_to_gates": sum(1 for r in pos if r["model_positive"] and not r["predicted"]),
         "not_applicable_positives": sum(1 for r in pos if r["outcome"] == "not_applicable"),
+        "not_applicable_reasons": dict(sorted(na_reasons.items())),
         "llm_calls": sum(r["llm_calls"] for r in rows),
         "latency_ms_mean": _r4(sum(latencies) / len(latencies)) if latencies else None,
         "latency_ms_p95": (latencies[math.ceil(0.95 * len(latencies)) - 1] if latencies else None),
@@ -1128,14 +1135,25 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         return 2
     by_source: dict[str, int] = {}
     by_shape = {str(s): {"negatives": 0, "positives": 0} for s in (1, 2, 3)}
+    scope = dict.fromkeys(
+        ("final_message_only", "no_text_after_result", "no_tool_result", "text_after_result"),
+        0,
+    )
     for c in cases:
         by_source[c.label_source] = by_source.get(c.label_source, 0) + 1
         by_shape[str(c.shape)]["positives" if c.label else "negatives"] += 1
+        if c.shape == 3:
+            cur = c.digests[-1]
+            key3 = surprise.shape3_skip_reason(cur) or str(
+                surprise.shape3_prompt_details(cur)["shape3_scope"]
+            )
+            scope[key3] += 1
     summary = {
         "by_label_source": by_source,
         "by_shape": by_shape,
         "cases": len(cases),
         "redacted_cases": sum(1 for c in cases if c.redactions),
+        "shape3_scope": scope,
     }
     print(json.dumps(summary, sort_keys=True))
     return 0

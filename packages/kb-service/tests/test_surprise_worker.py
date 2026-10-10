@@ -545,7 +545,7 @@ def test_drain_shadow_then_idempotent(
         ("s1:0", 3, "no_surprise", ""),
         ("s1:1", 1, "candidate", ""),
         ("s1:1", 2, "candidate", ""),
-        ("s1:1", 3, "not_applicable", "no_claim_before_result"),
+        ("s1:1", 3, "not_applicable", "no_text_after_result"),
     ]
     assert all(r["mode"] == "shadow" for r in rows)
     assert all(r["detector_version"] == SURPRISE_DETECTOR_VERSION for r in rows)
@@ -703,6 +703,10 @@ _S3_ITEMS = [
         "is_error": True,
         "excerpt": "No such file: /etc/foo.conf; config is at /etc/foo/main.conf",
     },
+    {
+        "kind": "assistant_text",
+        "text": "/etc/foo.conf does not exist; the config is at /etc/foo/main.conf.",
+    },
 ]
 
 
@@ -758,6 +762,43 @@ def test_drain_shape3_outcomes(
     assert len(warns) == warnings
     if warnings:
         assert "detector_failed" in warns[0]
+
+
+def test_drain_shape3_assistant_text_evidence_ungrounded(
+    local_client: TestClient, ctx: _Ctx
+) -> None:
+    _seed(local_client, "s3", 0, user_prompt="where is it", items=_S3_ITEMS)
+    ctx.llm.enqueue(_s3_verdict("/etc/foo.conf does not exist", 0.9))
+    _drain(local_client)
+    rows = [r for r in _detections("s3:0") if r["shape"] == 3]
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "ungrounded"
+    assert rows[0]["candidate_id"] is None
+
+
+def test_drain_shape3_details_scope(local_client: TestClient, ctx: _Ctx) -> None:
+    _seed(local_client, "s3", 0, user_prompt="where is it", items=_S3_ITEMS)
+    _seed(
+        local_client,
+        "s5",
+        0,
+        user_prompt="where is it",
+        items=_S3_ITEMS[:3],
+        final_message="The config is at /etc/foo/main.conf.",
+    )
+    ctx.llm.enqueue('{"surprise": false}')
+    ctx.llm.enqueue('{"surprise": false}')
+    _drain(local_client)
+    for ev, scope, rendered in (
+        ("s3:0", "text_after_result", False),
+        ("s5:0", "final_message_only", True),
+    ):
+        rows = [r for r in _detections(ev) if r["shape"] == 3]
+        assert len(rows) == 1
+        details = json.loads(rows[0]["details"])
+        assert details["shape3_scope"] == scope
+        assert details["final_rendered"] is rendered
+        assert details["min_confidence"] == 0.7
 
 
 def test_drain_claim_race(

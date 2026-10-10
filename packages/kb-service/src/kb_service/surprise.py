@@ -3,8 +3,9 @@
 Shape 1 (deterministic): a failed Bash call later succeeded by a different
 command of the same class. Shape 2 (one model call): the human's next message
 says a claim from the assistant's previous turn was wrong. Shape 3 (one model
-call): a tool result later in a turn contradicts a claim the assistant made
-earlier in the same turn.
+call): within one turn, after at least one tool result, the agent reaches a
+corrected understanding or a root cause backed by tool output; no earlier wrong
+claim by the agent is needed.
 
 No I/O here: the drain in ``kb_service.surprise_worker`` reads digests, calls
 the model and stores the results.
@@ -32,12 +33,13 @@ DetectionOutcome = Literal[
 ParseReject = Literal["llm_error", "unparseable", "invalid_fields", "no_surprise"]
 
 # bump on ANY change to SURPRISE_DETECTOR_SYSTEM, DETECTOR_SCHEMA_LINE,
-# build_shape2_prompt, build_shape3_prompt, parse_detector_response,
+# build_shape2_prompt, build_shape3_prompt, SHAPE3_INSTRUCTIONS, SHAPE3_FIELDS,
+# shape3_skip_reason, shape3_prompt_details, parse_detector_response,
 # evidence_grounded, the DETECTOR_MIN_CONFIDENCE default, SHAPE1_IGNORED_CLASSES
 # or the shape-1 pairing rule; the effective KB_SURPRISE_MIN_CONFIDENCE
 # threshold is recorded per row in surprise_detections.details.min_confidence
 # instead
-SURPRISE_DETECTOR_VERSION: int = 1
+SURPRISE_DETECTOR_VERSION: int = 2
 SHAPE1_DETECTOR_MODEL = "rule:shape1"
 DETECTOR_MIN_CONFIDENCE = 0.7
 # per-shape defaults (shape 2 recall gain; shape 3 must not drop)
@@ -336,27 +338,47 @@ def build_shape2_prompt(prev: TurnDigest, cur: TurnDigest) -> str:
 # --- shape 3 -----------------------------------------------------------------
 
 
-def shape3_skip_reason(cur: TurnDigest) -> str | None:
-    """Return None iff a non-empty assistant claim precedes some tool result."""
-    first_claim: int | None = None
-    last_result: int | None = None
+def _text_after_first_result(cur: TurnDigest) -> bool:
+    first: int | None = None
     for idx, item in enumerate(cur.items):
         kind = item.get("kind")
-        if (
+        if kind == "tool_result" and first is None:
+            first = idx
+        elif (
             kind == "assistant_text"
+            and first is not None
             and str(item.get("text") or "").strip()
-            and first_claim is None
         ):
-            first_claim = idx
-        elif kind == "tool_result":
-            last_result = idx
-    if (
-        first_claim is not None
-        and last_result is not None
-        and first_claim < last_result
-    ):
+            return True
+    return False
+
+
+def shape3_skip_reason(cur: TurnDigest) -> str | None:
+    """Return why shape 3 does not apply to *cur*, or None when it does."""
+    if not any(item.get("kind") == "tool_result" for item in cur.items):
+        return "no_tool_result"
+    if (cur.final_message or "").strip() != "" or _text_after_first_result(cur):
         return None
-    return "no_claim_before_result"
+    return "no_text_after_result"
+
+
+def _shape3_final(cur: TurnDigest) -> str:
+    final = (cur.final_message or "").strip()
+    texts = _assistant_texts(cur)
+    last = texts[-1].strip() if texts else ""
+    return final if final != "" and final != last else ""
+
+
+def shape3_prompt_details(cur: TurnDigest) -> dict[str, Any]:
+    """Return which part of the scope rule admits *cur* and whether its final message is rendered."""  # noqa: E501
+    return {
+        "shape3_scope": (
+            "text_after_result"
+            if _text_after_first_result(cur)
+            else "final_message_only"
+        ),
+        "final_rendered": _shape3_final(cur) != "",
+    }
 
 
 def render_items(items: list[dict[str, Any]]) -> str:
@@ -374,22 +396,38 @@ def render_items(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+SHAPE3_INSTRUCTIONS = (
+    "Set surprise to true only when, in this turn, the agent reached a corrected"
+    " understanding or a root cause, supported by a tool result in this turn,"
+    " that contradicts what had been believed or indicated before, whether by"
+    " the agent itself earlier, a code comment, documentation, a config file,"
+    " an error message or the apparent state of the environment. The agent's"
+    " own conclusion after investigating counts as the trigger (for example"
+    " 'Root cause: ...', 'that was wrong', 'it turns out', 'actually'), even"
+    " when the agent never stated the wrong belief itself. Set it to false for"
+    " routine progress where nothing that was believed or indicated turned out"
+    " to be wrong: a failing test fixed by an ordinary code change, a planned"
+    " edit, reading files to learn what they contain, or a retry after a"
+    " transient error."
+)
+SHAPE3_FIELDS = (
+    "wrong_belief is what was believed or indicated before, naming its source"
+    " (for example: the README says the service listens on port 8000)."
+    " corrected_fact is what this turn established is actually true, as one"
+    " self-contained sentence. evidence_excerpt is the tool output that shows"
+    " corrected_fact is true, copied verbatim from the text of one tool result"
+    " above without the bracketed label that starts its line, never from"
+    " assistant text, with no ellipses."
+)
+
+
 def build_shape3_prompt(cur: TurnDigest) -> str:
-    """Prompt asking whether a tool result contradicted an earlier claim."""
-    return "\n".join(
-        [
-            "One turn of a coding agent, in order:",
-            render_items(cur.items),
-            "",
-            "Set surprise to true only when a tool result later in this turn"
-            " contradicts a factual claim or assumption the assistant stated"
-            " earlier in the same turn. A tool error alone is not a"
-            " contradiction unless the assistant had asserted the call would"
-            " work.",
-            "evidence_excerpt must be copied verbatim from a tool result.",
-            DETECTOR_SCHEMA_LINE,
-        ]
-    )
+    """Prompt asking whether the agent reached a corrected understanding or root cause in this turn."""  # noqa: E501
+    parts = ["One turn of a coding agent, in order:", render_items(cur.items)]
+    if shape3_prompt_details(cur)["final_rendered"]:
+        parts.append(f"[assistant final] {_shape3_final(cur)}")
+    parts.extend(["", SHAPE3_INSTRUCTIONS, SHAPE3_FIELDS, DETECTOR_SCHEMA_LINE])
+    return "\n".join(parts)
 
 
 # --- parsing and grounding ---------------------------------------------------

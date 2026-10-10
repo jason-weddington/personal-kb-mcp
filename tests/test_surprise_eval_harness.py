@@ -28,6 +28,7 @@ EVAL_DIR = REPO_ROOT / "scripts" / "surprise_eval"
 SCRIPT_PATH = EVAL_DIR / "surprise_eval.py"
 DIGESTS_FIXTURE = EVAL_DIR / "fixtures" / "synthetic_cases.jsonl"
 MINED_FIXTURE = EVAL_DIR / "fixtures" / "synthetic_mined_cases.jsonl"
+CONCLUSION_FIXTURE = EVAL_DIR / "fixtures" / "synthetic_shape3_conclusion_cases.jsonl"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -233,6 +234,7 @@ def test_a_digests_fixture_perfect(tmp_path, capsys, made):
         assert cell["recall"] == 1.0
         assert cell["recall_applicable"] == 1.0
         assert cell["f1"] == 1.0
+        assert cell["not_applicable_reasons"] == {}
         assert cell["precision_wilson95"] == [0.2065, 1.0]
         assert cell["precision_bar"] == "not-gating"
     gating = "precision is not gating (frames=synthetic, label_sources=synthetic)"
@@ -401,27 +403,47 @@ def _late_text_case() -> dict[str, Any]:
     )
 
 
+def _early_text_case() -> dict[str, Any]:
+    return _shape3_case(
+        "early-text-1",
+        True,
+        [
+            _text("The file should be there."),
+            _call("t1", "cat /x", "cat"),
+            _res("t1", True, "missing"),
+        ],
+    )
+
+
 def test_i_not_applicable_and_recall_applicable(tmp_path, capsys, made):
     path = _write_cases(
-        tmp_path / "cases.jsonl", [_fixture_cases()["syn-s3-pos"], _late_text_case()]
+        tmp_path / "cases.jsonl", [_fixture_cases()["syn-s3-pos"], _early_text_case()]
     )
     res = _run(capsys, tmp_path / "o", path, "--model", "stub-model", "--shapes", "3")
     cell = _cell(res, 3)
     assert cell["recall"] == 0.5
     assert cell["recall_applicable"] == 1.0
     assert cell["not_applicable_positives"] == 1
+    assert cell["not_applicable_reasons"] == {"no_text_after_result": 1}
+    assert _row(res, "early-text-1")["reason"] == "no_text_after_result"
     assert (
         "stub-model shape 3: 1 cases were not_applicable under the detector's skip rules,"
         " 1 of them labelled positive (detector scope, not model quality)"
     ) in res["report"]["warnings"]
 
-    alone = _write_cases(tmp_path / "alone.jsonl", [_late_text_case()])
+    alone = _write_cases(tmp_path / "alone.jsonl", [_early_text_case()])
     res = _run(capsys, tmp_path / "o2", alone, "--model", "stub-model")
     assert res["code"] == 3
     assert (
         "run: no detector calls made for stub-model (every shape-2/3 case was not_applicable)"
         in res["err"]
     )
+
+    late = _write_cases(tmp_path / "late.jsonl", [_late_text_case()])
+    res = _run(capsys, tmp_path / "o3", late, "--model", "stub-model", "--shapes", "3")
+    assert res["code"] == 0
+    row = _row(res, "late-text-1")
+    assert (row["outcome"], row["reason"], row["llm_calls"]) == ("no_surprise", "", 1)
 
 
 def test_j_anomalies(tmp_path, capsys, made, monkeypatch):
@@ -448,6 +470,7 @@ def test_j_anomalies(tmp_path, capsys, made, monkeypatch):
     monkeypatch.setattr(surprise_worker, "detect_digest", empty)
     res = _run(capsys, tmp_path / "o2", DIGESTS_FIXTURE, "--model", "stub-model")
     assert all(r["anomaly"] == "own_records=0" for r in res["rows"])
+    assert all(c["not_applicable_reasons"] == {"unknown": 2} for c in res["report"]["cells"])
     assert res["code"] == 4
 
 
@@ -530,16 +553,47 @@ def test_m_cross_shape_candidate(tmp_path, capsys, made):
             _res("t1", True, "rejected"),
             _call("t2", "git push origin HEAD:main", "git push"),
             _res("t2", False, "ok"),
+            _text("Pushed with HEAD:main."),
         ],
     )
     path = _write_cases(tmp_path / "cases.jsonl", [case])
     res = _run(capsys, tmp_path / "o", path, "--model", "stub-model")
+    assert res["code"] == 0
+    assert _row(res, "cross-1")["outcome"] == "no_surprise"
+    assert _row(res, "cross-1")["llm_calls"] == 1
     assert _row(res, "cross-1")["cross_shape_candidates"] == [1]
     assert _cell(res, 3)["cross_shape_fp"] == 1
     assert (
         "stub-model shape 3: 1 negative cases produced a candidate of another shape"
         " (production would write it)" in res["report"]["warnings"]
     )
+
+
+def test_s3_conclusion_fixture(tmp_path, capsys, made):
+    evidence = "OnCalendar=*-*-* 02:00:00 UTC"
+    StubLLM.mapping = {
+        evidence: _verdict(
+            "docs/export.md says the export job runs at 02:00 America/Chicago",
+            "export.timer fires at 02:00 UTC",
+            evidence,
+            0.9,
+        )
+    }
+    res = _run(capsys, tmp_path / "o", CONCLUSION_FIXTURE, "--model", "stub-model")
+    assert res["code"] == 0
+    assert _row(res, "syn-s3c-pos")["outcome"] == "candidate"
+    assert _row(res, "syn-s3c-neg")["outcome"] == "no_surprise"
+    for cid in ("syn-s3c-pos", "syn-s3c-neg"):
+        assert _row(res, cid)["llm_calls"] == 1
+        assert _row(res, cid)["cross_shape_candidates"] == []
+    cell = _cell(res, 3)
+    assert (cell["tp"], cell["fp"], cell["fn"], cell["tn"]) == (1, 0, 0, 1)
+    assert cell["not_applicable_reasons"] == {}
+    assert len(StubLLM.calls) == 2
+    prompts = [c[1] for c in StubLLM.calls if "export.timer" in c[1]]
+    assert len(prompts) == 1
+    assert surprise.SHAPE3_INSTRUCTIONS in prompts[0]
+    assert not any(x.startswith("[assistant final] ") for x in prompts[0].splitlines())
 
 
 def test_n_latency_over_production_timeout(tmp_path, capsys, made, monkeypatch):
@@ -574,13 +628,24 @@ def test_p_validate_fixtures(capsys):
     assert capsys.readouterr().out.strip() == (
         '{"by_label_source": {"synthetic": 6}, "by_shape": {"1": {"negatives": 1, "positives":'
         ' 1}, "2": {"negatives": 1, "positives": 1}, "3": {"negatives": 1, "positives": 1}},'
-        ' "cases": 6, "redacted_cases": 0}'
+        ' "cases": 6, "redacted_cases": 0, "shape3_scope": {"final_message_only": 1,'
+        ' "no_text_after_result": 0, "no_tool_result": 0, "text_after_result": 1}}'
     )
     assert se.main(["validate", "--cases", str(MINED_FIXTURE)]) == 0
     assert capsys.readouterr().out.strip() == (
         '{"by_label_source": {"unspecified": 2}, "by_shape": {"1": {"negatives": 0,'
         ' "positives": 0}, "2": {"negatives": 0, "positives": 1}, "3": {"negatives": 1,'
-        ' "positives": 0}}, "cases": 2, "redacted_cases": 0}'
+        ' "positives": 0}}, "cases": 2, "redacted_cases": 0, "shape3_scope":'
+        ' {"final_message_only": 0, "no_text_after_result": 0, "no_tool_result": 0,'
+        ' "text_after_result": 1}}'
+    )
+    assert se.main(["validate", "--cases", str(CONCLUSION_FIXTURE)]) == 0
+    assert capsys.readouterr().out.strip() == (
+        '{"by_label_source": {"synthetic": 2}, "by_shape": {"1": {"negatives": 0,'
+        ' "positives": 0}, "2": {"negatives": 0, "positives": 0}, "3": {"negatives": 1,'
+        ' "positives": 1}}, "cases": 2, "redacted_cases": 0, "shape3_scope":'
+        ' {"final_message_only": 0, "no_text_after_result": 0, "no_tool_result": 0,'
+        ' "text_after_result": 2}}'
     )
 
 
@@ -851,7 +916,7 @@ def test_y_model_required_only_for_shapes_2_3(tmp_path, capsys, made):
 
 
 def test_z_fixture_ids_and_outcome_drift_guard():
-    for path in (DIGESTS_FIXTURE, MINED_FIXTURE):
+    for path in (DIGESTS_FIXTURE, MINED_FIXTURE, CONCLUSION_FIXTURE):
         assert all(cid.startswith("syn-") for cid in _fixture_cases(path))
     assert typing.get_args(surprise.DetectionOutcome) == se.OUTCOMES
     for group in (se.ERROR_OUTCOMES, se.MODEL_POSITIVE_OUTCOMES, se.NO_CALL_OUTCOMES):
