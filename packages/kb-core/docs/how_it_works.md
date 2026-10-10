@@ -635,13 +635,7 @@ the work:
   unchanged files, runs PII redaction, and then delegates to a shared
   pipeline that calls the LLM extractor, the optional dedup agent, and
   finally `KnowledgeStore` for the writes.
-- **`kb_core/ingest/safety.py`** — `check_deny_list(path)`,
-  `detect_secrets_in_content(content)` (uses `detect-secrets` when
-  available), `redact_pii(content)` (uses `scrubadub` when available),
-  and `run_safety_pipeline(path, content)` which chains them. All
-  three optional libraries are off the critical path: if they're
-  missing, the pipeline degrades to "no extra safety checks" rather
-  than failing.
+- **`kb_core/ingest/safety.py`** — `check_deny_list(path)`, `detect_secrets_in_content(content)` (uses `detect-secrets` when available), `redact_secrets(content)` -> `(redacted, types)` | None (whole-line `[REDACTED:<type>]` replacement using six detect-secrets plugins plus four regex fallbacks; None when detect-secrets is missing), `redact_pii(content)` (uses `scrubadub` when available), and `run_safety_pipeline(path, content)` which chains them. All three optional libraries are off the critical path: if they're missing, the pipeline degrades to "no extra safety checks" rather than failing.
 - **`kb_core/ingest/dedup_agent.py`** — `DedupAgent.check(...)` runs a
   hybrid search against the existing KB with the candidate chunk's
   text and, if the top hit's RRF score exceeds the dedup threshold
@@ -833,7 +827,7 @@ they are just async functions over the `Database` / `Embedder` /
 | `kb_core/llm/bedrock.py` | `BedrockLLMClient` (Smithy / `aws-sdk-bedrock-runtime`). |
 | `kb_core/llm/ollama.py` | `OllamaLLMClient` (HTTP). |
 | `kb_core/ingest/ingester.py` | `FileIngester` orchestrator + `FileResult` / `IngestResult`. |
-| `kb_core/ingest/safety.py` | `check_deny_list`, `detect_secrets_in_content`, `redact_pii`, `run_safety_pipeline`. |
+| `kb_core/ingest/safety.py` | `check_deny_list`, `detect_secrets_in_content`, `redact_secrets(content)` -> `(redacted, types)` \| None, `redact_pii`, `run_safety_pipeline`. |
 | `kb_core/ingest/dedup_agent.py` | `DedupAgent`, `DedupResult`. |
 | `kb_core/ingest/extractor.py` | `summarize_file`, `extract_entries`, `ExtractedEntry`. |
 | `kb_core/ingest/html_extract.py` | `extract_content` (HTML → plaintext via `trafilatura`). |

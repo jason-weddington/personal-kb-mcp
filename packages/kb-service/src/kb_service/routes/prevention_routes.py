@@ -17,6 +17,8 @@ Server switches are read per request from ``os.environ`` and fail closed:
 * ``KB_SOFT_GATE_DISABLED_PROJECTS`` — comma-separated per-project kill switch.
 * ``KB_DELIVER_OBSERVED_ONCE`` — default on; ``FALSE`` withholds autonomous
   resolutions observed in a single session.
+* ``KB_SURPRISE_CAPTURE`` — ``off|shadow|on``, default off; any other value
+  means off. Reported as the top-level ``surprise_capture`` field.
 
 No route answers with a 5xx: a failure is logged at WARNING and answered with
 an inert, empty response. No model or LLM call is made anywhere here.
@@ -43,6 +45,7 @@ from kb_service.models import (
     GateStatsResponse,
     PreventionDiagnostics,
     PreventionResponse,
+    SurpriseCaptureMode,
     User,
 )
 from kb_service.prevention import (
@@ -52,6 +55,7 @@ from kb_service.prevention import (
     load_resolutions,
     render_slice,
 )
+from kb_service.turn_digest import surprise_capture_mode
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
@@ -168,7 +172,9 @@ def _deliver_observed_once() -> bool:
     return os.environ.get("KB_DELIVER_OBSERVED_ONCE", "").strip().upper() != "FALSE"
 
 
-def _inert(project: str) -> PreventionResponse:
+def _inert(
+    project: str, surprise_capture: SurpriseCaptureMode = "off"
+) -> PreventionResponse:
     return PreventionResponse(
         project=project,
         gate=GateSettings(
@@ -178,6 +184,7 @@ def _inert(project: str) -> PreventionResponse:
         slice=[],
         slice_text="",
         diagnostics=PreventionDiagnostics(),
+        surprise_capture=surprise_capture,
     )
 
 
@@ -194,11 +201,18 @@ async def get_prevention(
 ) -> PreventionResponse:
     """Return the gate settings, Bash cue index and gotcha slice for a session."""
     del user  # auth gate only
+    mode = surprise_capture_mode()
     effective = ""
     try:
         effective = resolve_cue_project(project, cwd)[0]
         gate = gate_settings(effective)
         if not effective:
+            logger.info(
+                "prevention_fetch project= session_id=%s no_project=true"
+                " surprise_capture=%s",
+                session_id,
+                mode,
+            )
             return PreventionResponse(
                 project="",
                 gate=gate,
@@ -206,6 +220,7 @@ async def get_prevention(
                 slice=[],
                 slice_text="",
                 diagnostics=PreventionDiagnostics(),
+                surprise_capture=mode,
             )
         db = request.app.state.kb.db
         resolutions, stats = await load_resolutions(
@@ -232,12 +247,12 @@ async def get_prevention(
             session_id,
             type(exc).__name__,
         )
-        return _inert(effective)
+        return _inert(effective, mode)
     logger.info(
         "prevention_fetch project=%s session_id=%s enabled=%s shadow=%s"
         " index_len=%d slice_len=%d resolutions_total=%d skipped_malformed=%d"
         " skipped_observed_once=%d index_truncated=%d slice_truncated=%d"
-        " slice_ids=%s",
+        " slice_ids=%s surprise_capture=%s",
         effective,
         session_id,
         gate.enabled,
@@ -250,6 +265,7 @@ async def get_prevention(
         diagnostics.index_truncated,
         diagnostics.slice_truncated,
         [i.entry_id for i in items],
+        mode,
     )
     return PreventionResponse(
         project=effective,
@@ -258,6 +274,7 @@ async def get_prevention(
         slice=items,
         slice_text=slice_text,
         diagnostics=diagnostics,
+        surprise_capture=mode,
     )
 
 

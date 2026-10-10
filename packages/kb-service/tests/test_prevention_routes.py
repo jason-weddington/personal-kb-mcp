@@ -34,6 +34,7 @@ _SWITCHES = (
     "KB_SOFT_GATE_SHADOW",
     "KB_SOFT_GATE_DISABLED_PROJECTS",
     "KB_DELIVER_OBSERVED_ONCE",
+    "KB_SURPRISE_CAPTURE",
 )
 
 
@@ -399,6 +400,62 @@ async def test_prevention_db_failure_is_inert(
     assert body["index"] == []
     assert body["slice"] == []
     assert body["slice_text"] == ""
+
+
+def test_prevention_surprise_capture_default_off(real_client: TestClient) -> None:
+    body = real_client.get("/api/kb/prevention", params={"project": "p"}).json()
+    assert body["surprise_capture"] == "off"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("shadow", "shadow"), ("bogus", "off")]
+)
+def test_prevention_surprise_capture_values(
+    real_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    expected: str,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", value)
+    body = real_client.get("/api/kb/prevention", params={"project": "p"}).json()
+    assert body["surprise_capture"] == expected
+
+
+def test_prevention_surprise_capture_no_project(
+    real_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "on")
+    caplog.set_level(logging.INFO)
+    body = real_client.get("/api/kb/prevention").json()
+    assert body["project"] == ""
+    assert body["surprise_capture"] == "on"
+    assert "no_project=true" in caplog.text
+
+
+def test_prevention_inert_reports_surprise_capture(
+    real_client: TestClient, fake_kb: FakeKnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Boom:
+        async def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("boom")
+
+    monkeypatch.setenv("KB_SOFT_GATE_ENABLED", "TRUE")
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    monkeypatch.setattr(fake_kb, "db", Boom())
+    body = real_client.get("/api/kb/prevention", params={"project": "p"}).json()
+    assert body["gate"]["enabled"] is False
+    assert body["surprise_capture"] == "shadow"
+
+
+def test_prevention_surprise_capture_ignores_listener_switch(
+    real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "FALSE")
+    body = real_client.get("/api/kb/prevention", params={"project": "p"}).json()
+    assert body["surprise_capture"] == "shadow"
 
 
 @pytest.mark.parametrize(

@@ -9,9 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from kb_core import Attribution, EmbeddingRetryConfig, create_postgres, create_sqlite
 
@@ -45,6 +47,8 @@ from kb_service.routes.prevention_routes import router as prevention_router
 from kb_service.routes.query_routes import router as query_router
 from kb_service.routes.settings_routes import router as settings_router
 from kb_service.routes.telemetry_routes import router as telemetry_router
+from kb_service.routes.turn_routes import record_validation_failure
+from kb_service.routes.turn_routes import router as turn_router
 from kb_service.supersession_log import log_reconcile_report
 
 if TYPE_CHECKING:
@@ -218,6 +222,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Personal KB Web Service", version="0.1.0", lifespan=lifespan)
 
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> Response:
+    """Log /api/kb/turn 422s (loc and type only); body is FastAPI's default."""
+    if request.url.path == "/api/kb/turn":
+        record_validation_failure(exc.errors())
+    return await request_validation_exception_handler(request, exc)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -243,6 +258,7 @@ app.include_router(chat_router)
 app.include_router(cluster_ledger_router)
 app.include_router(listener_router)
 app.include_router(event_router)
+app.include_router(turn_router)
 app.include_router(prevention_router)
 app.include_router(telemetry_router)
 app.include_router(embedding_queue_router)

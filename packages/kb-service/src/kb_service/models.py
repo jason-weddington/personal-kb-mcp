@@ -768,6 +768,140 @@ class EventHeartbeatResponse(BaseModel):
     route_outcomes: dict[str, int]
 
 
+# --- Surprise capture: turn digests ---
+
+TURN_USER_PROMPT_MAX = 4000
+TURN_FINAL_MESSAGE_MAX = 4000
+TURN_TEXT_MAX = 2000
+TURN_TARGET_MAX = 500
+TURN_EXCERPT_MAX = 1500
+TURN_ITEMS_MAX = 200
+
+SurpriseCaptureMode = Literal["off", "shadow", "on"]
+
+
+class TurnAssistantTextItem(BaseModel):
+    """Assistant prose within a turn."""
+
+    kind: Literal["assistant_text"]
+    text: str = Field(max_length=TURN_TEXT_MAX)
+
+
+class TurnToolCallItem(BaseModel):
+    """A tool call within a turn."""
+
+    kind: Literal["tool_call"]
+    tool_use_id: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+    target: str = Field(default="", max_length=TURN_TARGET_MAX)
+    target_class: str = ""
+
+
+class TurnToolResultItem(BaseModel):
+    """A tool result within a turn."""
+
+    kind: Literal["tool_result"]
+    tool_use_id: str = Field(min_length=1)
+    is_error: bool
+    excerpt: str = Field(default="", max_length=TURN_EXCERPT_MAX)
+
+
+TurnItem = Annotated[
+    TurnAssistantTextItem | TurnToolCallItem | TurnToolResultItem,
+    Field(discriminator="kind"),
+]
+
+
+class TurnDigestRequest(BaseModel):
+    """``POST /api/kb/turn`` — one per-turn digest sent by the hook at Stop."""
+
+    event_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    harness: str = Field(default="claude-code", min_length=1)
+    mode: Literal["interactive", "headless"] = "interactive"
+    engine: str | None = None
+    host: str | None = None
+    hook_version: str | None = None
+    project: str | None = None
+    turn_index: int = Field(ge=0)
+    ts: str | None = None
+    user_prompt: str | None = Field(default=None, max_length=TURN_USER_PROMPT_MAX)
+    items: list[TurnItem] = Field(default_factory=list, max_length=TURN_ITEMS_MAX)
+    final_message: str | None = Field(default=None, max_length=TURN_FINAL_MESSAGE_MAX)
+    truncated: bool = False
+
+    @model_validator(mode="after")
+    def _event_id_matches(self) -> "TurnDigestRequest":
+        if self.event_id != f"{self.session_id}:{self.turn_index}":
+            raise ValueError("event_id must equal '<session_id>:<turn_index>'")
+        return self
+
+
+class TurnDigestResponse(BaseModel):
+    """Response for ``POST /api/kb/turn``."""
+
+    recorded: bool
+    reason: Literal[
+        "recorded",
+        "duplicate",
+        "duplicate-mismatch",
+        "capture-off",
+        "redaction-unavailable",
+        "write-failed",
+    ]
+    redactions: list[str] = Field(default_factory=list)
+
+
+class StoredTurnDigest(BaseModel):
+    """A ``turn_events`` row as read back by consumers."""
+
+    event_id: str
+    session_id: str
+    harness: str
+    mode: Literal["interactive", "headless"]
+    engine: str | None
+    host: str | None
+    hook_version: str | None
+    project: str
+    turn_index: int
+    ts: str
+    user_prompt: str | None
+    items: list[TurnItem]
+    final_message: str | None
+    truncated: bool
+    redactions: list[str]
+    anomaly: str | None
+    capture_mode: Literal["shadow", "on"]
+    processed_at: str | None
+    received_ts: str
+
+
+class TurnHeartbeatRow(BaseModel):
+    """One (harness, mode, host) group in the turn-digest heartbeat."""
+
+    harness: str
+    mode: str
+    host: str | None
+    count: int
+    truncated: int
+    redacted: int
+    anomalies: int
+    empty_project: int
+    last_ts: str
+    hook_version: str | None
+
+
+class TurnHeartbeatResponse(BaseModel):
+    """Response for ``GET /api/kb/turn/heartbeat``."""
+
+    since: str
+    rows: list[TurnHeartbeatRow]
+    pending: int
+    oldest_pending_received_ts: str | None
+    sessions_with_gaps: int
+    route_outcomes: dict[str, int]
+
+
 class IngestFileResult(BaseModel):
     """Lossless mirror of kb-core's ``FileResult`` dataclass for P5 round-trip.
 
@@ -1440,6 +1574,7 @@ class PreventionResponse(BaseModel):
     slice: list[SliceItem]
     slice_text: str
     diagnostics: PreventionDiagnostics
+    surprise_capture: SurpriseCaptureMode = "off"
 
 
 GateDecision = Literal[

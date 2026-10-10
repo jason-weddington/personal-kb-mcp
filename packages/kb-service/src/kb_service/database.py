@@ -311,6 +311,38 @@ _SCHEMA_STATEMENTS: list[str] = [
     " ON gate_decisions(resolution_id, ts)",
     "CREATE INDEX IF NOT EXISTS idx_gate_decisions_received_ts"
     " ON gate_decisions(received_ts)",
+    # turn_events: surprise-capture turn digests posted by the hook at Stop.
+    # event_id is exactly '<session_id>:<turn_index>' (idempotency key, first
+    # write wins). items and redactions hold json.dumps() TEXT. processed_at
+    # NULL means pending (not yet consumed by the surprise drain) and is the
+    # ONLY pending marker on this table. capture_mode records the
+    # KB_SURPRISE_CAPTURE value at ingest and is informational only: consumers
+    # decide shadow vs on from the CURRENT env value at processing time.
+    "CREATE TABLE IF NOT EXISTS turn_events ("
+    "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+    "event_id TEXT NOT NULL UNIQUE, "
+    "session_id TEXT NOT NULL, "
+    "harness TEXT NOT NULL, "
+    "mode TEXT NOT NULL CHECK (mode IN ('interactive', 'headless')), "
+    "engine TEXT, "
+    "host TEXT, "
+    "hook_version TEXT, "
+    "project TEXT NOT NULL DEFAULT '', "
+    "turn_index INTEGER NOT NULL, "
+    "ts TEXT NOT NULL, "
+    "user_prompt TEXT, "
+    "items TEXT NOT NULL DEFAULT '[]', "
+    "final_message TEXT, "
+    "truncated INTEGER NOT NULL DEFAULT 0, "
+    "redactions TEXT NOT NULL DEFAULT '[]', "
+    "anomaly TEXT, "
+    "capture_mode TEXT NOT NULL CHECK (capture_mode IN ('shadow', 'on')), "
+    "processed_at TEXT, "
+    "received_ts TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_turn_events_session_turn"
+    " ON turn_events(session_id, turn_index)",
+    "CREATE INDEX IF NOT EXISTS idx_turn_events_received_ts"
+    " ON turn_events(received_ts)",
 ]
 
 

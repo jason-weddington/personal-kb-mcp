@@ -2,6 +2,7 @@
 
 import fnmatch
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -132,6 +133,72 @@ def detect_secrets_in_content(content: str) -> list[str] | None:
                     secret_types.append(stype)
 
     return secret_types
+
+
+_REDACT_SCAN_SETTINGS = {
+    "plugins_used": [
+        {"name": "KeywordDetector"},
+        {"name": "PrivateKeyDetector"},
+        {"name": "BasicAuthDetector"},
+        {"name": "AWSKeyDetector"},
+        {"name": "GitHubTokenDetector"},
+        {"name": "JwtTokenDetector"},
+    ]
+}
+
+# Regex fallbacks for shapes detect-secrets misses (unquoted KEY=value, sk-ant-
+# keys, opaque Bearer tokens, private-key END lines).
+_REDACT_FALLBACK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "Secret Assignment",
+        re.compile(
+            r"(?i)\b[\w.-]*(?:secret|token|passw(?:or)?d|api_?key|access_?key"
+            r"|private_?key|credential)[\w.-]*[\"']?\s*[=:]\s*[\"']?[^\s\"']{8,}"
+        ),
+    ),
+    ("Anthropic API Key", re.compile(r"sk-ant-[\w-]{8,}")),
+    ("Bearer Token", re.compile(r"(?i)\bbearer\s+[\w.~+/=-]{8,}")),
+    ("Private Key", re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY")),
+)
+
+
+def redact_secrets(content: str) -> tuple[str, list[str]] | None:
+    """Redact secrets line by line.
+
+    Any line with a finding is replaced whole by ``[REDACTED:<first type>]``
+    (line ending preserved). A Private Key finding replaces the whole content.
+    Returns ``(redacted, distinct_types)``, or None if detect-secrets is not
+    installed.
+    """
+    try:
+        from detect_secrets.core.scan import scan_line
+        from detect_secrets.settings import transient_settings
+    except ImportError:
+        logger.debug("detect-secrets not installed — skipping redaction")
+        return None
+
+    types: list[str] = []
+    out: list[str] = []
+    with transient_settings(_REDACT_SCAN_SETTINGS):
+        for line in content.splitlines(keepends=True):
+            body = line.splitlines()[0]
+            ending = line[len(body) :]
+            line_types: list[str] = []
+            for secret in scan_line(line=body):
+                if secret.type not in line_types:
+                    line_types.append(secret.type)
+            if not line_types:
+                line_types = [name for name, pat in _REDACT_FALLBACK_PATTERNS if pat.search(body)]
+            if line_types:
+                out.append(f"[REDACTED:{line_types[0]}]" + ending)
+                for t in line_types:
+                    if t not in types:
+                        types.append(t)
+            else:
+                out.append(line)
+    if "Private Key" in types:
+        return "[REDACTED:Private Key]", types
+    return "".join(out), types
 
 
 def redact_pii(content: str) -> tuple[str, list[str]]:

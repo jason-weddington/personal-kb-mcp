@@ -91,6 +91,7 @@ async def test_service_db_lives_next_to_kb_db_path(local_env: Path) -> None:
             "listener_decisions",
             "failure_events",
             "gate_decisions",
+            "turn_events",
         } <= names
         mode = await db.fetchval("PRAGMA journal_mode")
         assert mode == "wal"
@@ -400,3 +401,22 @@ def test_local_mode_telemetry_flush_upserts(local_client: TestClient) -> None:
     assert row["emitted_ts"] == first
     assert row["last_emitted_ts"] == later
     assert row["consumed"] == 1
+
+
+async def test_turn_events_schema_is_idempotent(local_env: Path) -> None:
+    await database.init_db()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        tables = await db.fetchval(
+            "SELECT COUNT(*) FROM sqlite_master"
+            " WHERE type = 'table' AND name = 'turn_events'"
+        )
+        indexes = await db.fetchval(
+            "SELECT COUNT(*) FROM sqlite_master"
+            " WHERE type = 'index' AND name LIKE 'idx_turn_events_%'"
+        )
+        assert tables == 1
+        assert indexes == 2
+    finally:
+        await database.close_db()
