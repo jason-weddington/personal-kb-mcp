@@ -52,7 +52,7 @@ Whispers, maps, the listener, preflight and roster pushes are implementation det
 - Claude Code's `PreToolUse` `additionalContext` lands *next to the tool result*, not before the tool runs. The only pre-action channel is `permissionDecision: deny | ask`.
 - Stop and SubagentStop carry `last_assistant_message`. The transcript can lag.
 - About 89% of `thinking` blocks in recent Opus transcripts are empty. Talos records full reasoning.
-- Decision ("System One") models: Clef 27B is local on jason-desktop's 5090 (Cloudflare, Apache 2.0, about 209 ms median, vendor-reported); Clef-flash is 9B at about 39 ms; Jev is hosted.
+- Decision ("System One") models: Clef 27B runs on a local RTX 5090 (Cloudflare, Apache 2.0, about 209 ms median, vendor-reported); Clef-flash is 9B at about 39 ms; Jev is hosted.
   - API: Ollama `/v1/systemone` (Ollama ≥0.35.1).
   - Question types: `noul` (probability true), `choice` (up to 26 options on Clef) and `score`.
   - Up to 64 questions per call.

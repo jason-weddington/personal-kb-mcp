@@ -87,14 +87,14 @@ Detector results (private evals repo, surprise/):
 
 Delivery gap, measured on a random 90 durable mined episodes: the KB held the fact BEFORE the mistake in only 14%, held it after in 34%, and lacked it in 49% (about 9 of those are steering facts that belong in CLAUDE.md). None of the known-before facts was a correction or resolution, 10 of 13 sat under another project_ref, and most were one line in a run log. Capture, not delivery, is the bigger hole, which demotes step 5.
 
-Clef as a System-1 prefilter (odin; context only, not a production dependency):
+Clef as a System-1 prefilter (a local inference host; context only, not a production dependency):
 
 - clef-flash, shape 2, threshold 0.3: recall 0.74 while passing only 18% of turns to Sonnet.
 - clef-flash, shape 3 (v1-style question): recall 0.69 at threshold 0.5, passing 31%.
 - clef 27B is no better and about 3x slower.
 - clef-flash cannot write the lesson text; it would only gate the Sonnet call.
 
-Local extraction models on odin (shape 2, same 80-case stratified sample as the API models; latency under load from other jobs): qwen3.8:27b reached precision 0.86 and recall 0.60 on the raw sample at about 45 s per call. The other two models are recorded in the private repo once their runs finish.
+Local extraction models on a local inference host (shape 2, same 80-case stratified sample as the API models; latency under load from other jobs): qwen3.8:27b reached precision 0.86 and recall 0.60 on the raw sample at about 45 s per call. The other two models are recorded in the private repo once their runs finish.
 
 Cost estimate for step 2. Assuming Sonnet-class pricing of $3/M input and $15/M output (check current pricing), a detector call is about 2-2.5k input tokens and under 100 output tokens, roughly $0.008-0.01. Interactive volume averages 15 prompts per active day (164 on the busiest), plus every tool-using turn for shape 3. A headless dispatch run is one turn. That comes to about $0.5-1 on a typical day and $5 on a heavy day. A clef-flash prefilter would cut shape-2 calls by about 80%.
 
@@ -107,14 +107,14 @@ Lesson precision, the number that decides whether capture goes back on. personal
 
 Model-agnostic learning (kb-03710):
 
-- Claude Code on local qwen3.8:27b (the 5090) learned from session-1 corrections in 7 of 8 two-session trials, against 0 of 8 with capture off.
-- On shape-2 detection over the same 80 cases, local qwen models on odin match Sonnet (qwen3.8:27b-mtp: population recall 0.67 and precision 0.45, vs Sonnet's 0.67 and 0.43) at about 30x the latency.
+- Claude Code on local qwen3.8:27b (a local GPU) learned from session-1 corrections in 7 of 8 two-session trials, against 0 of 8 with capture off.
+- On shape-2 detection over the same 80 cases, local qwen models on a local inference host match Sonnet (qwen3.8:27b-mtp: population recall 0.67 and precision 0.45, vs Sonnet's 0.67 and 0.43) at about 30x the latency.
 - A fully local detector (clef-flash prefilter, then qwen) is quality-viable for the async worker. The distiller and critic were not evaluated locally.
 
 Decisions for Jason:
 
 1. The quality bar for turning autonomous capture back on. Decided 2026-10-10: back on at 13:58Z on Jason's KB, with the existing trust rules (interactive shape 1 and shape 2 gate at first sighting with precise cues; headless shape 1 and shape 3 wait for a second sighting), the Opus critic and the 30-day expiry. The evidence from the shadow window (04:00Z to 13:58Z): 12 candidates, 9 correctly rejected (in-progress lint and type errors, transient checkout state, one critic rejection of an embellished user claim) and 3 would-write lessons, all correct.
-2. The detector and distiller model: Sonnet API spend of roughly $0.5-5 a day, or a local path on odin.
+2. The detector and distiller model: Sonnet API spend of roughly $0.5-5 a day, or a local path on a local inference host.
 
 Status of the six steps:
 
@@ -132,7 +132,7 @@ Also shipped overnight:
 - stop_reason logging on empty provider responses;
 - the per-shape floor.
 
-kb-bench qwen lane (Claude Code on qwen3.8:27b-256k, the 5090 now free): two-session trials on removed-remote, stop-hook, ollama-num-ctx and review-push, k=2, running overnight.
+kb-bench qwen lane (Claude Code on qwen3.8:27b-256k on a local GPU): two-session trials on removed-remote, stop-hook, ollama-num-ctx and review-push, k=2, running overnight.
 
 ## Next: eval coverage before more memory features (Jason, 2026-10-10)
 
