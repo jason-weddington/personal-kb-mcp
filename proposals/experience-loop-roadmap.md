@@ -113,12 +113,12 @@ Model-agnostic learning (kb-03710):
 
 Decisions for Jason:
 
-1. The quality bar for turning autonomous capture back on. The options are: wait for better precision; turn it on with autonomous lessons delivered only as hedged slice context that never gates; or turn it on for shape 3 only, the best class.
+1. The quality bar for turning autonomous capture back on. Decided 2026-10-10: back on at 13:58Z on Jason's KB, with the existing trust rules (interactive shape 1 and shape 2 gate at first sighting with precise cues; headless shape 1 and shape 3 wait for a second sighting), the Opus critic and the 30-day expiry. The evidence from the shadow window (04:00Z to 13:58Z): 12 candidates, 9 correctly rejected (in-progress lint and type errors, transient checkout state, one critic rejection of an embellished user claim) and 3 would-write lessons, all correct.
 2. The detector and distiller model: Sonnet API spend of roughly $0.5-5 a day, or a local path on odin.
 
 Status of the six steps:
 
-1. Release and enable: done (v1.4.0 to v1.6.0). On Jason's KB the soft gate is live and capture is in shadow; turning it back on is decision 1 above.
+1. Release and enable: done (v1.4.0 to v1.7.0). On Jason's KB the soft gate is live and capture is on (since 2026-10-10 13:58Z).
 2. Cost: estimate above; the choice of detector model and prefilter is Jason's.
 3. First-sighting gate trust: done, then narrowed after the incident. Interactive shape 1 and all shape 2 are trusted at first sighting with precise cues; headless shape 1 and shape 3 wait for a second sighting. Trusted lessons are delivered without the "unconfirmed" hedge (Sonnet ignored hedged denies).
 4. Headless fleet digests: done. The dispatch user has hook 1.4.1+ with Stop wired on all four hosts, and headless digests are arriving.
@@ -133,6 +133,15 @@ Also shipped overnight:
 - the per-shape floor.
 
 kb-bench qwen lane (Claude Code on qwen3.8:27b-256k, the 5090 now free): two-session trials on removed-remote, stop-hook, ollama-num-ctx and review-push, k=2, running overnight.
+
+## Next: eval coverage before more memory features (Jason, 2026-10-10)
+
+Jason's steer: improve eval coverage, and then continue toward the north star. Before any more net-new memory feature work on the KB side, audit which shipped features lack controlled kb-bench evidence and expand kb-bench to cover everything in the space. The suspicion is that the older whisper, roster and mental-map features (and somnus building maps nightly) have the thinnest evidence, because they predate kb-bench. The aim is to stop cruft and overlapping solutions from accumulating: features that try to do the same job through different channels should be measured against each other, and the losers switched off.
+
+- **Eval-coverage audit and kb-bench expansion** (GTD 758a3cd4): a feature-by-evidence matrix (A = an arm that isolates it, B = offline component metric, C = uncontrolled telemetry, D = rationale only), the overlap groups, and new kb-bench scenarios or arms for every feature below A. Supersedes the narrower listener and roster decision item (c2d96250).
+- **Proceeding meanwhile** (wiring, not new memory features): talos into the KB (tool-name map 839064fe, reasoning item 8a9aefbb, shape 4 harness_correction 043c8dd3, MCP over streamable HTTP c91b7468, server-side write policy da491dc4, contract fixtures 3a6d256b), plus two fixes that finish in-flight work: autonomous+asserted never gates (ee76119f) and failure context re-arms like the gate (6edfa051).
+- **Held until the audit lands:** the harness-memory up-sync (ae89d2ea, groomed and ready). Its groom found that memory copies in the KB can make the surprise worker mark candidates as already covered, which would quietly starve the gate of lessons; that is exactly the kind of interaction kb-bench should measure first.
+- **Standing guidance** (GTD ce2cd311, parked until the audit lands): a third section in the SessionStart injection, next to the maps roster and the gotcha slice, carrying short behavioural rules as content rather than pointers. It would carry rules like the north star and no-per-session-budgets to every harness and machine instead of relying on per-repo CLAUDE.md files. Build it only once the audit shows where it fits against the roster and slice, with a kb-bench arm that isolates it.
 
 ## Remaining roadmap after that
 

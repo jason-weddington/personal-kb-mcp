@@ -1,5 +1,11 @@
 # Personal Knowledge MCP Server
 
+## North star and standing rules
+
+- **North star: an agent that learns from experience.** Judge every KB proposal by whether it lowers the cross-session repeat-mistake rate and carries experience across harnesses, models and machines. Whispers, maps, preflight and the listener are delivery details, and harness-native memory is a channel to feed, not a competitor. Resume from `proposals/experience-loop-roadmap.md`. Decision: kb-03728.
+- **Prove it in kb-bench before building more.** A memory or delivery feature earns its place with a controlled kb-bench result (an arm that isolates it), not design rationale or uncontrolled telemetry. As of 2026-10-10, eval coverage comes before any net-new memory feature: audit which shipped features lack kb-bench evidence, close those gaps, then continue (see the eval-coverage section of the roadmap).
+- **No per-session budgets in KB delivery.** Jason's lead sessions run for weeks without clearing and are the main target of the experience loop. Never limit a gate, whisper, slice or failure-context injection to a count per session or once per session. Use rate limits (per turn, per hour) and re-arm on memory loss (SessionStart with source compact, resume or clear) or after a time window. Decision: kb-03729.
+
 ## Quick Reference
 
 - **Run tests (main package)**: `uv run pytest -m "not eval"` — the default for all iteration and CI. The `eval` marker covers the agent-baseline tests, which hit a **live Anthropic API** and rewrite baseline JSON files; **never run the bare `uv run pytest`** in a build/iteration loop (it's slow, nondeterministic, and dirties the tree). Run eval tests manually and deliberately — see "Search Quality Eval" below.
