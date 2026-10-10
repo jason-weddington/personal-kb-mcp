@@ -94,6 +94,7 @@ async def test_service_db_lives_next_to_kb_db_path(local_env: Path) -> None:
             "turn_events",
             "surprise_candidates",
             "surprise_detections",
+            "surprise_distillations",
         } <= names
         mode = await db.fetchval("PRAGMA journal_mode")
         assert mode == "wal"
@@ -443,5 +444,28 @@ async def test_surprise_schema_is_idempotent(local_env: Path) -> None:
             assert indexes == 2
         cols = await db.fetch("PRAGMA table_info(turn_events)")
         assert "detected_at" not in {c["name"] for c in cols}
+    finally:
+        await database.close_db()
+
+
+async def test_surprise_distillations_schema_is_idempotent(local_env: Path) -> None:
+    await database.init_db()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        tables = await db.fetchval(
+            "SELECT COUNT(*) FROM sqlite_master"
+            " WHERE type = 'table' AND name = 'surprise_distillations'"
+        )
+        indexes = await db.fetchval(
+            "SELECT COUNT(*) FROM sqlite_master"
+            " WHERE type = 'index' AND name LIKE 'idx_surprise_distillations_%'"
+        )
+        assert tables == 1
+        assert indexes == 2
+        cols = await db.fetch("PRAGMA table_info(surprise_distillations)")
+        names = {c["name"] for c in cols}
+        assert "mode" not in names
+        assert len(names) == 24  # id + 23 data columns
     finally:
         await database.close_db()

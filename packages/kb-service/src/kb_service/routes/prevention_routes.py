@@ -51,6 +51,7 @@ from kb_service.models import (
 from kb_service.prevention import (
     build_gate_index,
     build_slice,
+    count_index_excluded_observed_once,
     load_corrections,
     load_resolutions,
     render_slice,
@@ -229,8 +230,17 @@ async def get_prevention(
         corrections = await load_corrections(db, effective, _CORRECTIONS_LIMIT)
         if gate.enabled:
             index, index_truncated = build_gate_index(resolutions)
+            excluded = count_index_excluded_observed_once(resolutions)
         else:
             index, index_truncated = [], 0
+            excluded = 0
+        if any(c.observed_once for c in index):
+            logger.warning(
+                "prevention tripwire=observed_once_in_index project=%s"
+                " resolution_ids=%s",
+                effective,
+                [c.resolution_id for c in index if c.observed_once],
+            )
         items, slice_truncated = build_slice(resolutions, corrections)
         slice_text = render_slice(effective, items)
         diagnostics = PreventionDiagnostics(
@@ -239,6 +249,7 @@ async def get_prevention(
             skipped_observed_once=stats.skipped_observed_once,
             index_truncated=index_truncated,
             slice_truncated=slice_truncated,
+            index_excluded_observed_once=excluded,
         )
     except Exception as exc:
         logger.warning(
@@ -252,7 +263,8 @@ async def get_prevention(
         "prevention_fetch project=%s session_id=%s enabled=%s shadow=%s"
         " index_len=%d slice_len=%d resolutions_total=%d skipped_malformed=%d"
         " skipped_observed_once=%d index_truncated=%d slice_truncated=%d"
-        " slice_ids=%s surprise_capture=%s",
+        " slice_ids=%s surprise_capture=%s index_excluded_observed_once=%d"
+        " index_ids=%s",
         effective,
         session_id,
         gate.enabled,
@@ -266,6 +278,8 @@ async def get_prevention(
         diagnostics.slice_truncated,
         [i.entry_id for i in items],
         mode,
+        diagnostics.index_excluded_observed_once,
+        [c.resolution_id for c in index],
     )
     return PreventionResponse(
         project=effective,

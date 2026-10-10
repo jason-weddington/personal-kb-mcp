@@ -21,6 +21,7 @@ from kb_service.prevention import (
     Resolution,
     build_gate_index,
     build_slice,
+    count_index_excluded_observed_once,
     load_corrections,
     load_resolutions,
     provenance_label,
@@ -729,3 +730,118 @@ async def test_args_prefix_carried_to_index(kb: Any) -> None:
     assert stats.skipped_malformed == 0
     index, _ = build_gate_index(resolutions)
     assert [(c.resolution_id, c.args_prefix) for c in index] == [(rid, "add")]
+
+
+# ─── D7: observed-once resolutions stay out of the gate ─────────────────────
+
+
+def _once(entry_id: str, sessions: int = 1) -> Resolution:
+    base = _resolution(1).__dict__
+    return Resolution(
+        **{
+            **base,
+            "entry_id": entry_id,
+            "capture": "autonomous",
+            "grounding": "observed",
+            "observed_sessions": sessions,
+            "observed_once": sessions < 2,
+        }
+    )
+
+
+def test_observed_once_excluded_from_index_and_last_in_slice() -> None:
+    a = _once("kb-A")
+    b = _once("kb-B", sessions=2)
+    c = Resolution(
+        **{
+            **_resolution(1).__dict__,
+            "entry_id": "kb-C",
+            "capture": "deliberate",
+            "grounding": "asserted",
+        }
+    )
+    index, _ = build_gate_index([a, b, c])
+    assert [i.resolution_id for i in index] == ["kb-B", "kb-C"]
+    assert count_index_excluded_observed_once([a, b, c]) == 1
+    items, _ = build_slice([a, b, c], [])
+    assert [i.entry_id for i in items] == ["kb-B", "kb-C", "kb-A"]
+
+
+def test_slice_observed_once_cap() -> None:
+    once = [_once(f"kb-O{i}") for i in range(25)]
+    d = Resolution(**{**_resolution(1).__dict__, "entry_id": "kb-D"})
+    corr = Correction(entry_id="kb-corr", corrected_fact="x", wrong_belief="y")
+    items, dropped = build_slice([*once, d], [corr])
+    assert [i.entry_id for i in items] == [
+        "kb-D",
+        "kb-corr",
+        "kb-O0",
+        "kb-O1",
+        "kb-O2",
+        "kb-O3",
+        "kb-O4",
+    ]
+    assert dropped == 20
+
+
+async def test_prevention_observed_once_index_exclusion(
+    kb: Any,
+    real_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SOFT_GATE_ENABLED", "TRUE")
+    caplog.set_level(logging.INFO, logger=prevention_routes.logger.name)
+    prov = {"capture": "autonomous", "grounding": "observed", "event_id": "s1:0"}
+    o1 = await _store(kb, **_res(provenance=prov))
+    body = real_client.get("/api/kb/prevention", params={"project": "p"}).json()
+    assert o1 not in {c["resolution_id"] for c in body["index"]}
+    assert o1 in {s["entry_id"] for s in body["slice"]}
+    assert body["diagnostics"]["index_excluded_observed_once"] == 1
+
+    o2 = await _store(kb, **_res(provenance=prov, observed_sessions=2))
+    caplog.clear()
+    body = real_client.get("/api/kb/prevention", params={"project": "p"}).json()
+    assert o2 in {c["resolution_id"] for c in body["index"]}
+    fetch = [r for r in caplog.records if "prevention_fetch project=p" in r.message]
+    assert len(fetch) == 1
+    index_ids = fetch[0].message.split("index_ids=", 1)[1]
+    assert o2 in index_ids
+    assert o1 not in index_ids
+
+    monkeypatch.setenv("KB_DELIVER_OBSERVED_ONCE", "FALSE")
+    body = real_client.get("/api/kb/prevention", params={"project": "p"}).json()
+    assert o1 not in {c["resolution_id"] for c in body["index"]}
+    assert o1 not in {s["entry_id"] for s in body["slice"]}
+    assert body["diagnostics"]["index_excluded_observed_once"] == 0
+
+
+async def test_prevention_observed_once_in_index_tripwire(
+    kb: Any,
+    real_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import kb_service.prevention as prevention
+
+    monkeypatch.setenv("KB_SOFT_GATE_ENABLED", "TRUE")
+    monkeypatch.setattr(prevention, "_gate_trusted", lambda r: True)
+    o1 = await _store(
+        kb,
+        **_res(
+            provenance={
+                "capture": "autonomous",
+                "grounding": "observed",
+                "event_id": "s1:0",
+            }
+        ),
+    )
+    with caplog.at_level(logging.WARNING, logger=prevention_routes.logger.name):
+        real_client.get("/api/kb/prevention", params={"project": "p"})
+    warnings = [
+        r.message
+        for r in caplog.records
+        if "tripwire=observed_once_in_index" in r.message
+    ]
+    assert len(warnings) == 1
+    assert o1 in warnings[0]

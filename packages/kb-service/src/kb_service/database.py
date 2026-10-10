@@ -391,6 +391,44 @@ _SCHEMA_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_surprise_detections_ts ON surprise_detections(ts)",
     "CREATE INDEX IF NOT EXISTS idx_surprise_detections_session"
     " ON surprise_detections(session_id)",
+    # surprise_distillations: one row per distill decision on a pending
+    # surprise candidate (see surprise_worker.distill_candidates), mirroring
+    # surprise_detections. There is no mode column: distillation runs only in
+    # KB_SURPRISE_CAPTURE=on, so every row is an 'on' decision. Candidates
+    # skipped as no_llm or by the double_distill tripwire get no row.
+    "CREATE TABLE IF NOT EXISTS surprise_distillations ("
+    "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+    "candidate_id BIGINT NOT NULL, "
+    "session_id TEXT NOT NULL, "
+    "project TEXT NOT NULL DEFAULT '', "
+    "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3)), "
+    "outcome TEXT NOT NULL CHECK (outcome IN ('written', 'merged', "
+    "'same_session', 'covered', 'not_durable', 'redacted', 'gate_induced', "
+    "'llm_error', 'unparseable', 'invalid_fields', 'invalid_resolution', "
+    "'secret_detected', 'no_project', 'kb_error')), "
+    "reason TEXT NOT NULL DEFAULT '', "
+    "entry_id TEXT, "
+    "matched_entry_id TEXT, "
+    "match_kind TEXT NOT NULL DEFAULT '' CHECK (match_kind IN ('', 'exact', "
+    "'cosine')), "
+    "similarity DOUBLE PRECISION, "
+    "near_duplicate_status TEXT NOT NULL DEFAULT '', "
+    "near_duplicate_floor DOUBLE PRECISION, "
+    "cue_target_class TEXT NOT NULL DEFAULT '', "
+    "observed_sessions_before INTEGER, "
+    "observed_sessions_after INTEGER, "
+    "verdict TEXT, "
+    "distiller_model TEXT NOT NULL DEFAULT '', "
+    "distiller_version INTEGER NOT NULL, "
+    "raw_response_excerpt TEXT, "
+    "prompt_chars INTEGER, "
+    "response_chars INTEGER, "
+    "latency_ms INTEGER, "
+    "ts TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_surprise_distillations_candidate"
+    " ON surprise_distillations(candidate_id)",
+    "CREATE INDEX IF NOT EXISTS idx_surprise_distillations_ts"
+    " ON surprise_distillations(ts)",
 ]
 
 

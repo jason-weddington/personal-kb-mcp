@@ -46,6 +46,9 @@ A resolution is OBSERVED-ONCE iff ``provenance.capture == 'autonomous'`` AND
 
 Only Bash cues with a two-word ``target_class`` (``'git push'``) are admitted
 to the gate index; every other resolution still reaches the slice.
+OBSERVED-ONCE resolutions are never admitted to the gate index, and reach the
+slice after trusted resolutions and corrections, at most
+``SLICE_OBSERVED_ONCE_CAP`` of them.
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 INDEX_CAP = 200
 SLICE_CAP = 20
+SLICE_OBSERVED_ONCE_CAP = 5
 _TEXT_CAP = 300
 _SLICE_TEXT_CAP = 4000
 
@@ -288,8 +292,28 @@ def _gate_trusted(r: Resolution) -> bool:
     (tool-output evidence). Autonomous + asserted resolutions -- e.g. LLM-drafted
     seeds -- and resolutions without provenance reach the session-start slice
     only, as labelled low-trust context. Fail closed: unknown means untrusted.
+
+    An autonomous resolution observed in a single session (observed-once)
+    reaches the slice only, labelled 'observed once, unconfirmed', and only
+    while ``KB_DELIVER_OBSERVED_ONCE`` is on. An autonomous + observed
+    resolution becomes gate-eligible at ``observed_sessions >= 2`` (recurrence
+    promotion); autonomous + asserted stays untrusted at any count.
     """
+    if r.observed_once:
+        return False
     return r.capture == "deliberate" or r.grounding == "observed"
+
+
+def count_index_excluded_observed_once(resolutions: list[Resolution]) -> int:
+    """Count observed-grounded Bash two-word cues held out of the index (D7)."""
+    return sum(
+        1
+        for r in resolutions
+        if r.cue_tool == "Bash"
+        and " " in r.cue_target_class
+        and r.observed_once
+        and r.grounding == "observed"
+    )
 
 
 def build_gate_index(resolutions: list[Resolution]) -> tuple[list[IndexCue], int]:
@@ -324,9 +348,22 @@ def build_gate_index(resolutions: list[Resolution]) -> tuple[list[IndexCue], int
 def build_slice(
     resolutions: list[Resolution], corrections: list[Correction]
 ) -> tuple[list[SliceItem], int]:
-    """Resolutions first, then corrections, de-duplicated; ``(items, dropped)``."""
+    """Build the gotcha slice; ``(items, dropped)``.
+
+    Order: trusted (not observed-once) resolutions, then corrections, then at
+    most ``SLICE_OBSERVED_ONCE_CAP`` observed-once resolutions, de-duplicated
+    by entry id and capped at ``SLICE_CAP``. ``dropped`` counts observed-once
+    resolutions beyond their cap plus items beyond ``SLICE_CAP``.
+    """
     seen: set[str] = set()
-    sources: list[Resolution | Correction] = [*resolutions, *corrections]
+    trusted = [r for r in resolutions if not r.observed_once]
+    once = [r for r in resolutions if r.observed_once]
+    sources: list[Resolution | Correction] = [
+        *trusted,
+        *corrections,
+        *once[:SLICE_OBSERVED_ONCE_CAP],
+    ]
+    once_dropped = max(0, len(once) - SLICE_OBSERVED_ONCE_CAP)
     items: list[SliceItem] = []
     for item in sources:
         if item.entry_id in seen:
@@ -340,7 +377,7 @@ def build_slice(
                 provenance_label=provenance_label(item),
             )
         )
-    return items[:SLICE_CAP], max(0, len(items) - SLICE_CAP)
+    return items[:SLICE_CAP], once_dropped + max(0, len(items) - SLICE_CAP)
 
 
 def render_slice(project: str, items: list[SliceItem]) -> str:

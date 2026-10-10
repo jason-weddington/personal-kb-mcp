@@ -1590,6 +1590,7 @@ class PreventionDiagnostics(BaseModel):
     skipped_observed_once: int = 0
     index_truncated: int = 0
     slice_truncated: int = 0
+    index_excluded_observed_once: int = 0
 
 
 class PreventionResponse(BaseModel):
