@@ -723,3 +723,66 @@ class TestPreflightSupersession:
             await db.close()
         assert "kb-00002" in result
         assert "kb-00001" not in result
+
+
+# ---------------------------------------------------------------------------
+# Expiry filtering (Recent / Conventions / Related skip expired; Expiring keeps grace)
+# ---------------------------------------------------------------------------
+
+
+def _section(result: str, header: str) -> str:
+    """Return the text of one rendered section (header line through next blank line)."""
+    parts = result.split(f"\n{header}")
+    if len(parts) < 2:
+        return ""
+    return parts[1].split("\n\n")[0]
+
+
+async def _set_expiry(db, entry_id, delta):
+    value = None if delta is None else (datetime.now(UTC) + delta).isoformat()
+    await db.execute("UPDATE knowledge_entries SET expires_at = ? WHERE id = ?", [value, entry_id])
+    await db.commit()
+
+
+class TestExpiryFiltering:
+    async def test_recent_skips_expired(self, graph_db) -> None:
+        await _insert_entry(
+            graph_db, "kb-00040", "alpha", "Expired lesson", "lesson_learned", now=datetime.now(UTC)
+        )
+        await _insert_entry(
+            graph_db, "kb-00041", "alpha", "Future lesson", "lesson_learned", now=datetime.now(UTC)
+        )
+        await _set_expiry(graph_db, "kb-00040", timedelta(days=-1))
+        await _set_expiry(graph_db, "kb-00041", timedelta(days=1))
+        recent = _section(await build_project_context(graph_db, "alpha"), "Recent decisions")
+        assert "kb-00040" not in recent
+        assert "kb-00041" in recent
+        assert "kb-00031" in recent  # no expires_at
+
+    async def test_conventions_skip_expired(self, graph_db) -> None:
+        now = datetime.now(UTC)
+        await _insert_entry(
+            graph_db, "kb-00042", "alpha", "Old conv", "pattern_convention", now=now
+        )
+        await _insert_entry(
+            graph_db, "kb-00043", "alpha", "New conv", "pattern_convention", now=now
+        )
+        await _set_expiry(graph_db, "kb-00042", timedelta(days=-1))
+        await _set_expiry(graph_db, "kb-00043", timedelta(days=1))
+        conv = _section(await build_project_context(graph_db, "alpha"), "Conventions:")
+        assert "kb-00042" not in conv
+        assert "kb-00043" in conv
+        assert "kb-00032" in conv  # no expires_at
+
+    async def test_related_skips_expired(self, graph_db) -> None:
+        await _set_expiry(graph_db, "kb-00033", timedelta(days=-1))
+        await _set_expiry(graph_db, "kb-00034", timedelta(days=1))
+        related = _section(await build_project_context(graph_db, "alpha"), "Related (via graph):")
+        assert "kb-00033" not in related
+        assert "kb-00034" in related
+
+    async def test_expiring_keeps_grace_window(self, graph_db) -> None:
+        await _set_expiry(graph_db, "kb-00030", timedelta(days=-2))
+        result = await build_project_context(graph_db, "alpha")
+        assert "kb-00030" in _section(result, "Expiring:")
+        assert "kb-00030" not in _section(result, "Recent decisions")

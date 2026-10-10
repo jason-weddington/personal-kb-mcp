@@ -46,6 +46,7 @@ def _recent_sql(team: str | None, *, has_since: bool) -> tuple[str, bool]:
         "FROM knowledge_entries "
         "WHERE is_active = 1 AND project_ref = ? AND superseded_by IS NULL "
         "AND entry_type IN ('decision', 'lesson_learned') "
+        "AND (expires_at IS NULL OR expires_at > ?) "
     )
     if has_since:
         sql += "AND created_at >= ? "
@@ -62,6 +63,7 @@ def _conventions_sql(team: str | None) -> tuple[str, bool]:
         "FROM knowledge_entries "
         "WHERE is_active = 1 AND project_ref = ? AND superseded_by IS NULL "
         "AND entry_type = 'pattern_convention' "
+        "AND (expires_at IS NULL OR expires_at > ?) "
     )
     if team:
         sql += _TEAM_CLAUSE
@@ -102,7 +104,7 @@ async def _graph_related(
     db: Database,
     project_ref: str,
     exclude_ids: set[str],
-    *,
+    now_iso: str,
     team: str | None = None,
 ) -> list[tuple[str, str, str, str]]:
     """Find decisions/lessons from other projects via shared tags.
@@ -150,8 +152,9 @@ async def _graph_related(
         "AND ke.superseded_by IS NULL "
         "AND (ke.project_ref != ? OR ke.project_ref IS NULL) "
         "AND ke.entry_type IN ('decision', 'lesson_learned') "
+        "AND (ke.expires_at IS NULL OR ke.expires_at > ?) "
     )
-    params: list[str | int] = [*tag_node_ids, project_ref]
+    params: list[str | int] = [*tag_node_ids, project_ref, now_iso]
 
     if team:
         related_sql += _TEAM_CLAUSE
@@ -259,13 +262,13 @@ async def build_project_context(
     if exp_has_team:
         exp_params.append(team)  # type: ignore[arg-type]
 
-    rec_params: list[str] = [project_ref]
+    rec_params: list[str] = [project_ref, now.isoformat()]
     if since_iso is not None:
         rec_params.append(since_iso)
     if rec_has_team:
         rec_params.append(team)  # type: ignore[arg-type]
 
-    conv_params: list[str] = [project_ref]
+    conv_params: list[str] = [project_ref, now.isoformat()]
     if conv_has_team:
         conv_params.append(team)  # type: ignore[arg-type]
 
@@ -293,7 +296,9 @@ async def build_project_context(
     project_entry_ids |= {r[0] for r in conventions}
     project_entry_ids |= {r[0] for r in maps}
 
-    related = await _graph_related(db, project_ref, project_entry_ids, team=team)
+    related = await _graph_related(
+        db, project_ref, project_entry_ids, now_iso=now.isoformat(), team=team
+    )
 
     if not expiring and not recent and not conventions and not maps and not related:
         return f"No entries found for project '{project_ref}'."

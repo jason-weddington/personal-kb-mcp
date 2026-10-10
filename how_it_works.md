@@ -200,9 +200,11 @@ The output has five sections. The Maps section lists all of a project's mental m
 
 1. **Maps** — `mental_map` entries for this project, rendered as `- [kb-XXXXX] short_title — long_title`. The `Maps:` section leads the output: it is the orientation directory an agent reads first to decide which maps to pull. Implemented by `_maps_sql()` in `kb_core/preflight.py`, which filters on `entry_type = 'mental_map'` and orders by `created_at DESC` with no limit (maps are a small curated set, unlike the recent/conventions sections which cap at 5). See the Mental Maps section below for how this in-process pull pairs with the on-disk push index.
 2. **Expiring entries** — entries with `expires_at` in a window from 7 days ago (grace period for recently expired) to 30 days ahead. Sorted by expiry date ascending, so the most urgent appear first. Each line includes an expiry badge: `[EXPIRED 2d ago]`, `[EXPIRES 5d]`, or `[EXPIRES 12h]`.
-3. **Recent decisions & lessons** — entries with `entry_type` of `decision` or `lesson_learned`, sorted by `created_at` descending. An optional `since` parameter (same TTL format as `kb_store` — `7d`, `2w`, `24h`) narrows to a time window; omitting it shows all.
+3. **Recent decisions & lessons** — entries with `entry_type` of `decision` or `lesson_learned` (not yet expired), sorted by `created_at` descending. An optional `since` parameter (same TTL format as `kb_store` — `7d`, `2w`, `24h`) narrows to a time window; omitting it shows all.
 4. **Active conventions** — `pattern_convention` entries, always shown regardless of `since`.
 5. **Related (via graph)** — decisions and lessons from *other* projects that share tags with the current project. Found via 2-hop graph traversal: project entries → shared tag nodes (threshold: 2+ entries using that tag) → entries from other projects. Each line shows the connecting tag: `(via #api)`.
+
+Recent, Conventions and Related skip entries whose `expires_at` has passed, while Expiring shows entries from 7 days past expiry to 30 days ahead.
 
 Output format is compact — entry ID, type, and short title only. Agents use `kb_get` to read full details for entries that look relevant.
 
