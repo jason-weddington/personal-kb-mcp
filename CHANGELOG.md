@@ -2,6 +2,35 @@
 
 <!-- version list -->
 
+## v1.5.0 (2026-10-10)
+
+### Bug Fixes
+
+- **kb-core**: Log stop_reason when an Anthropic response has no text block
+  ([`908b241`](https://github.com/jason-weddington/personal-kb-mcp/commit/908b241735635b8f61f382d949b1a23925dd436b))
+
+- **surprise**: Precise shape-1 cues, stricter distiller, headless shape-1 waits for a second
+  sighting
+  ([`7865904`](https://github.com/jason-weddington/personal-kb-mcp/commit/786590432c3441aebd2e8562d791409ad7e5e4b3))
+
+### Features
+
+- **13079367**: Surprise capture: redesign shape 3 around the agent reaching a corrected or
+  root-cause conclusion backed by tool output
+  ([`fa59326`](https://github.com/jason-weddington/personal-kb-mcp/commit/fa59326d16184caade745e0b6f839e6c5b7113da))
+
+- **a3a7b307**: Experience loop: weekly cross-session repeat-mistake rate from failure_events (GET
+  /api/kb/metrics/repeat-rate + kb-service metrics repeat-rate)
+  ([`84395e9`](https://github.com/jason-weddington/personal-kb-mcp/commit/84395e934d3e9c53227e2bb8c50ad364444f9901))
+
+- **c5c57405**: Experience loop: deliver the matching resolution on tool failure (PostToolUseFailure
+  same-turn context)
+  ([`2317472`](https://github.com/jason-weddington/personal-kb-mcp/commit/23174729a934e85c1dec73063b02e770dfda7e3f))
+
+- **surprise**: Per-shape confidence floor; shape 2 defaults to 0.5
+  ([`b312760`](https://github.com/jason-weddington/personal-kb-mcp/commit/b312760a19e145660e146d36cd0514bdfe5396b4))
+
+
 ## v1.4.1 (2026-10-09)
 
 ### Bug Fixes
