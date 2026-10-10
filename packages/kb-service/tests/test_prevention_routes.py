@@ -38,6 +38,9 @@ _SWITCHES = (
     "KB_SOFT_GATE_DISABLED_PROJECTS",
     "KB_DELIVER_OBSERVED_ONCE",
     "KB_SURPRISE_CAPTURE",
+    "KB_SOFT_GATE_MAX_DENIES_PER_TURN",
+    "KB_SOFT_GATE_MAX_DENIES_PER_HOUR",
+    "KB_SOFT_GATE_REARM_HOURS",
 )
 
 
@@ -309,7 +312,14 @@ async def test_prevention_gate_switches(
     resp = real_client.get("/api/kb/prevention", params={"project": "p"})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["gate"] == {"enabled": False, "shadow": True, "max_denies": 2}
+    assert body["gate"] == {
+        "enabled": False,
+        "shadow": True,
+        "max_denies": 1000,
+        "max_denies_per_turn": 1,
+        "max_denies_per_hour": 6,
+        "rearm_hours": 24,
+    }
     assert body["index"] == []
     assert [s["entry_id"] for s in body["slice"]] == [push]
     assert body["slice_text"].startswith("Known gotchas for p")
@@ -572,13 +582,210 @@ def test_decisions_value_mapping(local_client: TestClient) -> None:
     assert stored[2]["retry_changed_command"] == 1
 
 
-def test_decisions_invariant_warning(
+def _rows_at(*stamps: str, session_id: str = "s1") -> list[dict[str, Any]]:
+    return [
+        _row(
+            i,
+            session_id=session_id,
+            decision_id=f"cc:{session_id}:toolu_{i}:denied",
+            resolution_id=f"kb-{i:05d}",
+            ts=ts,
+        )
+        for i, ts in enumerate(stamps)
+    ]
+
+
+def _invariant_logged(caplog: pytest.LogCaptureFixture) -> bool:
+    return any("gate_invariant_violation" in r.getMessage() for r in caplog.records)
+
+
+def test_decisions_invariant_warning_per_hour(
     local_client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    rows = [_row(i, resolution_id=f"kb-0000{i}") for i in range(3)]
+    # Six denies inside one hour: at the default cap, no warning.
+    six = [f"2026-10-07T12:{m:02d}:00+00:00" for m in range(0, 60, 10)]
     with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
-        local_client.post("/api/kb/prevention/decisions", json={"rows": rows})
-    assert any("gate_invariant_violation" in r.getMessage() for r in caplog.records)
+        local_client.post("/api/kb/prevention/decisions", json={"rows": _rows_at(*six)})
+    assert not _invariant_logged(caplog)
+    # A seventh at 12:59 puts seven in [12:00, 13:00): over the cap.
+    seventh = _row(
+        99, decision_id="cc:s1:toolu_99:denied", ts="2026-10-07T12:59:00+00:00"
+    )
+    with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
+        local_client.post("/api/kb/prevention/decisions", json={"rows": [seventh]})
+    assert _invariant_logged(caplog)
+
+
+def test_decisions_many_denies_spread_over_hours_ok(
+    local_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A weeks-long session: 20 denies an hour apart never trips the check.
+    stamps = [f"2026-10-{7 + h // 24:02d}T{h % 24:02d}:00:00+00:00" for h in range(20)]
+    with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
+        local_client.post(
+            "/api/kb/prevention/decisions", json={"rows": _rows_at(*stamps)}
+        )
+    assert not _invariant_logged(caplog)
+
+
+def test_decisions_invariant_uses_env_limit(
+    local_client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KB_SOFT_GATE_MAX_DENIES_PER_HOUR", "2")
+    stamps = ("2026-10-07T12:00:00+00:00", "2026-10-07T12:10:00+00:00")
+    with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
+        local_client.post(
+            "/api/kb/prevention/decisions", json={"rows": _rows_at(*stamps)}
+        )
+    assert not _invariant_logged(caplog)
+    with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
+        local_client.post(
+            "/api/kb/prevention/decisions",
+            json={"rows": [_row(50, decision_id="w50", decision="would_deny")]},
+        )
+    assert _invariant_logged(caplog)
+
+
+def test_gate_settings_from_env(
+    real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SOFT_GATE_MAX_DENIES_PER_TURN", " 3 ")
+    monkeypatch.setenv("KB_SOFT_GATE_MAX_DENIES_PER_HOUR", "1000")
+    monkeypatch.setenv("KB_SOFT_GATE_REARM_HOURS", "1")
+    gate = real_client.get("/api/kb/prevention", params={"project": ""}).json()["gate"]
+    assert gate["max_denies_per_turn"] == 3
+    assert gate["max_denies_per_hour"] == 1000
+    assert gate["rearm_hours"] == 1
+    assert gate["max_denies"] == prevention_routes.LEGACY_MAX_DENIES == 1000
+
+
+@pytest.mark.parametrize("bad", ["0", "1001", "-5", "abc", "2.5"])
+def test_gate_settings_env_fallback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, bad: str
+) -> None:
+    for var in (
+        "KB_SOFT_GATE_MAX_DENIES_PER_TURN",
+        "KB_SOFT_GATE_MAX_DENIES_PER_HOUR",
+        "KB_SOFT_GATE_REARM_HOURS",
+    ):
+        monkeypatch.setenv(var, bad)
+    with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
+        gate = prevention_routes.gate_settings("p")
+    assert (gate.max_denies_per_turn, gate.max_denies_per_hour, gate.rearm_hours) == (
+        1,
+        6,
+        24,
+    )
+    assert gate.max_denies == 1000
+    warned = [
+        r.getMessage()
+        for r in caplog.records
+        if "invalid KB_SOFT_GATE" in r.getMessage()
+    ]
+    assert len(warned) == 3
+
+
+def test_gate_settings_unset_no_warning(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
+        gate = prevention_routes.gate_settings("p")
+    assert (gate.max_denies_per_turn, gate.max_denies_per_hour, gate.rearm_hours) == (
+        1,
+        6,
+        24,
+    )
+    assert not caplog.records
+
+
+def test_inert_response_carries_new_settings(
+    real_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = prevention_routes._inert("p").gate
+    assert gate.enabled is False
+    assert gate.max_denies == 1000
+    assert gate.rearm_hours == 24
+
+
+def test_rearmed_and_overridden_rows_ingest(local_client: TestClient) -> None:
+    rows = [
+        _row(
+            1,
+            decision="rearmed",
+            decision_id="cc:s1:rearmed:1",
+            tool="SessionStart",
+            resolution_id="",
+            source="compact",
+        ),
+        _row(2, decision="overridden", decision_id="cc:s1:toolu_2:overridden"),
+        _row(
+            3,
+            decision="skipped_cap",
+            decision_id="cc:s1:toolu_3:skipped_cap",
+            reason="per_hour",
+        ),
+    ]
+    assert local_client.post(
+        "/api/kb/prevention/decisions", json={"rows": rows}
+    ).json() == {"inserted": 3, "duplicates": 0}
+    stored = _query("SELECT decision, reason_excerpt FROM gate_decisions ORDER BY id")
+    assert [(r["decision"], r["reason_excerpt"]) for r in stored] == [
+        ("rearmed", "compact"),
+        ("overridden", None),
+        ("skipped_cap", "per_hour"),
+    ]
+    counts = local_client.get("/api/kb/prevention/stats").json()["counts"]
+    assert counts["rearmed"] == 1
+    assert counts["overridden"] == 1
+
+
+def test_stats_repeat_deny_respects_rearm(
+    local_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    def deny(i: int, ts: str, sid: str) -> dict[str, Any]:
+        return _row(i, session_id=sid, decision_id=f"d{i}", ts=ts)
+
+    rows = [
+        # sA: same lesson again after 25h — re-armed by time, not a repeat
+        deny(1, "2026-10-01T00:00:00+00:00", "sA"),
+        deny(2, "2026-10-02T01:00:00+00:00", "sA"),
+        # sB: again after 2h but a compaction re-arm in between — not a repeat
+        deny(3, "2026-10-01T00:00:00+00:00", "sB"),
+        _row(
+            4,
+            session_id="sB",
+            decision="rearmed",
+            decision_id="r4",
+            tool="SessionStart",
+            resolution_id="",
+            ts="2026-10-01T01:00:00+00:00",
+        ),
+        deny(5, "2026-10-01T02:00:00+00:00", "sB"),
+        # sC: again after 2h, no re-arm — a repeat
+        deny(6, "2026-10-01T00:00:00+00:00", "sC"),
+        deny(7, "2026-10-01T02:00:00+00:00", "sC"),
+    ]
+    _post(local_client, *rows)
+    with caplog.at_level(logging.WARNING, logger="kb_service.routes.prevention_routes"):
+        body = local_client.get("/api/kb/prevention/stats").json()
+    assert body["invariant_violations"]["repeat_deny_pairs"] == 1
+    assert body["invariant_violations"]["over_cap_sessions"] == 0
+    assert _invariant_logged(caplog)
+
+
+def test_max_in_hour_window() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    base = datetime(2026, 10, 7, tzinfo=UTC)
+    mins = [0, 10, 59, 60, 61, 200]
+    stamps = [base + timedelta(minutes=m) for m in mins]
+    assert prevention_routes._max_in_hour([*stamps, None]) == 4  # 10, 59, 60, 61
+    assert prevention_routes._max_in_hour(stamps[:4]) == 3  # 60 is outside [0, 60)
+    assert prevention_routes._max_in_hour([]) == 0
+    assert prevention_routes._parse_ts("garbage") is None
+    assert prevention_routes._parse_ts(None) is None
+    assert prevention_routes._parse_ts(base.replace(tzinfo=None)) == base
+    assert prevention_routes._parse_ts("2026-10-07T00:00:00") == base
 
 
 def test_decisions_db_failure(
@@ -628,8 +835,11 @@ def _insert_failure(session_id: str, tool: str, tc: str, ts: str) -> None:
 
 
 def test_stats_aggregates(
-    local_client: TestClient, caplog: pytest.LogCaptureFixture
+    local_client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("KB_SOFT_GATE_MAX_DENIES_PER_HOUR", "2")
     rows = [
         # s1: 3 denied rows (over cap), two for the same resolution (repeat pair)
         _row(1),

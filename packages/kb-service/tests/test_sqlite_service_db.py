@@ -214,10 +214,11 @@ async def test_gate_decisions_old_check_is_rebuilt(local_env: Path) -> None:
     )
     old_ddl = create.replace(
         "'summary', 'failure_context', 'failure_context_repeat',"
-        " 'failure_context_error'",
+        " 'failure_context_error', 'rearmed', 'overridden'",
         "'summary'",
     ).replace(database._PG_IDENTITY, database._SQLITE_IDENTITY)
     assert "'failure_context" not in old_ddl
+    assert "'rearmed'" not in old_ddl
     indexes = [
         s
         for s in database._SCHEMA_STATEMENTS
@@ -248,6 +249,8 @@ async def test_gate_decisions_old_check_is_rebuilt(local_env: Path) -> None:
             == armed_id
         )
         await db.execute(_GATE_INSERT, "d-fc1", "failure_context")
+        await db.execute(_GATE_INSERT, "d-re1", "rearmed")
+        await db.execute(_GATE_INSERT, "d-ov1", "overridden")
         sql = await db.fetchval(
             "SELECT sql FROM sqlite_master"
             " WHERE type = 'table' AND name = 'gate_decisions'"

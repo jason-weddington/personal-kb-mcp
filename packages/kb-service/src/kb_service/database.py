@@ -292,7 +292,8 @@ _SCHEMA_STATEMENTS: list[str] = [
     "target_class TEXT NOT NULL DEFAULT '', "
     "decision TEXT NOT NULL CHECK (decision IN ('denied', 'would_deny', "
     "'skipped_already_denied', 'skipped_cap', 'retry', 'armed', 'summary', "
-    "'failure_context', 'failure_context_repeat', 'failure_context_error')), "
+    "'failure_context', 'failure_context_repeat', 'failure_context_error', "
+    "'rearmed', 'overridden')), "
     "shadow INTEGER NOT NULL DEFAULT 0, "
     "reason_excerpt TEXT, "
     "retry_changed_command INTEGER, "
@@ -313,7 +314,8 @@ _SCHEMA_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_gate_decisions_received_ts"
     " ON gate_decisions(received_ts)",
     # Widen an ALREADY-DEPLOYED Postgres gate_decisions decision CHECK with the
-    # PostToolUseFailure failure-context decisions, mirroring the
+    # PostToolUseFailure failure-context decisions and the soft gate's
+    # rearmed / overridden decisions, mirroring the
     # listener_decisions_reason_check DROP+ADD above (idempotent on re-run).
     # SQLite skips these and rebuilds the table instead
     # (_rebuild_sqlite_gate_decisions).
@@ -322,7 +324,8 @@ _SCHEMA_STATEMENTS: list[str] = [
     "ALTER TABLE gate_decisions ADD CONSTRAINT gate_decisions_decision_check"
     " CHECK (decision IN ('denied', 'would_deny', 'skipped_already_denied',"
     " 'skipped_cap', 'retry', 'armed', 'summary', 'failure_context',"
-    " 'failure_context_repeat', 'failure_context_error'))",
+    " 'failure_context_repeat', 'failure_context_error', 'rearmed',"
+    " 'overridden'))",
     # turn_events: surprise-capture turn digests posted by the hook at Stop.
     # event_id is exactly '<session_id>:<turn_index>' (idempotency key, first
     # write wins). items and redactions hold json.dumps() TEXT. processed_at
@@ -480,7 +483,7 @@ _SQLITE_IDENTITY = "INTEGER PRIMARY KEY AUTOINCREMENT"
 # Present in the stored SQLite gate_decisions DDL once its decision CHECK
 # carries the failure-context members. Any future CHECK widening must point
 # this at the new last member, or existing SQLite tables are never rebuilt.
-_GATE_DECISIONS_CHECK_MARKER = "'failure_context_error'"
+_GATE_DECISIONS_CHECK_MARKER = "'overridden'"
 _GATE_DECISIONS_CREATE_PREFIX = "CREATE TABLE IF NOT EXISTS gate_decisions ("
 _GATE_DECISIONS_INDEX_PREFIX = "CREATE INDEX IF NOT EXISTS idx_gate_decisions_"
 

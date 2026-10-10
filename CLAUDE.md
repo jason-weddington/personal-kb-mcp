@@ -253,6 +253,9 @@ Format: `type(optional-scope): description`
 | `KB_SURPRISE_CRITIC_MODEL` | `claude-sonnet-5-5` | Model for the surprise-capture critic pass, which checks each drafted lesson against its evidence before any autonomous write or merge |
 | `KB_SURPRISE_LESSON_TTL_DAYS` | `30` | Days an autonomous surprise-capture lesson lives after its last observation (integer 1..3650, anything else falls back to 30); a merge from a new session renews it and the third distinct session makes it permanent |
 | `KB_SURPRISE_MIN_CONFIDENCE` | (unset) | Global surprise-detector floor override for both shapes; unset uses the per-shape defaults |
+| `KB_SOFT_GATE_MAX_DENIES_PER_TURN` | `1` | Soft gate: most denies (or shadow `would_deny`) per turn; integer 1..1000, anything else falls back to the default with a warning |
+| `KB_SOFT_GATE_MAX_DENIES_PER_HOUR` | `6` | Soft gate: most denies in any rolling 60 minutes; integer 1..1000, anything else falls back to the default with a warning |
+| `KB_SOFT_GATE_REARM_HOURS` | `24` | Soft gate: hours a lesson stays quiet after it denies before it may deny again (compaction, resume or clear re-arms sooner); integer 1..1000, anything else falls back to the default with a warning |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level |
 
 ## Agent Feedback Loop

@@ -1588,11 +1588,21 @@ class MapDeleteResponse(BaseModel):
 
 
 class GateSettings(BaseModel):
-    """Server-side soft-gate switches, read per request from the environment."""
+    """Server-side soft-gate switches, read per request from the environment.
+
+    ``max_denies_per_turn`` / ``max_denies_per_hour`` rate-limit the hook's
+    denies and ``rearm_hours`` is how long a denied lesson stays quiet before
+    it may deny again. ``max_denies`` is LEGACY: hooks before the rate limits
+    read it as a per-session cap, so it is served as 1000 (effectively
+    uncapped) and new hooks ignore it.
+    """
 
     enabled: bool
     shadow: bool
     max_denies: int
+    max_denies_per_turn: int = 1
+    max_denies_per_hour: int = 6
+    rearm_hours: int = 24
 
 
 class IndexCue(BaseModel):
@@ -1658,6 +1668,8 @@ GateDecision = Literal[
     "failure_context",
     "failure_context_repeat",
     "failure_context_error",
+    "rearmed",
+    "overridden",
 ]
 
 
@@ -1690,6 +1702,11 @@ class GateDecisionRow(BaseModel):
     last_error_type: str | None = None
     tool_use_id: str | None = None
     ts: str | None = None
+    # skipped_cap: per_turn | per_hour; skipped_already_denied: overridden |
+    # not_rearmed. Stored in reason_excerpt when that is empty.
+    reason: str | None = None
+    # rearmed: the SessionStart source (compact | resume | clear).
+    source: str | None = None
 
 
 class GateDecisionBatch(BaseModel):
@@ -1728,7 +1745,13 @@ class GateStatsHostRow(BaseModel):
 
 
 class GateInvariantViolations(BaseModel):
-    """Breaches of deny-once / cap that the hook should make impossible."""
+    """Breaches of the hook's deny limits that it should make impossible.
+
+    ``over_cap_sessions`` counts sessions with more denied + would_deny rows
+    in some rolling hour than ``max_denies_per_hour``; ``repeat_deny_pairs``
+    counts (session, resolution) pairs denied again within ``rearm_hours``
+    without an intervening ``rearmed`` row.
+    """
 
     over_cap_sessions: int
     repeat_deny_pairs: int

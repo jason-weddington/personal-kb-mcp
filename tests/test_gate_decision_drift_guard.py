@@ -83,3 +83,60 @@ def test_failure_context_rows_validate(tmp_path: Path, monkeypatch: pytest.Monke
         "failure_context_repeat",
         "failure_context_error",
     ]
+
+
+def _pre(tool_use_id: str, command: str) -> dict[str, Any]:
+    return {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s2",
+        "tool_name": "Bash",
+        "tool_use_id": tool_use_id,
+        "tool_input": {"command": command},
+    }
+
+
+def test_rate_limit_and_rearm_rows_validate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """denied / retry / overridden / skipped_* / rearmed rows all validate."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HEADLESS_BUILD_ENGINE", raising=False)
+
+    def _no_network(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("offline")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _no_network)
+    second = {**_cue(), "resolution_id": "kb-00002", "target_class": "git pull"}
+    cache_path = get_prevention_cache_path("s2")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "project": "personal-kb",
+                "gate": {"enabled": True, "shadow": False, "max_denies_per_turn": 1},
+                "index": [_cue(), second],
+                "pending_retry": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert prevention.pre_tool(_pre("t1", "git push github main")) is not None
+    assert prevention.pre_tool(_pre("t2", "git push github main")) is None
+    assert prevention.pre_tool(_pre("t3", "git pull")) is None
+    prevention.session_start(
+        {"hook_event_name": "SessionStart", "session_id": "s2", "source": "compact"}
+    )
+
+    lines = get_gate_log_path("s2").read_text(encoding="utf-8").splitlines()
+    rows = [GateDecisionRow.model_validate(json.loads(line)) for line in lines]
+    assert [r.decision for r in rows] == [
+        "denied",
+        "retry",
+        "overridden",
+        "skipped_already_denied",
+        "skipped_cap",
+        "rearmed",
+    ]
+    assert rows[3].reason == "overridden"
+    assert rows[4].reason == "per_turn"
+    assert rows[5].source == "compact"

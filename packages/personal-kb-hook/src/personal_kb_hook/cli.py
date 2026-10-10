@@ -4,7 +4,7 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
 
 * **PreToolUse** — the prevention soft gate
   (:func:`personal_kb_hook.prevention.pre_tool`): reads the session's cached
-  Bash cue index, NO network, and on a match prints a one-time ``deny``
+  Bash cue index, NO network, and on a match prints a rate-limited ``deny``
   envelope verbatim (regardless of ``--format``); otherwise no stdout.
 * **SessionStart** / **UserPromptSubmit** — resolves the project via the
   committed ``.kb_project`` walk-up, looks the resolved project up in the
@@ -12,8 +12,11 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
   prints a factual directory string. On ``UserPromptSubmit``, also checks
   the listener cache for a pending whisper and appends it (whisper-last).
   On ``SessionStart``, also fetches the prevention payload
-  (:func:`personal_kb_hook.prevention.session_start`); a non-empty gotcha
-  slice is emitted in the same single output, before the directory.
+  (:func:`personal_kb_hook.prevention.session_start`, which reads the
+  payload ``source`` and re-arms the gate after ``compact`` / ``resume`` /
+  ``clear``); a non-empty gotcha slice is emitted in the same single output,
+  before the directory. On ``UserPromptSubmit``, also resets the gate's
+  per-turn deny counter (:func:`personal_kb_hook.prevention.new_turn`).
 * **PostToolUseFailure** — forwards the failed tool call as a record-only
   ``post_tool`` event to ``POST /api/kb/event`` (the failure-cue index) via
   :func:`personal_kb_hook.events.post_failure` (unchanged, record-only).
@@ -365,6 +368,9 @@ def main(argv: list[str] | None = None) -> None:
         whisper_emitted_pairs: list[list[str]] = []
 
         if event_name == "UserPromptSubmit":
+            # A new user turn resets the soft gate's per-turn deny counter
+            # (cache-only, no network, silent on failure).
+            prevention.new_turn(payload)
             try:
                 session_id_w = payload.get("session_id")
                 if (

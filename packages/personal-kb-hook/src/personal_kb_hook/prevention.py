@@ -6,10 +6,18 @@
   for the project) is handed back to the CLI to inject as context.
 * **PreToolUse** (:func:`pre_tool`) — NO network, no model. Reads the cache
   and, when a Bash call's two-word ``target_class`` exactly matches a cue,
-  denies it ONCE with the corrected fact as the reason (at most
-  ``max_denies`` per session). In shadow mode it only records ``would_deny``
-  — consuming the same deny-once and cap budget, so would-deny counts equal
-  what live denies would have been. An identical retry is allowed.
+  denies it with the corrected fact as the reason. Per-lesson state lives in
+  ``deny_state`` (``{resolution_id: {last_deny_ts, overridden}}``): a lesson
+  may deny again once ``rearm_hours`` have passed since its last deny, or
+  after a SessionStart with source ``compact`` / ``resume`` / ``clear``
+  re-arms every lesson (a ``rearmed`` row). Denies are rate limited to
+  ``max_denies_per_turn`` per turn (reset by UserPromptSubmit and Stop) and
+  ``max_denies_per_hour`` in any rolling 60 minutes; an over-limit match
+  records ``skipped_cap`` with ``reason`` ``per_turn`` or ``per_hour``. In
+  shadow mode it only records ``would_deny`` — consuming the same per-lesson
+  state and limits, so would-deny counts equal what live denies would have
+  been. An identical retry is allowed and marks the lesson ``overridden``
+  (quiet until its next re-arm).
 * **Stop** — :func:`stop` records an abandoned pending retry and a summary
   row, :func:`flush_gate_log` POSTs the decision log to
   ``/api/kb/prevention/decisions`` in chunks of 500, and :func:`refresh`
@@ -23,7 +31,7 @@
   (tracked in ``failure-context-<session>.json``). It records
   ``failure_context`` (delivered), ``failure_context_repeat`` (already
   delivered this session, same failure again) and ``failure_context_error``
-  rows, and is independent of shadow mode and the deny budget.
+  rows, and is independent of shadow mode and the deny limits.
 
 Every decision is appended to ``gate-log-<session>.jsonl``; every failed
 fetch / flush lands in the shared ``event-drops.jsonl`` drop log. Every public
@@ -41,6 +49,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from personal_kb_hook import cues_lite, telemetry
@@ -85,9 +94,20 @@ FAILURE_CONTEXT_PREFIX_OBSERVED_ONCE = (
 )
 _FAILURE_CONTEXT_ON_VALUES = frozenset({"1", "true", "yes", "on"})
 
+# Gate rate-limit defaults, used when the server omits a setting (older server).
+DEFAULT_MAX_DENIES_PER_TURN = 1
+DEFAULT_MAX_DENIES_PER_HOUR = 6
+DEFAULT_REARM_HOURS = 24
+_SETTING_MAX = 1000
+_DENY_TS_CAP = 1000
+# SessionStart sources after which the agent may have lost a lesson's deny
+# reason from its context; each one re-arms every lesson.
+REARM_SOURCES = frozenset({"compact", "resume", "clear"})
+
 _STATE_DEFAULTS: dict[str, Any] = {
-    "denied_resolution_ids": [],
-    "deny_count": 0,
+    "deny_state": {},
+    "deny_timestamps": [],
+    "turn_denies": 0,
     "pending_retry": None,
     "pre_tool_calls": 0,
     "pre_tool_errors": 0,
@@ -148,6 +168,47 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _parse_ts(raw: object) -> datetime | None:
+    """Parse an ISO timestamp (naive means UTC); ``None`` when unparseable."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _migrate_state(data: dict[str, Any]) -> None:
+    """Normalise per-lesson state in place; migrate a legacy deny-once cache.
+
+    An old cache's ``denied_resolution_ids`` list becomes ``deny_state``
+    entries stamped now (not overridden), so those lessons re-arm after
+    ``rearm_hours`` rather than never.
+    """
+    state = data.get("deny_state")
+    if not isinstance(state, dict):
+        state = {}
+    legacy = data.pop("denied_resolution_ids", None)
+    if isinstance(legacy, list):
+        now = telemetry.now_ts()
+        for rid in legacy:
+            if isinstance(rid, str) and rid not in state:
+                state[rid] = {"last_deny_ts": now, "overridden": False}
+    data.pop("deny_count", None)
+    data["deny_state"] = {
+        k: v for k, v in state.items() if isinstance(k, str) and isinstance(v, dict)
+    }
+    stamps = data.get("deny_timestamps")
+    data["deny_timestamps"] = (
+        [t for t in stamps if isinstance(t, str)][-_DENY_TS_CAP:]
+        if isinstance(stamps, list)
+        else []
+    )
+    if not isinstance(data.get("turn_denies"), int):
+        data["turn_denies"] = 0
+
+
 def _load_cache(session_id: str) -> dict[str, Any] | None:
     try:
         data = json.loads(get_prevention_cache_path(session_id).read_text(encoding="utf-8"))
@@ -155,6 +216,7 @@ def _load_cache(session_id: str) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict) or not isinstance(data.get("gate"), dict):
         return None
+    _migrate_state(data)
     return data
 
 
@@ -210,20 +272,29 @@ def _fetch(payload: dict[str, Any], session_id: str) -> dict[str, Any] | None:
         return None
 
 
+def _setting(gate: dict[str, Any], key: str, default: int) -> int:
+    """A gate integer setting in 1..1000, else *default* (an older server omits it)."""
+    value = gate.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value if 1 <= value <= _SETTING_MAX else default
+
+
 def _apply_fetch(session_id: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Rewrite project/gate/index/fetched_ts, preserving the deny-once state."""
+    """Rewrite project/gate/index/fetched_ts, preserving the per-lesson state."""
     gate = data["gate"]
     cache = _load_cache(session_id) or {}
     for key, default in _STATE_DEFAULTS.items():
         if key not in cache:
-            cache[key] = list(default) if isinstance(default, list) else default
+            cache[key] = type(default)(default) if isinstance(default, list | dict) else default
     project = data.get("project")
-    max_denies = gate.get("max_denies")
     cache["project"] = project if isinstance(project, str) else ""
     cache["gate"] = {
         "enabled": gate.get("enabled") is True,
         "shadow": gate.get("shadow") is not False,
-        "max_denies": max_denies if isinstance(max_denies, int) else 0,
+        "max_denies_per_turn": _setting(gate, "max_denies_per_turn", DEFAULT_MAX_DENIES_PER_TURN),
+        "max_denies_per_hour": _setting(gate, "max_denies_per_hour", DEFAULT_MAX_DENIES_PER_HOUR),
+        "rearm_hours": _setting(gate, "rearm_hours", DEFAULT_REARM_HOURS),
     }
     cache["index"] = [e for e in data["index"] if isinstance(e, dict)]
     mode = data.get("surprise_capture")
@@ -254,12 +325,42 @@ def _arm(payload: dict[str, Any], session_id: str, tool: str) -> dict[str, Any] 
     return data
 
 
+def _rearm(session_id: str, source: str) -> None:
+    """Clear every lesson's deny state and record one ``rearmed`` row."""
+    cache = _load_cache(session_id)
+    cleared = 0
+    if cache is not None:
+        cleared = len(cache.get("deny_state") or {})
+        cache["deny_state"] = {}
+        cache["turn_denies"] = 0
+        _write_cache(session_id, cache)
+    ts = telemetry.now_ts()
+    _record(
+        session_id,
+        cache if cache is not None else {},
+        "rearmed",
+        decision_id=f"cc:{session_id}:rearmed:{ts}",
+        tool="SessionStart",
+        source=source,
+        cleared=cleared,
+    )
+
+
 def session_start(payload: dict[str, Any]) -> str | None:
-    """SessionStart: fetch + cache the gate index; return the slice text or ``None``."""
+    """SessionStart: fetch + cache the gate index; return the slice text or ``None``.
+
+    A ``compact`` / ``resume`` / ``clear`` source first re-arms every lesson
+    (the agent may no longer remember earlier deny reasons); ``startup``
+    does not.
+    """
     try:
         session_id = _session_id(payload)
         if session_id is None:
             return None
+        source = payload.get("source")
+        if isinstance(source, str) and source in REARM_SOURCES:
+            with contextlib.suppress(Exception):
+                _rearm(session_id, source)
         data = _arm(payload, session_id, "SessionStart")
         if data is None:
             return None
@@ -269,6 +370,21 @@ def session_start(payload: dict[str, Any]) -> str | None:
         return text if isinstance(text, str) and text else None
     except Exception:
         return None
+
+
+def new_turn(payload: dict[str, Any]) -> None:
+    """UserPromptSubmit: reset the per-turn deny counter. No network."""
+    try:
+        session_id = _session_id(payload)
+        if session_id is None:
+            return
+        cache = _load_cache(session_id)
+        if cache is None or not cache.get("turn_denies"):
+            return
+        cache["turn_denies"] = 0
+        _write_cache(session_id, cache)
+    except Exception:
+        return
 
 
 def refresh(payload: dict[str, Any]) -> None:
@@ -383,22 +499,42 @@ def _gate(
     target = cues_lite.extract_target(tool_name, tool_input)
     per_call = {"tool_use_id": tool_use_id, "tool": tool_name, "target": target[:_TARGET_CAP]}
 
+    deny_state: dict[str, Any] = cache["deny_state"]
     pending = cache.get("pending_retry")
     if isinstance(pending, dict) and pending.get("tool") == tool_name:
         prior = str(pending.get("target", ""))
+        pending_rid = str(pending.get("resolution_id", ""))
+        retry_tc = cues_lite.target_class(tool_name, target)
         _record(
             session_id,
             cache,
             "retry",
             decision_id=f"cc:{session_id}:{tool_use_id}:retry",
-            target_class=cues_lite.target_class(tool_name, target),
-            resolution_id=str(pending.get("resolution_id", "")),
+            target_class=retry_tc,
+            resolution_id=pending_rid,
             observed_once=False,
             retry_changed_command=target != prior,
             prior_target=prior[:_TARGET_CAP],
             **per_call,
         )
         cache["pending_retry"] = None
+        if target == prior and pending_rid:
+            lesson = deny_state.get(pending_rid)
+            if not isinstance(lesson, dict):
+                lesson = {"last_deny_ts": telemetry.now_ts()}
+            deny_state[pending_rid] = {**lesson, "overridden": True}
+            _record(
+                session_id,
+                cache,
+                "overridden",
+                decision_id=f"cc:{session_id}:{tool_use_id}:overridden",
+                target_class=retry_tc,
+                resolution_id=pending_rid,
+                observed_once=False,
+                retry_changed_command=False,
+                prior_target=prior[:_TARGET_CAP],
+                **per_call,
+            )
 
     index = cache.get("index")
     entries = index if isinstance(index, list) else []
@@ -426,20 +562,35 @@ def _gate(
             **extra,
         )
 
-    denied_ids = cache.get("denied_resolution_ids")
-    if not isinstance(denied_ids, list):
-        denied_ids = []
-    if rid in denied_ids:
-        _row("skipped_already_denied")
-        return None
     gate = cache["gate"]
-    deny_count = int(cache.get("deny_count") or 0)
-    if deny_count >= int(gate.get("max_denies") or 0):
-        _row("skipped_cap")
+    now = datetime.now(UTC)
+    rearm = timedelta(hours=_setting(gate, "rearm_hours", DEFAULT_REARM_HOURS))
+    lesson = deny_state.get(rid)
+    if isinstance(lesson, dict):
+        last = _parse_ts(lesson.get("last_deny_ts"))
+        if last is not None and now - last < rearm:
+            _row(
+                "skipped_already_denied",
+                reason="overridden" if lesson.get("overridden") is True else "not_rearmed",
+            )
+            return None
+    hour_ago = now - timedelta(hours=1)
+    recent = [
+        t for t in cache["deny_timestamps"] if (p := _parse_ts(t)) is not None and p > hour_ago
+    ]
+    cache["deny_timestamps"] = recent
+    turn_denies = int(cache.get("turn_denies") or 0)
+    if turn_denies >= _setting(gate, "max_denies_per_turn", DEFAULT_MAX_DENIES_PER_TURN):
+        _row("skipped_cap", reason="per_turn")
+        return None
+    if len(recent) >= _setting(gate, "max_denies_per_hour", DEFAULT_MAX_DENIES_PER_HOUR):
+        _row("skipped_cap", reason="per_hour")
         return None
 
-    cache["denied_resolution_ids"] = [*denied_ids, rid]
-    cache["deny_count"] = deny_count + 1
+    now_iso = now.isoformat()
+    deny_state[rid] = {"last_deny_ts": now_iso, "overridden": False}
+    cache["deny_timestamps"] = [*recent, now_iso][-_DENY_TS_CAP:]
+    cache["turn_denies"] = turn_denies + 1
     reason = build_reason(match)
     if gate.get("shadow") is not False:
         _row("would_deny", reason_excerpt=reason)
@@ -513,7 +664,7 @@ def failure_context(payload: dict[str, Any]) -> str | None:
 
     Opt-in via ``KB_FAILURE_CONTEXT``. A failed Bash call that matches the
     session's cached gate index gets the corrected fact, at most once per
-    resolution per session, independent of shadow mode and the deny budget.
+    resolution per session, independent of shadow mode and the deny limits.
     Never raises and never writes the prevention cache.
     """
     sid: str | None = None
@@ -624,7 +775,10 @@ def failure_context(payload: dict[str, Any]) -> str | None:
 
 
 def stop(payload: dict[str, Any]) -> None:
-    """Record an abandoned pending retry and a summary row; reset the counters."""
+    """Record an abandoned pending retry and a summary row; reset the counters.
+
+    Stop also ends the turn, so the per-turn deny counter resets here.
+    """
     try:
         session_id = _session_id(payload)
         if session_id is None:
@@ -660,6 +814,7 @@ def stop(payload: dict[str, Any]) -> None:
         )
         cache["pre_tool_calls"] = 0
         cache["pre_tool_errors"] = 0
+        cache["turn_denies"] = 0
         cache["last_error_type"] = None
         _write_cache(session_id, cache)
     except Exception:

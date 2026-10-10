@@ -108,10 +108,20 @@ def _prevention_body(
     shadow: bool = False,
     index: list[dict[str, Any]] | None = None,
     slice_text: str = "",
+    per_turn: int = 1,
+    per_hour: int = 6,
+    rearm_hours: int = 24,
 ) -> dict[str, Any]:
     return {
         "project": "personal-kb",
-        "gate": {"enabled": enabled, "shadow": shadow, "max_denies": 2},
+        "gate": {
+            "enabled": enabled,
+            "shadow": shadow,
+            "max_denies": 1000,
+            "max_denies_per_turn": per_turn,
+            "max_denies_per_hour": per_hour,
+            "rearm_hours": rearm_hours,
+        },
         "index": [_cue()] if index is None else index,
         "slice": [{"entry_id": "kb-1"}] if slice_text else [],
         "slice_text": slice_text,
@@ -295,17 +305,18 @@ def test_second_session_start_preserves_state(
 ) -> None:
     _run(monkeypatch, _ss(tmp_path), [])
     cache = _cache()
-    assert cache["denied_resolution_ids"] == []
-    assert cache["deny_count"] == 0
+    assert cache["deny_state"] == {}
+    assert cache["turn_denies"] == 0
     assert cache["pending_retry"] is None
     out = _run(monkeypatch, _pre("git push origin main", "t1"), [])
     assert out
     before = _cache()
     server.prevention = _prevention_body(index=[_cue(), _cue("kb-00002", "git pull")])
-    _run(monkeypatch, {**_ss(tmp_path), "source": "compact"}, [])
+    _run(monkeypatch, _ss(tmp_path), [])
     after = _cache()
-    for key in ("denied_resolution_ids", "deny_count", "pending_retry"):
+    for key in ("deny_state", "deny_timestamps", "turn_denies", "pending_retry"):
         assert after[key] == before[key]
+    assert "kb-00001" in after["deny_state"]
     assert len(after["index"]) == 2
 
 
@@ -334,8 +345,11 @@ def test_deny_then_identical_retry_allowed(
     out = _run(monkeypatch, _pre(command, "t2"), [])
     assert out == ""
     later = [r for r in _rows() if r.get("tool_use_id") == "t2"]
-    assert [r["decision"] for r in later] == ["retry", "skipped_already_denied"]
+    assert [r["decision"] for r in later] == ["retry", "overridden", "skipped_already_denied"]
     assert later[0]["retry_changed_command"] is False
+    assert later[1]["resolution_id"] == "kb-00001"
+    assert later[2]["reason"] == "overridden"
+    assert _cache()["deny_state"]["kb-00001"]["overridden"] is True
     assert later[0]["prior_target"] == command
     assert _cache()["pending_retry"] is None
 
@@ -354,18 +368,20 @@ def test_other_tool_does_not_consume_retry(
     assert retry[0]["tool_use_id"] == "t3"
 
 
-def test_cap_after_two_denies(
+def test_cap_after_two_denies_in_one_turn(
     server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     server.prevention = _prevention_body(
-        index=[_cue("kb-1", "git push"), _cue("kb-2", "git pull"), _cue("kb-3", "git fetch")]
+        index=[_cue("kb-1", "git push"), _cue("kb-2", "git pull"), _cue("kb-3", "git fetch")],
+        per_turn=2,
     )
     _run(monkeypatch, _ss(tmp_path), [])
     assert _run(monkeypatch, _pre("git push", "t1"), [])
     assert _run(monkeypatch, _pre("git pull", "t2"), [])
     assert _run(monkeypatch, _pre("git fetch", "t3"), []) == ""
     assert _rows()[-1]["decision"] == "skipped_cap"
-    assert _cache()["deny_count"] == 2
+    assert _rows()[-1]["reason"] == "per_turn"
+    assert _cache()["turn_denies"] == 2
 
 
 def test_shadow_mode_would_deny(
@@ -379,7 +395,8 @@ def test_shadow_mode_would_deny(
     assert row["shadow"] is True
     assert row["reason_excerpt"].endswith(prevention.REASON_SUFFIX)
     cache = _cache()
-    assert cache["deny_count"] == 1
+    assert cache["turn_denies"] == 1
+    assert cache["deny_state"]["kb-00001"]["overridden"] is False
     assert cache["pending_retry"] is None
 
 
@@ -624,8 +641,8 @@ def test_stop_refresh_switch_flip(
     _run(monkeypatch, _stop(tmp_path), [])
     assert _cache()["gate"]["enabled"] is False
     assert _run(monkeypatch, _pre("git pull", "t2"), []) == ""
-    assert _cache()["denied_resolution_ids"] == ["kb-1"]
-    assert _cache()["deny_count"] == 1
+    assert list(_cache()["deny_state"]) == ["kb-1"]
+    assert len(_cache()["deny_timestamps"]) == 1
 
 
 # ─── (l) error inside matching ───────────────────────────────────────────────
@@ -1088,7 +1105,10 @@ def test_failure_context_ignores_shadow(
 
 
 def test_failure_context_ignores_deny_budget(armed: _Server) -> None:
-    _mutate_cache(deny_count=2, denied_resolution_ids=["kb-00001"])
+    _mutate_cache(
+        turn_denies=5,
+        deny_state={"kb-00001": {"last_deny_ts": "2099-01-01T00:00:00+00:00"}},
+    )
     assert prevention.failure_context(_fail()) is not None
 
 
@@ -1249,3 +1269,270 @@ def test_orphan_sweep_gcs_failure_context_state(server: _Server) -> None:
     prevention.orphan_sweep(_SID)
     assert not old.exists()
     assert young.exists()
+
+
+# ─── deny state, rate limits, re-arming, override ───────────────────────────
+
+
+def _ago(hours: float) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+
+
+def _ups(sid: str = _SID) -> dict[str, Any]:
+    return {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": "hi"}
+
+
+def _decisions(tool_use_id: str) -> list[str]:
+    return [r["decision"] for r in _rows() if r.get("tool_use_id") == tool_use_id]
+
+
+def test_cache_carries_new_gate_settings(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server.prevention = _prevention_body(per_turn=3, per_hour=9, rearm_hours=48)
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _cache()["gate"] == {
+        "enabled": True,
+        "shadow": False,
+        "max_denies_per_turn": 3,
+        "max_denies_per_hour": 9,
+        "rearm_hours": 48,
+    }
+
+
+@pytest.mark.parametrize("bad", [None, 0, 1001, "5", True])
+def test_gate_settings_fall_back_to_defaults(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: Any
+) -> None:
+    body = _prevention_body()
+    for key in ("max_denies_per_turn", "max_denies_per_hour", "rearm_hours"):
+        if bad is None:
+            del body["gate"][key]
+        else:
+            body["gate"][key] = bad
+    server.prevention = body
+    _run(monkeypatch, _ss(tmp_path), [])
+    gate = _cache()["gate"]
+    assert gate["max_denies_per_turn"] == prevention.DEFAULT_MAX_DENIES_PER_TURN
+    assert gate["max_denies_per_hour"] == prevention.DEFAULT_MAX_DENIES_PER_HOUR
+    assert gate["rearm_hours"] == prevention.DEFAULT_REARM_HOURS
+
+
+def test_no_redeny_before_rearm_hours(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _run(monkeypatch, _pre("git push", "t1"), [])
+    _run(monkeypatch, _ups(), [])
+    _mutate_cache(
+        pending_retry=None,
+        deny_state={"kb-00001": {"last_deny_ts": _ago(23.9), "overridden": False}},
+    )
+    assert _run(monkeypatch, _pre("git push", "t2"), []) == ""
+    assert _decisions("t2") == ["skipped_already_denied"]
+    assert _rows()[-1]["reason"] == "not_rearmed"
+
+
+def test_redeny_after_rearm_hours(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _run(monkeypatch, _pre("git push", "t1"), [])
+    _run(monkeypatch, _stop(tmp_path), [])
+    _mutate_cache(
+        deny_state={"kb-00001": {"last_deny_ts": _ago(24.1), "overridden": False}},
+        deny_timestamps=[_ago(24.1)],
+    )
+    assert _run(monkeypatch, _pre("git push", "t2"), [])
+    assert _decisions("t2") == ["denied"]
+    assert _cache()["deny_timestamps"] != [] and len(_cache()["deny_timestamps"]) == 1
+
+
+def test_override_suppression_lifted_by_rearm_hours(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _run(monkeypatch, _pre("git push", "t1"), [])
+    assert _run(monkeypatch, _pre("git push", "t2"), []) == ""
+    assert _cache()["deny_state"]["kb-00001"]["overridden"] is True
+    _run(monkeypatch, _stop(tmp_path), [])
+    assert _run(monkeypatch, _pre("git push", "t3"), []) == ""
+    assert _decisions("t3") == ["skipped_already_denied"]
+    _mutate_cache(deny_state={"kb-00001": {"last_deny_ts": _ago(25), "overridden": True}})
+    assert _run(monkeypatch, _pre("git push", "t4"), [])
+    assert _cache()["deny_state"]["kb-00001"]["overridden"] is False
+
+
+def test_changed_retry_is_not_an_override(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _run(monkeypatch, _pre("git push github main", "t1"), [])
+    _run(monkeypatch, _pre("git push origin main", "t2"), [])
+    assert "overridden" not in [r["decision"] for r in _rows()]
+    assert _cache()["deny_state"]["kb-00001"]["overridden"] is False
+
+
+@pytest.mark.parametrize("source", ["compact", "resume", "clear"])
+def test_session_start_rearms_on_memory_loss(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    server.prevention = _prevention_body(
+        index=[_cue("kb-1", "git push"), _cue("kb-2", "git pull")], per_turn=5
+    )
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _run(monkeypatch, _pre("git push", "t1"), [])
+    assert _run(monkeypatch, _pre("git push", "t2"), []) == ""  # override kb-1
+    assert _run(monkeypatch, _pre("git pull", "t3"), [])
+    assert set(_cache()["deny_state"]) == {"kb-1", "kb-2"}
+    _run(monkeypatch, {**_ss(tmp_path), "source": source}, [])
+    assert _cache()["deny_state"] == {}
+    rearmed = [r for r in _rows() if r["decision"] == "rearmed"]
+    assert len(rearmed) == 1
+    assert rearmed[0]["source"] == source
+    assert rearmed[0]["tool"] == "SessionStart"
+    assert rearmed[0]["cleared"] == 2
+    _run(monkeypatch, _ups(), [])
+    _mutate_cache(pending_retry=None)
+    assert _run(monkeypatch, _pre("git push", "t4"), [])  # overridden lesson fires again
+
+
+def test_session_start_startup_does_not_rearm(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _run(monkeypatch, _pre("git push", "t1"), [])
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert "kb-00001" in _cache()["deny_state"]
+    assert "rearmed" not in [r["decision"] for r in _rows()]
+
+
+def test_rearm_without_cache_still_logs(server: _Server, tmp_path: Path) -> None:
+    server.prevention = OSError("down")
+    prevention.session_start({**_ss(tmp_path), "source": "resume"})
+    assert [r["decision"] for r in _rows()] == ["rearmed"]
+    assert not get_prevention_cache_path(_SID).exists()
+
+
+def test_per_turn_cap_resets_on_user_prompt_and_stop(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server.prevention = _prevention_body(
+        index=[_cue("kb-1", "git push"), _cue("kb-2", "git pull"), _cue("kb-3", "git fetch")]
+    )
+    _run(monkeypatch, _ss(tmp_path), [])
+    assert _run(monkeypatch, _pre("git push", "t1"), [])
+    _mutate_cache(pending_retry=None)
+    assert _run(monkeypatch, _pre("git pull", "t2"), []) == ""
+    assert _rows()[-1]["decision"] == "skipped_cap"
+    assert _rows()[-1]["reason"] == "per_turn"
+    _run(monkeypatch, _ups(), [])
+    assert _cache()["turn_denies"] == 0
+    assert _run(monkeypatch, _pre("git pull", "t3"), [])
+    _mutate_cache(pending_retry=None)
+    assert _run(monkeypatch, _pre("git fetch", "t4"), []) == ""
+    assert _rows()[-1]["reason"] == "per_turn"
+    _run(monkeypatch, _stop(tmp_path), [])
+    assert _cache()["turn_denies"] == 0
+    assert _run(monkeypatch, _pre("git fetch", "t5"), [])
+
+
+def test_per_hour_cap(server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    server.prevention = _prevention_body(
+        index=[_cue("kb-1", "git push"), _cue("kb-2", "git pull")], per_hour=2
+    )
+    _run(monkeypatch, _ss(tmp_path), [])
+    _mutate_cache(deny_timestamps=[_ago(0.5), _ago(0.9)])
+    assert _run(monkeypatch, _pre("git push", "t1"), []) == ""
+    assert _rows()[-1]["decision"] == "skipped_cap"
+    assert _rows()[-1]["reason"] == "per_hour"
+    assert "kb-1" not in _cache()["deny_state"]
+    _mutate_cache(deny_timestamps=[_ago(0.5), _ago(1.1)])
+    assert _run(monkeypatch, _pre("git push", "t2"), [])
+    assert len(_cache()["deny_timestamps"]) == 2
+    _run(monkeypatch, _ups(), [])
+    _mutate_cache(pending_retry=None)
+    assert _run(monkeypatch, _pre("git pull", "t3"), []) == ""
+    assert _rows()[-1]["reason"] == "per_hour"
+
+
+def test_deny_timestamps_bounded(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    _mutate_cache(deny_timestamps=[_ago(2)] * 5000)
+    assert len(prevention._load_cache(_SID)["deny_timestamps"]) == 1000  # type: ignore[index]
+    assert _run(monkeypatch, _pre("git push", "t1"), [])
+    assert len(_cache()["deny_timestamps"]) == 1
+
+
+def test_shadow_mode_consumes_same_limits(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server.prevention = _prevention_body(
+        shadow=True, index=[_cue("kb-1", "git push"), _cue("kb-2", "git pull")], per_hour=1
+    )
+    _run(monkeypatch, _ss(tmp_path), [])
+    _run(monkeypatch, _pre("git push", "t1"), [])
+    _run(monkeypatch, _pre("git push", "t2"), [])
+    _run(monkeypatch, _pre("git pull", "t3"), [])
+    _run(monkeypatch, _ups(), [])
+    _run(monkeypatch, _pre("git pull", "t4"), [])
+    assert _decisions("t1") == ["would_deny"]
+    assert _decisions("t2") == ["skipped_already_denied"]
+    assert _decisions("t3") == ["skipped_cap"]
+    assert _decisions("t4") == ["skipped_cap"]
+    reasons = [r["reason"] for r in _rows() if r["decision"] == "skipped_cap"]
+    assert reasons == ["per_turn", "per_hour"]
+    _run(monkeypatch, {**_ss(tmp_path), "source": "compact"}, [])
+    _mutate_cache(deny_timestamps=[])
+    _run(monkeypatch, _pre("git push", "t5"), [])
+    assert _decisions("t5") == ["would_deny"]
+
+
+def test_legacy_cache_migrates_on_read(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    cache = _cache()
+    for key in ("deny_state", "deny_timestamps", "turn_denies"):
+        cache.pop(key)
+    cache["denied_resolution_ids"] = ["kb-00001", 7]
+    cache["deny_count"] = 2
+    cache["gate"] = {"enabled": True, "shadow": False, "max_denies": 2}
+    get_prevention_cache_path(_SID).write_text(json.dumps(cache))
+    loaded = prevention._load_cache(_SID)
+    assert loaded is not None
+    state = loaded["deny_state"]
+    assert list(state) == ["kb-00001"]
+    assert state["kb-00001"]["overridden"] is False
+    assert prevention._parse_ts(state["kb-00001"]["last_deny_ts"]) is not None
+    assert "denied_resolution_ids" not in loaded
+    assert "deny_count" not in loaded
+    assert loaded["turn_denies"] == 0
+    # legacy gate (no new settings): defaults apply; kb-00001 is not re-armed yet
+    assert _run(monkeypatch, _pre("git push", "t1"), []) == ""
+    assert _decisions("t1") == ["skipped_already_denied"]
+    assert "denied_resolution_ids" not in _cache()
+
+
+def test_legacy_cache_malformed_state_tolerated(
+    server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run(monkeypatch, _ss(tmp_path), [])
+    _mutate_cache(
+        deny_state={"kb-00001": {"last_deny_ts": "garbage"}, "kb-x": 3},
+        deny_timestamps="nope",
+        turn_denies="x",
+    )
+    assert _run(monkeypatch, _pre("git push", "t1"), [])
+
+
+def test_cli_user_prompt_submit_without_cache_is_quiet(
+    server: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prevention.new_turn({"session_id": ""})
+    prevention.new_turn(_ups())
+    assert not get_prevention_cache_path(_SID).exists()

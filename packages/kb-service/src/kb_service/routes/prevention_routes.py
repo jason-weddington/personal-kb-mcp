@@ -24,6 +24,13 @@ Server switches are read per request from ``os.environ`` and fail closed:
   resolutions observed in a single session.
 * ``KB_SURPRISE_CAPTURE`` — ``off|shadow|on``, default off; any other value
   means off. Reported as the top-level ``surprise_capture`` field.
+* ``KB_SOFT_GATE_MAX_DENIES_PER_TURN`` (default 1),
+  ``KB_SOFT_GATE_MAX_DENIES_PER_HOUR`` (default 6) and
+  ``KB_SOFT_GATE_REARM_HOURS`` (default 24) — the hook's deny rate limits and
+  per-lesson re-arm interval; integers 1..1000, anything else falls back to
+  the default with a warning. The legacy ``max_denies`` field is served as
+  :data:`LEGACY_MAX_DENIES` so hooks that predate the rate limits are no
+  longer capped at two denies per session.
 
 No route answers with a 5xx: a failure is logged at WARNING and answered with
 an inert, empty response. No model or LLM call is made anywhere here.
@@ -31,6 +38,7 @@ an inert, empty response. No model or LLM call is made anywhere here.
 
 import logging
 import os
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -67,7 +75,14 @@ router = APIRouter(prefix="/api/kb", tags=["kb"])
 
 logger = logging.getLogger(__name__)
 
-MAX_DENIES_PER_SESSION = 2
+# Served as the legacy ``gate.max_denies`` (a per-session cap in old hooks):
+# high enough that pre-rate-limit hooks stop losing the gate after 2 denies.
+LEGACY_MAX_DENIES = 1000
+DEFAULT_MAX_DENIES_PER_TURN = 1
+DEFAULT_MAX_DENIES_PER_HOUR = 6
+DEFAULT_REARM_HOURS = 24
+_SETTING_MIN = 1
+_SETTING_MAX = 1000
 _CORRECTIONS_LIMIT = 20
 _DECISIONS = (
     "denied",
@@ -80,6 +95,8 @@ _DECISIONS = (
     "failure_context",
     "failure_context_repeat",
     "failure_context_error",
+    "rearmed",
+    "overridden",
 )
 
 _INSERT_SQL = (
@@ -94,8 +111,8 @@ _INSERT_SQL = (
     " ON CONFLICT (decision_id) DO NOTHING"
 )
 
-_SESSION_DENIES_SQL = (
-    "SELECT COUNT(*) AS n FROM gate_decisions"
+_SESSION_DENY_TS_SQL = (
+    "SELECT ts FROM gate_decisions"
     " WHERE session_id = $1 AND decision IN ('denied', 'would_deny')"
 )
 
@@ -139,16 +156,11 @@ _HOSTS_SQL = (
     " GROUP BY harness, mode, host ORDER BY harness, mode, host"
 )
 
-_OVER_CAP_SQL = (
-    "SELECT COUNT(*) AS n FROM (SELECT session_id FROM gate_decisions"
-    " WHERE received_ts >= $1 AND decision IN ('denied', 'would_deny')"
-    " GROUP BY session_id HAVING COUNT(*) > $2) AS over_cap"
-)
-
-_REPEAT_PAIRS_SQL = (
-    "SELECT COUNT(*) AS n FROM (SELECT session_id, resolution_id FROM gate_decisions"
-    " WHERE received_ts >= $1 AND decision IN ('denied', 'would_deny')"
-    " GROUP BY session_id, resolution_id HAVING COUNT(*) > 1) AS repeats"
+# Deny + rearmed rows, for the per-hour cap and repeat-deny invariants
+# (evaluated in Python: rolling windows and re-arm resets are not portable SQL).
+_DENY_ROWS_SQL = (
+    "SELECT id, session_id, resolution_id, decision, ts FROM gate_decisions"
+    " WHERE received_ts >= $1 AND decision IN ('denied', 'would_deny', 'rearmed')"
 )
 
 
@@ -173,15 +185,58 @@ def _project_disabled(project: str) -> bool:
     return project.strip().lower() in disabled
 
 
+def _int_setting(name: str, default: int) -> int:
+    """Read an integer env setting in 1..1000; *default* (with a warning) otherwise."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = None
+    if value is None or not _SETTING_MIN <= value <= _SETTING_MAX:
+        logger.warning(
+            "invalid %s=%r (want an integer %d..%d); using default %d",
+            name,
+            raw,
+            _SETTING_MIN,
+            _SETTING_MAX,
+            default,
+        )
+        return default
+    return value
+
+
+def max_denies_per_hour() -> int:
+    """``KB_SOFT_GATE_MAX_DENIES_PER_HOUR`` (default 6)."""
+    return _int_setting("KB_SOFT_GATE_MAX_DENIES_PER_HOUR", DEFAULT_MAX_DENIES_PER_HOUR)
+
+
+def rearm_hours() -> int:
+    """``KB_SOFT_GATE_REARM_HOURS`` (default 24)."""
+    return _int_setting("KB_SOFT_GATE_REARM_HOURS", DEFAULT_REARM_HOURS)
+
+
+def _settings(enabled: bool, shadow: bool) -> GateSettings:
+    return GateSettings(
+        enabled=enabled,
+        shadow=shadow,
+        max_denies=LEGACY_MAX_DENIES,
+        max_denies_per_turn=_int_setting(
+            "KB_SOFT_GATE_MAX_DENIES_PER_TURN", DEFAULT_MAX_DENIES_PER_TURN
+        ),
+        max_denies_per_hour=max_denies_per_hour(),
+        rearm_hours=rearm_hours(),
+    )
+
+
 def gate_settings(project: str) -> GateSettings:
     """Read the soft-gate switches for *project* (fail closed)."""
     enabled = os.environ.get("KB_SOFT_GATE_ENABLED", "").strip().upper() == "TRUE"
     shadow = os.environ.get("KB_SOFT_GATE_SHADOW", "").strip().upper() != "FALSE"
     if _project_disabled(project):
         enabled = False
-    return GateSettings(
-        enabled=enabled, shadow=shadow, max_denies=MAX_DENIES_PER_SESSION
-    )
+    return _settings(enabled, shadow)
 
 
 def _deliver_observed_once() -> bool:
@@ -193,9 +248,7 @@ def _inert(
 ) -> PreventionResponse:
     return PreventionResponse(
         project=project,
-        gate=GateSettings(
-            enabled=False, shadow=True, max_denies=MAX_DENIES_PER_SESSION
-        ),
+        gate=_settings(False, True),
         index=[],
         slice=[],
         slice_text="",
@@ -312,6 +365,65 @@ async def get_prevention(
 # --- POST /api/kb/prevention/decisions --------------------------------------
 
 
+def _parse_ts(raw: object) -> datetime | None:
+    """Parse a stored ISO timestamp to an aware datetime; ``None`` on failure."""
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo is not None else raw.replace(tzinfo=UTC)
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _max_in_hour(stamps: Iterable[datetime | None]) -> int:
+    """Most timestamps falling in any rolling 60-minute window ``[t, t + 1h)``."""
+    ordered = sorted(t for t in stamps if t is not None)
+    best = 0
+    start = 0
+    for end, ts in enumerate(ordered):
+        while ts - ordered[start] >= timedelta(hours=1):
+            start += 1
+        best = max(best, end - start + 1)
+    return best
+
+
+def _deny_invariants(records: list[Any], per_hour: int, rearm: int) -> tuple[int, int]:
+    """(sessions over the per-hour cap, repeat-deny pairs) from deny/rearmed rows.
+
+    A repeat pair is a (session, resolution) denied again less than *rearm*
+    hours after its previous deny with no ``rearmed`` row in between.
+    """
+    by_session: dict[str, list[tuple[datetime, int, str, str]]] = {}
+    for r in records:
+        ts = _parse_ts(r["ts"])
+        if ts is None:
+            continue
+        by_session.setdefault(str(r["session_id"]), []).append(
+            (ts, int(r["id"]), str(r["decision"]), str(r["resolution_id"]))
+        )
+    over_cap = 0
+    repeats: set[tuple[str, str]] = set()
+    window = timedelta(hours=rearm)
+    for sid, rows in by_session.items():
+        rows.sort()
+        denies = [ts for ts, _, decision, _ in rows if decision != "rearmed"]
+        if _max_in_hour(denies) > per_hour:
+            over_cap += 1
+        last: dict[str, datetime] = {}
+        for ts, _, decision, rid in rows:
+            if decision == "rearmed":
+                last.clear()
+                continue
+            prev = last.get(rid)
+            if prev is not None and ts - prev < window:
+                repeats.add((sid, rid))
+            last[rid] = ts
+    return over_cap, len(repeats)
+
+
 def _normalize_ts(raw: str | None, fallback: str) -> str:
     """Parse an ISO timestamp to UTC, second precision; *fallback* on failure."""
     if not raw:
@@ -327,6 +439,9 @@ def _normalize_ts(raw: str | None, fallback: str) -> str:
 
 def _insert_args(row: GateDecisionRow, received_ts: str) -> tuple[Any, ...]:
     changed = row.retry_changed_command
+    excerpt = row.reason_excerpt
+    if excerpt is None:
+        excerpt = row.reason or row.source
     return (
         row.decision_id,
         row.session_id,
@@ -343,7 +458,7 @@ def _insert_args(row: GateDecisionRow, received_ts: str) -> tuple[Any, ...]:
         row.target_class,
         row.decision,
         1 if row.shadow else 0,
-        row.reason_excerpt[:1000] if row.reason_excerpt is not None else None,
+        excerpt[:1000] if excerpt is not None else None,
         None if changed is None else (1 if changed else 0),
         row.prior_target[:500] if row.prior_target is not None else None,
         1 if row.observed_once else 0,
@@ -376,14 +491,17 @@ async def post_decisions(
                 inserted += 1
                 if row.decision in ("denied", "would_deny"):
                     deny_sessions.add(row.session_id)
+        per_hour = max_denies_per_hour()
         for sid in sorted(deny_sessions):
-            count = await _count(pool, _SESSION_DENIES_SQL, sid)
-            if count > MAX_DENIES_PER_SESSION:
+            rows = await pool.fetch(_SESSION_DENY_TS_SQL, sid)
+            peak = _max_in_hour([_parse_ts(r["ts"]) for r in rows])
+            if peak > per_hour:
                 logger.warning(
-                    "gate_invariant_violation session_id=%s denies=%d max=%d",
+                    "gate_invariant_violation session_id=%s denies_in_hour=%d"
+                    " max_per_hour=%d",
                     sid,
-                    count,
-                    MAX_DENIES_PER_SESSION,
+                    peak,
+                    per_hour,
                 )
     except Exception as exc:
         logger.warning(
@@ -482,8 +600,11 @@ async def prevention_stats(
             )
             for r in await pool.fetch(_HOSTS_SQL, since)
         ]
-        over_cap = await _count(pool, _OVER_CAP_SQL, since, MAX_DENIES_PER_SESSION)
-        repeats = await _count(pool, _REPEAT_PAIRS_SQL, since)
+        over_cap, repeats = _deny_invariants(
+            list(await pool.fetch(_DENY_ROWS_SQL, since)),
+            max_denies_per_hour(),
+            rearm_hours(),
+        )
         repeat_fc = await _count(pool, _REPEAT_FAILURE_CONTEXT_SQL, since)
     except Exception as exc:
         logger.warning("prevention_stats failed exc=%s", type(exc).__name__)
