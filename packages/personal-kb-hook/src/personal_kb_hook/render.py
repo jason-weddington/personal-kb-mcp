@@ -20,6 +20,9 @@ roster label.
   ``Maps in other domains — {label}/{proj}: [{id}] {short}, ...; {label2}/{proj2}: ...``,
   sorted by ``(label, project_ref)``.
 
+Line 2 is opt-in: it is rendered only when ``KB_ROSTER_OTHER_DOMAINS`` is a
+truthy value (see :func:`other_domains_enabled`), default off.
+
 Within a single project group, multiple ``(label, MapEntry)`` tuples
 appearing under the same ``project_ref`` are bucketed by their label so
 each label produces its own ``{label}/{proj}: ...`` group — preserving the
@@ -29,6 +32,7 @@ guarantee that every Line-2 cell names exactly one source KB.
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -62,6 +66,14 @@ BANNED_TOKENS: frozenset[str] = frozenset(
 # telemetry row (see personal_kb_hook.cli) — this constant governs only how
 # many are NAMED in the emitted text before an "(+N more)" suffix.
 NEW_MAPS_DISPLAY_CAP = 5
+
+
+_ON_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def other_domains_enabled() -> bool:
+    """Return True iff ``KB_ROSTER_OTHER_DOMAINS`` opts in to Line 2 (default off)."""
+    return os.environ.get("KB_ROSTER_OTHER_DOMAINS", "").strip().lower() in _ON_VALUES
 
 
 def render_directory(project_ref: str, maps: list[MapEntry]) -> str:

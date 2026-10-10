@@ -12,6 +12,7 @@ and listener whispers. See the repo root `README.md` for install and wiring.
 | `KB_TOOL_DIRS` | Colon-separated directories scanned for the SessionStart tool inventory. Required to enable the inventory; there is no default, and when unset or blank nothing is scanned. Missing or relative entries are skipped; the first dir wins on duplicate names. |
 | `KB_TOOL_INVENTORY` | Default on. `0`/`false`/`no`/`off` disables the SessionStart tool inventory. |
 | `KB_GOTCHA_SLICE` | Default on. `0`/`false`/`no`/`off` suppresses the SessionStart gotcha slice text while the soft gate is still armed (gate index fetched and cached). |
+| `KB_ROSTER_OTHER_DOMAINS` | Default off. `1`/`true`/`yes`/`on` adds the `Maps in other domains` roster line (other projects' maps) to the SessionStart/UserPromptSubmit directory. Paused by default: no measured consumption, pending a kb-bench arm. Own-project maps are unaffected. |
 | `KB_FAILURE_CONTEXT` | Default off. `1`/`true`/`yes`/`on` enables the `PostToolUseFailure` failure context (the matching corrected fact delivered next to a failed Bash call). The record-only failure-cue POST runs either way. |
 
 ## SessionStart tool inventory

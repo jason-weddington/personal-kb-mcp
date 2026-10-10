@@ -225,6 +225,7 @@ def test_first_emission_full_roster_byte_identical(
     assert rows[-1]["trigger_context"]["emit_reason"] == "first-emission"
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_scope_change_full_roster_byte_identical(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:

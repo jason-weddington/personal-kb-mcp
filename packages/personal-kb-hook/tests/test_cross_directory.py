@@ -414,6 +414,7 @@ def _run(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_two_line_emission_local_jsonl(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
@@ -472,6 +473,7 @@ def test_two_line_emission_local_jsonl(
     assert "personal/" not in lines[1]
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_two_line_claude_json_envelope(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
@@ -517,6 +519,7 @@ def test_two_line_claude_json_envelope(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_roster_only_local_jsonl(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
@@ -595,6 +598,7 @@ def test_suppression_second_prompt_silent_with_cross_project(
     assert out2 == ""
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_suppression_new_cross_project_map_retriggers(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
@@ -667,6 +671,7 @@ def test_suppression_new_cross_project_map_retriggers(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_banned_tokens_not_in_cross_directory_output(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
@@ -725,6 +730,7 @@ def _make_fake_urlopen(service_response: dict[str, Any]) -> Any:
     return fake_urlopen
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_two_line_emission_http_mock(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
@@ -771,6 +777,7 @@ def test_two_line_emission_http_mock(
     assert "personal-kb" not in lines[1]
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_roster_only_http_mock(monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]) -> None:
     """HTTP index: personal-kb absent; agent-gtd has maps → roster line only."""
     import urllib.request

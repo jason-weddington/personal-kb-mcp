@@ -1333,6 +1333,7 @@ def test_extract_manifest_raising_still_emits_directory(
 # ===========================================================================
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_byte_identical_absent_roster_single_kb(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
@@ -1385,6 +1386,7 @@ def test_byte_identical_absent_roster_single_kb(
     assert "personal/" not in out
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_one_kb_down_error_isolation_emits_surviving(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
@@ -1469,6 +1471,7 @@ def test_one_kb_down_error_isolation_emits_surviving(
     assert "team/" not in out
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_one_kb_down_wall_deadline_elapsed_lt_3p5s(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:

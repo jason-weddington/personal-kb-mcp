@@ -27,3 +27,15 @@ def turn_spawns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[s
 
     monkeypatch.setattr("personal_kb_hook.turn_digest.spawn_sender", recorder)
     return spawns
+
+
+@pytest.fixture
+def other_domains_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opt in to the roster's 'Maps in other domains' line."""
+    monkeypatch.setenv("KB_ROSTER_OTHER_DOMAINS", "1")
+
+
+@pytest.fixture(autouse=True)
+def _other_domains_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never rely on the ambient environment for the opt-in switch."""
+    monkeypatch.delenv("KB_ROSTER_OTHER_DOMAINS", raising=False)

@@ -34,6 +34,10 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
   transcript and spawns a detached listener-worker subprocess. Never produces
   stdout; never calls :func:`http_index.load_index`.
 
+The roster's Line 2 (``Maps in other domains``) is opt-in via
+``KB_ROSTER_OTHER_DOMAINS`` (default off): when off, other projects' maps are
+absent from the directory, suppression state, new-map delta and telemetry.
+
 SessionStart additionally appends a tool inventory of the personal script
 directories (``KB_TOOL_DIRS``, opt-in with no default; see
 :mod:`personal_kb_hook.tool_inventory`) after the directory text.
@@ -75,6 +79,7 @@ from personal_kb_hook.listener_worker import _MAX_POINTERS_PER_KB
 from personal_kb_hook.paths import get_listener_cache_path
 from personal_kb_hook.render import (
     compose_directory,
+    other_domains_enabled,
     render_claude_json,
     render_new_maps,
     render_whisper,
@@ -576,12 +581,18 @@ def main(argv: list[str] | None = None) -> None:
         # can carry each map's ``pointers`` list into the appended jsonl
         # row (used by mark_consumed to chain-credit map → detail fetches;
         # GTD 88441f9c).
-        cross_pairs: list[tuple[str, Any]] = [
-            (label, entry)
-            for proj, pairs in index.items()
-            if proj != project_ref
-            for (label, entry) in pairs
-        ]
+        # Line 2 is opt-in (KB_ROSTER_OTHER_DOMAINS, default off): when off,
+        # other projects' maps are treated as absent everywhere.
+        if other_domains_enabled():
+            cross_pairs: list[tuple[str, Any]] = [
+                (label, entry)
+                for proj, pairs in index.items()
+                if proj != project_ref
+                for (label, entry) in pairs
+            ]
+        else:
+            cross_pairs = []
+            index = {project_ref: own_pairs} if own_pairs else {}
         cross_map_ids: list[MapKey] = [
             MapKey(label=label, id=entry["id"]) for (label, entry) in cross_pairs
         ]

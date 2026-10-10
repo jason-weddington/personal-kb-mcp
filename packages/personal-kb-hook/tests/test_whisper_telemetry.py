@@ -159,6 +159,7 @@ def _stub_http_index(
 # ─── (1) roster emit (incl. cross-project) ──────────────────────────────────
 
 
+@pytest.mark.usefixtures("other_domains_on")
 def test_roster_emit_one_row_per_mapkey_including_cross_project(
     monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
 ) -> None:
