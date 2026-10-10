@@ -149,6 +149,43 @@ async def _make_admin(email: str) -> str:
         await close_db()
 
 
+async def _metrics_repeat_rate(
+    weeks: int,
+    project: str | None,
+    min_gap_hours: float,
+    as_json: bool,
+    now: datetime | None = None,
+) -> str:
+    """Compute the weekly repeat rate from the service DB and the data DB.
+
+    Returns:
+        The response as indented JSON when *as_json*, else markdown.
+    """
+    import kb_service.main
+    from kb_service.database import close_db, get_db, init_db
+    from kb_service.repeat_rate import build_repeat_rate, render_repeat_rate_markdown
+
+    await init_db()
+    try:
+        kb = await kb_service.main._open_kb()
+        try:
+            resp = await build_repeat_rate(
+                await get_db(),
+                kb.db,
+                weeks=weeks,
+                project=project,
+                min_gap_hours=min_gap_hours,
+                now=now or datetime.now(UTC),
+            )
+        finally:
+            await kb.close()
+    finally:
+        await close_db()
+    if as_json:
+        return resp.model_dump_json(indent=2)
+    return render_repeat_rate_markdown(resp)
+
+
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _HANDLER_MARKER = "_kb_service_handler"
 
@@ -268,6 +305,25 @@ def main() -> None:
     )
     sv.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000).")
 
+    mt = subparsers.add_parser(
+        "metrics",
+        help="Experience-loop metrics (reads the service DB and the data DB).",
+    )
+    mt_sub = mt.add_subparsers(dest="metrics_command", metavar="METRIC")
+    rr = mt_sub.add_parser(
+        "repeat-rate",
+        help="Weekly cross-session repeat-mistake rate from failure_events.",
+    )
+    rr.add_argument("--weeks", type=int, default=8, help="Weeks to cover (default 8).")
+    rr.add_argument("--project", default=None, help="Only failures of this project.")
+    rr.add_argument(
+        "--min-gap-hours",
+        type=float,
+        default=24.0,
+        help="Minimum hours between a cue's first and a repeat (default 24).",
+    )
+    rr.add_argument("--json", action="store_true", help="Emit JSON, not markdown.")
+
     args = parser.parse_args()
 
     if args.command == "create-admin":
@@ -280,6 +336,15 @@ def main() -> None:
         _run(_set_machine_principal(args.email))
     elif args.command == "serve":
         _serve(args.host, args.port)
+    elif args.command == "metrics" and args.metrics_command == "repeat-rate":
+        _run(
+            _metrics_repeat_rate(
+                args.weeks, args.project, args.min_gap_hours, args.json
+            )
+        )
+    elif args.command == "metrics":
+        mt.print_help(sys.stderr)
+        sys.exit(1)
     else:
         parser.print_help(sys.stderr)
         sys.exit(1)

@@ -43,6 +43,7 @@ from kb_service.routes.map_lint_routes import router as map_lint_router
 from kb_service.routes.map_loop_routes import router as map_loop_router
 from kb_service.routes.map_op_routes import router as map_op_router
 from kb_service.routes.maps_routes import router as maps_router
+from kb_service.routes.metrics_routes import router as metrics_router
 from kb_service.routes.nudge_routes import router as nudge_router
 from kb_service.routes.prevention_routes import router as prevention_router
 from kb_service.routes.query_routes import router as query_router
@@ -283,6 +284,7 @@ app.include_router(event_router)
 app.include_router(turn_router)
 app.include_router(surprise_router)
 app.include_router(prevention_router)
+app.include_router(metrics_router)
 app.include_router(telemetry_router)
 app.include_router(embedding_queue_router)
 app.include_router(map_eligibility_router)

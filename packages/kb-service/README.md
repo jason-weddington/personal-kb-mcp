@@ -24,6 +24,7 @@ agent sessions.
   one pointer per KB into the next agent turn. Multi-KB whisper is gated on
   **0 union false-injections**; the evaluation harnesses are maintained outside
   this repo.
+- **Experience-loop metric**: `GET /api/kb/metrics/repeat-rate` and `kb-service metrics repeat-rate [--json]` report the weekly cross-session repeat-mistake rate from `failure_events`, cut by harness, mode, engine and host, with resolution coverage.
 
 ## Topology
 

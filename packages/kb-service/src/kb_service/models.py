@@ -1708,3 +1708,157 @@ class GateStatsResponse(BaseModel):
     by_resolution: list[GateStatsResolutionRow]
     by_host: list[GateStatsHostRow]
     invariant_violations: GateInvariantViolations
+
+
+# --- Cross-session repeat-rate metric ---
+
+
+class RepeatRateCounts(BaseModel):
+    """Session and (session, cue) pair counts for one slice of the metric.
+
+    Attributes:
+        sessions: Distinct sessions with a booked pair.
+        repeat_sessions: Sessions with at least one repeat pair.
+        repeat_rate: ``repeat_sessions / sessions``; None when no sessions.
+        distinct_cue_keys: Distinct cue keys across the booked pairs.
+        pairs: Booked (session, cue) pairs.
+        repeat_pairs: Booked pairs that are repeats.
+        aggregate_rate: ``repeat_pairs / pairs``; None when no pairs.
+        covered_sessions: Sessions with at least one covered pair.
+        covered_repeat_sessions: Sessions with a pair both covered and repeat.
+        covered_repeat_rate: ``covered_repeat_sessions / covered_sessions``.
+    """
+
+    sessions: int
+    repeat_sessions: int
+    repeat_rate: float | None
+    distinct_cue_keys: int
+    pairs: int
+    repeat_pairs: int
+    aggregate_rate: float | None
+    covered_sessions: int
+    covered_repeat_sessions: int
+    covered_repeat_rate: float | None
+
+
+class RepeatRateWeek(RepeatRateCounts):
+    """Counts for one ISO week.
+
+    Attributes:
+        week: ISO week label, e.g. ``2026-W40``.
+        week_start: The Monday of that week, ``YYYY-MM-DD``.
+    """
+
+    week: str
+    week_start: str
+
+
+class RepeatRateCutRow(RepeatRateCounts):
+    """Counts for one (week, cut key) cell.
+
+    Attributes:
+        week: ISO week label.
+        key: The cut value (harness, mode, engine, host class or host).
+    """
+
+    week: str
+    key: str
+
+
+class RepeatRateCue(BaseModel):
+    """One cue that repeated across sessions.
+
+    Attributes:
+        cue_key: The failure cue key.
+        tool: Tool of the cue's earliest failure.
+        target_class: Target class of the cue's earliest failure.
+        project: Project of the cue's earliest failure.
+        normalized_error: Normalized error of the cue's earliest failure.
+        sessions: Booked pairs for the cue.
+        repeat_sessions: Booked repeat pairs for the cue.
+        covered_sessions: Booked covered pairs for the cue.
+        covering_resolution_ids: Sorted ids of resolutions covering any pair.
+    """
+
+    cue_key: str
+    tool: str
+    target_class: str
+    project: str
+    normalized_error: str
+    sessions: int
+    repeat_sessions: int
+    covered_sessions: int
+    covering_resolution_ids: list[str]
+
+
+class RepeatRateDiagnostics(BaseModel):
+    """Inputs, skips and invariant checks behind a repeat-rate response.
+
+    Attributes:
+        failure_rows_scanned: Failure rows read from the service DB.
+        failure_rows_skipped_bad_ts: Rows skipped for an unparseable ts.
+        failure_rows_noncanonical_ts: Rows kept with a non-canonical ts text.
+        failure_rows_before_window: Kept rows older than the window.
+        resolutions_scanned: Resolution entries read from the data DB.
+        resolutions_skipped_malformed: Resolutions failing the parse rules.
+        resolutions_skipped_no_cue: Resolutions without a usable cue.
+        resolutions_skipped_bad_created_at: Resolutions with a bad created_at.
+        coverage_near_miss_created_after: Uncovered pairs whose cue matched a
+            resolution created only after the failure.
+        normalizer_versions: Distinct normalizer versions among booked rows.
+        singleton_cue_fraction: Share of cues seen in exactly one row.
+        top_cue_share: Share of rows belonging to the busiest cue.
+        tripwires: Names of failed invariant checks.
+    """
+
+    failure_rows_scanned: int
+    failure_rows_skipped_bad_ts: int
+    failure_rows_noncanonical_ts: int
+    failure_rows_before_window: int
+    resolutions_scanned: int
+    resolutions_skipped_malformed: int
+    resolutions_skipped_no_cue: int
+    resolutions_skipped_bad_created_at: int
+    coverage_near_miss_created_after: int
+    normalizer_versions: list[int]
+    singleton_cue_fraction: float | None
+    top_cue_share: float | None
+    tripwires: list[str]
+
+
+class RepeatRateResponse(BaseModel):
+    """Weekly cross-session repeat-mistake rate with cuts and diagnostics.
+
+    Attributes:
+        weeks: One row per week, oldest first.
+        total: Counts over every booked pair.
+        by_harness: Per-week cut by harness.
+        by_mode: Per-week cut by mode.
+        by_engine: Per-week cut by engine.
+        by_host_class: Per-week cut by host class.
+        by_host: Per-week cut by host.
+        top_cues: Cues with the most repeat sessions.
+        project: Echoed project parameter (does not filter in compute).
+        min_gap_hours: Minimum gap between a cue's first and a repeat session.
+        window_start: Window start (inclusive), ISO-8601 UTC.
+        window_end: Window end (exclusive), ISO-8601 UTC.
+        failure_rows: Number of failure rows used.
+        resolutions_loaded: Number of resolution cues loaded.
+        diagnostics: Inputs, skips and tripwires.
+    """
+
+    weeks: list[RepeatRateWeek]
+    total: RepeatRateCounts
+    by_harness: list[RepeatRateCutRow]
+    by_mode: list[RepeatRateCutRow]
+    by_engine: list[RepeatRateCutRow]
+    by_host_class: list[RepeatRateCutRow]
+    by_host: list[RepeatRateCutRow]
+    top_cues: list[RepeatRateCue]
+    project: str | None
+    min_gap_hours: float
+    window_start: str
+    window_end: str
+    failure_rows: int
+    resolutions_loaded: int
+    diagnostics: RepeatRateDiagnostics
