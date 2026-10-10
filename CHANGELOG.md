@@ -2,6 +2,51 @@
 
 <!-- version list -->
 
+## v1.4.0 (2026-10-09)
+
+### Bug Fixes
+
+- Tool inventory is opt-in via KB_TOOL_DIRS; resolution index no longer matches scope on JSON
+  spacing
+  ([`cca78a2`](https://github.com/jason-weddington/personal-kb-mcp/commit/cca78a2a63ec6a213bcf416c04b7de9760250526))
+
+- **f3d06c8d): fix(surprise**: Shape-1 detection and its cue look at every segment of a compound
+  Bash command
+  ([`2ec56b2`](https://github.com/jason-weddington/personal-kb-mcp/commit/2ec56b2abbd5437b95651f87c225ab2f401da7e7))
+
+- **kb-core**: Read text blocks from LLM responses, not content[0]
+  ([`dc76418`](https://github.com/jason-weddington/personal-kb-mcp/commit/dc76418efafaa28ef1ddad8e5cbc3a1018dfabe7))
+
+### Documentation
+
+- Experience-loop status and roadmap (resume point), with eval results and GTD ids
+  ([`3f503ea`](https://github.com/jason-weddington/personal-kb-mcp/commit/3f503ea0abaad48cc35ed38dbcc33ee6111231e2))
+
+### Features
+
+- **03ce88c7**: Experience loop step 3: shape-1 and shape-2 captures are gate-eligible at first
+  sighting
+  ([`17d8c0d`](https://github.com/jason-weddington/personal-kb-mcp/commit/17d8c0d3a4013d3aa29da5318e43c9c438b926d1))
+
+- **321e3f64**: Surprise capture: distill candidates into autonomous resolutions with recurrence
+  promotion
+  ([`401bacd`](https://github.com/jason-weddington/personal-kb-mcp/commit/401bacda959d5002dad8090299f53c6e1c878d1e))
+
+- **61a417ba**: Surprise capture: detection for shapes 1-3, candidates table, drain endpoint and
+  worker
+  ([`c4b385d`](https://github.com/jason-weddington/personal-kb-mcp/commit/c4b385d529368d7e6e096a3585bc4047b68519b4))
+
+- **9b59b615**: Surprise capture: kb-service turn_events ingest and storage (digest contract owner)
+  ([`1febccb`](https://github.com/jason-weddington/personal-kb-mcp/commit/1febccbd38851f881ae89557b207ad380509cef9))
+
+- **bbe3289e**: Surprise capture: detector eval harness (precision/recall per shape on a private
+  labeled set)
+  ([`7350fbb`](https://github.com/jason-weddington/personal-kb-mcp/commit/7350fbb0304d7e14490a48b9c00dd9bb996c41d4))
+
+- **e397f59b**: Surprise capture: hook ships a turn digest at Stop
+  ([`9c62ada`](https://github.com/jason-weddington/personal-kb-mcp/commit/9c62ada286dbaaf469b7e20b29d01ba120edc1f2))
+
+
 ## v1.3.0 (2026-10-09)
 
 ### Bug Fixes
