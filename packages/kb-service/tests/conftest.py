@@ -1384,7 +1384,7 @@ def mcp_client(
 # shell can carry a real KB_DATABASE_URL (it did: a daemon smoke test opened
 # the live KB and ran the startup reconcile, 2026-10-07). Tests that need one
 # set it explicitly with monkeypatch after this runs.
-_AMBIENT_DB_VARS = ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL")
+_AMBIENT_DB_VARS = ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL", "KB_DB_PATH")
 # Surprise capture runs with mode off and default models unless a test opts in.
 _AMBIENT_SURPRISE_VARS = (
     "KB_SURPRISE_CAPTURE",

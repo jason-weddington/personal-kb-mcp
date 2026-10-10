@@ -76,7 +76,7 @@ _CHUNK = 500
 _LOG_MAX_BYTES = 262144
 _ORPHAN_MIN_AGE_SECONDS = 3600.0
 _CACHE_GC_AGE_SECONDS = 7 * 24 * 3600.0
-# Longer than the server's 30-day turn_events retention, so a counter removed
+# Longer than the server's 90-day turn_events retention, so a counter removed
 # by GC cannot restart and reuse an event_id the server still retains.
 _TURN_STATE_GC_AGE_SECONDS = 91 * 24 * 3600.0
 # Server surprise-capture modes; lives here (not turn_digest) to avoid a cycle.
