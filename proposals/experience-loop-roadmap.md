@@ -94,9 +94,27 @@ Local extraction models on odin (shape 2, same 80-case stratified sample as the 
 
 Cost estimate for step 2. Assuming Sonnet-class pricing of $3/M input and $15/M output (check current pricing), a detector call is about 2-2.5k input tokens and under 100 output tokens, roughly $0.008-0.01. Interactive volume averages 15 prompts per active day (164 on the busiest), plus every tool-using turn for shape 3. A headless dispatch run is one turn. That comes to about $0.5-1 on a typical day and $5 on a heavy day. A clef-flash prefilter would cut shape-2 calls by about 80%.
 
+Lesson precision, the number that decides whether capture goes back on. personal-kb-evals/surprise/replay_pipeline.py replays labelled mined cases through a local shadow-mode kb-service, and an Opus judge rates every lesson the pipeline would write against the source and current reality (kb-03709).
+
+- v1.6.0: 39 would-write lessons, 19 good, 12 harmful. Shape-2 lessons overgeneralise narrow user corrections; shape-3 positives were 6/8 good.
+- With a scope-faithful distiller and a critic pass (55676e7): 14 would-write lessons, 7 good, 6 harmful. Volume fell, but precision stayed at about 50%.
+- Of the remaining harm, a third is time-staleness: true when captured, false after a later change. That argues for expiry (dispatched: a 30-day TTL unless re-observed, permanent at three sessions; the critic also rejects hedged user claims).
+- Duplicates of existing entries cannot show in an empty-KB replay; production compares against the real KB.
+
+Model-agnostic learning (kb-03710):
+
+- Claude Code on local qwen3.8:27b (the 5090) learned from session-1 corrections in 7 of 8 two-session trials, against 0 of 8 with capture off.
+- On shape-2 detection over the same 80 cases, local qwen models on odin match Sonnet (qwen3.8:27b-mtp: population recall 0.67 and precision 0.45, vs Sonnet's 0.67 and 0.43) at about 30x the latency.
+- A fully local detector (clef-flash prefilter, then qwen) is quality-viable for the async worker. The distiller and critic were not evaluated locally.
+
+Decisions for Jason:
+
+1. The quality bar for turning autonomous capture back on. The options are: wait for better precision; turn it on with autonomous lessons delivered only as hedged slice context that never gates; or turn it on for shape 3 only, the best class.
+2. The detector and distiller model: Sonnet API spend of roughly $0.5-5 a day, or a local path on odin.
+
 Status of the six steps:
 
-1. Release and enable: done (v1.4.0 to v1.6.0). On Jason's KB the soft gate is live and capture is in shadow pending the automated audit of dry runs; then back to on.
+1. Release and enable: done (v1.4.0 to v1.6.0). On Jason's KB the soft gate is live and capture is in shadow; turning it back on is decision 1 above.
 2. Cost: estimate above; the choice of detector model and prefilter is Jason's.
 3. First-sighting gate trust: done, then narrowed after the incident. Interactive shape 1 and all shape 2 are trusted at first sighting with precise cues; headless shape 1 and shape 3 wait for a second sighting. Trusted lessons are delivered without the "unconfirmed" hedge (Sonnet ignored hedged denies).
 4. Headless fleet digests: done. The dispatch user has hook 1.4.1+ with Stop wired on all four hosts, and headless digests are arriving.
