@@ -814,6 +814,43 @@ class TurnReasoningItem(BaseModel):
     truncated: bool
 
 
+# harness_correction trigger meanings (the KB never branches on trigger):
+# gate_red: the harness ran the project gate and it failed; detail is the failing
+#   gate output.
+# claim_rejected: the harness rejected the agent's claim that the work, or an
+#   acceptance criterion, is done; detail is the rejected claim.
+# no_change: the agent tried to finish with no change to the working tree; detail
+#   is the harness's message to the agent.
+# nudge: the harness prompted the agent to keep going or to finish, without
+#   seeing a failure; detail is the nudge text.
+# resolved_by: the tool_use_ids of the agent's tool calls between the trigger and
+#   the next green gate or accepted finish.
+# resolved: True iff that green gate or accepted finish happened before the run
+#   ended.
+HarnessCorrectionTrigger = Literal["gate_red", "claim_rejected", "no_change", "nudge"]
+
+
+class TurnHarnessCorrectionItem(BaseModel):
+    """A harness rejection and the actions that resolved it (talos).
+
+    Sender rules: (a) emit each correction exactly once, in the digest that holds
+    its last resolving tool_call, or in the run's final digest with resolved false.
+    (b) resolved_by names only tool_calls posted in that digest or in an earlier
+    digest of the same session. (c) When fitting the 200-item / 65536-byte budget,
+    never drop a harness_correction item or a tool_call that one names; drop
+    reasoning items first, then tool items that no correction names. (d) A forward
+    or dropped reference is recorded permanently as ungrounded/resolved_by_unmatched.
+    """
+
+    kind: Literal["harness_correction"]
+    trigger: HarnessCorrectionTrigger
+    detail: str = Field(max_length=TURN_EXCERPT_MAX)
+    resolved_by: list[Annotated[str, Field(min_length=1)]] = Field(
+        max_length=TURN_ITEMS_MAX
+    )
+    resolved: bool
+
+
 # To add a new item kind, do all six steps:
 # (1) add its model to this union;
 # (2) add an isinstance branch before assert_never in
@@ -824,7 +861,11 @@ class TurnReasoningItem(BaseModel):
 # (6) decide whether surprise.render_items renders it, since unknown kinds are
 #     skipped.
 TurnItem = Annotated[
-    TurnAssistantTextItem | TurnToolCallItem | TurnToolResultItem | TurnReasoningItem,
+    TurnAssistantTextItem
+    | TurnToolCallItem
+    | TurnToolResultItem
+    | TurnReasoningItem
+    | TurnHarnessCorrectionItem,
     Field(discriminator="kind"),
 ]
 
@@ -922,12 +963,14 @@ class TurnHeartbeatResponse(BaseModel):
 
 # --- Surprise capture: detection drain ---
 
+SurpriseShape = Literal[1, 2, 3, 4]
+
 
 class SurpriseCandidateOut(BaseModel):
     """One ``surprise_candidates`` row as returned by the drain."""
 
     id: int
-    shape: Literal[1, 2, 3]
+    shape: SurpriseShape
     session_id: str
     project: str
     turn_event_ids: list[str]
@@ -968,7 +1011,7 @@ class SurpriseCandidateAudit(BaseModel):
     """
 
     id: int
-    shape: Literal[1, 2, 3]
+    shape: SurpriseShape
     status: SurpriseCandidateStatus
     session_id: str
     project: str

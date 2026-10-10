@@ -1,7 +1,7 @@
 """Surprise capture: the drain over pending turn digests and its worker.
 
 ``drain_once`` reads pending ``turn_events`` digests through the
-``kb_service.turn_digest`` helpers, runs the three detectors in
+``kb_service.turn_digest`` helpers, runs the four detectors in
 ``kb_service.surprise`` on each, claims each digest (``processed_at``) and
 records every decision in ``surprise_detections`` and every hit in
 ``surprise_candidates``. In mode ``on`` it then hands pending candidates to
@@ -62,6 +62,7 @@ from kb_service.surprise import (
     build_shape2_prompt,
     build_shape3_prompt,
     detect_shape1,
+    detect_shape4,
     evidence_grounded,
     parse_detector_response,
     shape2_skip_reason,
@@ -402,10 +403,12 @@ async def detect_digest(
     min_confidence: float | None = None,
     min_confidence_by_shape: Mapping[int, float] | None = None,
 ) -> list[DetectionRecord]:
-    """Run shapes 1, 2 and 3 on *cur*; return its detection records in order.
+    """Run shapes 1-4 on *cur*; return its detection records in order.
 
     *session_digests* holds the session's digests with ``turn_index`` up to
     the current one. Model calls run sequentially (shape 2, then shape 3).
+    Shape 4 adds zero or more records last (one per harness_correction item in
+    *cur*) with no model call.
     """
 
     def floor(shape: int) -> float:
@@ -507,6 +510,7 @@ async def detect_digest(
                 ],
             )
         )
+    records.extend(detect_shape4(session_digests, cur.event_id))
     return records
 
 
@@ -1531,6 +1535,24 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
                     rec.outcome,
                     rec.reason,
                 )
+            if rec.shape == 4:
+                c["shape4_records"] += 1
+                if rec.reason == "resolved_by_unmatched":
+                    c["shape4_unmatched"] += 1
+                    logger.warning(
+                        "surprise_drain shape4_unmatched event_id=%s trigger=%s"
+                        " resolved_by=%d turn_gap=%s",
+                        cur.event_id,
+                        rec.details["trigger"],
+                        rec.details["resolved_by_count"],
+                        flags["turn_gap"],
+                    )
+                if (
+                    rec.outcome == "candidate"
+                    and rec.details["resolved_by_matched"]
+                    < rec.details["resolved_by_count"]
+                ):
+                    c["shape4_partial"] += 1
 
         now = _now()
         if await mark_turn_digests_processed(pool, [cur.event_id], now) != 1:
@@ -1601,7 +1623,8 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         " invalid=%d no_surprise=%d low_confidence=%d ungrounded=%d no_llm=%d"
         " truncated=%d out_of_order=%d turn_gaps=%d llm_ms=%d prompt_chars=%d"
         " response_chars=%d distill_input=%d written=%d merged=%d"
-        " dry_run_input=%d",
+        " dry_run_input=%d shape4=%d shape4_records=%d shape4_unmatched=%d"
+        " shape4_partial=%d",
         mode,
         SURPRISE_DETECTOR_VERSION,
         floor2,
@@ -1632,6 +1655,10 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         len(dres.entries_written),
         len(dres.entries_merged),
         dry_run_input,
+        c["shape4"],
+        c["shape4_records"],
+        c["shape4_unmatched"],
+        c["shape4_partial"],
     )
     return DrainResult(
         digests_processed=c["digests"],

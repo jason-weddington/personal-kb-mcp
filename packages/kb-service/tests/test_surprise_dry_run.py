@@ -24,6 +24,7 @@ from kb_service.db_sqlite import SqlitePool
 from kb_service.main import app
 from kb_service.surprise import DistillResult, SurpriseCandidate
 from kb_service.surprise_distill import (
+    SHAPE_DESCRIPTIONS,
     SURPRISE_CRITIC_VERSION,
     SURPRISE_DISTILLER_SYSTEM,
     SURPRISE_DISTILLER_VERSION,
@@ -34,7 +35,7 @@ from kb_service.surprise_worker import (
     drain_once,
     dry_run_candidates,
 )
-from tests.conftest import CRITIC_ACCEPT, FakeCritic, FakeLLM
+from tests.conftest import CRITIC_ACCEPT, S4_OUT, FakeCritic, FakeLLM
 from tests.test_surprise_distill_worker import (
     _HERMETIC_ENV,
     _SCRUB_ENV,
@@ -572,7 +573,7 @@ def test_candidates_endpoint(client: TestClient) -> None:
 
 @pytest.mark.parametrize(
     "params",
-    [{"limit": 1001}, {"limit": 0}, {"shape": 4}, {"status": "bogus"}],
+    [{"limit": 1001}, {"limit": 0}, {"shape": 5}, {"status": "bogus"}],
 )
 def test_candidates_endpoint_rejects_bad_params(
     client: TestClient, params: dict[str, Any]
@@ -617,3 +618,25 @@ async def test_shadow_unparseable_critic_records_unparseable(
     assert await dry_run_candidates(pool, kb, [c]) == 1
     (r,) = await _dry_runs(pool)
     assert (r["would_outcome"], r["reason"]) == ("unparseable", "critic: unparseable")
+
+
+async def test_shadow_shape4_would_write(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    await _turn(pool, "s4")
+    c = await _cand(pool, "s4", shape=4, output=S4_OUT)
+    llm.enqueue(D)
+    assert await dry_run_candidates(pool, kb, [c]) == 1
+    (r,) = await _dry_runs(pool)
+    assert (r["shape"], r["would_outcome"], r["mode"]) == (4, "would_write", "headless")
+    payload = json.loads(r["payload"])
+    assert payload["cue"] is None
+    assert payload["critic_version"] == SURPRISE_CRITIC_VERSION
+    assert llm.generate_calls[0][0].split("\n")[0] == SHAPE_DESCRIPTIONS[4]
+    assert "[tool_result]" not in critic.generate_calls[0][0]
+    assert await _lessons(kb) == 0
+
+
+def test_candidates_endpoint_shape4(client: TestClient) -> None:
+    e = _seed_candidate("e", shape=4, created_at=_now_iso(hours=1))
+    assert [(c["id"], c["shape"]) for c in _get(client, shape=4)] == [(e, 4)]

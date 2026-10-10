@@ -982,6 +982,16 @@ CRITIC_ACCEPT = json.dumps(
     }
 )
 
+# detector_output of the shape-4 candidate drawn from test_surprise_worker._S4_ITEMS
+S4_OUT = {
+    "wrong_belief": "ruff format --check: would reformat src/a.py",
+    "corrected_fact": "Bash uv run ruff format src/a.py; run_checks",
+    "evidence_excerpt": "ruff format --check: would reformat src/a.py",
+    "confidence": 1.0,
+    "trigger": "gate_red",
+    "resolved_by": ["c2", "c3"],
+}
+
 
 class FakeCritic(FakeLLM):
     """Surprise-capture critic stub: scripted replies, then accept by default.

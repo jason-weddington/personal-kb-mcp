@@ -23,6 +23,7 @@ from kb_service.database import get_db
 from kb_service.models import (
     TurnDigestRequest,
     TurnDigestResponse,
+    TurnHarnessCorrectionItem,
     TurnHeartbeatResponse,
     TurnHeartbeatRow,
     TurnReasoningItem,
@@ -104,6 +105,9 @@ async def post_turn(
     nbytes = len(await request.body())
     n_calls = sum(1 for i in body.items if isinstance(i, TurnToolCallItem))
     n_reasoning = sum(1 for i in body.items if isinstance(i, TurnReasoningItem))
+    n_corrections = sum(
+        1 for i in body.items if isinstance(i, TurnHarnessCorrectionItem)
+    )
     n_results = sum(1 for i in body.items if isinstance(i, TurnToolResultItem))
     n_errors = sum(
         1 for i in body.items if isinstance(i, TurnToolResultItem) and i.is_error
@@ -111,7 +115,8 @@ async def post_turn(
     if nbytes > TURN_DIGEST_MAX_BYTES:
         logger.warning(
             "turn_event reason=too-large session_id=%s turn_index=%d bytes=%d"
-            " items=%d truncated=%s hook_version=%s harness=%s reasoning=%d",
+            " items=%d truncated=%s hook_version=%s harness=%s reasoning=%d"
+            " corrections=%d",
             body.session_id,
             body.turn_index,
             nbytes,
@@ -120,6 +125,7 @@ async def post_turn(
             body.hook_version,
             body.harness,
             n_reasoning,
+            n_corrections,
         )
         _OUTCOMES["too-large"] = _OUTCOMES.get("too-large", 0) + 1
         raise HTTPException(413, detail="turn digest exceeds 65536 bytes")
@@ -179,7 +185,7 @@ async def post_turn(
         "turn_event reason=%s capture_mode=%s session_id=%s turn_index=%d"
         " project=%s host=%s hook_version=%s bytes=%d items=%d tool_calls=%d"
         " tool_results=%d result_errors=%d truncated=%s anomaly=%s redactions=%s"
-        " harness=%s reasoning=%d unmapped_tools=%s",
+        " harness=%s reasoning=%d unmapped_tools=%s corrections=%d",
         reason,
         mode,
         body.session_id,
@@ -198,6 +204,7 @@ async def post_turn(
         body.harness,
         n_reasoning,
         unmapped,
+        n_corrections,
     )
     return response
 

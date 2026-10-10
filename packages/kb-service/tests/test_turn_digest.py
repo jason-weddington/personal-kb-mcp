@@ -14,9 +14,11 @@ import kb_service.database as database
 from kb_service import turn_digest
 from kb_service.db_sqlite import SqlitePool
 from kb_service.models import (
+    HarnessCorrectionTrigger,
     StoredTurnDigest,
     TurnAssistantTextItem,
     TurnDigestRequest,
+    TurnHarnessCorrectionItem,
     TurnItem,
     TurnReasoningItem,
     TurnToolCallItem,
@@ -254,8 +256,9 @@ async def test_clean_digest_stores_null_anomaly(pool: SqlitePool) -> None:
 
 
 def test_str_field_partition_drift_guard() -> None:
-    """Only user_prompt, final_message, text, target and excerpt are redacted.
+    """Only user_prompt, final_message, text, target, excerpt and detail are redacted.
 
+    list[str] fields (resolved_by: tool_use_ids) are classified and never scanned.
     A newly added str field fails here until it is classified.
     """
 
@@ -267,6 +270,22 @@ def test_str_field_partition_drift_guard() -> None:
                 typing.get_origin(ann) is not None
                 and set(typing.get_args(ann)) == {str, type(None)}
             ):
+                out.add(name)
+        return out
+
+    def list_str_fields(model: type) -> set[str]:
+        out = set()
+        for name, info in model.model_fields.items():  # type: ignore[attr-defined]
+            ann = info.annotation
+            if typing.get_origin(ann) is not list:
+                continue
+            args = typing.get_args(ann)
+            if len(args) != 1:
+                continue
+            arg = args[0]
+            if typing.get_origin(arg) is typing.Annotated:
+                arg = typing.get_args(arg)[0]
+            if arg is str:
                 out.add(name)
         return out
 
@@ -291,6 +310,16 @@ def test_str_field_partition_drift_guard() -> None:
     }
     assert str_fields(TurnToolResultItem) == {"tool_use_id", "excerpt"}
     assert str_fields(TurnReasoningItem) == {"text"}
+    assert str_fields(TurnHarnessCorrectionItem) == {"detail"}
+    assert list_str_fields(TurnHarnessCorrectionItem) == {"resolved_by"}
+    for m in (
+        TurnDigestRequest,
+        TurnAssistantTextItem,
+        TurnToolCallItem,
+        TurnToolResultItem,
+        TurnReasoningItem,
+    ):
+        assert list_str_fields(m) == set()
 
 
 def _reasoning(text: str, truncated: bool = False) -> dict[str, Any]:
@@ -366,7 +395,83 @@ def test_turn_item_kinds_pinned() -> None:
         typing.get_args(c.model_fields["kind"].annotation)[0]
         for c in typing.get_args(u)
     }
-    assert kinds == {"assistant_text", "tool_call", "tool_result", "reasoning"}
+    assert kinds == {
+        "assistant_text",
+        "tool_call",
+        "tool_result",
+        "reasoning",
+        "harness_correction",
+    }
+
+
+def test_harness_correction_trigger_pinned() -> None:
+    assert typing.get_args(HarnessCorrectionTrigger) == (
+        "gate_red",
+        "claim_rejected",
+        "no_change",
+        "nudge",
+    )
+
+
+def _hc_item(detail: str) -> dict[str, Any]:
+    return {
+        "kind": "harness_correction",
+        "trigger": "claim_rejected",
+        "detail": detail,
+        "resolved_by": ["t1"],
+        "resolved": True,
+    }
+
+
+def test_harness_correction_redacted() -> None:
+    result = redact_turn_digest(_body(items=[_hc_item('password = "hunter2hunter2"')]))
+    assert result is not None
+    red, types = result
+    assert types == ["Secret Keyword"]
+    item = red.items[0]
+    assert isinstance(item, TurnHarnessCorrectionItem)
+    assert item.detail == "[REDACTED:Secret Keyword]"
+    assert item.trigger == "claim_rejected"
+    assert item.resolved_by == ["t1"]
+    assert item.resolved is True
+
+
+def test_harness_correction_retruncated(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    detail = 'pwd="hunter2hunter2"\n' + "x" * 1479
+    assert len(detail) == 1500
+    result = redact_turn_digest(_body(items=[_hc_item(detail)]))
+    assert result is not None
+    item = result[0].items[0]
+    assert isinstance(item, TurnHarnessCorrectionItem)
+    assert item.detail == "[REDACTED:Secret Keyword]\n" + "x" * 1474
+    assert (
+        "turn_event retruncated event_id=s1:0 fields=1 chars_dropped=5" in caplog.text
+    )
+
+
+def test_harness_correction_no_anomaly() -> None:
+    body = _body(items=[_hc_item('password = "hunter2hunter2"')])
+    assert turn_digest_anomalies(body) == []
+
+
+async def test_harness_correction_storage_round_trip(pool: SqlitePool) -> None:
+    hc = {
+        "kind": "harness_correction",
+        "trigger": "gate_red",
+        "detail": "FAILED tests/test_a.py::test_x",
+        "resolved_by": ["t1", "t2"],
+        "resolved": True,
+    }
+    await _insert(pool, _body(items=[hc]))
+    (d,) = await get_session_turn_digests(pool, "s1")
+    assert isinstance(d.items[0], TurnHarnessCorrectionItem)
+    assert d.items[0].model_dump() == hc
+    row = await pool.fetchrow(
+        "SELECT items FROM turn_events WHERE event_id = $1", "s1:0"
+    )
+    assert row is not None
+    assert json.loads(row["items"]) == [hc]
 
 
 def test_empty_tool_target_anomaly() -> None:

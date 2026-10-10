@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from kb_service import surprise_worker
 from kb_service.auth import get_current_user
-from kb_service.database import get_db
+from kb_service.database import SURPRISE_SHAPES, get_db
 from kb_service.models import (
     SurpriseCandidateAudit,
     SurpriseCandidateOut,
@@ -97,7 +97,7 @@ async def list_surprise_candidates(
         datetime | None, Query(description="ISO timestamp; default 24h ago")
     ] = None,
     status: SurpriseCandidateStatus | None = None,
-    shape: Annotated[int | None, Query(ge=1, le=3)] = None,
+    shape: Annotated[int | None, Query(ge=1, le=max(SURPRISE_SHAPES))] = None,
     project: str | None = None,
     limit: Annotated[
         int, Query(ge=1, le=CANDIDATES_MAX_LIMIT)

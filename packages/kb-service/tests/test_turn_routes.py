@@ -123,6 +123,7 @@ def test_shadow_records(
         "bytes=",
         "harness=claude-code",
         "reasoning=0",
+        "corrections=0",
     ):
         assert frag in caplog.text
 
@@ -612,3 +613,106 @@ def test_too_large_talos_logs_harness(
     assert _post(local_client, _talos(items=items)).status_code == 413
     assert "reason=too-large" in caplog.text
     assert "harness=talos" in caplog.text
+
+
+HC: dict[str, Any] = {
+    "kind": "harness_correction",
+    "trigger": "gate_red",
+    "detail": "FAILED tests/test_a.py::test_x",
+    "resolved_by": ["toolu_1"],
+    "resolved": True,
+}
+
+
+def _assert_422_no_rows(resp: Any) -> None:
+    assert resp.status_code == 422
+    assert _rows("SELECT COUNT(*) FROM turn_events")[0][0] == 0
+
+
+def test_harness_correction_recorded(
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    caplog.set_level(logging.INFO)
+    resp = _post(local_client, _digest(harness="talos", mode="headless", items=[HC]))
+    assert resp.json()["reason"] == "recorded"
+    (row,) = _rows()
+    assert json.loads(row["items"]) == [HC]
+    assert row["harness"] == "talos"
+    assert "corrections=1" in caplog.text
+
+
+def test_harness_correction_unknown_trigger_422(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _digest(items=[{**HC, "trigger": "flaky"}]))
+    _assert_422_no_rows(resp)
+
+
+@pytest.mark.parametrize("field", ["trigger", "detail", "resolved_by", "resolved"])
+def test_harness_correction_missing_field_422(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    item = {k: v for k, v in HC.items() if k != field}
+    _assert_422_no_rows(_post(local_client, _digest(items=[item])))
+
+
+def test_harness_correction_detail_over_cap_422(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _digest(items=[{**HC, "detail": "d" * 1501}]))
+    _assert_422_no_rows(resp)
+
+
+def test_harness_correction_resolved_by_over_cap_422(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    ids = [f"t{i}" for i in range(201)]
+    resp = _post(local_client, _digest(items=[{**HC, "resolved_by": ids}]))
+    _assert_422_no_rows(resp)
+
+
+def test_harness_correction_empty_id_422(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _digest(items=[{**HC, "resolved_by": [""]}]))
+    _assert_422_no_rows(resp)
+
+
+def test_harness_correction_redacted(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _digest(items=[{**HC, "detail": _AWS_LINE}]))
+    assert resp.json()["reason"] == "recorded"
+    assert resp.json()["redactions"] == ["Secret Keyword", "AWS Access Key"]
+    (row,) = _rows()
+    assert "wJalrXUtnFEMI" not in row["items"]
+    assert json.loads(row["items"]) == [{**HC, "detail": "[REDACTED:Secret Keyword]"}]
+
+
+def test_too_large_harness_correction(
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    raw = json.dumps(
+        _digest(
+            harness="talos", mode="headless", items=[{**HC, "detail": "d" * 1500}] * 45
+        )
+    ).encode()
+    resp = local_client.post(
+        "/api/kb/turn", content=raw, headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 413
+    assert _rows("SELECT COUNT(*) FROM turn_events")[0][0] == 0
+    assert "reason=too-large" in caplog.text
+    assert "corrections=45" in caplog.text

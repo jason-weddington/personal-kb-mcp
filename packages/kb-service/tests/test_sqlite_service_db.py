@@ -7,14 +7,17 @@ module-level pool so nothing leaks between tests or into the rest of the suite.
 
 import json
 import sqlite3
+import typing
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 import kb_service.database as database
-from kb_service import attribution, chat_history
+from kb_service import attribution, chat_history, models
 from kb_service.db_sqlite import SqlitePool, translate_sql
 from kb_service.main import app
 from kb_service.models import User
@@ -266,7 +269,7 @@ async def test_gate_decisions_old_check_is_rebuilt(local_env: Path) -> None:
         assert (
             await db.fetchval(
                 "SELECT COUNT(*) FROM sqlite_master"
-                " WHERE name = 'gate_decisions_pre_failure_context'"
+                " WHERE name = 'gate_decisions_pre_rebuild'"
             )
             == 0
         )
@@ -559,5 +562,179 @@ async def test_surprise_distillations_schema_is_idempotent(local_env: Path) -> N
         names = {c["name"] for c in cols}
         assert "mode" not in names
         assert len(names) == 24  # id + 23 data columns
+    finally:
+        await database.close_db()
+
+
+# --- surprise shape CHECK ------------------------------------------------------
+
+_SHAPE_INSERT = {
+    "surprise_candidates": (
+        "INSERT INTO surprise_candidates (shape, session_id, detector_model,"
+        " created_at) VALUES ($1, 's1', 'm', 't')"
+    ),
+    "surprise_detections": (
+        "INSERT INTO surprise_detections (event_id, session_id, shape, mode,"
+        " outcome, detector_version, ts) VALUES ('s1:0', 's1', $1, 'shadow',"
+        " 'no_surprise', 1, 't')"
+    ),
+    "surprise_distillations": (
+        "INSERT INTO surprise_distillations (candidate_id, session_id, shape,"
+        " outcome, distiller_version, ts) VALUES (1, 's1', $1, 'written', 1, 't')"
+    ),
+}
+_SHAPE_TABLES = list(_SHAPE_INSERT)
+
+
+def _create(table: str) -> str:
+    prefix = f"CREATE TABLE IF NOT EXISTS {table} ("
+    return next(s for s in database._SCHEMA_STATEMENTS if s.startswith(prefix))
+
+
+def _index_stmts(table: str) -> list[str]:
+    return [
+        s
+        for s in database._SCHEMA_STATEMENTS
+        if s.startswith("CREATE ") and " INDEX " in s and f" ON {table}(" in s
+    ]
+
+
+def _drop(table: str) -> str:
+    return f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_shape_check"
+
+
+def _add(table: str) -> str:
+    return (
+        f"ALTER TABLE {table} ADD CONSTRAINT {table}_shape_check"
+        " CHECK (shape IN (1, 2, 3, 4))"
+    )
+
+
+def test_surprise_shape_constants() -> None:
+    assert database.SURPRISE_SHAPES == (1, 2, 3, 4)
+    assert database._SURPRISE_SHAPE_CHECK == "CHECK (shape IN (1, 2, 3, 4))"
+    assert typing.get_args(models.SurpriseShape) == database.SURPRISE_SHAPES
+    for table in _SHAPE_TABLES:
+        assert "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3, 4)), " in _create(
+            table
+        )
+    assert "CHECK (shape" not in _create("surprise_dry_runs")
+
+
+def test_surprise_shape_postgres_statement_order() -> None:
+    stmts = database._SCHEMA_STATEMENTS
+    for table in _SHAPE_TABLES:
+        assert (
+            stmts.index(_create(table))
+            < stmts.index(_drop(table))
+            < stmts.index(_add(table))
+        )
+
+
+async def test_postgres_init_runs_shape_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[str] = []
+
+    class _Conn:
+        async def execute(self, sql: str, *args: Any) -> str:
+            executed.append(sql)
+            return "OK"
+
+    class _Pool:
+        @asynccontextmanager
+        async def acquire(self) -> AsyncIterator[_Conn]:
+            yield _Conn()
+
+    monkeypatch.setattr(database, "_pool", _Pool())
+    await database.init_db()
+    monkeypatch.setattr(database, "_pool", None)
+    expected = [stmt for t in _SHAPE_TABLES for stmt in (_drop(t), _add(t))]
+    assert [s for s in executed if s in expected] == expected
+
+
+@pytest.mark.parametrize("table", _SHAPE_TABLES)
+async def test_surprise_shape_check_is_rebuilt(
+    local_env: Path, caplog: pytest.LogCaptureFixture, table: str
+) -> None:
+    old_ddl = (
+        _create(table)
+        .replace(database._SURPRISE_SHAPE_CHECK, "CHECK (shape IN (1, 2, 3))")
+        .replace(database._PG_IDENTITY, database._SQLITE_IDENTITY)
+    )
+    assert database._SURPRISE_SHAPE_CHECK not in old_ddl
+    insert = _SHAPE_INSERT[table]
+    raw = await SqlitePool.open(local_env)
+    try:
+        await raw.execute(old_ddl)
+        for stmt in _index_stmts(table):
+            await raw.execute(stmt)
+        await raw.execute(insert, 3)
+        old_id = await raw.fetchval(f"SELECT id FROM {table}")  # noqa: S608
+        with pytest.raises(sqlite3.IntegrityError):
+            await raw.execute(insert, 4)
+    finally:
+        await raw.close()
+
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        assert (
+            await db.fetchval(f"SELECT id FROM {table} WHERE shape = 3")  # noqa: S608
+            == old_id
+        )
+        await db.execute(insert, 4)
+        with pytest.raises(sqlite3.IntegrityError):
+            await db.execute(insert, 5)
+        sql = await db.fetchval(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = $1", table
+        )
+        assert database._SURPRISE_SHAPE_CHECK in sql
+        assert (
+            await db.fetchval(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'"
+                " AND name LIKE $1 AND tbl_name = $2",
+                f"idx_{table}_%",
+                table,
+            )
+            == 2
+        )
+        assert (
+            await db.fetchval(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = $1",
+                f"{table}_pre_rebuild",
+            )
+            == 0
+        )
+        assert f"service_db check_rebuild table={table} rows=1" in caplog.text
+    finally:
+        await database.close_db()
+
+    caplog.clear()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        assert (
+            await db.fetchval(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = $1",
+                table,
+            )
+            == sql
+        )
+        assert await db.fetchval(f"SELECT COUNT(*) FROM {table}") == 2  # noqa: S608
+        assert "check_rebuild" not in caplog.text
+    finally:
+        await database.close_db()
+
+
+async def test_fresh_db_surprise_shape_check(local_env: Path) -> None:
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        for table, insert in _SHAPE_INSERT.items():
+            await db.execute(insert, 4)
+            with pytest.raises(sqlite3.IntegrityError):
+                await db.execute(insert, 5)
+            assert await db.fetchval(f"SELECT COUNT(*) FROM {table}") == 1  # noqa: S608
     finally:
         await database.close_db()

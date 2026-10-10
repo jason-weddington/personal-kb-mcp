@@ -10,10 +10,12 @@ from kb_service.surprise import (
     SHAPE3_INSTRUCTIONS,
     SURPRISE_DETECTOR_VERSION,
     DetectorVerdict,
+    NewCandidate,
     TurnDigest,
     build_shape2_prompt,
     build_shape3_prompt,
     detect_shape1,
+    detect_shape4,
     evidence_grounded,
     parse_detector_response,
     render_items,
@@ -297,8 +299,8 @@ def _text(t: str | None) -> dict[str, Any]:
     return {"kind": "assistant_text", "text": t}
 
 
-def test_detector_version_is_three() -> None:
-    assert SURPRISE_DETECTOR_VERSION == 3
+def test_detector_version_is_four() -> None:
+    assert SURPRISE_DETECTOR_VERSION == 4
 
 
 def test_shape3_skip_reasons() -> None:
@@ -558,3 +560,221 @@ def test_shape3_reasoning_details() -> None:
     assert blank["reasoning_chars"] == 2
     d = _digest(0, [call, result, _reasoning("x")])
     assert shape3_reasoning_details(d)["reasoning_after_result"] is True
+
+
+# --- shape 4 -----------------------------------------------------------------
+
+E: dict[str, Any] = {
+    "kind": "tool_call",
+    "tool_use_id": "e1",
+    "tool": "Edit",
+    "target": "src/a.py",
+    "target_class": "ext:py",
+}
+ER: dict[str, Any] = {
+    "kind": "tool_result",
+    "tool_use_id": "e1",
+    "is_error": False,
+    "excerpt": "",
+}
+
+
+def _hc(
+    trigger: str = "claim_rejected",
+    detail: str = "criterion 2 is done",
+    resolved_by: Any = ("e1",),
+    resolved: bool = True,
+) -> dict[str, Any]:
+    return {
+        "kind": "harness_correction",
+        "trigger": trigger,
+        "detail": detail,
+        "resolved_by": list(resolved_by),
+        "resolved": resolved,
+    }
+
+
+def _call(tid: str, tool: str, target: str) -> dict[str, Any]:
+    return {
+        "kind": "tool_call",
+        "tool_use_id": tid,
+        "tool": tool,
+        "target": target,
+        "target_class": "",
+    }
+
+
+def _one(items: list[dict[str, Any]]) -> Any:
+    (rec,) = detect_shape4([_digest(0, items)], "s:0")
+    return rec
+
+
+def test_shape4_cross_turn_candidate() -> None:
+    d0 = _digest(0, [E, ER])
+    d1 = _digest(1, [_hc(resolved_by=["e1", "zz"])])
+    (rec,) = detect_shape4([d0, d1], "s:1")
+    assert rec.shape == 4
+    assert rec.outcome == "candidate"
+    assert rec.reason == ""
+    assert rec.detector_model == "rule:shape4"
+    assert rec.confidence == 1.0
+    assert rec.details == {
+        "trigger": "claim_rejected",
+        "resolved": True,
+        "resolved_by_count": 2,
+        "resolved_by_matched": 1,
+        "resolved_by_errored": 0,
+        "last_resolving_error": False,
+        "resolved_by_tools": ["Edit"],
+    }
+    assert rec.candidate == NewCandidate(
+        4,
+        ["s:0", "s:1"],
+        "rule:shape4",
+        {
+            "wrong_belief": "criterion 2 is done",
+            "corrected_fact": "Edit src/a.py",
+            "evidence_excerpt": "criterion 2 is done",
+            "confidence": 1.0,
+            "trigger": "claim_rejected",
+            "resolved_by": ["e1"],
+        },
+    )
+
+
+def test_shape4_no_records_and_forward_reference() -> None:
+    d0 = _digest(0, [E, ER])
+    d1 = _digest(1, [_hc(resolved_by=["e1", "zz"])])
+    assert detect_shape4([d0, d1], "s:0") == []
+    assert detect_shape4([d0], "s:9") == []
+    assert detect_shape4([_digest(0, [E, ER])], "s:0") == []
+    (rec,) = detect_shape4([_digest(0, [_hc()]), _digest(1, [E, ER])], "s:0")
+    assert (rec.outcome, rec.reason) == ("ungrounded", "resolved_by_unmatched")
+
+
+def test_shape4_outcome_order() -> None:
+    rec = _one([E, ER, _hc(resolved=False)])
+    assert (rec.outcome, rec.reason) == ("not_applicable", "unresolved")
+    assert rec.details["resolved_by_matched"] == 1
+    rec = _one([E, ER, _hc(resolved=False, detail="")])
+    assert (rec.outcome, rec.reason) == ("not_applicable", "unresolved")
+    rec = _one([E, ER, _hc(detail="   ")])
+    assert (rec.outcome, rec.reason) == ("not_applicable", "empty_detail")
+    rec = _one([E, ER, _hc(resolved_by=[])])
+    assert (rec.outcome, rec.reason) == ("not_applicable", "no_resolving_actions")
+    rec = _one([E, ER, _hc(resolved_by=["zz"])])
+    assert (rec.outcome, rec.reason) == ("ungrounded", "resolved_by_unmatched")
+    assert rec.candidate is None
+    assert rec.confidence is None
+    rec = _one([ER, _hc()])
+    assert (rec.outcome, rec.reason) == ("ungrounded", "resolved_by_unmatched")
+
+
+def test_shape4_duplicate_ids_and_multiple_items() -> None:
+    rec = _one([E, ER, _hc(resolved_by=["e1", "e1"])])
+    assert rec.outcome == "candidate"
+    assert rec.candidate.detector_output["resolved_by"] == ["e1"]
+    assert rec.candidate.detector_output["corrected_fact"] == "Edit src/a.py"
+    assert rec.details["resolved_by_count"] == 1
+    assert rec.details["resolved_by_matched"] == 1
+    recs = detect_shape4(
+        [_digest(0, [E, ER, _hc(trigger="gate_red"), _hc(resolved=False)])], "s:0"
+    )
+    assert [(r.details["trigger"], r.outcome) for r in recs] == [
+        ("gate_red", "candidate"),
+        ("claim_rejected", "not_applicable"),
+    ]
+
+
+def test_shape4_corrected_fact_rendering() -> None:
+    items = [
+        _call("c2", "Bash", "uv run ruff format src/a.py"),
+        _call("c3", "run_checks", ""),
+        _hc(resolved_by=["c3", "c2"]),
+    ]
+    rec = detect_shape4([_digest(0, items)], "s:0")[0]
+    assert (
+        rec.candidate.detector_output["corrected_fact"]
+        == "run_checks; Bash uv run ruff format src/a.py"
+    )
+    rec = _one(
+        [
+            _call("b1", "Bash", "a" * 400),
+            _call("b2", "Bash", "b" * 400),
+            _hc(resolved_by=["b1", "b2"]),
+        ]
+    )
+    fact = rec.candidate.detector_output["corrected_fact"]
+    assert fact == ("Bash " + "a" * 400 + "; Bash " + "b" * 400)[:500]
+    assert len(fact) == 500
+
+
+def test_shape4_detail_caps_and_strip() -> None:
+    out = _one([E, ER, _hc(detail="d" * 1500)]).candidate.detector_output
+    assert len(out["wrong_belief"]) == 500
+    assert len(out["evidence_excerpt"]) == 1500
+    out = _one([E, ER, _hc(detail="  x  ")]).candidate.detector_output
+    assert out["wrong_belief"] == "x"
+
+
+def test_shape4_duplicate_id_across_digests_first_wins() -> None:
+    d0 = _digest(0, [E])
+    d1 = _digest(1, [{**E, "target": "src/b.py"}])
+    d2 = _digest(2, [_hc()])
+    cand = detect_shape4([d0, d1, d2], "s:2")[0].candidate
+    assert cand is not None
+    assert cand.detector_output["corrected_fact"] == "Edit src/a.py"
+    assert cand.turn_event_ids == ["s:0", "s:2"]
+
+
+def test_shape4_result_audit() -> None:
+    rec = _one([E, {**ER, "is_error": True}, _hc()])
+    assert rec.outcome == "candidate"
+    assert rec.details["resolved_by_errored"] == 1
+    assert rec.details["last_resolving_error"] is True
+    rec = _one([E, _hc()])
+    assert rec.outcome == "candidate"
+    assert rec.details["resolved_by_errored"] == 0
+    assert rec.details["last_resolving_error"] is None
+    rec = _one(
+        [
+            E,
+            {**ER, "is_error": True},
+            {
+                "kind": "tool_call",
+                "tool_use_id": "e2",
+                "tool": "Bash",
+                "target": "ls",
+                "target_class": "ls",
+            },
+            {
+                "kind": "tool_result",
+                "tool_use_id": "e2",
+                "is_error": False,
+                "excerpt": "",
+            },
+            _hc(resolved_by=["e2", "e1"]),
+        ]
+    )
+    assert rec.outcome == "candidate"
+    assert rec.details["resolved_by_errored"] == 1
+    assert rec.details["last_resolving_error"] is False
+    assert rec.details["resolved_by_tools"] == ["Bash", "Edit"]
+
+
+def test_harness_correction_not_rendered_for_shapes_2_and_3() -> None:
+    call, result = _bash("ls", error=False, excerpt="a")
+    hc = {
+        "kind": "harness_correction",
+        "trigger": "gate_red",
+        "detail": "FAILED",
+        "resolved_by": [call["tool_use_id"]],
+        "resolved": True,
+    }
+    assert render_items([hc]) == ""
+    assert build_shape3_prompt(
+        _digest(0, [_text("x"), call, result, hc, _text("Root cause: y")])
+    ) == build_shape3_prompt(
+        _digest(0, [_text("x"), call, result, _text("Root cause: y")])
+    )
+    assert shape3_skip_reason(_digest(0, [call, result, hc])) == "no_text_after_result"

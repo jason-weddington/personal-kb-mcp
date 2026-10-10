@@ -29,7 +29,7 @@ from kb_service.surprise import (
     DistillResult,
     SurpriseCandidate,
 )
-from tests.conftest import FakeLLM
+from tests.conftest import S4_OUT, FakeLLM
 
 LOGGER = "kb_service.surprise_worker"
 
@@ -814,7 +814,7 @@ def test_drain_shape3_reasoning_evidence_ungrounded(
     assert len(rows) == 1
     assert rows[0]["outcome"] == "ungrounded"
     assert rows[0]["candidate_id"] is None
-    assert rows[0]["detector_version"] == 3
+    assert rows[0]["detector_version"] == SURPRISE_DETECTOR_VERSION
     details = json.loads(rows[0]["details"])
     assert details["evidence_in_reasoning"] is True
     assert details["reasoning_items"] == 1
@@ -1120,3 +1120,231 @@ async def test_detect_digest_shape_floors_under_defaults() -> None:
     assert by_shape[2].details["min_confidence"] == 0.5
     assert by_shape[3].outcome == "low_confidence"
     assert by_shape[3].details["min_confidence"] == 0.7
+
+
+# --- shape 4 -----------------------------------------------------------------
+
+_S4_ITEMS: list[dict[str, Any]] = [
+    {
+        "kind": "tool_call",
+        "tool_use_id": "c1",
+        "tool": "run_checks",
+        "target": "",
+        "target_class": "",
+    },
+    {
+        "kind": "tool_result",
+        "tool_use_id": "c1",
+        "is_error": True,
+        "excerpt": "ruff format --check: would reformat src/a.py",
+    },
+    {
+        "kind": "tool_call",
+        "tool_use_id": "c2",
+        "tool": "bash",
+        "target": "uv run ruff format src/a.py",
+        "target_class": "",
+    },
+    {
+        "kind": "tool_result",
+        "tool_use_id": "c2",
+        "is_error": False,
+        "excerpt": "1 file reformatted",
+    },
+    {
+        "kind": "tool_call",
+        "tool_use_id": "c3",
+        "tool": "run_checks",
+        "target": "",
+        "target_class": "",
+    },
+    {
+        "kind": "tool_result",
+        "tool_use_id": "c3",
+        "is_error": False,
+        "excerpt": "all checks passed",
+    },
+    {
+        "kind": "harness_correction",
+        "trigger": "gate_red",
+        "detail": "ruff format --check: would reformat src/a.py",
+        "resolved_by": ["c2", "c3"],
+        "resolved": True,
+    },
+    {
+        "kind": "harness_correction",
+        "trigger": "nudge",
+        "detail": "call finish when the work is done",
+        "resolved_by": [],
+        "resolved": False,
+    },
+]
+
+
+def test_drain_shape4_talos_digest(
+    local_client: TestClient, ctx: _Ctx, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    _seed(
+        local_client,
+        "t4",
+        0,
+        user_prompt="fix it",
+        harness="talos",
+        mode="headless",
+        items=_S4_ITEMS,
+    )
+    body = _drain(local_client)
+    assert ctx.llm.generate_calls == []
+    stored = _query("SELECT items FROM turn_events WHERE event_id = 't4:0'")
+    assert json.loads(stored[0]["items"])[2]["tool"] == "Bash"
+    rows = _detections()
+    assert [(r["event_id"], r["shape"], r["outcome"], r["reason"]) for r in rows] == [
+        ("t4:0", 1, "no_surprise", ""),
+        ("t4:0", 2, "not_applicable", "no_prev"),
+        ("t4:0", 3, "not_applicable", "no_text_after_result"),
+        ("t4:0", 4, "candidate", ""),
+        ("t4:0", 4, "not_applicable", "unresolved"),
+    ]
+    cand_row, unresolved = rows[3], rows[4]
+    for r in (cand_row, unresolved):
+        assert r["detector_model"] == "rule:shape4"
+        assert r["detector_version"] == SURPRISE_DETECTOR_VERSION
+    flags = {"truncated": False, "out_of_order": False, "turn_gap": False}
+    assert cand_row["confidence"] == 1.0
+    assert json.loads(cand_row["details"]) == {
+        "trigger": "gate_red",
+        "resolved": True,
+        "resolved_by_count": 2,
+        "resolved_by_matched": 2,
+        "resolved_by_errored": 0,
+        "last_resolving_error": False,
+        "resolved_by_tools": ["Bash", "run_checks"],
+        **flags,
+    }
+    assert unresolved["candidate_id"] is None
+    assert unresolved["confidence"] is None
+    assert json.loads(unresolved["details"]) == {
+        "trigger": "nudge",
+        "resolved": False,
+        "resolved_by_count": 0,
+        "resolved_by_matched": 0,
+        "resolved_by_errored": 0,
+        "last_resolving_error": None,
+        "resolved_by_tools": [],
+        **flags,
+    }
+    (cand,) = body["candidates"]
+    assert cand["shape"] == 4
+    assert cand["status"] == "shadow"
+    assert cand["detector_model"] == "rule:shape4"
+    assert cand["turn_event_ids"] == ["t4:0"]
+    assert cand["detector_output"] == S4_OUT
+    assert ctx.dry_run_calls == [[cand["id"]]]
+    line = _info_line(caplog)
+    assert "shape4=1 shape4_records=2 shape4_unmatched=0 shape4_partial=0" in line
+    resp = local_client.get("/api/kb/surprise/candidates", params={"shape": 4})
+    assert resp.status_code == 200, resp.text
+    (audit,) = resp.json()["candidates"]
+    assert audit["shape"] == 4
+    assert audit["mode"] == "headless"
+
+
+def test_drain_shape4_window_and_counters(
+    local_client: TestClient, ctx: _Ctx, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    _seed(
+        local_client,
+        "t5",
+        0,
+        items=[
+            {
+                "kind": "harness_correction",
+                "trigger": "claim_rejected",
+                "detail": "criterion 2 is done",
+                "resolved_by": ["c9"],
+                "resolved": True,
+            }
+        ],
+    )
+    _seed(
+        local_client,
+        "t5",
+        1,
+        items=[
+            {
+                "kind": "tool_call",
+                "tool_use_id": "c9",
+                "tool": "Edit",
+                "target": "src/a.py",
+                "target_class": "ext:py",
+            },
+            {
+                "kind": "tool_result",
+                "tool_use_id": "c9",
+                "is_error": False,
+                "excerpt": "",
+            },
+        ],
+    )
+    _seed(
+        local_client,
+        "t6",
+        0,
+        items=[
+            {
+                "kind": "tool_call",
+                "tool_use_id": "c7",
+                "tool": "Edit",
+                "target": "src/a.py",
+                "target_class": "ext:py",
+            },
+            {
+                "kind": "tool_result",
+                "tool_use_id": "c7",
+                "is_error": False,
+                "excerpt": "",
+            },
+            {
+                "kind": "harness_correction",
+                "trigger": "gate_red",
+                "detail": "FAILED tests/test_a.py::test_x",
+                "resolved_by": ["c7", "zz"],
+                "resolved": True,
+            },
+        ],
+    )
+    _drain(local_client)
+    assert ctx.llm.generate_calls == []
+    assert [
+        (r["event_id"], r["outcome"], r["reason"])
+        for r in _detections()
+        if r["shape"] == 4
+    ] == [
+        ("t5:0", "ungrounded", "resolved_by_unmatched"),
+        ("t6:0", "candidate", ""),
+    ]
+    line = _info_line(caplog)
+    assert "shape4=1 shape4_records=2 shape4_unmatched=1 shape4_partial=1" in line
+    assert (
+        "surprise_drain shape4_unmatched event_id=t5:0 trigger=claim_rejected"
+        " resolved_by=1 turn_gap=False"
+    ) in _messages(caplog, logging.WARNING)
+
+
+async def test_detect_digest_shape4_last() -> None:
+    hc = {
+        "kind": "harness_correction",
+        "trigger": "gate_red",
+        "detail": "x",
+        "resolved_by": ["c2"],
+        "resolved": True,
+    }
+    cur = surprise_worker.digest_from_row(_row(items=[*_S4_ITEMS[2:4], hc]))
+    records = await surprise_worker.detect_digest(None, cur, [cur])
+    assert [r.shape for r in records] == [1, 2, 3, 4]
+    assert records[-1].outcome == "candidate"
+    cur = surprise_worker.digest_from_row(_row(items=_S4_ITEMS[2:4]))
+    records = await surprise_worker.detect_digest(None, cur, [cur])
+    assert [r.shape for r in records] == [1, 2, 3]

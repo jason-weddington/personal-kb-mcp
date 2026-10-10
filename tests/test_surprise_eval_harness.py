@@ -973,3 +973,24 @@ def test_validate_accepts_reasoning_item(tmp_path, capsys):
     path = _write_cases(tmp_path / "cases.jsonl", [case])
     assert se.main(["validate", "--cases", str(path)]) == 0
     assert json.loads(capsys.readouterr().out)["cases"] == 1
+
+
+def test_validate_accepts_harness_correction_item(tmp_path, capsys):
+    case = _shape3_case(
+        "syn-hc1",
+        False,
+        [
+            _call("t1", "ls", "ls"),
+            _res("t1", False, "ok"),
+            {
+                "kind": "harness_correction",
+                "trigger": "gate_red",
+                "detail": "FAILED",
+                "resolved_by": ["t1"],
+                "resolved": True,
+            },
+        ],
+    )
+    path = _write_cases(tmp_path / "cases.jsonl", [case])
+    assert se.main(["validate", "--cases", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["cases"] == 1

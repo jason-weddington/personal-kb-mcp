@@ -27,6 +27,7 @@ from kb_service.models import (
     SurpriseCaptureMode,
     TurnAssistantTextItem,
     TurnDigestRequest,
+    TurnHarnessCorrectionItem,
     TurnReasoningItem,
     TurnToolCallItem,
     TurnToolResultItem,
@@ -97,7 +98,7 @@ def redact_turn_digest(
     """Redact secrets from the free-text fields; None if redaction unavailable.
 
     Only user_prompt, final_message and the item fields text (assistant_text and
-    reasoning), target and excerpt are scanned.
+    reasoning), target, excerpt and detail (harness_correction) are scanned.
     """
     red = _Redactor()
     user_prompt = red(body.user_prompt, TURN_USER_PROMPT_MAX)
@@ -123,6 +124,9 @@ def redact_turn_digest(
                     }
                 )
             )
+        elif isinstance(item, TurnHarnessCorrectionItem):
+            detail = red(item.detail, TURN_EXCERPT_MAX)
+            items.append(item.model_copy(update={"detail": detail}))
         else:  # pragma: no cover
             assert_never(item)
     final_message = red(body.final_message, TURN_FINAL_MESSAGE_MAX)

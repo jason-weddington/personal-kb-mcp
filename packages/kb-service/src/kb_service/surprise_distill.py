@@ -29,7 +29,7 @@ from kb_service.surprise import SurpriseCandidate
 # parse_distill_response, build_resolution, build_knowledge_details,
 # shape1_cue, find_exact_match, merge_block_reason, known_sessions,
 # merged_surprise_hint or the S0-S13 order
-SURPRISE_DISTILLER_VERSION: int = 6
+SURPRISE_DISTILLER_VERSION: int = 7
 
 # bump on ANY change to SURPRISE_CRITIC_SYSTEM, CRITIC_INSTRUCTIONS,
 # CRITIC_SCHEMA_LINE, build_critic_prompt or parse_critic_response
@@ -195,6 +195,12 @@ SHAPE_DESCRIPTIONS: dict[int, str] = {
         "In one turn the agent reached a corrected understanding or a root"
         " cause, backed by tool output, that contradicts what it, the code, a"
         " comment, a doc, a config or the environment had indicated before."
+    ),
+    4: (
+        "The coding harness rejected the agent's work (a failing gate, a rejected"
+        " claim, a finish with no change, or a nudge), and the agent's next actions"
+        " resolved it. Wrong belief and evidence are the harness's trigger detail;"
+        " corrected fact lists the resolving actions."
     ),
 }
 

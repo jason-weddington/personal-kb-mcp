@@ -14,6 +14,7 @@ data DB (``KB_DATABASE_URL`` / ``KB_DB_PATH``).
   silently start against an empty, userless SQLite auth DB.
 """
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -22,7 +23,21 @@ from typing import Any
 from kb_service.db_sqlite import SqliteConnection, SqlitePool
 from kb_service.db_types import DbPool
 
+logger = logging.getLogger(__name__)
+
 _pool: DbPool | None = None
+
+# Surprise-capture shapes allowed by the shape CHECK on surprise_candidates,
+# surprise_detections and surprise_distillations (surprise_dry_runs has none).
+SURPRISE_SHAPES: tuple[int, ...] = (1, 2, 3, 4)
+_SURPRISE_SHAPE_CHECK = (
+    "CHECK (shape IN (" + ", ".join(str(s) for s in SURPRISE_SHAPES) + "))"
+)
+_SURPRISE_SHAPE_TABLES = (
+    "surprise_candidates",
+    "surprise_detections",
+    "surprise_distillations",
+)
 
 # Each statement must be executed individually (asyncpg has no executescript).
 # Column types are TEXT/INTEGER on purpose: the auth code writes timestamps via
@@ -318,7 +333,7 @@ _SCHEMA_STATEMENTS: list[str] = [
     # rearmed / overridden decisions, mirroring the
     # listener_decisions_reason_check DROP+ADD above (idempotent on re-run).
     # SQLite skips these and rebuilds the table instead
-    # (_rebuild_sqlite_gate_decisions).
+    # (_rebuild_sqlite_table via _SQLITE_CHECK_REBUILDS).
     "ALTER TABLE gate_decisions"
     " DROP CONSTRAINT IF EXISTS gate_decisions_decision_check",
     "ALTER TABLE gate_decisions ADD CONSTRAINT gate_decisions_decision_check"
@@ -365,7 +380,7 @@ _SCHEMA_STATEMENTS: list[str] = [
     # / merged; written and merged carry entry_id.
     "CREATE TABLE IF NOT EXISTS surprise_candidates ("
     "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
-    "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3)), "
+    f"shape INTEGER NOT NULL {_SURPRISE_SHAPE_CHECK}, "
     "session_id TEXT NOT NULL, "
     "project TEXT NOT NULL DEFAULT '', "
     "turn_event_ids TEXT NOT NULL DEFAULT '[]', "
@@ -387,7 +402,7 @@ _SCHEMA_STATEMENTS: list[str] = [
     "event_id TEXT NOT NULL, "
     "session_id TEXT NOT NULL, "
     "project TEXT NOT NULL DEFAULT '', "
-    "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3)), "
+    f"shape INTEGER NOT NULL {_SURPRISE_SHAPE_CHECK}, "
     "mode TEXT NOT NULL CHECK (mode IN ('shadow', 'on')), "
     "outcome TEXT NOT NULL CHECK (outcome IN ('candidate', 'not_applicable', "
     "'no_llm', 'llm_error', 'unparseable', 'invalid_fields', 'no_surprise', "
@@ -416,7 +431,7 @@ _SCHEMA_STATEMENTS: list[str] = [
     "candidate_id BIGINT NOT NULL, "
     "session_id TEXT NOT NULL, "
     "project TEXT NOT NULL DEFAULT '', "
-    "shape INTEGER NOT NULL CHECK (shape IN (1, 2, 3)), "
+    f"shape INTEGER NOT NULL {_SURPRISE_SHAPE_CHECK}, "
     "outcome TEXT NOT NULL CHECK (outcome IN ('written', 'merged', "
     "'same_session', 'covered', 'not_durable', 'redacted', 'gate_induced', "
     "'llm_error', 'unparseable', 'invalid_fields', 'invalid_resolution', "
@@ -468,6 +483,20 @@ _SCHEMA_STATEMENTS: list[str] = [
     " ON surprise_dry_runs(created_at)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_surprise_dry_runs_candidate"
     " ON surprise_dry_runs(candidate_id)",
+    # Widen an ALREADY-DEPLOYED Postgres shape CHECK on the three surprise
+    # tables to SURPRISE_SHAPES, mirroring the listener_decisions_reason_check
+    # and gate_decisions_decision_check DROP+ADD above: Postgres autogenerates
+    # the column-CHECK name <table>_<column>_check, and DROP+ADD is idempotent
+    # on every init_db(). SQLite skips these and rebuilds the tables instead
+    # (_rebuild_sqlite_table via _SQLITE_CHECK_REBUILDS).
+    *(
+        stmt
+        for t in _SURPRISE_SHAPE_TABLES
+        for stmt in (
+            f"ALTER TABLE {t} DROP CONSTRAINT IF EXISTS {t}_shape_check",
+            f"ALTER TABLE {t} ADD CONSTRAINT {t}_shape_check {_SURPRISE_SHAPE_CHECK}",
+        )
+    ),
 ]
 
 
@@ -484,8 +513,14 @@ _SQLITE_IDENTITY = "INTEGER PRIMARY KEY AUTOINCREMENT"
 # carries the failure-context members. Any future CHECK widening must point
 # this at the new last member, or existing SQLite tables are never rebuilt.
 _GATE_DECISIONS_CHECK_MARKER = "'overridden'"
-_GATE_DECISIONS_CREATE_PREFIX = "CREATE TABLE IF NOT EXISTS gate_decisions ("
-_GATE_DECISIONS_INDEX_PREFIX = "CREATE INDEX IF NOT EXISTS idx_gate_decisions_"
+# (table, marker): an existing SQLite table whose stored DDL lacks its marker
+# carries an older, narrower CHECK and is rebuilt by _rebuild_sqlite_table.
+_SQLITE_CHECK_REBUILDS: tuple[tuple[str, str], ...] = (
+    ("gate_decisions", _GATE_DECISIONS_CHECK_MARKER),
+    ("surprise_candidates", _SURPRISE_SHAPE_CHECK),
+    ("surprise_detections", _SURPRISE_SHAPE_CHECK),
+    ("surprise_distillations", _SURPRISE_SHAPE_CHECK),
+)
 
 
 def sqlite_service_db_path() -> Path:
@@ -570,9 +605,9 @@ async def _init_sqlite(pool: SqlitePool) -> None:
     * ``ADD COLUMN IF NOT EXISTS`` (unsupported in SQLite) -> checked against
       ``PRAGMA table_info`` first, so re-running is a no-op.
     * ``DROP/ADD CONSTRAINT`` (unsupported in SQLite) are skipped: a fresh
-      ``CREATE TABLE`` already carries the full CHECK. A pre-existing
-      ``gate_decisions`` table with the older, narrower decision CHECK IS
-      migrated: :func:`_rebuild_sqlite_gate_decisions` rebuilds it last.
+      ``CREATE TABLE`` already carries the full CHECK. A pre-existing table
+      listed in :data:`_SQLITE_CHECK_REBUILDS` with an older, narrower CHECK
+      IS migrated: :func:`_rebuild_sqlite_table` rebuilds it last.
     """
     async with pool.acquire() as conn:
         for stmt in _SCHEMA_STATEMENTS:
@@ -589,43 +624,48 @@ async def _init_sqlite(pool: SqlitePool) -> None:
                 )
                 continue
             await conn.execute(stmt.replace(_PG_IDENTITY, _SQLITE_IDENTITY))
-        await _rebuild_sqlite_gate_decisions(conn)
+        for table, marker in _SQLITE_CHECK_REBUILDS:
+            await _rebuild_sqlite_table(conn, table, marker)
 
 
-async def _rebuild_sqlite_gate_decisions(conn: SqliteConnection) -> None:
-    """Rebuild an old SQLite ``gate_decisions`` whose decision CHECK is too narrow.
+async def _rebuild_sqlite_table(
+    conn: SqliteConnection, table: str, marker: str
+) -> None:
+    """Rebuild an old SQLite *table* whose stored DDL lacks *marker*.
 
     SQLite cannot alter a CHECK, so the table is renamed, recreated from the
     current DDL, refilled and dropped, then its indexes are recreated — all in
     one transaction. Uses only *conn* (never the pool: ``SqlitePool.acquire``
-    holds a non-reentrant lock). A no-op when the stored DDL already carries
-    :data:`_GATE_DECISIONS_CHECK_MARKER`.
+    holds a non-reentrant lock). A no-op when the table is absent or its
+    stored DDL already carries *marker*.
     """
     row = await conn.fetchrow(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gate_decisions'"
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = $1", table
     )
-    if row is None or row["sql"] is None or _GATE_DECISIONS_CHECK_MARKER in row["sql"]:
+    if row is None or row["sql"] is None or marker in row["sql"]:
         return
-    create = next(
-        s for s in _SCHEMA_STATEMENTS if s.startswith(_GATE_DECISIONS_CREATE_PREFIX)
-    )
+    create_prefix = f"CREATE TABLE IF NOT EXISTS {table} ("
+    create = next(s for s in _SCHEMA_STATEMENTS if s.startswith(create_prefix))
     indexes = [
-        s for s in _SCHEMA_STATEMENTS if s.startswith(_GATE_DECISIONS_INDEX_PREFIX)
+        s
+        for s in _SCHEMA_STATEMENTS
+        if s.startswith("CREATE ") and " INDEX " in s and f" ON {table}(" in s
     ]
+    old = f"{table}_pre_rebuild"
     async with conn.transaction():
-        await conn.execute(
-            "ALTER TABLE gate_decisions RENAME TO gate_decisions_pre_failure_context"
-        )
+        await conn.execute(f"ALTER TABLE {table} RENAME TO {old}")
         await conn.execute(create.replace(_PG_IDENTITY, _SQLITE_IDENTITY))
-        info = await conn.fetch("PRAGMA table_info(gate_decisions_pre_failure_context)")
+        info = await conn.fetch(f"PRAGMA table_info({old})")
         cols = ", ".join(str(c["name"]) for c in info)
         await conn.execute(
-            f"INSERT INTO gate_decisions ({cols})"  # noqa: S608 - names from PRAGMA
-            f" SELECT {cols} FROM gate_decisions_pre_failure_context"
+            f"INSERT INTO {table} ({cols})"  # noqa: S608 - names from PRAGMA
+            f" SELECT {cols} FROM {old}"
         )
-        await conn.execute("DROP TABLE gate_decisions_pre_failure_context")
+        n = await conn.fetchval(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
+        await conn.execute(f"DROP TABLE {old}")
         for stmt in indexes:
             await conn.execute(stmt)
+    logger.warning("service_db check_rebuild table=%s rows=%d", table, n)
 
 
 async def init_db() -> None:

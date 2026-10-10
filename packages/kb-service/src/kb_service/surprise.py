@@ -6,6 +6,9 @@ says a claim from the assistant's previous turn was wrong. Shape 3 (one model
 call): within one turn, after at least one tool result, the agent reaches a
 corrected understanding or a root cause backed by tool output; no earlier wrong
 claim by the agent is needed.
+Shape 4 (deterministic): a harness_correction the harness reported as resolved,
+whose resolving tool calls are found in the session up to the current turn,
+becomes a candidate; other corrections are recorded only.
 
 No I/O here: the drain in ``kb_service.surprise_worker`` reads digests, calls
 the model and stores the results.
@@ -35,12 +38,13 @@ ParseReject = Literal["llm_error", "unparseable", "invalid_fields", "no_surprise
 # bump on ANY change to SURPRISE_DETECTOR_SYSTEM, DETECTOR_SCHEMA_LINE,
 # build_shape2_prompt, build_shape3_prompt, render_items, SHAPE3_INSTRUCTIONS,
 # SHAPE3_FIELDS, shape3_skip_reason, shape3_prompt_details, parse_detector_response,
-# evidence_grounded, the DETECTOR_MIN_CONFIDENCE default, SHAPE1_IGNORED_CLASSES
-# or the shape-1 pairing rule; the effective KB_SURPRISE_MIN_CONFIDENCE
+# evidence_grounded, the DETECTOR_MIN_CONFIDENCE default, SHAPE1_IGNORED_CLASSES,
+# the shape-1 pairing rule or detect_shape4; the effective KB_SURPRISE_MIN_CONFIDENCE
 # threshold is recorded per row in surprise_detections.details.min_confidence
 # instead
-SURPRISE_DETECTOR_VERSION: int = 3
+SURPRISE_DETECTOR_VERSION: int = 4
 SHAPE1_DETECTOR_MODEL = "rule:shape1"
+SHAPE4_DETECTOR_MODEL = "rule:shape4"
 DETECTOR_MIN_CONFIDENCE = 0.7
 # per-shape defaults (shape 2 recall gain; shape 3 must not drop)
 DETECTOR_MIN_CONFIDENCE_BY_SHAPE: dict[int, float] = {2: 0.5, 3: 0.7}
@@ -453,6 +457,122 @@ def build_shape3_prompt(cur: TurnDigest) -> str:
         parts.append(f"[assistant final] {_shape3_final(cur)}")
     parts.extend(["", SHAPE3_INSTRUCTIONS, SHAPE3_FIELDS, DETECTOR_SCHEMA_LINE])
     return "\n".join(parts)
+
+
+# --- shape 4 -----------------------------------------------------------------
+
+
+def detect_shape4(
+    session_digests: list[TurnDigest], current_event_id: str
+) -> list[DetectionRecord]:
+    """One record per harness_correction item in the current digest, no model call.
+
+    resolved_by ids are matched against tool_call items in the session's digests
+    up to the current turn (first occurrence wins), so a forward reference stays
+    unmatched. Harness, mode and trigger are ignored.
+    """
+    cur = next((d for d in session_digests if d.event_id == current_event_id), None)
+    if cur is None:
+        return []
+    walk = sorted(
+        (d for d in session_digests if d.turn_index <= cur.turn_index),
+        key=lambda d: d.turn_index,
+    )
+    calls: dict[str, tuple[str, int, int, str, str]] = {}
+    results: dict[str, bool] = {}
+    for d in walk:
+        for pos, it in enumerate(d.items):
+            kind = it.get("kind")
+            tid = it.get("tool_use_id")
+            if not isinstance(tid, str):
+                continue
+            if kind == "tool_call" and tid not in calls:
+                calls[tid] = (
+                    d.event_id,
+                    d.turn_index,
+                    pos,
+                    str(it.get("tool") or ""),
+                    str(it.get("target") or ""),
+                )
+            elif kind == "tool_result" and tid not in results:
+                results[tid] = it.get("is_error") is True
+    records: list[DetectionRecord] = []
+    for item in cur.items:
+        if item.get("kind") != "harness_correction":
+            continue
+        records.append(_shape4_record(cur, item, calls, results))
+    return records
+
+
+def _shape4_record(
+    cur: TurnDigest,
+    item: dict[str, Any],
+    calls: dict[str, tuple[str, int, int, str, str]],
+    results: dict[str, bool],
+) -> DetectionRecord:
+    trigger = str(item.get("trigger") or "")
+    detail = str(item.get("detail") or "").strip()
+    resolved_by = item.get("resolved_by")
+    if not isinstance(resolved_by, list):
+        resolved_by = []
+    ids = list(dict.fromkeys(i for i in resolved_by if isinstance(i, str) and i))
+    matched = [i for i in ids if i in calls]
+    resolved = item.get("resolved") is True
+    last_error: bool | None = None
+    if matched:
+        i_last = max(matched, key=lambda i: (calls[i][1], calls[i][2]))
+        last_error = results.get(i_last)
+    details: dict[str, Any] = {
+        "trigger": trigger,
+        "resolved": resolved,
+        "resolved_by_count": len(ids),
+        "resolved_by_matched": len(matched),
+        "resolved_by_errored": sum(1 for i in matched if results.get(i) is True),
+        "last_resolving_error": last_error,
+        "resolved_by_tools": sorted({calls[i][3] for i in matched}),
+    }
+    reject: tuple[DetectionOutcome, str] | None = None
+    if not resolved:
+        reject = ("not_applicable", "unresolved")
+    elif detail == "":
+        reject = ("not_applicable", "empty_detail")
+    elif not ids:
+        reject = ("not_applicable", "no_resolving_actions")
+    elif not matched:
+        reject = ("ungrounded", "resolved_by_unmatched")
+    if reject is not None:
+        return DetectionRecord(
+            shape=4,
+            outcome=reject[0],
+            reason=reject[1],
+            detector_model=SHAPE4_DETECTOR_MODEL,
+            details=details,
+        )
+    corrected_fact = "; ".join(f"{calls[i][3]} {calls[i][4]}".strip() for i in matched)[
+        :CORRECTED_FACT_MAX
+    ]
+    earlier = sorted(
+        {(calls[i][1], calls[i][0]) for i in matched if calls[i][0] != cur.event_id}
+    )
+    turn_event_ids = list(dict.fromkeys(e for _, e in earlier))
+    turn_event_ids.append(cur.event_id)
+    output = {
+        "wrong_belief": detail[:WRONG_BELIEF_MAX],
+        "corrected_fact": corrected_fact,
+        "evidence_excerpt": detail[:EVIDENCE_EXCERPT_MAX],
+        "confidence": 1.0,
+        "trigger": trigger,
+        "resolved_by": matched,
+    }
+    return DetectionRecord(
+        shape=4,
+        outcome="candidate",
+        reason="",
+        detector_model=SHAPE4_DETECTOR_MODEL,
+        confidence=1.0,
+        candidate=NewCandidate(4, turn_event_ids, SHAPE4_DETECTOR_MODEL, output),
+        details=details,
+    )
 
 
 # --- parsing and grounding ---------------------------------------------------

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+import kb_service.database as database
 import kb_service.surprise_distill as sd
 from kb_service.prevention import Resolution
 from kb_service.resolution_hint import validate_and_stamp_resolution
@@ -36,6 +37,7 @@ from kb_service.surprise_distill import (
     stored_observed_sessions,
     surprise_hint,
 )
+from tests.conftest import S4_OUT
 
 _OUTPUT1 = {
     "wrong_belief": "git push origin main",
@@ -124,7 +126,13 @@ def test_pinned_literals() -> None:
         "backed by tool output, that contradicts what it, the code, a comment, a "
         "doc, a config or the environment had indicated before."
     )
-    assert sd.SURPRISE_DISTILLER_VERSION == 6
+    assert SHAPE_DESCRIPTIONS[4] == (
+        "The coding harness rejected the agent's work (a failing gate, a rejected "
+        "claim, a finish with no change, or a nudge), and the agent's next actions "
+        "resolved it. Wrong belief and evidence are the harness's trigger detail; "
+        "corrected fact lists the resolving actions."
+    )
+    assert sd.SURPRISE_DISTILLER_VERSION == 7
     assert sd.SURPRISE_EVENT_IDS_CAP == 20
     assert sd.SURPRISE_HINT_LIST_CAP == 100
 
@@ -352,7 +360,7 @@ def test_distiller_instructions_durability_test() -> None:
     ) in DISTILLER_INSTRUCTIONS
     examples_end = DISTILLER_INSTRUCTIONS.index("leave the other fields empty.")
     assert DISTILLER_INSTRUCTIONS.index("Also set durable to false") > examples_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 6
+    assert sd.SURPRISE_DISTILLER_VERSION == 7
 
 
 _SCOPE_RULE = (
@@ -373,7 +381,7 @@ def test_distiller_instructions_scope_rule() -> None:
         "would plausibly hold the same wrong belief."
     )
     assert DISTILLER_INSTRUCTIONS.index(_SCOPE_RULE) > durability_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 6
+    assert sd.SURPRISE_DISTILLER_VERSION == 7
     assert _SCOPE_RULE in build_distill_prompt(_cand())
 
 
@@ -738,3 +746,28 @@ def test_merge_keeps_first_lesson_class() -> None:
     assert again["lesson_class"] == "quality_gates"
     legacy = merged_surprise_hint({"surprise_capture": {"sessions": ["a"]}}, _cand())
     assert "lesson_class" not in legacy
+
+
+# --- shape 4 -----------------------------------------------------------------
+
+
+def test_shape_descriptions_match_surprise_shapes() -> None:
+    assert set(SHAPE_DESCRIPTIONS) == set(database.SURPRISE_SHAPES)
+
+
+def test_shape4_distill_prompt() -> None:
+    p = build_distill_prompt(_cand(shape=4, output=S4_OUT))
+    assert p.split("\n")[0] == SHAPE_DESCRIPTIONS[4]
+    assert "Corrected fact: Bash uv run ruff format src/a.py; run_checks" in p
+
+
+def test_shape4_critic_prompt() -> None:
+    q = build_critic_prompt(
+        _cand(shape=4, output=S4_OUT),
+        _VERDICT,
+        user_correction="ignored",
+        tool_results=["ignored"],
+    )
+    assert q.split("\n")[0] == SHAPE_DESCRIPTIONS[4]
+    assert "[tool_result]" not in q
+    assert "The human's correction:" not in q

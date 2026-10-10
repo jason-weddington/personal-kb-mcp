@@ -106,6 +106,7 @@ DIGEST_ITEM_KEYS = {
     "tool_call": {"kind", "tool_use_id", "tool", "target", "target_class"},
     "tool_result": {"kind", "tool_use_id", "is_error", "excerpt"},
     "reasoning": {"kind", "text", "truncated"},
+    "harness_correction": {"kind", "trigger", "detail", "resolved_by", "resolved"},
 }
 MINED_ITEM_KEYS = {
     "assistant_text": {"kind", "text"},

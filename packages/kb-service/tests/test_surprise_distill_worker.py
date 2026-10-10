@@ -32,6 +32,7 @@ from kb_service.surprise import (
     SurpriseCandidate,
 )
 from kb_service.surprise_distill import (
+    SHAPE_DESCRIPTIONS,
     SURPRISE_CRITIC_VERSION,
     SURPRISE_DISTILLER_SYSTEM,
     SURPRISE_DISTILLER_VERSION,
@@ -42,7 +43,7 @@ from kb_service.surprise_distill import (
     parse_distill_response,
 )
 from kb_service.surprise_worker import candidate_from_row, distill_candidates
-from tests.conftest import CRITIC_ACCEPT, FakeCritic, FakeLLM
+from tests.conftest import CRITIC_ACCEPT, S4_OUT, FakeCritic, FakeLLM
 
 LOGGER = "kb_service.surprise_worker"
 
@@ -1792,3 +1793,46 @@ async def test_expired_autonomous_resolution_excluded(kb: Any) -> None:
     assert ids == {live, permanent}
     assert dead not in {c.resolution_id for c in build_gate_index(rs)[0]}
     assert dead not in {i.entry_id for i in build_slice(rs, [])[0]}
+
+
+async def test_shape4_write_then_exact_merge(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, critic: FakeCritic
+) -> None:
+    c1 = await _insert(pool, 4, "s4", "p", ["s4:0"], "rule:shape4", S4_OUT)
+    llm.enqueue(D)
+    result = await distill_candidates(pool, kb, [c1], "on")
+    assert len(result.entries_written) == 1
+    x = result.entries_written[0]
+    entry = await kb.get(x)
+    assert sorted(entry.tags) == ["lesson-class:none", "shape-4", "surprise-capture"]
+    assert entry.hints["surprise_capture"]["shape"] == 4
+    assert "cue" not in entry.hints["resolution"]
+    assert (
+        entry.hints["resolution"]["wrong_belief"]
+        == "ruff format --check: would reformat src/a.py"
+    )
+    assert entry.hints["resolution"]["provenance"] == {
+        "capture": "autonomous",
+        "grounding": "observed",
+        "event_id": "s4:0",
+    }
+    assert "(shape 4, candidate" in entry.knowledge_details
+    assert llm.generate_calls[0][0].split("\n")[0] == SHAPE_DESCRIPTIONS[4]
+    assert critic.generate_calls[0][0].split("\n")[0] == SHAPE_DESCRIPTIONS[4]
+    (row,) = await _rows(pool)
+    assert row["outcome"] == "written"
+    assert row["shape"] == 4
+    assert row["cue_target_class"] == ""
+
+    c2 = await _insert(pool, 4, "s5", "p", ["s5:0"], "rule:shape4", S4_OUT)
+    result = await distill_candidates(pool, kb, [c2], "on")
+    assert result == DistillResult([], [x])
+    assert len(llm.generate_calls) == 1
+    assert len(critic.generate_calls) == 1
+    row = (await _rows(pool))[-1]
+    assert row["outcome"] == "merged"
+    assert row["match_kind"] == "exact"
+    assert row["observed_sessions_before"] == 1
+    assert row["observed_sessions_after"] == 2
+    rs, _ = await load_resolutions(kb.db, "p", True)
+    assert build_gate_index(rs)[0] == []

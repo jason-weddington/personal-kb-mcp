@@ -1160,6 +1160,7 @@ async def test_autonomous_asserted_never_gates(kb: Any) -> None:
         (None, "interactive", False),
         ("x", None, False),
         (4, None, False),
+        (4, "headless", False),
     ],
 )
 async def test_observed_once_gate_admission_by_shape(
