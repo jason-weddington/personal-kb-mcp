@@ -2,6 +2,32 @@
 
 <!-- version list -->
 
+## v1.10.0 (2026-10-11)
+
+### Bug Fixes
+
+- **mcp**: The server instructions fit Claude Code's per-server cap, so every session gets all of
+  them
+  ([`1db9e1f`](https://github.com/jason-weddington/personal-kb-mcp/commit/1db9e1f54f13ef9eab3d3b856d525fafa1a96c05))
+
+### Chores
+
+- **72d848a0**: Optional post-push hook ./release.post.local.sh runs after the release is pushed
+  ([`02e4164`](https://github.com/jason-weddington/personal-kb-mcp/commit/02e4164db8c37dd72434a4d332df03699f45cea5))
+
+### Features
+
+- **80aed1fa**: Every Claude API call records its usage and cache diagnostics, by purpose, in an
+  llm_calls table the admin observe API serves
+  ([`61aafe6`](https://github.com/jason-weddington/personal-kb-mcp/commit/61aafe6d55acea1dd9118c3aecebfb4441d47827))
+
+### Performance Improvements
+
+- **f64dd7e4**: The distiller's static instructions form one cached system block, and no one-shot
+  call pays a top-level automatic-cache write
+  ([`b7e5010`](https://github.com/jason-weddington/personal-kb-mcp/commit/b7e501028c0063c3ed4085c82b585c9151dcec33))
+
+
 ## v1.9.0 (2026-10-10)
 
 ### Bug Fixes
