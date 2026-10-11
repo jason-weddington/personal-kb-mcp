@@ -272,3 +272,83 @@ def test_wrong_version_wheels_abort(sandbox):
     assert r.returncode != 0
     assert not any(c.startswith(("hook", "git push")) for c in _calls(sandbox))
     assert _tags(sandbox) == ""
+
+
+# --- docs backstop ---------------------------------------------------------------
+
+ABORT_MSG = (
+    "feat commits since v1.0.0 but neither technical doc changed; "
+    "update the docs or pass --no-docs-check"
+)
+
+
+def _commit(sb: dict[str, Path], subject: str, *files: str) -> None:
+    repo = sb["repo"]
+    for name in files:
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.read_text() + "x\n" if path.exists() else "x\n")
+    subprocess.run([REAL_GIT, "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        [REAL_GIT, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", subject],
+        cwd=repo,
+        check=True,
+    )
+
+
+def _tag_baseline(sb: dict[str, Path]) -> None:
+    subprocess.run([REAL_GIT, "tag", "-a", "v1.0.0", "-m", "v1.0.0"], cwd=sb["repo"], check=True)
+
+
+def test_feat_without_docs_aborts_before_bump(sandbox):
+    _hook(sandbox, 0)
+    _tag_baseline(sandbox)
+    _commit(sandbox, "feat(search): new thing", "src/personal_kb/new.py")
+    r = _run(sandbox)
+    assert r.returncode != 0
+    assert ABORT_MSG in r.stderr
+    assert not any(c.startswith(("uv run", "hook", "git push")) for c in _calls(sandbox))
+    assert _tags(sandbox) == "v1.0.0"
+
+
+def test_feat_in_package_src_without_docs_aborts(sandbox):
+    _hook(sandbox, 0)
+    _tag_baseline(sandbox)
+    _commit(sandbox, "feat: svc", "packages/kb-service/src/kb_service/new.py")
+    assert ABORT_MSG in _run(sandbox).stderr
+
+
+def test_feat_with_doc_change_in_range_passes(sandbox):
+    _hook(sandbox, 0)
+    _tag_baseline(sandbox)
+    _commit(sandbox, "feat: new thing", "src/personal_kb/new.py")
+    _commit(sandbox, "docs: describe it", "docs/intelligent-kb.md")
+    r = _run(sandbox)
+    assert r.returncode == 0, r.stderr
+    assert "neither technical doc changed" not in r.stderr
+
+
+def test_doc_change_before_last_tag_does_not_count(sandbox):
+    _commit(sandbox, "docs: early", "how_it_works.md")
+    _tag_baseline(sandbox)
+    _commit(sandbox, "feat: later", "src/personal_kb/new.py")
+    assert ABORT_MSG in _run(sandbox).stderr
+
+
+def test_non_feat_and_feat_without_code_pass(sandbox):
+    _hook(sandbox, 0)
+    _tag_baseline(sandbox)
+    _commit(sandbox, "fix: bug", "src/personal_kb/new.py")
+    _commit(sandbox, "feat(ci): tooling only", "scripts/tool.sh")
+    r = _run(sandbox)
+    assert r.returncode == 0, r.stderr
+
+
+def test_no_docs_check_overrides_loudly(sandbox):
+    _hook(sandbox, 0)
+    _tag_baseline(sandbox)
+    _commit(sandbox, "feat: new thing", "src/personal_kb/new.py")
+    r = _run(sandbox, "--no-docs-check")
+    assert r.returncode == 0, r.stderr
+    assert "--no-docs-check given" in r.stderr
+    assert ABORT_MSG not in r.stderr

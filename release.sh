@@ -9,7 +9,12 @@
 # (the home-lab VM) freely for testing. This script is the separate
 # promote-to-github step — run it only when local `main` is verified good.
 #
-# Usage: ./release.sh [--no-publish]
+# Usage: ./release.sh [--no-publish] [--no-docs-check]
+#
+# Docs backstop: the release aborts, before any version bump, when a `feat`
+# commit since the last tag touches src/ or packages/*/src but neither
+# how_it_works.md nor docs/intelligent-kb.md changed in that range.
+# --no-docs-check skips the check (loudly).
 #
 # Optional maintainer-local publish hook
 # --------------------------------------
@@ -36,11 +41,13 @@
 set -euo pipefail
 
 publish=1
+docs_check=1
 for arg in "$@"; do
   case "$arg" in
     --no-publish) publish=0 ;;
+    --no-docs-check) docs_check=0 ;;
     *)
-      echo "Unknown argument: $arg (usage: ./release.sh [--no-publish])" >&2
+      echo "Unknown argument: $arg (usage: ./release.sh [--no-publish] [--no-docs-check])" >&2
       exit 2
       ;;
   esac
@@ -55,6 +62,30 @@ fi
 if [ -n "$(git status --porcelain)" ]; then
   echo "Working tree is not clean — commit or stash before releasing." >&2
   exit 1
+fi
+
+# 1. (docs) Backstop for the same-commit docs rule: a feat commit that changes
+#    shipped code needs a technical-doc change somewhere in the same release.
+if [ "$docs_check" = "0" ]; then
+  echo "!!! --no-docs-check given: NOT verifying that feat commits updated how_it_works.md or docs/intelligent-kb.md. !!!" >&2
+else
+  last_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
+  if [ -n "$last_tag" ]; then range="${last_tag}..HEAD"; else range="HEAD"; fi
+  feat_touches_code=0
+  while read -r sha subject; do
+    case "$subject" in
+      feat*)
+        if git diff-tree --no-commit-id --name-only -r "$sha" |
+          grep -Eq '^(src/|packages/[^/]+/src/)'; then
+          feat_touches_code=1
+        fi ;;
+    esac
+  done < <(git log --no-merges --format='%H %s' "$range")
+  if [ "$feat_touches_code" = "1" ] &&
+    [ -z "$(git diff --name-only "${last_tag:-$(git hash-object -t tree /dev/null)}" HEAD -- how_it_works.md docs/intelligent-kb.md)" ]; then
+    echo "feat commits since ${last_tag:-the first commit} but neither technical doc changed; update the docs or pass --no-docs-check" >&2
+    exit 1
+  fi
 fi
 
 # 1. (gate) Work-user upgrade smoke test. GitHub is production: ~60 people

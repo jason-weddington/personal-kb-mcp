@@ -92,7 +92,7 @@ Two technical docs, one owner each. `how_it_works.md` covers the core KB: the en
 
 **Same commit, not later.** A feature commit updates its owning doc in the same commit, and so does a fix that changes documented behaviour (a default, threshold, status code, env var, endpoint, hook event, table, prompt version). A groomed item names the doc in `files_to_modify` and carries an AC saying which section it updates. User-facing changes also update `README.md`, and decisions and non-obvious patterns go to the KB (`kb_store`).
 
-**Enforced by `tests/test_docs_coverage.py`** (in the default suite): every kb-service route and every env var the shipped code reads must appear in one of the two docs. When it fails, document the thing; do not loosen the test.
+**Enforced by `tests/test_docs_coverage.py`** (in the default suite and a pre-push hook): routes, env vars (in the owning doc's table), hook events, MCP tools, tables, LLM purposes, contract fixtures, backticked code references, markdown anchors and pinned constants (`NAME = value`) must match the code. When it fails, document the thing; do not loosen the test.
 
 **Process**: research the code with agents before writing (exact signatures, thresholds, data flow), write from their reports, and make every statement verifiable against the code. For a large refresh, the six-reader doc audit workflow (inventory, plan, write, adversarial verify, revise) is the model.
 
@@ -126,6 +126,7 @@ Run `./release.sh` only when local `main` is verified good and you intend to shi
 to users. It:
 
 1. Asserts you're on `main` with a clean tree.
+   Also refuses (before any bump) when a `feat` commit since the last tag touches shipped code but neither `how_it_works.md` nor `docs/intelligent-kb.md` changed; `--no-docs-check` overrides loudly.
 2. `uv run semantic-release version --no-push --no-vcs-release` — bumps version, updates `CHANGELOG.md` + `uv.lock`, and tags.
 3. Builds `dist/` with exactly four wheels at the release version (`personal-kb`, `kb-core`, `personal-kb-web-service`, `personal-kb-hook`) and runs the optional publish hook (below). Then pushes `main` + tags to **both** remotes: `origin` **and** `github`.
 4. Runs `./deploy.sh` if one exists (none in this tree — consumers use `uvx`, which is pull-based).

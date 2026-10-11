@@ -80,6 +80,16 @@ repos:
         always_run: true
         stages: [pre-push]
 
+      # Not wrapped in run_unless_docs_only.sh: a docs-only push is exactly where
+      # a doc edit can delete a mention the test requires.
+      - id: docs-coverage
+        name: docs coverage
+        entry: uv run --frozen pytest tests/test_docs_coverage.py -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
       - id: kb-service-coverage
         name: coverage (kb-service)
         entry: scripts/run_unless_docs_only.sh bash -c 'log=$(mktemp); cd packages/kb-service && uv run --frozen --project ../.. pytest -q --cov --cov-report=term-missing > "$log" 2>&1; rc=$?; tail -6 "$log"; rm -f "$log"; exit $rc'
