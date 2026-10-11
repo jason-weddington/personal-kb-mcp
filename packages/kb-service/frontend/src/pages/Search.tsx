@@ -16,28 +16,13 @@ import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { searchKb, listKbProjects } from '../api'
 import { useEntryDrawer } from '../contexts/EntryDrawerContext'
+import { ENTRY_TYPES, ENTRY_TYPE_COLORS } from '../entryTypes'
 import type {
   SearchResult,
   KbProject,
   EntryType,
   MatchSource,
 } from '../kbTypes'
-
-const ENTRY_TYPES: EntryType[] = [
-  'factual_reference',
-  'decision',
-  'pattern_convention',
-  'lesson_learned',
-  'mental_map',
-]
-
-const ENTRY_TYPE_COLORS: Record<EntryType, 'default' | 'primary' | 'secondary' | 'error' | 'info' | 'success' | 'warning'> = {
-  factual_reference: 'info',
-  decision: 'primary',
-  pattern_convention: 'secondary',
-  lesson_learned: 'warning',
-  mental_map: 'success',
-}
 
 export function Search() {
   const { openEntry } = useEntryDrawer()

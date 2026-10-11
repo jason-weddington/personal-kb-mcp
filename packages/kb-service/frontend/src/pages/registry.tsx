@@ -2,7 +2,7 @@ import { lazy, Suspense } from 'react'
 import type { ReactElement } from 'react'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
-import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer'
+import HomeIcon from '@mui/icons-material/Home'
 import SettingsIcon from '@mui/icons-material/Settings'
 import SearchIcon from '@mui/icons-material/Search'
 import BubbleChartIcon from '@mui/icons-material/BubbleChart'
@@ -33,7 +33,7 @@ export const appPages: AppPage[] = [
   {
     path: '/',
     label: 'Home',
-    icon: <QuestionAnswerIcon />,
+    icon: <HomeIcon />,
     element: <Home />,
   },
   {

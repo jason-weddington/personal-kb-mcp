@@ -8,18 +8,8 @@ import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import { ResponseCard, MarkdownBody } from './ResponseCard'
 import { getEntries, getGraphNeighbors } from '../api'
-import type { KnowledgeEntry, PointerRotTarget, EntryType } from '../kbTypes'
-
-const ENTRY_TYPE_COLORS: Record<
-  EntryType,
-  'default' | 'primary' | 'secondary' | 'error' | 'info' | 'success' | 'warning'
-> = {
-  factual_reference: 'info',
-  decision: 'primary',
-  pattern_convention: 'secondary',
-  lesson_learned: 'warning',
-  mental_map: 'success',
-}
+import type { KnowledgeEntry, PointerRotTarget } from '../kbTypes'
+import { ENTRY_TYPE_COLORS } from '../entryTypes'
 
 // Matches kb-core entry ids: kb-NNNNN (one or more digits)
 const ENTRY_ID_RE = /^kb-\d+$/
@@ -83,7 +73,7 @@ function useEntryNeighbors(entryId: string): ConnectionsState | null {
         for (let i = 0; i < entryNeighborIds.length; i += 20) {
           if (cancelled) return
           const chunk = entryNeighborIds.slice(i, i + 20)
-          const batch = await getEntries(chunk)
+          const batch = await getEntries(chunk, { touch: false })
           for (const r of batch.results) {
             if (r.found && r.entry) {
               titleMap[r.id] = r.entry.short_title

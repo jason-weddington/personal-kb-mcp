@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { ApiError, api } from '../api'
+import {
+  ApiError,
+  api,
+  browseProject,
+  browseRecent,
+  getEntries,
+} from '../api'
 
 describe('api 401 guard (kb-01449 #1)', () => {
   const originalLocation = window.location
@@ -83,5 +89,57 @@ describe('api 401 guard (kb-01449 #1)', () => {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).status).toBe(401)
     }
+  })
+})
+
+describe('KB browse + get request shapes', () => {
+  beforeEach(() => {
+    localStorage.setItem('kb-token', 'test-token')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({}),
+      } as Response),
+    )
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+    vi.unstubAllGlobals()
+  })
+
+  function lastUrl(): string {
+    return vi.mocked(fetch).mock.calls.at(-1)![0] as string
+  }
+
+  function lastBody(): string {
+    return (vi.mocked(fetch).mock.calls.at(-1)![1] as RequestInit).body as string
+  }
+
+  it('getEntries with touch false sends touch: false', async () => {
+    await getEntries(['kb-1'], { touch: false })
+    expect(lastBody()).toBe('{"ids":["kb-1"],"touch":false}')
+  })
+
+  it('getEntries without opts sends ids only', async () => {
+    await getEntries(['kb-1'])
+    expect(lastBody()).toBe('{"ids":["kb-1"]}')
+  })
+
+  it('browseProject encodes the ref and orders params', async () => {
+    await browseProject('p alpha', { sort: 'newest', q: 'x', cursor: '25' })
+    expect(lastUrl()).toBe('/api/kb/browse/project/p%20alpha?sort=newest&q=x&cursor=25')
+  })
+
+  it('browseProject encodes a slash in the ref', async () => {
+    await browseProject('team/sub', { sort: 'newest' })
+    expect(lastUrl()).toBe('/api/kb/browse/project/team%2Fsub?sort=newest')
+  })
+
+  it('browseRecent skips a null cursor', async () => {
+    await browseRecent({ sort: 'created', entryType: 'decision', limit: 25, cursor: null })
+    expect(lastUrl()).toBe('/api/kb/browse/recent?sort=created&entry_type=decision&limit=25')
   })
 })

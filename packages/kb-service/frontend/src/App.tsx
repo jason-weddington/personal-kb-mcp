@@ -55,8 +55,9 @@ export function App() {
             }
           />
         ))}
-        {/* /ask is merged into Home — redirect deep links */}
-        <Route path="/ask" element={<Navigate to="/" replace />} />
+        {/* The Ask panel left Home, so /ask deep links go to Chat (which
+            itself redirects to / in no-auth mode) */}
+        <Route path="/ask" element={<Navigate to="/chat" replace />} />
         {/* Entry detail — navigation-only, no nav link */}
         <Route path="/entries/:id" element={<EntryDetail />} />
       </Route>

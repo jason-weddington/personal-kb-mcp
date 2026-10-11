@@ -344,4 +344,26 @@ describe('EntryDrawer — Connections section', () => {
     // Neighbors re-fetched for the new entry
     expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledWith('kb-00002', 'both', 50)
   })
+
+  // (j) Neighbour-title lookups are not reads: they pass { touch: false }
+  it('(j) neighbour title fetch passes touch false; the opened entry does not', async () => {
+    vi.mocked(getEntries).mockImplementation(async (ids: string[]) =>
+      makeGetResponse(ids[0], {
+        short_title: ids[0] === 'kb-00001' ? 'Main Entry' : 'Neighbor Entry',
+      }),
+    )
+    vi.mocked(getGraphNeighbors).mockResolvedValue({
+      neighbors: [
+        { neighbor_id: 'kb-00002', edge_type: 'related', direction: 'outgoing' },
+      ],
+    })
+
+    renderWithProvider(<OpenButton entryId="kb-00001" />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
+
+    await screen.findByRole('button', { name: '[kb-00002] Neighbor Entry' })
+    expect(vi.mocked(getEntries).mock.calls[0]).toEqual([['kb-00001']])
+    expect(vi.mocked(getEntries)).toHaveBeenCalledWith(['kb-00002'], { touch: false })
+  })
 })

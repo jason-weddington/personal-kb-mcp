@@ -5,7 +5,7 @@ import Skeleton from '@mui/material/Skeleton'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import { ResponseCard } from '../components/ResponseCard'
-import { AskPanel } from '../components/AskPanel'
+import { BrowsePanel } from '../components/browse/BrowsePanel'
 import { listKbProjects, listKbContributors, getMapsIndex } from '../api'
 
 /** undefined = loading, null = failed, number = resolved value */
@@ -87,12 +87,12 @@ export function Home() {
   return (
     <Box>
       <Grid container spacing={3}>
-        {/* Left column: welcome heading + Ask panel (~2/3) */}
+        {/* Left column: Browse panel (~2/3) */}
         <Grid size={{ xs: 12, md: 8 }}>
           <Typography variant="h5" gutterBottom>
-            Welcome to Personal KB
+            Browse the KB
           </Typography>
-          <AskPanel />
+          <BrowsePanel />
         </Grid>
 
         {/* Right column: KB Stats (~1/3) */}

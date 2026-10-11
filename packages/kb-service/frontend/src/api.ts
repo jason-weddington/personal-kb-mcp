@@ -22,6 +22,9 @@ import type {
   ChatListItem,
   ChatMessageItem,
   ChatOkResponse,
+  EntryType,
+  BrowseEntriesResponse,
+  BrowseProjectsResponse,
 } from './kbTypes'
 
 export class ApiError extends Error {
@@ -217,8 +220,16 @@ export function searchKb(req: SearchRequest): Promise<SearchResponse> {
   return kbRequest<SearchResponse>('POST', '/kb/search', req)
 }
 
-export function getEntries(ids: string[]): Promise<GetResponse> {
-  return kbRequest<GetResponse>('POST', '/kb/get', { ids })
+/**
+ * Fetch entries by id. `{ touch: false }` skips the server's last_accessed
+ * update, for UI lookups (e.g. neighbour titles) that are not reads.
+ */
+export function getEntries(
+  ids: string[],
+  opts?: { touch?: boolean },
+): Promise<GetResponse> {
+  const body = opts?.touch === false ? { ids, touch: false } : { ids }
+  return kbRequest<GetResponse>('POST', '/kb/get', body)
 }
 
 export function listKbProjects(): Promise<KbListResponse> {
@@ -260,4 +271,91 @@ export function getChatMessages(chatId: string): Promise<ChatMessageItem[]> {
 
 export function deleteChat(chatId: string): Promise<ChatOkResponse> {
   return kbRequest<ChatOkResponse>('DELETE', `/chat/${chatId}`)
+}
+
+// ── Browse (Home page) ──────────────────────────────────────────────────────
+
+type BrowseParam = string | number | null | undefined
+
+/** Build a query string from ordered pairs, skipping undefined, null and ''. */
+function browseQuery(pairs: [string, BrowseParam][]): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of pairs) {
+    if (value === undefined || value === null || value === '') continue
+    params.append(key, String(value))
+  }
+  const qs = params.toString()
+  return qs ? `?${qs}` : ''
+}
+
+interface BrowsePaging {
+  entryType?: EntryType
+  limit?: number
+  cursor?: string | null
+}
+
+export function browseRecent(
+  p: { sort: 'created' | 'updated' } & BrowsePaging,
+): Promise<BrowseEntriesResponse> {
+  const qs = browseQuery([
+    ['sort', p.sort],
+    ['entry_type', p.entryType],
+    ['limit', p.limit],
+    ['cursor', p.cursor],
+  ])
+  return kbRequest<BrowseEntriesResponse>('GET', `/kb/browse/recent${qs}`)
+}
+
+export function browseTop(
+  p: { signal: 'degree' | 'read' } & BrowsePaging,
+): Promise<BrowseEntriesResponse> {
+  const qs = browseQuery([
+    ['signal', p.signal],
+    ['entry_type', p.entryType],
+    ['limit', p.limit],
+    ['cursor', p.cursor],
+  ])
+  return kbRequest<BrowseEntriesResponse>('GET', `/kb/browse/top${qs}`)
+}
+
+export function browseStale(
+  p: { kind: 'decayed' | 'expired' } & BrowsePaging,
+): Promise<BrowseEntriesResponse> {
+  const qs = browseQuery([
+    ['kind', p.kind],
+    ['entry_type', p.entryType],
+    ['limit', p.limit],
+    ['cursor', p.cursor],
+  ])
+  return kbRequest<BrowseEntriesResponse>('GET', `/kb/browse/stale${qs}`)
+}
+
+export function browseProjects(p: {
+  q?: string
+  limit?: number
+  cursor?: string | null
+}): Promise<BrowseProjectsResponse> {
+  const qs = browseQuery([
+    ['q', p.q],
+    ['limit', p.limit],
+    ['cursor', p.cursor],
+  ])
+  return kbRequest<BrowseProjectsResponse>('GET', `/kb/browse/projects${qs}`)
+}
+
+export function browseProject(
+  projectRef: string,
+  p: { sort: 'newest' | 'updated' | 'confidence'; q?: string } & BrowsePaging,
+): Promise<BrowseEntriesResponse> {
+  const qs = browseQuery([
+    ['sort', p.sort],
+    ['entry_type', p.entryType],
+    ['q', p.q],
+    ['limit', p.limit],
+    ['cursor', p.cursor],
+  ])
+  return kbRequest<BrowseEntriesResponse>(
+    'GET',
+    `/kb/browse/project/${encodeURIComponent(projectRef)}${qs}`,
+  )
 }

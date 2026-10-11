@@ -3,7 +3,11 @@
 import logging
 from datetime import UTC, datetime
 
-from kb_core.confidence.decay import compute_effective_confidence, staleness_warning
+from kb_core.confidence.decay import (
+    STALE_FILTER_THRESHOLD,
+    compute_effective_confidence,
+    staleness_warning,
+)
 from kb_core.db.backend import Database
 from kb_core.db.queries import get_entry
 from kb_core.models.search import SearchQuery, SearchResult
@@ -160,7 +164,7 @@ async def hybrid_search(
         )
 
         # Filter stale unless requested
-        if not query.include_stale and eff_conf < 0.3:
+        if not query.include_stale and eff_conf < STALE_FILTER_THRESHOLD:
             continue
 
         warning = staleness_warning(eff_conf, entry.entry_type)
@@ -265,7 +269,7 @@ async def _filter_only_search(
             last_accessed=entry.last_accessed,
         )
 
-        if not query.include_stale and eff_conf < 0.3:
+        if not query.include_stale and eff_conf < STALE_FILTER_THRESHOLD:
             continue
 
         warning = staleness_warning(eff_conf, entry.entry_type)

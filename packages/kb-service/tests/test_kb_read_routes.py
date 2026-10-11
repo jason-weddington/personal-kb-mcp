@@ -207,6 +207,24 @@ def test_touch_accessed_not_called_when_nothing_found(
     assert touched == []
 
 
+def test_touch_accessed_skipped_when_touch_false(
+    client: TestClient, fake_kb: FakeKnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app.dependency_overrides[get_current_user] = fake_user
+    fake_kb.entries["kb-00001"] = _entry("kb-00001")
+    touched: list[Any] = []
+
+    async def fake_touch(db: Any, ids: list[str]) -> None:
+        touched.extend(ids)
+
+    monkeypatch.setattr(kb_read_routes, "touch_accessed", fake_touch)
+
+    resp = client.post("/api/kb/get", json={"ids": ["kb-00001"], "touch": False})
+    assert resp.status_code == 200
+    assert resp.json()["results"][0]["found"] is True
+    assert touched == []
+
+
 # ---------------------------------------------------------------------------
 # GET /api/kb/preflight
 # ---------------------------------------------------------------------------

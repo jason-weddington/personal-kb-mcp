@@ -120,7 +120,7 @@ async def get_entries(
             )
         )
 
-    if found_ids:
+    if found_ids and body.touch:
         await touch_accessed(kb.db, found_ids)
 
     return GetResponse(results=results)

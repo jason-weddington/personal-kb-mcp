@@ -3,8 +3,8 @@
  * - Stats card: renders fetched numbers from three endpoints
  * - Stats card: partial failure renders em dash, not an error
  * - No fetch storm: exactly one call per endpoint on mount
- * - Welcome heading is shown
- * - AskPanel is rendered (presence of Question textarea)
+ * - The Browse panel renders (tablist), there is no Ask question field, and
+ *   nothing on Home fetches the full graph
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
@@ -30,8 +30,12 @@ vi.mock('../contexts/EntryDrawerContext', () => ({
   EntryDrawerProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-vi.mock('../streaming', () => ({
-  streamSSE: vi.fn(),
+const EMPTY_PAGE = vi.hoisted(() => ({
+  items: [],
+  next_cursor: null,
+  total: 0,
+  skipped: 0,
+  signal: null,
 }))
 
 // api mock — must be declared before import below
@@ -40,6 +44,12 @@ vi.mock('../api', () => ({
   listKbProjects: vi.fn(),
   listKbContributors: vi.fn(),
   getMapsIndex: vi.fn(),
+  browseRecent: vi.fn(() => Promise.resolve(EMPTY_PAGE)),
+  browseTop: vi.fn(() => Promise.resolve(EMPTY_PAGE)),
+  browseStale: vi.fn(() => Promise.resolve(EMPTY_PAGE)),
+  browseProjects: vi.fn(() => Promise.resolve(EMPTY_PAGE)),
+  browseProject: vi.fn(() => Promise.resolve(EMPTY_PAGE)),
+  getGraphFull: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
     detail: string
@@ -52,7 +62,7 @@ vi.mock('../api', () => ({
   },
 }))
 
-import { listKbProjects, listKbContributors, getMapsIndex } from '../api'
+import { listKbProjects, listKbContributors, getMapsIndex, getGraphFull } from '../api'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -71,26 +81,19 @@ describe('Home page', () => {
     vi.clearAllMocks()
   })
 
-  it('shows the welcome heading', async () => {
+  it('renders the Browse panel and no Ask field', async () => {
     vi.mocked(listKbProjects).mockResolvedValue({ items: [] })
     vi.mocked(listKbContributors).mockResolvedValue({ items: [] })
     vi.mocked(getMapsIndex).mockResolvedValue({ projects: [] })
 
     renderHome()
-    expect(screen.getByText('Welcome to Personal KB')).toBeInTheDocument()
-    // Flush pending stat fetches to avoid act() warnings
+    expect(screen.getByText('Browse the KB')).toBeInTheDocument()
+    expect(await screen.findByRole('tablist', { name: 'Browse views' })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/question/i)).toBeNull()
+    // Flush pending fetches to avoid act() warnings
     await waitFor(() => expect(screen.getByTestId('stat-value-entries')).toBeInTheDocument())
-  })
-
-  it('renders the Ask question textarea (AskPanel is present)', async () => {
-    vi.mocked(listKbProjects).mockResolvedValue({ items: [] })
-    vi.mocked(listKbContributors).mockResolvedValue({ items: [] })
-    vi.mocked(getMapsIndex).mockResolvedValue({ projects: [] })
-
-    renderHome()
-    expect(screen.getByLabelText(/question/i)).toBeInTheDocument()
-    // Flush pending stat fetches to avoid act() warnings
-    await waitFor(() => expect(screen.getByTestId('stat-value-entries')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('No entries yet.')).toBeInTheDocument())
+    expect(vi.mocked(getGraphFull)).not.toHaveBeenCalled()
   })
 
   it('renders fetched stats numbers', async () => {

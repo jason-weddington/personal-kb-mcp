@@ -294,6 +294,8 @@ class GetRequest(BaseModel):
     """Request body for ``POST /api/kb/get``."""
 
     ids: list[str] = Field(min_length=1, max_length=20)
+    # false skips touch_accessed; for UI lookups that are not reads
+    touch: bool = True
 
 
 class PointerRotTarget(BaseModel):
@@ -2124,3 +2126,57 @@ class ObserveLlmCallsResponse(BaseModel):
 
     rows: list[ObserveLlmCallRow]
     next_after_id: int | None = None
+
+
+# --- Browse (Home page) ---
+
+
+class BrowseEntryItem(BaseModel):
+    """One entry row in a ``/api/kb/browse/*`` entry list.
+
+    Timestamps are UTC ISO-8601 strings with a ``+00:00`` suffix.
+    """
+
+    id: str
+    short_title: str
+    long_title: str
+    entry_type: str
+    project_ref: str | None
+    created_at: str
+    updated_at: str
+    last_accessed: str | None
+    expires_at: str | None
+    confidence_level: float
+    effective_confidence: float
+    half_life_days: float | None
+    anchor_age_days: float
+    expired: bool
+    signal_value: int | None
+
+
+class BrowseEntriesResponse(BaseModel):
+    """A page of browse entries with an offset cursor."""
+
+    items: list[BrowseEntryItem]
+    next_cursor: str | None
+    total: int
+    skipped: int = 0
+    signal: Literal["degree", "read"] | None = None
+
+
+class BrowseProjectItem(BaseModel):
+    """One project card in ``GET /api/kb/browse/projects``."""
+
+    project_ref: str
+    entry_count: int
+    counts_by_type: dict[str, int]
+    last_activity: str
+
+
+class BrowseProjectsResponse(BaseModel):
+    """A page of project summaries with an offset cursor."""
+
+    items: list[BrowseProjectItem]
+    next_cursor: str | None
+    total: int
+    skipped: int = 0

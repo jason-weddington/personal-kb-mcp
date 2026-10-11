@@ -52,6 +52,18 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from browse_fixture import (
+    BROWSE_CASES,
+    BROWSE_EDGE_INSERT_SQL,
+    BROWSE_ENTRY_INSERT_SQL,
+    BROWSE_EXPECTED_DEGREES,
+    BROWSE_EXPECTED_PROJECTS,
+    BROWSE_NODE_INSERT_SQL,
+    BROWSE_NOW,
+    BROWSE_SEED_EDGES,
+    BROWSE_SEED_ENTRIES,
+    BROWSE_SEED_NODES,
+)
 from embedding_retry_queue_shape import (
     EXPECTED_C_COLLATION_COLUMN,
     EXPECTED_COLUMNS,
@@ -60,7 +72,7 @@ from embedding_retry_queue_shape import (
     EXPECTED_PRIMARY_KEY,
     EXPECTED_TEXT_COLUMNS,
 )
-from kb_core import create_postgres
+from kb_core import browse, create_postgres
 from kb_core.embedding_retry import (
     _claim_due,
     _vectorless_unqueued_count,
@@ -1127,3 +1139,37 @@ async def test_supersession_deactivating_superseder_clears_target_on_postgres(
     pg_supersession_kb: KnowledgeBase,
 ) -> None:
     await check_deactivating_superseder_clears_target(pg_supersession_kb)
+
+
+async def test_browse_cases_on_postgres(pg_kb: PostgresBackend) -> None:
+    """The browse functions return the SAME pages on Postgres as on SQLite.
+
+    Seeds the shared ``browse_fixture`` corpus (nodes first: graph_edges has
+    a foreign key to graph_nodes) and asserts every ``BROWSE_CASES`` row,
+    ``BROWSE_EXPECTED_DEGREES`` and ``BROWSE_EXPECTED_PROJECTS``.
+    """
+    for node in BROWSE_SEED_NODES:
+        await pg_kb.execute(BROWSE_NODE_INSERT_SQL, node)
+    for edge in BROWSE_SEED_EDGES:
+        await pg_kb.execute(BROWSE_EDGE_INSERT_SQL, edge)
+    for entry in BROWSE_SEED_ENTRIES:
+        await pg_kb.execute(BROWSE_ENTRY_INSERT_SQL, entry)
+    await pg_kb.commit()
+
+    for name, fn, kwargs, expected in BROWSE_CASES:
+        if fn == "browse_projects":
+            project_page = await browse.browse_projects(pg_kb, **kwargs)  # type: ignore[arg-type]
+            got = [p.project_ref for p in project_page.items]
+        else:
+            entry_page = await getattr(browse, fn)(pg_kb, **kwargs, now=BROWSE_NOW)
+            got = [r.id for r in entry_page.items]
+        assert got == expected, name
+
+    top = await browse.browse_top(pg_kb, now=BROWSE_NOW)
+    assert [r.signal_value for r in top.items] == BROWSE_EXPECTED_DEGREES
+
+    projects = await browse.browse_projects(pg_kb)
+    assert [
+        (p.project_ref, p.entry_count, list(p.counts_by_type.items()), p.last_activity.isoformat())
+        for p in projects.items
+    ] == [(r, n, list(c.items()), ts) for r, n, c, ts in BROWSE_EXPECTED_PROJECTS]

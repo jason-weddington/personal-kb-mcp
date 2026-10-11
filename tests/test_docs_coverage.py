@@ -441,6 +441,7 @@ DOC_PINNED: dict[str, tuple[str, Path]] = {
     "LLM_CALLS_RETENTION_DAYS": ("kb_service.llm_calls", CORE_DOC),
     "SURPRISE_LESSON_TTL_DAYS": ("kb_service.surprise_distill", AUTOMATION_DOC),
     "MAP_BODY_BASE_CHARS": ("kb_core.map_lint", CORE_DOC),
+    "STALE_FILTER_THRESHOLD": ("kb_core.confidence.decay", CORE_DOC),
 }
 
 

@@ -240,4 +240,25 @@ describe('App routing — /chat gating', () => {
     )
     expect(screen.queryByText('HOME-PAGE')).not.toBeInTheDocument()
   })
+
+  it('jwt mode: /ask redirects to the Chat page', async () => {
+    localStorage.setItem('kb-token', 'tok')
+    localStorage.setItem('kb-user', JSON.stringify(ADMIN))
+    vi.mocked(getRuntime).mockResolvedValue({ auth: 'jwt' })
+    renderApp('/ask')
+
+    await waitFor(() =>
+      expect(screen.getByText('CHAT-PAGE')).toBeInTheDocument(),
+    )
+  })
+
+  it('no-auth mode: /ask lands on Home via the Chat redirect', async () => {
+    vi.mocked(getRuntime).mockResolvedValue({ auth: 'none' })
+    renderApp('/ask')
+
+    await waitFor(() =>
+      expect(screen.getByText('HOME-PAGE')).toBeInTheDocument(),
+    )
+    expect(screen.queryByText('CHAT-PAGE')).not.toBeInTheDocument()
+  })
 })

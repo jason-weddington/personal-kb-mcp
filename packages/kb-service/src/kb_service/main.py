@@ -34,6 +34,7 @@ from kb_service.mcp_server.observability import MCP_ENDPOINT_MARKER
 from kb_service.mcp_server.server import _get_tool_prefix as _mcp_prefix
 from kb_service.routes.admin_routes import router as admin_router
 from kb_service.routes.auth_routes import router as auth_router
+from kb_service.routes.browse_routes import router as browse_router
 from kb_service.routes.chat_routes import router as chat_router
 from kb_service.routes.cluster_ledger_routes import router as cluster_ledger_router
 from kb_service.routes.embedding_queue_routes import router as embedding_queue_router
@@ -313,6 +314,7 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(kb_router)
 app.include_router(kb_read_router)
+app.include_router(browse_router)
 app.include_router(maps_router)
 app.include_router(query_router)
 app.include_router(settings_router)

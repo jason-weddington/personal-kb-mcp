@@ -213,3 +213,45 @@ export interface ChatToolResultEvent {
   success: boolean
   entry_ids: string[]
 }
+
+// ── Browse (GET /api/kb/browse/*) ───────────────────────────────────────────
+
+export interface BrowseEntry {
+  id: string
+  short_title: string
+  long_title: string
+  entry_type: EntryType
+  project_ref: string | null
+  created_at: string
+  updated_at: string
+  last_accessed: string | null
+  expires_at: string | null
+  confidence_level: number
+  effective_confidence: number
+  half_life_days: number | null
+  anchor_age_days: number
+  expired: boolean
+  signal_value: number | null
+}
+
+export interface BrowseEntriesResponse {
+  items: BrowseEntry[]
+  next_cursor: string | null
+  total: number
+  skipped: number
+  signal: 'degree' | 'read' | null
+}
+
+export interface BrowseProject {
+  project_ref: string
+  entry_count: number
+  counts_by_type: Record<string, number>
+  last_activity: string
+}
+
+export interface BrowseProjectsResponse {
+  items: BrowseProject[]
+  next_cursor: string | null
+  total: number
+  skipped: number
+}

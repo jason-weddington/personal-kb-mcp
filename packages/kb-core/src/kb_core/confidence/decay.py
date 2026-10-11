@@ -15,6 +15,17 @@ HALF_LIVES: dict[EntryType, float] = {
 
 STALENESS_THRESHOLD = 0.5
 
+# Effective-confidence floor below which hybrid_search drops a result unless
+# include_stale is set.
+STALE_FILTER_THRESHOLD = 0.3
+
+
+def half_life_for(entry_type: EntryType) -> float | None:
+    """Return the decay half-life in days for an entry type, or None if it never decays."""
+    if entry_type == EntryType.MENTAL_MAP:
+        return None
+    return HALF_LIVES.get(entry_type, 365.0)
+
 
 def compute_effective_confidence(
     base_confidence: float,
@@ -59,7 +70,9 @@ def compute_effective_confidence(
     if age_days <= 0:
         return base_confidence
 
-    half_life = HALF_LIVES.get(entry_type, 365.0)
+    half_life = half_life_for(entry_type)
+    if half_life is None:
+        return base_confidence
     decay_factor = math.pow(2, -age_days / half_life)
     return round(base_confidence * decay_factor, 4)
 

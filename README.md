@@ -8,6 +8,7 @@ No installation needed — just add the MCP config below and your client handles
 
 - **Hybrid search** — BM25 full-text search + vector similarity (via Ollama embeddings), fused with Reciprocal Rank Fusion
 - **Knowledge graph** — Automatically built from entries (deterministic edges for tags/projects + LLM-extracted entities like tools, concepts, people)
+- **Browse in the web UI** — the Home page of the hosted web UI lists new, most-connected, recently read, stale and expired entries and browses by project; every row opens the entry drawer
 - **Agentic queries** — ReAct agent loop that plans, executes, evaluates, and retries — resolves the right entries even when single-shot search ranks them poorly
 - **Graph-aware queries** — 5 traversal strategies (auto, decision_trace, timeline, related, connection) with LLM query planning
 - **Synthesized answers** — `kb_summarize` retrieves relevant entries and uses Claude Haiku to produce cited prose answers
