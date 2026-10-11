@@ -25,6 +25,7 @@ import { alpha } from '@mui/material/styles'
 import ForceGraph2D from 'react-force-graph-2d'
 import type { ForceGraphMethods, LinkObject, NodeObject } from 'react-force-graph-2d'
 import { useEntryDrawer } from '../contexts/EntryDrawerContext'
+import { RESULTS_FIT_MS, RESULTS_FIT_PADDING } from '../graph/queryModel'
 import { drawNode } from '../graph/drawNode'
 import type { NodeRenderState } from '../graph/drawNode'
 import {
@@ -95,6 +96,8 @@ export interface GraphExplorerProps {
   perf?: { loadMs: number | null }
   /** Overlay at the top of the canvas; fits are padded by its measured bottom edge. */
   fitInsetRef?: RefObject<HTMLElement | null>
+  /** Width in px of a panel beside the canvas (the entry drawer overlap shrinks by it). */
+  rightInset?: number
   ref?: Ref<GraphExplorerHandle>
 }
 
@@ -112,6 +115,7 @@ type Latest = {
   openEntry: (id: string) => void
   onEscape: (() => boolean) | undefined
   perf: GraphExplorerProps['perf']
+  rightInset: number
 }
 
 export function GraphExplorer({
@@ -120,6 +124,7 @@ export function GraphExplorer({
   onEscape,
   perf,
   fitInsetRef,
+  rightInset = 0,
   ref,
 }: GraphExplorerProps) {
   const { openEntry } = useEntryDrawer()
@@ -167,6 +172,7 @@ export function GraphExplorer({
     openEntry,
     onEscape,
     perf,
+    rightInset,
   })
   useLayoutEffect(() => {
     const rs = renderRef.current
@@ -184,6 +190,7 @@ export function GraphExplorer({
       openEntry,
       onEscape,
       perf,
+      rightInset,
     }
   })
 
@@ -269,7 +276,12 @@ export function GraphExplorer({
       if (!fg) return
       const c = fg.centerAt()
       dispatch({ type: 'select', nodeId: node.id, view: { zoom: fg.zoom(), cx: c.x, cy: c.y } })
-      const fc = focusCenter(node, node.type === 'entry', latestRef.current.width)
+      const fc = focusCenter(
+        node,
+        node.type === 'entry',
+        latestRef.current.width,
+        latestRef.current.rightInset,
+      )
       fg.centerAt(fc.x, fc.y, FOCUS_MS)
       fg.zoom(FOCUS_ZOOM, FOCUS_MS)
       drawerTimerRef.current = setTimeout(() => {
@@ -358,6 +370,8 @@ export function GraphExplorer({
       if (resizeFitTimerRef.current !== null) clearTimeout(resizeFitTimerRef.current)
       resizeFitTimerRef.current = setTimeout(() => {
         resizeFitTimerRef.current = null
+        // While a traversal is active the width-change effect refits the results instead.
+        if (renderRef.current.traversal.nodeStates.size > 0) return
         if (latestRef.current.state.focusedId === null) fitRef.current(FIT_MS, FIT_PADDING)
       }, RESIZE_FIT_DELAY_MS)
     })
@@ -367,6 +381,20 @@ export function GraphExplorer({
       if (resizeFitTimerRef.current !== null) clearTimeout(resizeFitTimerRef.current)
     }
   }, [])
+
+  // A width change during a query (e.g. the chat panel opening) refits the results.
+  const prevWidthRef = useRef<number | null>(null)
+  useEffect(() => {
+    const prev = prevWidthRef.current
+    prevWidthRef.current = size.width
+    const states = renderRef.current.traversal.nodeStates
+    if (prev === null || prev === size.width || states.size === 0) return
+    if (latestRef.current.state.focusedId !== null) return
+    const results = [...states].filter(([, v]) => v === 'result').map(([k]) => k)
+    const ids = new Set(results.length > 0 ? results : [...states.keys()])
+    fgRef.current?.zoomToFit(RESULTS_FIT_MS, RESULTS_FIT_PADDING, (n: FgNode) => ids.has(n.id))
+    clampLater(RESULTS_FIT_MS)
+  }, [size.width, clampLater])
 
   // ── Graph changes: prune state, refit, perf start ────────────────────────
   const graphStartRef = useRef(0)

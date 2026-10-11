@@ -11,6 +11,7 @@ import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 import type { QueryState } from '../graph/queryModel'
 import { MarkdownBody, ResponseCard } from './ResponseCard'
+import { CitedMarkdown } from './CitedMarkdown'
 
 export interface GraphQueryPanelProps {
   state: QueryState
@@ -19,6 +20,7 @@ export interface GraphQueryPanelProps {
   onSelectEntry: (id: string) => void
   onClose: () => void
   footer?: React.ReactNode
+  onCitation?: (id: string) => void
 }
 
 export function GraphQueryPanel({
@@ -28,6 +30,7 @@ export function GraphQueryPanel({
   onSelectEntry,
   onClose,
   footer,
+  onCitation,
 }: GraphQueryPanelProps) {
   if (state.phase === 'idle') return null
 
@@ -79,7 +82,11 @@ export function GraphQueryPanel({
 
       {hasAnswer && (
         <ResponseCard sx={{ mt: 1 }}>
-          <MarkdownBody>{state.answer as string}</MarkdownBody>
+          {onCitation ? (
+            <CitedMarkdown onCitation={onCitation}>{state.answer as string}</CitedMarkdown>
+          ) : (
+            <MarkdownBody>{state.answer as string}</MarkdownBody>
+          )}
         </ResponseCard>
       )}
 

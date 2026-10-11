@@ -52,23 +52,52 @@ vi.mock('../api', () => ({ getGraphFull: h.getGraphFull, getToken: () => null })
 
 vi.mock('../streaming', () => ({ streamSSE: h.mockStreamSSE }))
 
+const authState = vi.hoisted(() => ({ authMode: 'none' as 'jwt' | 'none' }))
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({
+    authMode: authState.authMode,
+    isAuthenticated: true,
+    user: null,
+    loading: false,
+    login: vi.fn(),
+    register: vi.fn(),
+    logout: vi.fn(),
+  }),
+}))
+
 vi.mock('../contexts/EntryDrawerContext', () => ({
   useEntryDrawer: () => ({ openEntry: h.mockOpenEntry, closeEntry: vi.fn() }),
 }))
 
+const roState = {
+  size: { width: 1200, height: 900 },
+  observers: [] as { cb: ResizeObserverCallback; el: Element; obs: ResizeObserver }[],
+}
 class ResizeObserverStub {
   private cb: ResizeObserverCallback
   constructor(cb: ResizeObserverCallback) {
     this.cb = cb
   }
   observe(el: Element) {
+    roState.observers.push({ cb: this.cb, el, obs: this as unknown as ResizeObserver })
     this.cb(
-      [{ target: el, contentRect: { width: 1200, height: 900 } } as unknown as ResizeObserverEntry],
+      [{ target: el, contentRect: { ...roState.size } } as unknown as ResizeObserverEntry],
       this as unknown as ResizeObserver,
     )
   }
   unobserve() {}
   disconnect() {}
+}
+const fireResize = (width: number) => {
+  roState.size.width = width
+  act(() => {
+    for (const { cb, el, obs } of roState.observers) {
+      cb(
+        [{ target: el, contentRect: { width, height: 900 } } as unknown as ResizeObserverEntry],
+        obs,
+      )
+    }
+  })
 }
 globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver
 
@@ -126,6 +155,9 @@ function chooseScope(value: string) {
 }
 
 beforeEach(() => {
+  authState.authMode = 'none'
+  roState.size = { width: 1200, height: 900 }
+  roState.observers = []
   h.fgState.cx = 0
   h.fgState.cy = 0
   h.fgState.k = 1
@@ -320,7 +352,10 @@ describe('Graph page', () => {
 })
 
 describe('GraphExplorer handle', () => {
-  function renderExplorer(onEscape?: () => boolean) {
+  function renderExplorer(
+    onEscape?: () => boolean,
+    extra: Partial<React.ComponentProps<typeof GraphExplorer>> = {},
+  ) {
     const f = fixture()
     const graph: { nodes: ExplorerNode[]; links: ExplorerLink[] } = filterGraph(
       f.nodes,
@@ -330,7 +365,7 @@ describe('GraphExplorer handle', () => {
     )
     const ref = createRef<GraphExplorerHandle>()
     vi.useFakeTimers()
-    render(<GraphExplorer ref={ref} graph={graph} onEscape={onEscape} />)
+    render(<GraphExplorer ref={ref} graph={graph} onEscape={onEscape} {...extra} />)
     clearFg()
     return { ref, graph }
   }
@@ -415,5 +450,51 @@ describe('GraphExplorer handle', () => {
     renderExplorer(() => false)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(fg.zoomToFit).toHaveBeenCalledWith(400, 40, expect.any(Function))
+  })
+
+  it('(j8) rightInset narrows the entry drawer shift', () => {
+    const { ref } = renderExplorer(undefined, { rightInset: 420 })
+    act(() => {
+      ref.current!.flyToNode('kb-00001')
+    })
+    expect(fg.centerAt).toHaveBeenCalledWith(37.5, 20, 800)
+  })
+
+  it('(j9) a width change during a traversal refits the results once', () => {
+    const traversal = {
+      queryMode: 'summarize' as const,
+      nodeStates: new Map([['kb-00001', 'result' as const]]),
+      pulseStarts: new Map<string, number>(),
+    }
+    renderExplorer(undefined, { traversal })
+    advance(2000)
+    clearFg()
+    fireResize(780)
+    advance(2000)
+    expect(fg.zoomToFit).toHaveBeenCalledTimes(1)
+    const [ms, pad, f] = fg.zoomToFit.mock.calls[0]
+    expect([ms, pad]).toEqual([600, 40])
+    expect(f({ id: 'kb-00001' })).toBe(true)
+    expect(f({ id: 'tag:alpha' })).toBe(false)
+    fireResize(780)
+    advance(2000)
+    expect(fg.zoomToFit).toHaveBeenCalledTimes(1)
+  })
+
+  it('(j9b) without a traversal the resize refit does not fit results', () => {
+    renderExplorer()
+    advance(2000)
+    clearFg()
+    fireResize(700)
+    advance(2000)
+    expect(fg.zoomToFit.mock.calls.some((c: any[]) => c[0] === 600 && c[1] === 40)).toBe(false)
+  })
+
+  it('(j10) backtrack keeps the inset-aware focus', () => {
+    renderExplorer(undefined, { rightInset: 420 })
+    click('kb-00001')
+    click('tag:alpha')
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(37.5, 20, 600)
   })
 })

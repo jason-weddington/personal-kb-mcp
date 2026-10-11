@@ -58,6 +58,19 @@ vi.mock('react-force-graph-2d', () => ({
 
 vi.mock('../api', () => ({ getGraphFull: h.getGraphFull, getToken: h.getToken }))
 vi.mock('../streaming', () => ({ streamSSE: h.mockStreamSSE }))
+
+const authState = vi.hoisted(() => ({ authMode: 'none' as 'jwt' | 'none' }))
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({
+    authMode: authState.authMode,
+    isAuthenticated: true,
+    user: null,
+    loading: false,
+    login: vi.fn(),
+    register: vi.fn(),
+    logout: vi.fn(),
+  }),
+}))
 vi.mock('../contexts/EntryDrawerContext', () => ({
   useEntryDrawer: () => ({ openEntry: h.mockOpenEntry, closeEntry: vi.fn() }),
 }))
@@ -165,6 +178,7 @@ async function ask(text: string) {
 }
 
 beforeEach(() => {
+  authState.authMode = 'none'
   h.fgState.cx = 0
   h.fgState.cy = 0
   h.fgState.k = 1
@@ -497,5 +511,238 @@ describe('Graph query mode', { timeout: 15000 }, () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Close query' }))
     expect(infoCalls()).toHaveLength(1)
+  })
+})
+
+type Ev = RecordedEvent
+const SUMMARIZE: Ev[] = [
+  { event: 'classified', data: { mode: 'summarize' } },
+  { event: 'agent_done', data: { type: 'agent_done', entry_ids: ['kb-00001'] } },
+  {
+    event: 'synthesis_result',
+    data: { answer: 'Alpha is decided [kb-00001].', question: 'Why alpha', entry_ids: ['kb-00001'] },
+  },
+  { event: 'stream_end', data: {} },
+]
+const EXPLORE: Ev[] = [
+  { event: 'classified', data: { mode: 'explore' } },
+  { event: 'agent_done', data: { type: 'agent_done', entry_ids: ['kb-00001', 'kb-00002'] } },
+  {
+    event: 'entries',
+    data: {
+      entries: [
+        { id: 'kb-00001', short_title: 'Alpha decision', entry_type: 'decision', tags: [], context: 'a' },
+        { id: 'kb-00002', short_title: 'Beta lesson', entry_type: 'lesson_learned', tags: [], context: 'b' },
+      ],
+      turns_used: 2,
+    },
+  },
+  { event: 'stream_end', data: {} },
+]
+const CHAT: Ev[] = [
+  { event: 'chat_session', data: { session_id: 's1' } },
+  { event: 'chat_thinking', data: {} },
+  { event: 'chat_done', data: { type: 'chat_done', new_entries: ['kb-00002'] } },
+  { event: 'chat_response', data: { answer: 'Beta too [kb-00002].', session_id: 's1' } },
+  { event: 'stream_end', data: {} },
+]
+const CHAT_HIDDEN: Ev[] = [
+  CHAT[0],
+  CHAT[1],
+  { event: 'chat_done', data: { type: 'chat_done', new_entries: ['kb-77777'] } },
+  { event: 'chat_response', data: { answer: 'Nothing new.', session_id: 's1' } },
+  { event: 'stream_end', data: {} },
+]
+const withAnswer = (answer: string): Ev[] =>
+  SUMMARIZE.map((e) =>
+    e.event === 'synthesis_result' ? { ...e, data: { ...e.data, answer } } : e,
+  )
+
+const panel = () => screen.getByRole('complementary', { name: 'Graph chat' })
+const followUp = () => within(panel()).getByRole('textbox', { name: 'Follow-up message' })
+const chatRoute = (chatScript: Ev[]) =>
+  h.mockStreamSSE.mockImplementation((url: string, _b: unknown, onEvent: any) => {
+    if (url.startsWith('/api/chat/stream')) {
+      for (const e of chatScript) onEvent(e.event, e.data)
+      return Promise.resolve()
+    }
+    return new Promise<void>(() => {})
+  })
+async function open(mode: 'jwt' | 'none', script: Ev[]) {
+  authState.authMode = mode
+  await setup()
+  await ask('Why alpha')
+  feedCall(script, 0)
+  drain()
+}
+const L = () => link('kb-00001', 'kb-00002')
+
+describe('Graph chat panel', { timeout: 15000 }, () => {
+  it('(c1) a summarize answer opens the chat beside the canvas', async () => {
+    await open('jwt', SUMMARIZE)
+    expect(within(panel()).getAllByText('Why alpha').length).toBeGreaterThan(0)
+    expect(within(panel()).getByText(/Alpha is decided/)).toBeInTheDocument()
+    expect(screen.getAllByText(/Alpha is decided/)).toHaveLength(1)
+    expect(region()).toBeNull()
+    const canvas = screen.getByTestId('graph-canvas-area')
+    expect(canvas.contains(panel())).toBe(false)
+    expect(within(canvas).getByRole('group', { name: 'Solo node type' })).toBeInTheDocument()
+    const seedCalls = infoSpy.mock.calls.filter((c: any[]) => c[0] === '[graph-chat] seed')
+    expect(seedCalls).toHaveLength(1)
+    expect(seedCalls[0][1]).toEqual(
+      expect.objectContaining({ decision: 'open', reason: null, mode: 'summarize' }),
+    )
+  })
+
+  it('(c2) none mode keeps the query panel and flies citations', async () => {
+    await open('none', SUMMARIZE)
+    expect(screen.queryByRole('complementary', { name: 'Graph chat' })).toBeNull()
+    expect(region()).not.toBeNull()
+    expect(screen.getAllByText(/Alpha is decided/)).toHaveLength(1)
+    expect(h.mockStreamSSE.mock.calls.some((c: any[]) => String(c[0]).startsWith('/api/chat/'))).toBe(
+      false,
+    )
+    expect(infoSpy).toHaveBeenCalledWith(
+      '[graph-chat] seed',
+      expect.objectContaining({ decision: 'none', reason: 'auth_none' }),
+    )
+    clearFg()
+    fireEvent.click(
+      within(region()!).getByRole('button', { name: 'Show kb-00001 on the graph' }),
+    )
+    expect(fg.centerAt).toHaveBeenLastCalledWith(90, 20, 800)
+  })
+
+  it('(c3) explore opens the chat beside the query results', async () => {
+    await open('jwt', EXPLORE)
+    expect(within(panel()).getByText(/^Found 2 entries:/)).toBeInTheDocument()
+    expect(region()).not.toBeNull()
+    chatRoute(CHAT)
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Summarize these' }))
+    await act(async () => {})
+    expect(h.mockStreamSSE).toHaveBeenCalledWith(
+      '/api/chat/stream?token=tok',
+      {
+        message: 'Summarize these entries for me.',
+        mode: 'explore',
+        seed_question: 'Why alpha',
+        seed_answer: 'Found 2 entries: [kb-00001], [kb-00002]. Ask me anything about these results.',
+        seed_entry_ids: ['kb-00001', 'kb-00002'],
+      },
+      expect.any(Function),
+    )
+  })
+
+  it('(c4) a citation flies to its node and opens the drawer late', async () => {
+    await open('jwt', SUMMARIZE)
+    clearFg()
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Show kb-00001 on the graph' }))
+    expect(fg.centerAt).toHaveBeenLastCalledWith(37.5, 20, 800)
+    advance(849)
+    expect(h.mockOpenEntry).not.toHaveBeenCalled()
+    advance(1)
+    expect(h.mockOpenEntry).toHaveBeenCalledWith('kb-00001')
+  })
+
+  it('(c5) an unrendered citation shows a snackbar', async () => {
+    await open('jwt', withAnswer('See [kb-99999].'))
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Show kb-99999 on the graph' }))
+    expect(screen.getByText('kb-99999 is not shown on the graph')).toBeInTheDocument()
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[graph] flyToNode: node not rendered',
+      expect.objectContaining({ nodeId: 'kb-99999' }),
+    )
+    expect(infoSpy).toHaveBeenCalledWith(
+      '[graph-chat] citation not rendered',
+      expect.objectContaining({ id: 'kb-99999', in_payload: false }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open entry' }))
+    expect(h.mockOpenEntry).toHaveBeenCalledWith('kb-99999')
+  })
+
+  it('(c6) new entries on the graph are revealed', async () => {
+    await open('jwt', SUMMARIZE)
+    expect(h.lastProps.linkColor(L())).toBe('rgba(0,255,136,0.25)')
+    chatRoute(CHAT)
+    await user.type(followUp(), 'more?{Enter}')
+    await act(async () => {})
+    drain()
+    expect(h.lastProps.linkColor(L())).toBe('rgba(0,255,136,0.5)')
+    expect(within(panel()).getByText(/Beta too/)).toBeInTheDocument()
+    expect(infoSpy).toHaveBeenCalledWith('[graph-chat] new_entries', {
+      count: 1,
+      rendered: 1,
+      not_rendered: [],
+    })
+  })
+
+  it('(c6b) hidden new entries only get a caption', async () => {
+    await open('jwt', SUMMARIZE)
+    chatRoute(CHAT_HIDDEN)
+    await user.type(followUp(), 'more?{Enter}')
+    await act(async () => {})
+    clearFg()
+    drain()
+    expect(within(panel()).getByText('1 new entry is not on the graph')).toBeInTheDocument()
+    expect(within(panel()).getByText('Nothing new.')).toBeInTheDocument()
+    expect(h.lastProps.linkColor(L())).toBe('rgba(0,255,136,0.25)')
+    expect(
+      fg.zoomToFit.mock.calls.some(
+        (c: any[]) => typeof c[2] === 'function' && c[2]({ id: 'kb-77777' }) === true,
+      ),
+    ).toBe(false)
+    expect(infoSpy).toHaveBeenCalledWith('[graph-chat] new_entries', {
+      count: 1,
+      rendered: 0,
+      not_rendered: ['kb-77777'],
+    })
+  })
+
+  it('(c7) Close chat ends the query and resets the view', async () => {
+    await open('jwt', SUMMARIZE)
+    clearFg()
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Close chat' }))
+    expect(screen.queryByRole('complementary', { name: 'Graph chat' })).toBeNull()
+    expect(fg.zoomToFit).toHaveBeenCalledWith(400, expect.any(Number), expect.any(Function))
+    expect(h.lastProps.linkColor(L())).toBe('rgba(255,255,255,0.08)')
+  })
+
+  it('(c8) Escape ends the conversation', async () => {
+    await open('jwt', SUMMARIZE)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('complementary', { name: 'Graph chat' })).toBeNull()
+    expect(region()).toBeNull()
+  })
+
+  it('(c9) a new query replaces the chat', async () => {
+    await open('jwt', SUMMARIZE)
+    await ask('Second q')
+    const i = h.mockStreamSSE.mock.calls.length - 1
+    expect(screen.queryByRole('complementary', { name: 'Graph chat' })).toBeNull()
+    feedCall([{ event: 'classified', data: { mode: 'summarize' } }], i)
+    expect(screen.queryByRole('complementary', { name: 'Graph chat' })).toBeNull()
+    feedCall(
+      [
+        {
+          event: 'synthesis_result',
+          data: { answer: 'Second answer', question: 'Second q', entry_ids: [] },
+        },
+        { event: 'stream_end', data: {} },
+      ],
+      i,
+    )
+    expect(within(panel()).getAllByText('Second q').length).toBeGreaterThan(0)
+    expect(within(panel()).queryByText('Why alpha')).toBeNull()
+  })
+
+  it('(c10) Escape dismisses only the snackbar', async () => {
+    await open('jwt', withAnswer('See [kb-99999].'))
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Show kb-99999 on the graph' }))
+    clearFg()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    advance(1000)
+    expect(screen.queryByText('kb-99999 is not shown on the graph')).toBeNull()
+    expect(panel()).toBeInTheDocument()
+    expect(fg.zoomToFit).not.toHaveBeenCalled()
   })
 })

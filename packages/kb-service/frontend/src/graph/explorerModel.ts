@@ -277,10 +277,12 @@ export function focusCenter(
   node: { x?: number; y?: number },
   opensEntryDrawer: boolean,
   containerWidth: number,
+  rightInset = 0,
 ): { x: number; y: number } {
+  const overlap = Math.max(0, ENTRY_DRAWER_W - rightInset)
   const shift =
-    opensEntryDrawer && containerWidth >= ENTRY_OFFSET_MIN_WIDTH
-      ? ENTRY_DRAWER_W / 2 / FOCUS_ZOOM
+    opensEntryDrawer && overlap > 0 && containerWidth + rightInset >= ENTRY_OFFSET_MIN_WIDTH
+      ? overlap / 2 / FOCUS_ZOOM
       : 0
   return { x: (node.x ?? 0) + shift, y: node.y ?? 0 }
 }

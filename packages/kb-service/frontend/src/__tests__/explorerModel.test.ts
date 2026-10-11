@@ -229,6 +229,17 @@ describe('camera helpers', () => {
     expect(focusCenter(n, true, 959)).toEqual({ x: 10, y: 20 })
     expect(focusCenter(n, false, 1200)).toEqual({ x: 10, y: 20 })
   })
+  it('focusCenter with a right inset', () => {
+    const n = { x: 10, y: 20 }
+    for (const w of [1200, 780, 959, 540]) {
+      expect(focusCenter(n, true, w, 420)).toEqual({ x: 37.5, y: 20 })
+    }
+    expect(focusCenter(n, true, 539, 420)).toEqual({ x: 10, y: 20 })
+    expect(focusCenter(n, true, 1200, 640)).toEqual({ x: 10, y: 20 })
+    expect(focusCenter(n, true, 1200, 800)).toEqual({ x: 10, y: 20 })
+    expect(focusCenter(n, false, 1200, 420)).toEqual({ x: 10, y: 20 })
+    expect(focusCenter(n, true, 1200)).toEqual({ x: 90, y: 20 })
+  })
   it('fpsFromFrameTimes', () => {
     const now = 10_000
     const times = Array.from({ length: 60 }, (_, i) => now - i * (1000 / 60))

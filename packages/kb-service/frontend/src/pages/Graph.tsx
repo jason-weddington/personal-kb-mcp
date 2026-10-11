@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
+import Button from '@mui/material/Button'
+import Snackbar from '@mui/material/Snackbar'
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
@@ -15,9 +17,12 @@ import { GraphExplorer } from '../components/GraphExplorer'
 import type { GraphExplorerHandle } from '../components/GraphExplorer'
 import { GraphAskBar } from '../components/GraphAskBar'
 import { GraphQueryPanel } from '../components/GraphQueryPanel'
+import { GraphChatPanel } from '../components/GraphChatPanel'
 import { GraphSearch } from '../components/GraphSearch'
+import { useAuth } from '../contexts/AuthContext'
 import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import { BACKGROUND, NODE_COLORS, NODE_TYPES, filterGraph } from '../graph/explorerModel'
+import { GRAPH_CHAT_W, chatSeedDecision } from '../graph/chatModel'
 import { useGraphQuery } from '../graph/useGraphQuery'
 import type { GraphFullResponse } from '../kbTypes'
 
@@ -79,17 +84,93 @@ export function Graph() {
   )
   const labelFor = useCallback((id: string) => labelById.get(id) ?? null, [labelById])
 
-  const { state: queryState, traversal, start, close } = useGraphQuery(explorerRef, graphIds)
+  const { state: queryState, traversal, start, close, reveal } = useGraphQuery(
+    explorerRef,
+    graphIds,
+  )
+
+  const { authMode } = useAuth()
+  const chatEnabled = authMode === 'jwt'
+  const {
+    question: queryQuestion,
+    answer: queryAnswer,
+    sourceIds: querySourceIds,
+    entries: queryEntries,
+  } = queryState
+  const seedDecision = useMemo(
+    () =>
+      chatSeedDecision({
+        question: queryQuestion,
+        answer: queryAnswer,
+        sourceIds: querySourceIds,
+        entries: queryEntries,
+      }),
+    [queryQuestion, queryAnswer, querySourceIds, queryEntries],
+  )
+  const chatSeed = chatEnabled ? (seedDecision?.seed ?? null) : null
+
+  const loggedSeedRef = useRef<typeof seedDecision>(null)
+  useEffect(() => {
+    if (seedDecision === null || seedDecision === loggedSeedRef.current) return
+    loggedSeedRef.current = seedDecision
+    console.info('[graph-chat] seed', {
+      decision: chatEnabled && seedDecision.seed ? 'open' : 'none',
+      reason: chatEnabled ? seedDecision.reason : 'auth_none',
+      mode: seedDecision.mode,
+      auth_mode: authMode,
+      answer_len: queryAnswer?.length ?? 0,
+      entry_ids: seedDecision.seed?.entryIds.length ?? 0,
+    })
+  }, [seedDecision, chatEnabled, authMode, queryAnswer])
+
+  const [cite, setCite] = useState<{ id: string; open: boolean }>({ id: '', open: false })
+  const citeOpenRef = useRef(cite.open)
+  useLayoutEffect(() => {
+    citeOpenRef.current = cite.open
+  }, [cite.open])
 
   const phaseRef = useRef(queryState.phase)
   useLayoutEffect(() => {
     phaseRef.current = queryState.phase
   })
-  const handleEscape = useCallback(() => {
+  const handleEscape = useCallback((): boolean => {
+    if (citeOpenRef.current) {
+      setCite((c) => ({ ...c, open: false }))
+      return true
+    }
     if (phaseRef.current === 'idle') return false
     close()
     return true
   }, [close])
+
+  const handleCitation = useCallback(
+    (id: string) => {
+      if (explorerRef.current?.flyToNode(id) === true) return
+      console.info('[graph-chat] citation not rendered', {
+        id,
+        in_payload: allIds.has(id),
+        scope,
+        active_types: activeTypes.size,
+      })
+      setCite({ id, open: true })
+    },
+    [allIds, scope, activeTypes],
+  )
+
+  const handleNewEntries = useCallback(
+    (ids: string[]): string[] => {
+      const shown = ids.filter((id) => renderedIds.has(id))
+      const hidden = ids.filter((id) => !renderedIds.has(id))
+      console.info('[graph-chat] new_entries', {
+        count: ids.length,
+        rendered: shown.length,
+        not_rendered: hidden.slice(0, 10),
+      })
+      if (shown.length > 0) reveal(shown)
+      return hidden
+    },
+    [renderedIds, reveal],
+  )
 
   const toggleType = (type: string) => {
     setActiveTypes((prev) => {
@@ -120,8 +201,13 @@ export function Graph() {
         height: 'calc(100vh - 64px)',
         overflow: 'hidden',
         bgcolor: BACKGROUND,
+        display: 'flex',
       }}
     >
+      <Box
+        data-testid="graph-canvas-area"
+        sx={{ position: 'relative', flex: 1, minWidth: 0, height: '100%' }}
+      >
       <GraphExplorer
         ref={explorerRef}
         graph={graph}
@@ -129,6 +215,7 @@ export function Graph() {
         onEscape={handleEscape}
         perf={perfOn ? { loadMs } : undefined}
         fitInsetRef={controlsRef}
+        rightInset={chatSeed ? GRAPH_CHAT_W : 0}
       />
 
       <Box
@@ -211,6 +298,7 @@ export function Graph() {
             </Stack>
           </Stack>
         </Paper>
+        {chatSeed?.mode !== 'summarize' && (
         <GraphQueryPanel
           state={queryState}
           renderedIds={renderedIds}
@@ -220,7 +308,9 @@ export function Graph() {
             if (!shown) openEntry(id)
           }}
           onClose={close}
+          onCitation={handleCitation}
         />
+        )}
       </Box>
 
       <Box
@@ -235,6 +325,36 @@ export function Graph() {
       >
         {`${graph.nodes.length} of ${data.stats.node_count} nodes · ${graph.links.length} of ${data.stats.edge_count} edges`}
       </Box>
+      </Box>
+      {chatSeed && (
+        <GraphChatPanel
+          key={`${chatSeed.mode}|${chatSeed.question}|${chatSeed.answer}`}
+          seed={chatSeed}
+          onCitation={handleCitation}
+          onNewEntries={handleNewEntries}
+          onClose={close}
+        />
+      )}
+      <Snackbar
+        open={cite.open}
+        autoHideDuration={6000}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        onClose={(_, reason) => {
+          if (reason !== 'clickaway') setCite((c) => ({ ...c, open: false }))
+        }}
+        message={`${cite.id} is not shown on the graph`}
+        action={
+          <Button
+            size="small"
+            onClick={() => {
+              openEntry(cite.id)
+              setCite((c) => ({ ...c, open: false }))
+            }}
+          >
+            Open entry
+          </Button>
+        }
+      />
     </Box>
   )
 }

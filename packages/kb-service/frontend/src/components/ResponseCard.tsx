@@ -30,16 +30,16 @@ export function ResponseCard({
   )
 }
 
+export const MARKDOWN_BODY_SX: SxProps<Theme> = {
+  '& p': { mt: 0, mb: 1 },
+  '& p:last-child': { mb: 0 },
+  '& pre': { overflowX: 'auto', bgcolor: 'action.selected', p: 1, borderRadius: 1 },
+  '& code': { fontFamily: 'monospace', fontSize: '0.875em' },
+}
+
 export function MarkdownBody({ children }: { children: string }) {
   return (
-    <Box
-      sx={{
-        '& p': { mt: 0, mb: 1 },
-        '& p:last-child': { mb: 0 },
-        '& pre': { overflowX: 'auto', bgcolor: 'action.selected', p: 1, borderRadius: 1 },
-        '& code': { fontFamily: 'monospace', fontSize: '0.875em' },
-      }}
-    >
+    <Box sx={MARKDOWN_BODY_SX}>
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
     </Box>
   )

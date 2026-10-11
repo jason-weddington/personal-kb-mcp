@@ -447,7 +447,14 @@ export type QuerySeed = {
   entryIds: string[]
 }
 
-export function querySeed(state: QueryState): QuerySeed | null {
+export type QuerySeedInput = Pick<QueryState, 'question' | 'answer' | 'sourceIds' | 'entries'>
+
+export function exploreSeedAnswer(entryIds: readonly string[]): string {
+  const n = entryIds.length
+  return `Found ${n} ${n === 1 ? 'entry' : 'entries'}: ${entryIds.map((id) => `[${id}]`).join(', ')}. Ask me anything about these results.`
+}
+
+export function querySeed(state: QuerySeedInput): QuerySeed | null {
   if (typeof state.answer === 'string' && state.answer !== '') {
     return {
       question: state.question,
@@ -462,7 +469,7 @@ export function querySeed(state: QueryState): QuerySeed | null {
     return {
       question: state.question,
       mode: 'explore',
-      answer: `Found ${ids.length} entries: ${ids.join(', ')}.`,
+      answer: exploreSeedAnswer(ids),
       entryIds: ids,
     }
   }

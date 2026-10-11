@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { EMPTY_TRAVERSAL } from '../graph/explorerModel'
 import {
+  exploreSeedAnswer,
   initialQueryState,
   queryReducer,
   querySeed,
@@ -360,9 +361,31 @@ describe('querySeed', () => {
     expect(querySeed(drain(feed(EXPLORE_AGENT_EVENTS, 'why alpha?')))).toEqual({
       question: 'why alpha?',
       mode: 'explore',
-      answer: 'Found 2 entries: kb-00001, kb-00003.',
+      answer: 'Found 2 entries: [kb-00001], [kb-00003]. Ask me anything about these results.',
       entryIds: ['kb-00001', 'kb-00003'],
     })
+  })
+
+  it('seeds a single no-LLM explore entry', () => {
+    expect(querySeed(drain(feed(EXPLORE_NO_LLM_EVENTS, 'q')))).toMatchObject({
+      answer: 'Found 1 entry: [kb-00001]. Ask me anything about these results.',
+      entryIds: ['kb-00001'],
+    })
+  })
+
+  it('exploreSeedAnswer pluralises', () => {
+    expect(exploreSeedAnswer(['kb-00001'])).toBe(
+      'Found 1 entry: [kb-00001]. Ask me anything about these results.',
+    )
+    expect(exploreSeedAnswer(['kb-00001', 'kb-00002'])).toBe(
+      'Found 2 entries: [kb-00001], [kb-00002]. Ask me anything about these results.',
+    )
+  })
+
+  it('accepts a plain seed input', () => {
+    expect(
+      querySeed({ question: 'Q', answer: 'A', sourceIds: ['kb-00001'], entries: null }),
+    ).toEqual({ question: 'Q', mode: 'summarize', answer: 'A', entryIds: ['kb-00001'] })
   })
 })
 
