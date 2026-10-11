@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
@@ -12,8 +12,12 @@ import Stack from '@mui/material/Stack'
 import { getGraphFull } from '../api'
 import { GraphExplorer } from '../components/GraphExplorer'
 import type { GraphExplorerHandle } from '../components/GraphExplorer'
+import { GraphAskBar } from '../components/GraphAskBar'
+import { GraphQueryPanel } from '../components/GraphQueryPanel'
 import { GraphSearch } from '../components/GraphSearch'
+import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import { BACKGROUND, NODE_COLORS, NODE_TYPES, filterGraph } from '../graph/explorerModel'
+import { useGraphQuery } from '../graph/useGraphQuery'
 import type { GraphFullResponse } from '../kbTypes'
 
 const EMPTY_PAYLOAD: GraphFullResponse = {
@@ -63,6 +67,28 @@ export function Graph() {
     [data, activeTypes, scope],
   )
 
+  const { openEntry } = useEntryDrawer()
+  const renderedIds = useMemo(() => new Set(graph.nodes.map((n) => n.id)), [graph])
+  const allIds = useMemo(() => new Set((payload?.nodes ?? []).map((n) => n.id)), [payload])
+  const graphIds = useMemo(() => ({ rendered: renderedIds, all: allIds }), [renderedIds, allIds])
+  const labelById = useMemo(
+    () => new Map((payload?.nodes ?? []).map((n) => [n.id, n.label] as const)),
+    [payload],
+  )
+  const labelFor = useCallback((id: string) => labelById.get(id) ?? null, [labelById])
+
+  const { state: queryState, traversal, start, close } = useGraphQuery(explorerRef, graphIds)
+
+  const phaseRef = useRef(queryState.phase)
+  useLayoutEffect(() => {
+    phaseRef.current = queryState.phase
+  })
+  const handleEscape = useCallback(() => {
+    if (phaseRef.current === 'idle') return false
+    close()
+    return true
+  }, [close])
+
   const toggleType = (type: string) => {
     setActiveTypes((prev) => {
       const next = new Set(prev)
@@ -94,72 +120,99 @@ export function Graph() {
         bgcolor: BACKGROUND,
       }}
     >
-      <GraphExplorer ref={explorerRef} graph={graph} perf={perfOn ? { loadMs } : undefined} />
+      <GraphExplorer
+        ref={explorerRef}
+        graph={graph}
+        traversal={traversal}
+        onEscape={handleEscape}
+        perf={perfOn ? { loadMs } : undefined}
+      />
 
-      <Paper
+      <Box
+        data-testid="graph-left-column"
         sx={{
           position: 'absolute',
-          top: '12px',
-          left: '12px',
-          maxWidth: 'calc(100% - 24px)',
+          top: 12,
+          left: 12,
           zIndex: 1,
-          p: 1.5,
+          maxWidth: 'calc(100% - 24px)',
+          maxHeight: 'calc(100% - 72px)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1,
+          pointerEvents: 'none',
+          '& > *': { pointerEvents: 'auto' },
         }}
       >
-        <Stack spacing={1.5}>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <GraphSearch
-              nodes={graph.nodes}
-              onSelectNode={(id) => {
-                explorerRef.current?.flyToNode(id)
-              }}
-            />
-            {scopeOptions.length > 0 && (
-              <FormControl size="small" sx={{ minWidth: 180 }}>
-                <InputLabel id="graph-scope-label">Scope</InputLabel>
-                <Select
-                  labelId="graph-scope-label"
-                  label="Scope"
-                  value={scope}
-                  onChange={(e) => setScope(e.target.value)}
-                >
-                  <MenuItem value="">All</MenuItem>
-                  {scopeOptions.map((p) => (
-                    <MenuItem key={p} value={p}>
-                      {p}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            )}
+        <Paper sx={{ p: 1.5, flexShrink: 0 }}>
+          <Stack spacing={1.5}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <GraphSearch
+                nodes={graph.nodes}
+                placeholder="Search nodes or ask a question..."
+                onFreeTextSubmit={start}
+                onSelectNode={(id) => {
+                  explorerRef.current?.flyToNode(id)
+                }}
+              />
+              <GraphAskBar onAsk={start} busy={queryState.phase === 'streaming'} />
+              {scopeOptions.length > 0 && (
+                <FormControl size="small" sx={{ minWidth: 180 }}>
+                  <InputLabel id="graph-scope-label">Scope</InputLabel>
+                  <Select
+                    labelId="graph-scope-label"
+                    label="Scope"
+                    value={scope}
+                    onChange={(e) => setScope(e.target.value)}
+                  >
+                    <MenuItem value="">All</MenuItem>
+                    {scopeOptions.map((p) => (
+                      <MenuItem key={p} value={p}>
+                        {p}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              )}
+            </Stack>
+            <Stack
+              role="group"
+              aria-label="Node type filters"
+              direction="row"
+              flexWrap="wrap"
+              useFlexGap
+              spacing={1}
+            >
+              {NODE_TYPES.map((type) => {
+                const on = activeTypes.has(type)
+                return (
+                  <Chip
+                    key={type}
+                    label={type}
+                    onClick={() => toggleType(type)}
+                    variant={on ? 'filled' : 'outlined'}
+                    size="small"
+                    sx={{
+                      bgcolor: on ? NODE_COLORS[type] : undefined,
+                      color: on ? '#000' : undefined,
+                    }}
+                  />
+                )
+              })}
+            </Stack>
           </Stack>
-          <Stack
-            role="group"
-            aria-label="Node type filters"
-            direction="row"
-            flexWrap="wrap"
-            useFlexGap
-            spacing={1}
-          >
-            {NODE_TYPES.map((type) => {
-              const on = activeTypes.has(type)
-              return (
-                <Chip
-                  key={type}
-                  label={type}
-                  onClick={() => toggleType(type)}
-                  variant={on ? 'filled' : 'outlined'}
-                  size="small"
-                  sx={{
-                    bgcolor: on ? NODE_COLORS[type] : undefined,
-                    color: on ? '#000' : undefined,
-                  }}
-                />
-              )
-            })}
-          </Stack>
-        </Stack>
-      </Paper>
+        </Paper>
+        <GraphQueryPanel
+          state={queryState}
+          renderedIds={renderedIds}
+          labelFor={labelFor}
+          onSelectEntry={(id) => {
+            const shown = explorerRef.current?.flyToNode(id) ?? false
+            if (!shown) openEntry(id)
+          }}
+          onClose={close}
+        />
+      </Box>
 
       <Box
         sx={{

@@ -8,6 +8,8 @@
  * @param url    Full URL including any ?token= param.
  * @param body   Request body — serialised as compact JSON.
  * @param onEvent  Called for every complete SSE frame with (eventType, parsedData).
+ * @param signal  Optional AbortSignal; aborting it cancels the fetch and rejects the
+ *           returned promise (the server-side task is not cancelled).
  * @returns  Resolves after the final chunk; rejects if the reader throws mid-stream
  *           (callers must not rely on stream_end alone to restore UI state).
  */
@@ -15,11 +17,13 @@ export async function streamSSE(
   url: string,
   body: unknown,
   onEvent: (event: string, data: Record<string, unknown>) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   })
 
   if (!res.ok) {

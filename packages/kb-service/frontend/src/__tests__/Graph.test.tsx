@@ -33,18 +33,24 @@ const h = vi.hoisted(() => {
     lastProps: {} as Record<string, any>,
     mockOpenEntry: vi.fn(),
     getGraphFull: vi.fn(),
+    mockStreamSSE: vi.fn(() => new Promise<void>(() => {})),
   }
 })
 
 vi.mock('react-force-graph-2d', () => ({
-  default: function ForceGraphStub({ ref, ...props }: { ref?: Ref<unknown> } & Record<string, any>) {
+  default: function ForceGraphStub({
+    ref,
+    ...props
+  }: { ref?: Ref<unknown> } & Record<string, any>) {
     h.lastProps = props
     useImperativeHandle(ref, () => h.fgMethods)
     return <div data-testid="fg-stub" />
   },
 }))
 
-vi.mock('../api', () => ({ getGraphFull: h.getGraphFull }))
+vi.mock('../api', () => ({ getGraphFull: h.getGraphFull, getToken: () => null }))
+
+vi.mock('../streaming', () => ({ streamSSE: h.mockStreamSSE }))
 
 vi.mock('../contexts/EntryDrawerContext', () => ({
   useEntryDrawer: () => ({ openEntry: h.mockOpenEntry, closeEntry: vi.fn() }),
@@ -69,8 +75,24 @@ globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserv
 function fixture(): GraphFullResponse {
   return {
     nodes: [
-      { id: 'kb-00001', type: 'entry', label: 'Alpha decision', val: 2, properties: { project_ref: 'p1' }, x: 10, y: 20 },
-      { id: 'kb-00002', type: 'entry', label: 'Beta lesson', val: 2, properties: { project_ref: 'p2' }, x: 30, y: 40 },
+      {
+        id: 'kb-00001',
+        type: 'entry',
+        label: 'Alpha decision',
+        val: 2,
+        properties: { project_ref: 'p1' },
+        x: 10,
+        y: 20,
+      },
+      {
+        id: 'kb-00002',
+        type: 'entry',
+        label: 'Beta lesson',
+        val: 2,
+        properties: { project_ref: 'p2' },
+        x: 30,
+        y: 40,
+      },
       { id: 'tag:alpha', type: 'tag', label: 'alpha', val: 1, properties: {}, x: 50, y: 60 },
       { id: 'tag:beta', type: 'tag', label: 'beta', val: 1, properties: {}, x: 70, y: 80 },
     ] as ExplorerNode[],
@@ -109,6 +131,7 @@ beforeEach(() => {
   h.fgState.k = 1
   h.lastProps = {}
   h.mockOpenEntry.mockClear()
+  h.mockStreamSSE.mockClear()
   clearFg()
   h.getGraphFull.mockImplementation(() => Promise.resolve(fixture()))
 })
@@ -172,7 +195,9 @@ describe('Graph page', () => {
     advance(849)
     expect(screen.queryByRole('region', { name: 'Node details' })).toBeNull()
     advance(1)
-    expect(within(screen.getByRole('region', { name: 'Node details' })).getAllByText('alpha').length).toBeGreaterThan(0)
+    expect(
+      within(screen.getByRole('region', { name: 'Node details' })).getAllByText('alpha').length,
+    ).toBeGreaterThan(0)
   })
 
   it('(f) Escape fits and clamps at 450 ms', async () => {
@@ -196,20 +221,33 @@ describe('Graph page', () => {
     expect(h.lastProps.linkVisibility(h.lastProps.graphData.links[0])).toBe(false)
   })
 
-  it('(h) search ranks the exact label first and Enter flies to it', async () => {
+  it('(h) search ranks the exact label first; Enter asks, ArrowDown+Enter flies', async () => {
     await renderPage()
-    const input = screen.getByPlaceholderText('Search nodes...')
+    const input = screen.getByPlaceholderText('Search nodes or ask a question...')
     fireEvent.change(input, { target: { value: 'alpha' } })
     const options = screen.getAllByRole('option')
     expect(options[0]).toHaveTextContent('alpha')
     expect(options[1]).toHaveTextContent('Alpha decision')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(h.mockStreamSSE).toHaveBeenCalledWith(
+      '/api/kb/query/stream',
+      { question: 'alpha' },
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
+    expect(fg.centerAt).not.toHaveBeenCalledWith(50, 60, 800)
+
+    fireEvent.change(input, { target: { value: 'alpha' } })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(fg.centerAt).toHaveBeenCalledWith(50, 60, 800)
   })
 
   it('(h2) one Escape in search clears and blurs without moving the graph', async () => {
     await renderPage()
-    const input = screen.getByPlaceholderText('Search nodes...') as HTMLInputElement
+    const input = screen.getByPlaceholderText(
+      'Search nodes or ask a question...',
+    ) as HTMLInputElement
     input.focus()
     fireEvent.change(input, { target: { value: 'alpha' } })
     const before = fg.zoomToFit.mock.calls.length

@@ -248,7 +248,7 @@ Ingest a web page into the knowledge base (only available when `KB_MANAGER=TRUE`
 
 ### `kb_explore`
 
-Returns the URL of the hosted web UI's Graph page (`<service url>/graph`); open it in a browser. The page is an interactive graph explorer with zoom-aware labels, click-to-focus on a node and its neighbours, ArrowLeft backtrack, a solo legend that shows one node type at a time, and node search.
+Returns the URL of the hosted web UI's Graph page (`<service url>/graph`); open it in a browser. The page is an interactive graph explorer with zoom-aware labels, click-to-focus on a node and its neighbours, ArrowLeft backtrack, a solo legend that shows one node type at a time, and node search. Type a question in the ask bar, or press Enter on free text in the search box, to stream it to the agent and watch its traversal light up on the graph, with the answer or the matching entries in a side panel.
 
 ### `kb_feedback`
 

@@ -103,3 +103,27 @@ describe('streamSSE', () => {
     ).rejects.toThrow('401')
   })
 })
+
+describe('streamSSE signal', () => {
+  it('passes the AbortSignal to fetch', async () => {
+    let init: RequestInit | undefined
+    global.fetch = async (_url, i) => {
+      init = i
+      return mockFetchOk(makeStream([]))
+    }
+    const controller = new AbortController()
+    await streamSSE('http://test/stream', {}, () => {}, controller.signal)
+    expect(init?.signal).toBe(controller.signal)
+  })
+
+  it('leaves signal out of the fetch init when none is given', async () => {
+    let init: RequestInit | undefined
+    global.fetch = async (_url, i) => {
+      init = i
+      return mockFetchOk(makeStream([]))
+    }
+    await streamSSE('http://test/stream', {}, () => {})
+    expect(init).toBeDefined()
+    expect('signal' in (init as RequestInit)).toBe(false)
+  })
+})
