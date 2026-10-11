@@ -79,7 +79,7 @@ def sandbox(tmp_path: Path) -> dict[str, Path]:
     )
     for cmd in ("init -q -b main", "add -A", "-c user.name=t -c user.email=t@t commit -qm init"):
         subprocess.run([REAL_GIT, *cmd.split()], cwd=repo, check=True)
-    (repo / ".gitignore").write_text("dist/\nrelease.local.sh\n")
+    (repo / ".gitignore").write_text("dist/\nrelease.local.sh\nrelease.post.local.sh\n")
     subprocess.run([REAL_GIT, "add", "-A"], cwd=repo, check=True)
     subprocess.run(
         [REAL_GIT, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "ignore"],
@@ -135,6 +135,54 @@ def _hook(sb: dict[str, Path], exit_code: int) -> None:
         exit {exit_code}
         """,
     )
+
+
+def _post_hook(sb: dict[str, Path], exit_code: int) -> None:
+    _write(
+        sb["repo"] / "release.post.local.sh",
+        f"""\
+        #!/usr/bin/env bash
+        echo "post $1 argc=$# pwd=$PWD" >> "{sb["log"]}"
+        exit {exit_code}
+        """,
+    )
+
+
+def _assert_post_after_pushes(sb: dict[str, Path]) -> list[str]:
+    calls = _calls(sb)
+    post = [i for i, c in enumerate(calls) if c.startswith("post ")]
+    pushes = [i for i, c in enumerate(calls) if c.startswith("git push")]
+    assert len(post) == 1 and len(pushes) == 2 and all(i < post[0] for i in pushes)
+    assert calls[post[0]] == f"post {NEW_VERSION} argc=1 pwd={sb['repo']}"
+    return calls
+
+
+def test_post_hook_runs_after_pushes(sandbox):
+    _hook(sandbox, 0)
+    _post_hook(sandbox, 0)
+    r = _run(sandbox)
+    assert r.returncode == 0, r.stderr
+    _assert_post_after_pushes(sandbox)
+    assert "release.post.local.sh failed" not in r.stderr
+
+
+def test_post_hook_failure_exits_4_without_rollback(sandbox):
+    _hook(sandbox, 0)
+    _post_hook(sandbox, 7)
+    r = _run(sandbox)
+    assert r.returncode == 4
+    _assert_post_after_pushes(sandbox)
+    assert "failed (exit 7)" in r.stderr
+    assert f"Rerun it by hand: ./release.post.local.sh {NEW_VERSION}" in r.stderr
+    assert f"v{NEW_VERSION}" in _tags(sandbox)
+
+
+def test_post_hook_runs_when_deploy_incomplete_and_exit_3_wins(sandbox):
+    _hook(sandbox, 10)
+    _post_hook(sandbox, 0)
+    r = _run(sandbox)
+    assert r.returncode == 3
+    _assert_post_after_pushes(sandbox)
 
 
 def test_hook_success_then_push(sandbox):

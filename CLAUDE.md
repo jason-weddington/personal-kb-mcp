@@ -176,6 +176,8 @@ before running `./release.sh`; that is the moment users get the new code.
 
 **Optional publish hook.** An optional maintainer-local hook publishes the built artifacts before anything is pushed, so a remote never advertises a version whose artifacts did not ship. If an executable `./release.local.sh` exists (gitignored, never committed), `release.sh` runs it from the repo root, after the release commit and tag exist locally, as `./release.local.sh <version> <absolute-dist-dir>`. Exit 0 means the artifacts are published; any non-zero exit aborts the release. On any abort the local tag is deleted and nothing is pushed. With no hook present the release aborts as well, unless you pass `./release.sh --no-publish`, which prints a loud notice that no artifacts were published and continues to push.
 
+**Optional post-push hook.** If an executable `./release.post.local.sh` exists (gitignored, never committed), `release.sh` runs it after the release is pushed, as `./release.post.local.sh <version>`; use it for steps that need the pushed release, such as upgrading hosts that install from the git origin. A failure is reported loudly and makes release.sh exit 4, but nothing is rolled back because the release is already public.
+
 > Release machinery: `python-semantic-release` (dev dep) + `[tool.semantic_release]`
 > in `pyproject.toml`. The legacy per-commit auto-release post-commit hook was
 > removed (it bumped the version on every `main` commit, which is incompatible

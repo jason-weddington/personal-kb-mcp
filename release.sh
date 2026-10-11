@@ -29,6 +29,10 @@
 # On any abort the local release tag is deleted and nothing has been pushed.
 # With no hook present the release aborts too, unless --no-publish is given,
 # which skips publishing (loudly) and pushes anyway.
+#
+# Optional maintainer-local post-push hook: if an executable
+# ./release.post.local.sh exists (gitignored), it runs after the pushes as
+# `./release.post.local.sh <version>`. A failure is reported and exits 4; nothing is rolled back.
 set -euo pipefail
 
 publish=1
@@ -180,6 +184,19 @@ else
   echo "!!! No 'github' remote configured: released to origin only. Publish later with: git push github main --tags !!!" >&2
 fi
 
+# 3b. Optional post-push hook. The release is already public, so a failure
+#     never rolls anything back; it is reported and makes the script exit 4.
+post_rc=0
+if [ -x ./release.post.local.sh ]; then
+  set +e
+  ./release.post.local.sh "$new_version"
+  post_rc=$?
+  set -e
+  if [ "$post_rc" -ne 0 ]; then
+    echo "!!! ${new_tag} is pushed, but ./release.post.local.sh failed (exit ${post_rc}). Rerun it by hand: ./release.post.local.sh ${new_version} !!!" >&2
+  fi
+fi
+
 # 4. Optional local deploy (restart the home-lab service) if a deploy script exists.
 if [ -x ./deploy.sh ]; then
   ./deploy.sh
@@ -193,4 +210,7 @@ fi
 if [ "$deploy_incomplete" = "1" ]; then
   echo "!!! ${new_tag} is published and pushed, but the publish hook reported an INCOMPLETE deploy (exit 10). Finish the deploy before relying on it. !!!" >&2
   exit 3
+fi
+if [ "$post_rc" -ne 0 ]; then
+  exit 4
 fi
