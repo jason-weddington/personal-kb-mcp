@@ -2,6 +2,30 @@
 
 <!-- version list -->
 
+## v1.9.0 (2026-10-10)
+
+### Bug Fixes
+
+- **cues**: Normalize_error recognizes the talos bash error header so the same mistake gets the same
+  cue across harnesses (CUE_NORMALIZER_VERSION 2)
+  ([`89dd5a6`](https://github.com/jason-weddington/personal-kb-mcp/commit/89dd5a6357f51a3401645c87934586fc3ca86cb4))
+
+### Documentation
+
+- Changelog 1.8.0: MCP over HTTP and contract fixtures are features (mis-typed chore by the rollout
+  manager); talos map has no write_file
+  ([`ff86617`](https://github.com/jason-weddington/personal-kb-mcp/commit/ff86617308cff5fc7d70965335865902fb5497dd))
+
+- Roadmap records v1.8.0 and the write-policy rollout state
+  ([`0c1415a`](https://github.com/jason-weddington/personal-kb-mcp/commit/0c1415a950c523a1edb583e70c2340f5496e7f41))
+
+### Features
+
+- **kb-service**: POST /api/kb/event contract fixture (Claude Code and talos examples) and talos
+  argument-name mapping for failure events
+  ([`57faa12`](https://github.com/jason-weddington/personal-kb-mcp/commit/57faa120cb0ab9e780c4188c807694cd30b0fa7d))
+
+
 ## v1.8.0 (2026-10-10)
 
 ### Bug Fixes
