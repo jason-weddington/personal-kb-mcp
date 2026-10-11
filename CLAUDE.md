@@ -39,56 +39,15 @@
 - Tests mirror source structure under `tests/`
 - During the stdio overlap every MCP tool exists twice (src/personal_kb/tools/ and packages/kb-service/src/kb_service/mcp_server/tools/); tests/test_mcp_http_parity.py enforces parity; change both together.
 
-## `personal-kb-hook` (CLI hook for mental_map surfacing)
+## `personal-kb-hook` (the harness hook)
 
-`personal-kb-hook` is a **separate, standalone, zero-dependency package**
-that lives at `packages/personal-kb-hook/`. It is wired into the harness's
-`SessionStart` and `UserPromptSubmit` hooks and proactively surfaces a
-project's `mental_map` directory into the model context. It is
-**stdlib-only**, **never touches the DB**, never imports the main
-`personal_kb` package, and is silent on every error path.
+`personal-kb-hook` is a separate, stdlib-only package at `packages/personal-kb-hook/`: one console script that Claude Code runs for six hook events (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop). It never imports the main package or touches a database: it talks to kb-service over HTTP (prevention slice and gate, maps index, failure events, turn digests, listener) and is silent on every error path, exiting 0. What each event does, the settings snippet and the scratch files are in `docs/intelligent-kb.md` section 3; keep that section current when the hook changes.
 
-**Install** (verified — produces a deps-free tool venv with only
-`personal_kb_hook` in site-packages):
+**Install**: `uv tool install` from this repo's `packages/personal-kb-hook` subdirectory (the README has the command). Production installs are pinned to the release tag by the maintainer's post-release hook.
 
-```
-uv tool install --from \
-  "git+https://github.com/jason-weddington/personal-kb-mcp.git#subdirectory=packages/personal-kb-hook" \
-  personal-kb-hook
-```
+**`.kb_project` convention**: commit a one-line `.kb_project` file at each repo root holding the KB `project_ref`. The hook walks up from the session's `cwd` to it to know which project's maps and lessons to surface. This repo's own `.kb_project` is `personal-kb`.
 
-The MCP-side writer that populates the on-disk JSONL maps index that this
-hook reads stays in the main package at
-`src/personal_kb/maps_index_writer.py` — it imports `personal_kb.preflight`
-and `personal_kb.db.backend`, which are server-only.
-
-**Wire it up**: in `~/.claude/settings.json`, add a hook entry for both
-`SessionStart` and `UserPromptSubmit` invoking `personal-kb-hook --format=claude-json`
-(see the README for the full snippet).
-
-**`.kb_project` convention**: commit a one-line `.kb_project` file at each
-repo root containing the KB `project_ref`. The hook walks up from the
-session's `cwd` to that file to know which project's maps to surface. This
-repo's own `.kb_project` is `personal-kb`.
-
-The hook reads only `<KB_DB_PATH dir>/maps_index.jsonl`, which the MCP server
-writes on `mental_map` create/update/deactivate. Per-session suppression
-lives in `~/.cache/personal_kb/injected-<session_id>.json`.
-
-**Drift guard**: the on-disk path contract (maps-index location + scratch
-file location) is duplicated between the main package
-(`personal_kb.config.get_maps_index_path` /
-`personal_kb.config.get_hook_scratch_path`) and the standalone hook package
-(`personal_kb_hook.paths`). A test in the main repo
-(`tests/test_path_drift_guard.py`) imports both implementations and asserts
-they produce identical paths for representative inputs — including a custom
-`KB_DB_PATH`. If you touch one side, touch the other and re-run that test.
-
-**uv workspace**: the root `pyproject.toml` declares
-`[tool.uv.workspace] members = ["packages/*"]` and pulls
-`personal-kb-hook` in as a workspace dev dep, so `uv sync` installs the
-standalone package editable into `.venv` (needed by the drift-guard test and
-by the cross-package round-trip test in `tests/test_maps_index_writer.py`).
+**uv workspace**: the root `pyproject.toml` declares `[tool.uv.workspace] members = ["packages/*"]`, so `uv sync` installs the hook package editable into `.venv`, and its own suite runs as described in Quick Reference.
 
 ## Search Quality Eval
 
@@ -129,13 +88,13 @@ This is a dogfooding project — we build the KB and use it in the same sessions
 
 ## Documentation Workflow
 
-Every new feature (not bug fixes) requires updating three things:
+Two technical docs, one owner each. `how_it_works.md` covers the core KB: the entry model, storage, the write path, supersession and the near-duplicate guard, search and embeddings, the graph, kb_ask and kb_summarize, LLM providers and the llm_calls ledger, ingestion, mental_map as an entry type, preflight, kb-service, the web UI and both MCP surfaces. `docs/intelligent-kb.md` covers everything that fires without an agent asking, or exists to serve something that does: the hook's events, resolutions and trust, failure cues, turn digests, surprise capture, the write policy, the slice, the soft gate, failure context, maps push and tool inventory, the listener, map maintenance endpoints, harness mapping and contracts, measurement and capture cost. Rule of thumb: if it fires without an agent asking, it goes in `docs/intelligent-kb.md`.
 
-1. **`README.md`** — user-facing: getting started, feature overview, deciding whether to use the tool
-2. **`how_it_works.md`** — technical deep dive: how things actually work in the code, for maintainers and contributors
-3. **KB** (`kb_store`) — capture decisions, architecture, and non-obvious patterns for future sessions
+**Same commit, not later.** A feature commit updates its owning doc in the same commit, and so does a fix that changes documented behaviour (a default, threshold, status code, env var, endpoint, hook event, table, prompt version). A groomed item names the doc in `files_to_modify` and carries an AC saying which section it updates. User-facing changes also update `README.md`, and decisions and non-obvious patterns go to the KB (`kb_store`).
 
-**Process**: Use research agents (subagent_type `Explore`) to deep dive the codebase for exact function signatures, thresholds, data flow, and behavior. Parallelize with multiple agents when researching independent features. Write docs from the research reports — every statement must be verifiable against the code. Don't guess or paraphrase from memory; the agents have the source of truth.
+**Enforced by `tests/test_docs_coverage.py`** (in the default suite): every kb-service route and every env var the shipped code reads must appear in one of the two docs. When it fails, document the thing; do not loosen the test.
+
+**Process**: research the code with agents before writing (exact signatures, thresholds, data flow), write from their reports, and make every statement verifiable against the code. For a large refresh, the six-reader doc audit workflow (inventory, plan, write, adversarial verify, revise) is the model.
 
 ## Branch, Merge & Release Policy
 
@@ -221,54 +180,7 @@ Format: `type(optional-scope): description`
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KB_DB_PATH` | `~/.local/share/personal_kb/knowledge.db` | Database file. kb-service refuses to start if this is set together with `KB_DATABASE_URL` or `KB_SERVICE_DATABASE_URL` (ambiguous config) |
-| `KB_OLLAMA_URL` | `http://localhost:11434` | Ollama API URL |
-| `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Embedding model |
-| `KB_EMBEDDING_DIM` | `1024` | Embedding vector dimensions |
-| `KB_OLLAMA_TIMEOUT` | `10.0` | Ollama timeout (seconds) |
-| `KB_OLLAMA_KEEP_ALIVE` | `30m` | Per-request Ollama `keep_alive` sent with every embed call, so only the embedding model stays warm in VRAM |
-| `KB_OLLAMA_MODEL` | `qwen3:4b` | LLM model for Ollama generation |
-| `KB_OLLAMA_LLM_TIMEOUT` | `120.0` | Ollama LLM timeout (seconds) |
-| `ANTHROPIC_API_KEY` | (unset) | Anthropic API key (enrichment, planning, synthesis) |
-| `KB_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Anthropic model for planning/synthesis |
-| `KB_ANTHROPIC_TIMEOUT` | `30.0` | Anthropic timeout (seconds) |
-| `KB_LLM_DIAGNOSTICS` | `1` | kb-service: set `0` (or `false`, `off`, `no`) to stop sending the Claude API cache-diagnostics object; kb-service still records every Anthropic call in `llm_calls` |
-| `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model ID (cross-region inference profile) |
-| `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
-| `KB_BEDROCK_TIMEOUT` | `60.0` | Bedrock timeout (seconds) |
-| `KB_AWS_PROFILE` | (unset) | AWS profile name for Bedrock credentials (uses boto3 credential chain). Falls back to `personal_kb_bedrock` profile if it exists |
-| `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
-| `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning/synthesis (`anthropic`, `bedrock`, or `ollama`) |
-| `KB_MANAGER` | (unset) | Set `TRUE` for maintenance + ingestion tools |
-| `KB_INGEST_MAX_FILE_SIZE` | `10485760` | Max file size in bytes for ingestion (10MB) |
-| `KB_INGEST_CHUNK_SIZE` | `16000` | Chunk size in chars for large file ingestion |
-| `KB_INGEST_CHUNK_OVERLAP` | `600` | Overlap in chars between adjacent chunks |
-| `KB_AGENTIC_INGEST` | `TRUE` | Enable KB-aware dedup during ingestion |
-| `KB_INGEST_DEDUP_THRESHOLD` | `0.06` | Hybrid search score threshold for dedup |
-| `KB_NEAR_DUPLICATE_FLOOR` | `0.88` | Cosine similarity at or above which kb_store create returns a near-duplicate 409 (same project, active non-map entries) |
-| `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for kb_ask auto strategy |
-| `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in agentic query loop |
-| `KB_AGENTIC_SYNTHESIS` | `TRUE` | Enable agentic retrieval + coverage check for kb_summarize |
-| `KB_CONTRIBUTOR` | (unset) | Contributor name for entry attribution |
-| `KB_TEAM` | (unset) | Team name for entry attribution |
-| `KB_PG_POOL_MIN` | `1` | Postgres connection pool minimum size |
-| `KB_PG_POOL_MAX` | `5` | Postgres connection pool maximum size |
-| `KB_PG_IAM_AUTH` | (unset) | Set `TRUE` for RDS/Aurora IAM authentication |
-| `KB_PG_REGION` | `us-east-1` | AWS region for RDS IAM token signing |
-| `KB_SKIP_SAFETY` | (unset) | Set `TRUE` to bypass secret scanning on store |
-| `KB_INSTANCE_ROLE` | (unset) | `personal` or `team` — prepends role-specific instructions and prefixes tool names (`personal` → `personal_kb_*`, `team` → `team_kb_*`) |
-| `KB_SURPRISE_MIN_CONFIDENCE_SHAPE2` | `0.5` | Surprise-detector confidence floor for shape 2 (overrides the global value) |
-| `KB_SURPRISE_MIN_CONFIDENCE_SHAPE3` | `0.7` | Surprise-detector confidence floor for shape 3 (overrides the global value) |
-| `KB_SURPRISE_CRITIC_MODEL` | `claude-sonnet-5-5` | Model for the surprise-capture critic pass, which checks each drafted lesson against its evidence before any autonomous write or merge |
-| `KB_SURPRISE_LESSON_TTL_DAYS` | `30` | Days an autonomous surprise-capture lesson lives after its last observation (integer 1..3650, anything else falls back to 30); a merge from a new session renews it and the third distinct session makes it permanent |
-| `KB_SURPRISE_MIN_CONFIDENCE` | (unset) | Global surprise-detector floor override for both shapes; unset uses the per-shape defaults |
-| `KB_SOFT_GATE_MAX_DENIES_PER_TURN` | `1` | Soft gate: most denies (or shadow `would_deny`) per turn; integer 1..1000, anything else falls back to the default with a warning |
-| `KB_SOFT_GATE_MAX_DENIES_PER_HOUR` | `6` | Soft gate: most denies in any rolling 60 minutes; integer 1..1000, anything else falls back to the default with a warning |
-| `KB_SOFT_GATE_REARM_HOURS` | `24` | Soft gate: hours a lesson stays quiet after it denies before it may deny again (compaction, resume or clear re-arms sooner); integer 1..1000, anything else falls back to the default with a warning |
-| `KB_WRITE_POLICY_DEFAULT_SURFACE` | `interactive` | kb-service: the surface for API keys with none set and for no-auth callers (interactive, headless or autonomous; an unknown value means headless). Password (JWT) logins are always interactive |
-| `KB_LOG_LEVEL` | `WARNING` | Logging level |
+The env var registry is the configuration reference in `how_it_works.md` (core settings) and the switch tables in `docs/intelligent-kb.md` (automation switches, with production defaults). `tests/test_docs_coverage.py` fails when the code reads a variable neither doc names, so add the row there in the same commit that adds the read.
 
 ## Agent Feedback Loop
 
