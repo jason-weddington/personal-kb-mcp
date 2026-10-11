@@ -21,10 +21,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 KB_INGEST_BULLET = (
-    "- kb_ingest: Intelligent extraction from local files. An LLM reads the source "
-    "and creates multiple properly structured KB entries (decisions, patterns, facts). "
-    "Deduplicates against existing entries — safe to ingest overlapping files. "
-    "Accepts file paths, directories, glob patterns (e.g. *.md, docs/**/*.txt).\n"
+    "- kb_ingest: extract entries from local files, directories or globs, "
+    "deduplicated against the KB.\n"
 )
 
 _SCHEMA_ENV_VARS = ("KB_INSTANCE_ROLE", "KB_MANAGER", "KB_CONTRIBUTOR", "KB_AUTH_MODE")

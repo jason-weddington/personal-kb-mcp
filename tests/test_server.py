@@ -374,3 +374,18 @@ async def test_lifespan_yields_and_logs_deprecation_note(monkeypatch, tmp_path, 
                 handler.close()
         root.handlers[:] = saved_handlers
         root.setLevel(saved_level)
+
+
+def test_instructions_fit_claude_codes_per_server_cap() -> None:
+    """Claude Code keeps only the first 2048 characters of each MCP server's
+    instructions before 2.1.296 (4096 from 2.1.296), and weeks-long sessions keep
+    the version they started on, so the full text plus the longest role prefix must
+    fit in 2048 for both the stdio and HTTP servers."""
+    from kb_service.mcp_server import server as http_server
+
+    from personal_kb import server as stdio_server
+
+    cap = 2048
+    for module in (stdio_server, http_server):
+        longest_prefix = max(len(p) for p in module._ROLE_PREFIXES.values())
+        assert len(module._INSTRUCTIONS) + longest_prefix <= cap, module.__name__

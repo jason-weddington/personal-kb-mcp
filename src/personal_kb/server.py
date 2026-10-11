@@ -153,79 +153,42 @@ _ROLE_PREFIXES = {
 }
 
 _INSTRUCTIONS = """\
-This KB stores private context that you — an AI agent with public knowledge \
-already memorized — would not otherwise have: project decisions, personal \
-conventions, hard-won lessons, and domain-specific facts.
+This KB holds private context you lack: project decisions, conventions, hard-won \
+lessons and domain facts.
 
-BEFORE YOU ACT — check the KB first:
-The KB is your institutional memory. Search it BEFORE guessing, grepping, \
-or asking the user:
-- Deployment/infra questions → kb_search before SSH-ing or trying hostnames
-- New project or unfamiliar codebase → kb_search(project_ref="X") for context
-- Errors you haven't seen → kb_search the error message
-- Architectural decisions → kb_ask("decisions about X")
-- Operational procedures → kb_search before improvising
-One failed kb_search costs a second. Not searching costs minutes of fumbling.
+SEARCH BEFORE YOU ACT. Check the KB before guessing, grepping or asking the user: \
+infra details before SSH or trying hostnames; kb_search(project_ref="X") in an \
+unfamiliar project; an error you have not seen; prior decisions (kb_ask). A miss \
+costs a second; not searching costs minutes.
 
-QUERYING — pick the right tool:
-- kb_preflight: Get a project context primer at session start. Returns a \
-compact table-of-contents of expiring entries, recent decisions/lessons, \
-and active conventions. Use 'since' to narrow to a time window (e.g. '7d', \
-'2w'). Call this when you start working on a project to see what's relevant.
-- kb_search: Quick lookup by keywords or filters. Returns compact summaries \
-(no details). Use for duplicate checking, finding entries, or filtering by \
-tags/project/type.
-- kb_get: Retrieve full details for specific entries by ID. Use after \
-kb_search or kb_preflight to read the complete content of interesting results.
-- kb_ask: Explore related knowledge via graph traversal. Use when you need \
-to discover connections, trace decision history, or find everything related \
-to a concept. Returns full details.
-- kb_summarize: Get a synthesized natural-language answer with citations. \
-Use when you need to answer a user question directly from the KB.
+QUERY
+- kb_preflight: project primer at session start (recent decisions, lessons, \
+conventions).
+- kb_search: keyword and filter lookup with compact results; also your duplicate \
+check.
+- kb_get: full text of entries by id.
+- kb_ask: graph traversal for connections and decision history.
+- kb_summarize: a synthesized answer with citations.
 
-STORING — capture knowledge proactively:
-- kb_store: Create or update a single entry.
-- kb_store_batch: Create multiple entries in one call (max 10). More \
-efficient — uses a single LLM call for graph enrichment.
-- Entries are automatically attributed to the configured contributor \
-and team — you do not need to specify who is storing.
-- Technical decisions and their rationale ("chose X because Y")
-- Patterns, conventions, or architecture worth preserving
-- Lessons learned from debugging, fixing issues, or trial-and-error
-- Key facts: API behaviors, config values, version constraints, gotchas
-- Anything the user explicitly asks you to remember
+STORE what a future agent would need: decisions with their rationale, conventions, \
+debugging lessons, non-obvious facts, anything the user asks you to remember. Skip \
+trivia and session state; search first and update with update_entry_id.
+- kb_store, or kb_store_batch for up to 10 related entries.
+- supersedes is a required kb_store parameter: the ids this entry replaces, or \
+"none".
+- entry_type: factual_reference, decision, pattern_convention or lesson_learned; add \
+tags and project_ref.
+- hints link the graph: {"tool": "sqlite"}, {"related_entities": [{"id": "kb-00003", \
+"edge_type": "depends_on"}]}.
+- A corrected belief gets {"resolution": {"corrected_fact": "...", "wrong_belief": \
+"...", "cue": {"tool": "Bash", "target_class": "git remote"}}}. Only entries with a \
+resolution are pushed to future sessions before the mistake repeats.
+- kb_ingest: extract entries from local files, directories or globs, deduplicated \
+against the KB.
+- kb_ingest_url: ingest a web page (or pass content you already fetched).
 
-DON'T capture trivial info, temporary session context, or duplicates. \
-SEARCH before storing — if a relevant entry exists, use update_entry_id.
-
-INGESTING — extend the KB from files or URLs:
-- kb_ingest: Intelligent extraction from local files. An LLM reads the source \
-and creates multiple properly structured KB entries (decisions, patterns, facts). \
-Deduplicates against existing entries — safe to ingest overlapping files. \
-Accepts file paths, directories, glob patterns (e.g. *.md, docs/**/*.txt).
-- kb_ingest_url: Fetch a URL, extract article content from HTML, and ingest it. \
-Handles boilerplate removal automatically — just provide the URL. \
-If you already have the page content (e.g. from authenticated sites or WebFetch), \
-pass it via the `content` parameter to skip fetching.
-
-Entry types: factual_reference, decision, pattern_convention, lesson_learned.
-Use tags for discoverability. Use project_ref for project-specific knowledge.
-
-supersedes is a required kb_store parameter: the kb ids this entry replaces, or "none".
-Use hints to build the knowledge graph:
-- {"person": "jason"}, {"tool": "sqlite"} to link entities
-- {"related_entities": [{"id": "kb-00003", "edge_type": "depends_on"}]}
-- {"resolution": {"corrected_fact": "...", "cue": \
-{"tool": "Bash", "target_class": "git remote"}}} records a corrected belief \
-(see kb_store hints)
-
-FEEDBACK — help improve the KB:
-- kb_feedback: Call this whenever a KB query returned poor results (zero hits, \
-irrelevant entries, missing knowledge). Takes 3 seconds, helps the human \
-prioritize what to add next.
-  - feedback_type: 'missing' (KB lacked needed knowledge), \
-'unhelpful' (results existed but didn't help), 'friction' (tool was awkward)
-  - Do NOT use for storing knowledge — use kb_store instead.
+kb_feedback: report an empty or unhelpful result or an awkward tool (missing, \
+unhelpful, friction).
 """
 
 
