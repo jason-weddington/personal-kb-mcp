@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
+  FIT_PADDING,
+  MAX_AUTO_ZOOM,
+  MAX_ZOOM,
+  boundingBox,
+  fitView,
   EMPTY_TRAVERSAL,
   IDLE_LINK_STYLE,
   activeNeighborSet,
@@ -433,5 +438,58 @@ describe('explorerReducer', () => {
     const A = { nodeId: 'A', zoom: 1, cx: 0, cy: 0 }
     const B = { nodeId: 'B', zoom: 4, cx: 90, cy: 20 }
     expect(backtrackTarget([A, B])).toEqual({ nodeId: 'A', view: { zoom: 4, cx: 90, cy: 20 } })
+  })
+})
+
+describe('fitView', () => {
+  const caps = { maxZoom: MAX_ZOOM, maxAutoZoom: MAX_AUTO_ZOOM }
+  const sq = { minX: -500, minY: -500, maxX: 500, maxY: 500 }
+
+  it('keeps a square graph at least 70% of a 390x844 canvas width with a 160 px inset', () => {
+    const v = fitView(sq, { width: 390, height: 844 }, 160, FIT_PADDING, caps)
+    expect(1000 * v.zoom).toBeGreaterThanOrEqual(0.7 * 390)
+  })
+
+  it('at 1440x900 beats the four-sided padding fit', () => {
+    const inset = 160
+    const v = fitView(sq, { width: 1440, height: 900 }, inset, FIT_PADDING, caps)
+    const old = Math.min(
+      (1440 - 2 * (FIT_PADDING + inset)) / 1000,
+      (900 - 2 * (FIT_PADDING + inset)) / 1000,
+    )
+    expect(v.zoom).toBeGreaterThan(old)
+    expect(v.zoom).toBeCloseTo((900 - inset - 2 * FIT_PADDING) / 1000)
+  })
+
+  it('with no inset matches zoomToFit with FIT_PADDING, centred on the box', () => {
+    const v = fitView(sq, { width: 1440, height: 900 }, 0, FIT_PADDING, caps)
+    expect(v.zoom).toBeCloseTo((900 - 2 * FIT_PADDING) / 1000)
+    expect(v.center).toEqual({ x: 0, y: 0 })
+  })
+
+  it('shifts the camera up by half the inset so the box sits below it', () => {
+    const v = fitView(sq, { width: 1440, height: 900 }, 100, FIT_PADDING, caps)
+    expect(v.center.y).toBeCloseTo(-50 / v.zoom)
+  })
+
+  it('caps the zoom for a single point', () => {
+    const v = fitView(
+      { minX: 5, minY: 5, maxX: 5, maxY: 5 },
+      { width: 800, height: 600 },
+      0,
+      FIT_PADDING,
+      caps,
+    )
+    expect(v.zoom).toBe(MAX_AUTO_ZOOM)
+  })
+
+  it('boundingBox skips nodes without a position', () => {
+    expect(boundingBox([{ x: 1, y: 2 }, {}, { x: 3, y: -4 }])).toEqual({
+      minX: 1,
+      minY: -4,
+      maxX: 3,
+      maxY: 2,
+    })
+    expect(boundingBox([{}])).toBeNull()
   })
 })

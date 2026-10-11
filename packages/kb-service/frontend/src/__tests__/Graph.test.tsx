@@ -25,7 +25,6 @@ const h = vi.hoisted(() => {
     fgState.k = k
     return fgMethods
   })
-  fgMethods.zoomToFit = vi.fn(() => fgMethods)
   fgMethods.emitParticle = vi.fn(() => fgMethods)
   return {
     fgState,
@@ -234,9 +233,9 @@ describe('Graph page', () => {
 
   it('(f) Escape fits and clamps at 450 ms', async () => {
     await renderPage()
-    h.fgState.k = 8
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(fg.zoomToFit).toHaveBeenCalledWith(400, 40, expect.any(Function))
+    expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
+    h.fgState.k = 8
     advance(449)
     expect(fg.zoom).not.toHaveBeenCalledWith(6, 300)
     advance(1)
@@ -282,9 +281,9 @@ describe('Graph page', () => {
     ) as HTMLInputElement
     input.focus()
     fireEvent.change(input, { target: { value: 'alpha' } })
-    const before = fg.zoomToFit.mock.calls.length
+    const before = fg.zoom.mock.calls.length
     fireEvent.keyDown(input, { key: 'Escape' })
-    expect(fg.zoomToFit.mock.calls.length).toBe(before)
+    expect(fg.zoom.mock.calls.length).toBe(before)
     expect(input.value).toBe('')
     expect(document.activeElement).not.toBe(input)
   })
@@ -311,7 +310,7 @@ describe('Graph page', () => {
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
     expect(fg.centerAt).toHaveBeenCalledWith(expect.anything(), expect.anything(), 600)
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(fg.zoomToFit).toHaveBeenCalledWith(400, 40, expect.any(Function))
+    expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
     expect(screen.queryByRole('region', { name: 'Node details' })).toBeNull()
   })
 
@@ -370,16 +369,18 @@ describe('GraphExplorer handle', () => {
     return { ref, graph }
   }
 
-  it('(j1) flyToNode on an unrendered node warns and returns false', () => {
+  it('(j1) flyToNode on an unrendered node logs at debug and returns false', () => {
     const { ref } = renderExplorer()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
     let ok: boolean | undefined
     act(() => {
       ok = ref.current!.flyToNode('kb-99999')
     })
     expect(ok).toBe(false)
     expect(fg.centerAt).not.toHaveBeenCalled()
-    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).not.toHaveBeenCalled()
+    expect(debug).toHaveBeenCalledTimes(1)
   })
 
   it('(j2) flyToNode clears solo and focuses', () => {
@@ -399,12 +400,10 @@ describe('GraphExplorer handle', () => {
 
   it('(j3) fitNodes fits a subset and clamps at duration + 50 ms', () => {
     const { ref } = renderExplorer()
-    h.fgState.k = 8
     act(() => ref.current!.fitNodes(new Set(['kb-00001']), 500, 60))
-    expect(fg.zoomToFit).toHaveBeenCalledWith(500, 60, expect.any(Function))
-    const f = fg.zoomToFit.mock.calls[0][2]
-    expect(f({ id: 'kb-00001' })).toBe(true)
-    expect(f({ id: 'tag:alpha' })).toBe(false)
+    expect(fg.zoom).toHaveBeenCalledWith(6, 500)
+    expect(fg.centerAt).toHaveBeenCalledWith(10, 20, 500)
+    h.fgState.k = 8
     advance(549)
     expect(fg.zoom).not.toHaveBeenCalledWith(6, 300)
     advance(1)
@@ -428,7 +427,7 @@ describe('GraphExplorer handle', () => {
     }
     expect(fg.centerAt).not.toHaveBeenCalled()
     expect(fg.zoom).not.toHaveBeenCalled()
-    expect(fg.zoomToFit).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
   })
 
   it('(j6) resetAll fits and clears solo', () => {
@@ -436,20 +435,20 @@ describe('GraphExplorer handle', () => {
     const btn = screen.getByRole('button', { name: 'Solo tag' })
     fireEvent.click(btn)
     act(() => ref.current!.resetAll())
-    expect(fg.zoomToFit).toHaveBeenCalledWith(400, 40, expect.any(Function))
+    expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
     expect(btn).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('(j7) onEscape returning true consumes Escape', () => {
     renderExplorer(() => true)
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(fg.zoomToFit).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
   })
 
   it('(j7) onEscape returning false lets Escape reset', () => {
     renderExplorer(() => false)
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(fg.zoomToFit).toHaveBeenCalledWith(400, 40, expect.any(Function))
+    expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
   })
 
   it('(j8) rightInset narrows the entry drawer shift', () => {
@@ -471,14 +470,13 @@ describe('GraphExplorer handle', () => {
     clearFg()
     fireResize(780)
     advance(2000)
-    expect(fg.zoomToFit).toHaveBeenCalledTimes(1)
-    const [ms, pad, f] = fg.zoomToFit.mock.calls[0]
-    expect([ms, pad]).toEqual([600, 40])
-    expect(f({ id: 'kb-00001' })).toBe(true)
-    expect(f({ id: 'tag:alpha' })).toBe(false)
+    const fits = () => fg.zoom.mock.calls.filter((c: any[]) => c[1] === 600).length
+    expect(fits()).toBe(1)
+    expect(fg.zoom).toHaveBeenCalledWith(6, 600)
+    expect(fg.centerAt).toHaveBeenCalledWith(10, 20, 600)
     fireResize(780)
     advance(2000)
-    expect(fg.zoomToFit).toHaveBeenCalledTimes(1)
+    expect(fits()).toBe(1)
   })
 
   it('(j9b) without a traversal the resize refit does not fit results', () => {
@@ -487,7 +485,7 @@ describe('GraphExplorer handle', () => {
     clearFg()
     fireResize(700)
     advance(2000)
-    expect(fg.zoomToFit.mock.calls.some((c: any[]) => c[0] === 600 && c[1] === 40)).toBe(false)
+    expect(fg.zoom.mock.calls.some((c: any[]) => c[1] === 600)).toBe(false)
   })
 
   it('(j10) backtrack keeps the inset-aware focus', () => {

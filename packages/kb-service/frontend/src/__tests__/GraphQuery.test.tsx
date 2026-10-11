@@ -32,7 +32,6 @@ const h = vi.hoisted(() => {
     fgState.k = k
     return fgMethods
   })
-  fgMethods.zoomToFit = vi.fn(() => fgMethods)
   fgMethods.emitParticle = vi.fn(() => fgMethods)
   return {
     fgState,
@@ -146,10 +145,9 @@ const searchBox = () => screen.getByPlaceholderText('Search nodes or ask a quest
 const region = () => screen.queryByRole('region', { name: 'Query results' })
 const cameraMoves = () =>
   fg.centerAt.mock.calls.filter((c: any[]) => c.length > 0).length +
-  fg.zoom.mock.calls.filter((c: any[]) => c.length > 0).length +
-  fg.zoomToFit.mock.calls.length
-const lastFit = (ms: number, pad: number) =>
-  [...fg.zoomToFit.mock.calls].reverse().find((c: any[]) => c[0] === ms && c[1] === pad)
+  fg.zoom.mock.calls.filter((c: any[]) => c.length > 0).length
+const lastCenter = (ms: number) =>
+  [...fg.centerAt.mock.calls].reverse().find((c: any[]) => c.length > 0 && c[2] === ms)
 
 // RTL's asyncWrapper only advances fake timers when a `jest` global exists, so
 // user-event would wait on a fake setTimeout forever under vitest.
@@ -158,12 +156,13 @@ const lastFit = (ms: number, pad: number) =>
 let user: ReturnType<typeof userEvent.setup>
 let infoSpy: ReturnType<typeof vi.spyOn>
 let warnSpy: ReturnType<typeof vi.spyOn>
+let debugSpy: ReturnType<typeof vi.spyOn>
 const infoCalls = () => infoSpy.mock.calls.filter((c: any[]) => c[0] === '[graph-query]')
 
 async function setup() {
   const view = render(<Graph />)
   await screen.findByText('4 of 4 nodes · 3 of 3 edges')
-  await vi.waitFor(() => expect(fg.zoomToFit).toHaveBeenCalledWith(400, 40, expect.any(Function)), {
+  await vi.waitFor(() => expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400), {
     timeout: 3000,
   })
   await new Promise((r) => setTimeout(r, 500))
@@ -192,6 +191,7 @@ beforeEach(() => {
   h.getGraphFull.mockImplementation(() => Promise.resolve(fixture()))
   infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
 })
 
 afterEach(() => {
@@ -244,23 +244,17 @@ describe('Graph query mode', { timeout: 15000 }, () => {
     expect(fg.emitParticle).toHaveBeenCalledTimes(2)
     expect(fg.emitParticle).toHaveBeenCalledWith(toAlpha)
     expect(fg.emitParticle).toHaveBeenCalledWith(toBeta)
-    const fit0 = lastFit(500, 60)
-    expect(fit0).toBeDefined()
-    expect(fit0![2]({ id: 'kb-00001' })).toBe(true)
-    expect(fit0![2]({ id: 'kb-00002' })).toBe(false)
+    // Step 0 fits kb-00001 alone; step 1 adds kb-00002 (no inset in jsdom).
+    expect(lastCenter(500)!.slice(0, 2)).toEqual([10, 20])
 
     advance(250)
-    expect(lastFit(500, 60)![2]({ id: 'kb-00002' })).toBe(true)
+    expect(lastCenter(500)!.slice(0, 2)).toEqual([20, 30])
 
     advance(1249)
-    expect(lastFit(600, 40)).toBeUndefined()
+    expect(lastCenter(600)).toBeUndefined()
     advance(1)
-    const res = lastFit(600, 40)
-    expect(res).toBeDefined()
-    expect(res![2]({ id: 'kb-00001' })).toBe(true)
-    expect(res![2]({ id: 'kb-00003' })).toBe(true)
-    expect(res![2]({ id: 'kb-00002' })).toBe(false)
-    expect(res![2]({ id: 'tag:alpha' })).toBe(false)
+    // Results fit: kb-00001 (kb-00003 is not on the graph), not kb-00002 or tag:alpha.
+    expect(lastCenter(600)!.slice(0, 2)).toEqual([10, 20])
 
     advance(249)
     expect(screen.getByTestId('query-status')).toBeInTheDocument()
@@ -294,12 +288,14 @@ describe('Graph query mode', { timeout: 15000 }, () => {
     h.mockOpenEntry.mockClear()
     fg.centerAt.mockClear()
     warnSpy.mockClear()
+    debugSpy.mockClear()
     fireEvent.click(within(panel).getByText('Gamma pattern'))
     expect(h.mockOpenEntry).toHaveBeenCalledWith('kb-00003')
     expect(fg.centerAt).not.toHaveBeenCalled()
     expect(
-      warnSpy.mock.calls.filter((c: any[]) => c[0] === '[graph] flyToNode: node not rendered'),
+      debugSpy.mock.calls.filter((c: any[]) => c[0] === '[graph] flyToNode: node not rendered'),
     ).toHaveLength(1)
+    expect(warnSpy).not.toHaveBeenCalledWith('[graph] flyToNode: node not rendered', expect.anything())
   })
 
   it('(e) summarize shows the answer and labels hidden sources', async () => {
@@ -323,9 +319,9 @@ describe('Graph query mode', { timeout: 15000 }, () => {
     await setup()
     await ask('q')
     const signal = signalOf()
-    expect(fg.zoomToFit).not.toHaveBeenCalledWith(400, 40, expect.any(Function))
+    expect(fg.zoom).not.toHaveBeenCalledWith(expect.any(Number), 400)
     fireEvent.keyDown(document.body, { key: 'Escape' })
-    expect(fg.zoomToFit).toHaveBeenCalledWith(400, 40, expect.any(Function))
+    expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
     expect(region()).toBeNull()
     expect(signal.aborted).toBe(true)
     for (const l of links()) {
@@ -648,7 +644,7 @@ describe('Graph chat panel', { timeout: 15000 }, () => {
     await open('jwt', withAnswer('See [kb-99999].'))
     fireEvent.click(within(panel()).getByRole('button', { name: 'Show kb-99999 on the graph' }))
     expect(screen.getByText('kb-99999 is not shown on the graph')).toBeInTheDocument()
-    expect(warnSpy).toHaveBeenCalledWith(
+    expect(debugSpy).toHaveBeenCalledWith(
       '[graph] flyToNode: node not rendered',
       expect.objectContaining({ nodeId: 'kb-99999' }),
     )
@@ -686,11 +682,7 @@ describe('Graph chat panel', { timeout: 15000 }, () => {
     expect(within(panel()).getByText('1 new entry is not on the graph')).toBeInTheDocument()
     expect(within(panel()).getByText('Nothing new.')).toBeInTheDocument()
     expect(h.lastProps.linkColor(L())).toBe('rgba(0,255,136,0.25)')
-    expect(
-      fg.zoomToFit.mock.calls.some(
-        (c: any[]) => typeof c[2] === 'function' && c[2]({ id: 'kb-77777' }) === true,
-      ),
-    ).toBe(false)
+    expect(fg.centerAt).not.toHaveBeenCalled()
     expect(infoSpy).toHaveBeenCalledWith('[graph-chat] new_entries', {
       count: 1,
       rendered: 0,
@@ -703,7 +695,7 @@ describe('Graph chat panel', { timeout: 15000 }, () => {
     clearFg()
     fireEvent.click(within(panel()).getByRole('button', { name: 'Close chat' }))
     expect(screen.queryByRole('complementary', { name: 'Graph chat' })).toBeNull()
-    expect(fg.zoomToFit).toHaveBeenCalledWith(400, expect.any(Number), expect.any(Function))
+    expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
     expect(h.lastProps.linkColor(L())).toBe('rgba(255,255,255,0.08)')
   })
 
@@ -743,6 +735,6 @@ describe('Graph chat panel', { timeout: 15000 }, () => {
     advance(1000)
     expect(screen.queryByText('kb-99999 is not shown on the graph')).toBeNull()
     expect(panel()).toBeInTheDocument()
-    expect(fg.zoomToFit).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
   })
 })

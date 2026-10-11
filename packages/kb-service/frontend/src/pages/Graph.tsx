@@ -320,7 +320,7 @@ export function Graph() {
           left: '12px',
           zIndex: 1,
           fontSize: '12px',
-          color: '#555',
+          color: 'text.secondary',
         }}
       >
         {`${graph.nodes.length} of ${data.stats.node_count} nodes · ${graph.links.length} of ${data.stats.edge_count} edges`}

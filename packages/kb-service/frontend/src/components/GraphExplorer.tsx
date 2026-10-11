@@ -58,6 +58,8 @@ import {
   endpointId,
   explorerReducer,
   focusCenter,
+  boundingBox,
+  fitView,
   fpsFromFrameTimes,
   initialExplorerState,
   isLinkVisible,
@@ -112,6 +114,7 @@ type Latest = {
   nodeById: Map<string, ExplorerNode>
   adjacency: Adjacency
   width: number
+  height: number
   openEntry: (id: string) => void
   onEscape: (() => boolean) | undefined
   perf: GraphExplorerProps['perf']
@@ -169,6 +172,7 @@ export function GraphExplorer({
     nodeById,
     adjacency,
     width: size.width,
+    height: size.height,
     openEntry,
     onEscape,
     perf,
@@ -187,6 +191,7 @@ export function GraphExplorer({
       nodeById,
       adjacency,
       width: size.width,
+      height: size.height,
       openEntry,
       onEscape,
       perf,
@@ -236,24 +241,37 @@ export function GraphExplorer({
     [schedule],
   )
 
-  const fit = useCallback(
-    (ms: number, basePad: number) => {
+  /** Fit `ids` (or the connected nodes when null) below the overlay's measured inset. */
+  const fitTo = useCallback(
+    (ids: ReadonlySet<string> | null, ms: number, pad: number) => {
       const fg = fgRef.current
       if (!fg) return
-      let pad = basePad
+      let inset = 0
       const overlay = fitInsetRef?.current
       const container = containerRef.current
       if (overlay && container) {
-        const inset = overlay.getBoundingClientRect().bottom - container.getBoundingClientRect().top
-        if (inset > 0) pad += inset
+        inset = Math.max(
+          0,
+          overlay.getBoundingClientRect().bottom - container.getBoundingClientRect().top,
+        )
       }
-      const adj = latestRef.current.adjacency
-      const connectedFilter = adj.size > 0 ? (n: FgNode) => adj.has(n.id) : undefined
-      fg.zoomToFit(ms, pad, connectedFilter)
+      const { graph: g, adjacency: adj, width, height } = latestRef.current
+      const nodes = g.nodes.filter((n) => (ids ? ids.has(n.id) : adj.size === 0 || adj.has(n.id)))
+      const box = boundingBox(nodes as ReadonlyArray<{ x?: number; y?: number }>)
+      if (box) {
+        const v = fitView(box, { width, height }, inset, pad, {
+          maxZoom: MAX_ZOOM,
+          maxAutoZoom: MAX_AUTO_ZOOM,
+        })
+        fg.zoom(v.zoom, ms)
+        fg.centerAt(v.center.x, v.center.y, ms)
+      }
       clampLater(ms)
     },
     [clampLater, fitInsetRef],
   )
+
+  const fit = useCallback((ms: number, pad: number) => fitTo(null, ms, pad), [fitTo])
 
   const fitRef = useRef(fit)
   useLayoutEffect(() => {
@@ -392,9 +410,8 @@ export function GraphExplorer({
     if (latestRef.current.state.focusedId !== null) return
     const results = [...states].filter(([, v]) => v === 'result').map(([k]) => k)
     const ids = new Set(results.length > 0 ? results : [...states.keys()])
-    fgRef.current?.zoomToFit(RESULTS_FIT_MS, RESULTS_FIT_PADDING, (n: FgNode) => ids.has(n.id))
-    clampLater(RESULTS_FIT_MS)
-  }, [size.width, clampLater])
+    fitTo(ids, RESULTS_FIT_MS, RESULTS_FIT_PADDING)
+  }, [size.width, fitTo])
 
   // ── Graph changes: prune state, refit, perf start ────────────────────────
   const graphStartRef = useRef(0)
@@ -426,7 +443,7 @@ export function GraphExplorer({
         const { nodeById: byId, graph: g } = latestRef.current
         const node = byId.get(nodeId)
         if (!node) {
-          console.warn('[graph] flyToNode: node not rendered', {
+          console.debug('[graph] flyToNode: node not rendered', {
             nodeId,
             rendered_nodes: g.nodes.length,
           })
@@ -437,10 +454,7 @@ export function GraphExplorer({
         return true
       },
       fitNodes(nodeIds, durationMs, padding) {
-        const fg = fgRef.current
-        if (!fg) return
-        fg.zoomToFit(durationMs, padding, nodeIds ? (n: FgNode) => nodeIds.has(n.id) : undefined)
-        clampLater(durationMs)
+        fitTo(nodeIds, durationMs, padding)
       },
       emitParticlesFor(nodeIds) {
         const fg = fgRef.current
@@ -466,7 +480,7 @@ export function GraphExplorer({
         fit(FIT_MS, FIT_PADDING)
       },
     }),
-    [select, clampLater, resetView, clearDrawerTimer, fit],
+    [select, fitTo, resetView, clearDrawerTimer, fit],
   )
 
   // ── ForceGraph accessors ─────────────────────────────────────────────────
@@ -625,7 +639,7 @@ export function GraphExplorer({
           maxWidth: '100%',
           boxSizing: 'border-box',
           fontSize: { xs: '13px', sm: '16px' },
-          color: '#888',
+          color: 'text.primary',
           display: 'flex',
           gap: { xs: '8px 12px', sm: '16px' },
           flexWrap: 'wrap',
@@ -658,7 +672,15 @@ export function GraphExplorer({
           >
             <Box
               component="span"
-              sx={{ width: 12, height: 12, borderRadius: '50%', bgcolor: NODE_COLORS[type] }}
+              sx={{
+                width: 12,
+                height: 12,
+                borderRadius: '50%',
+                bgcolor: NODE_COLORS[type],
+                border: 1,
+                borderColor: 'divider',
+                boxSizing: 'border-box',
+              }}
             />
             {type}
           </Box>

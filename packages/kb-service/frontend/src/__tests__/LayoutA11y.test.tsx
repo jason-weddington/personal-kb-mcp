@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 
@@ -40,5 +41,19 @@ describe('Layout accessibility', () => {
       document.querySelectorAll<HTMLElement>('a[href], button'),
     )
     expect(focusables[0]).toBe(skip)
+  })
+
+  it('makes the skip link the first Tab stop and focuses #main-content on activation', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <Layout />
+      </MemoryRouter>,
+    )
+    await user.tab()
+    const skip = screen.getByRole('link', { name: 'Skip to content' })
+    expect(skip).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(document.getElementById('main-content')).toHaveFocus()
   })
 })

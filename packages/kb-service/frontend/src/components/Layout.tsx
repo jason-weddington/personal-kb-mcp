@@ -49,6 +49,10 @@ export function Layout() {
       <Box
         component="a"
         href="#main-content"
+        onClick={(e: React.MouseEvent<HTMLElement>) => {
+          e.preventDefault()
+          document.getElementById('main-content')?.focus()
+        }}
         sx={{
           position: 'absolute',
           left: 0,

@@ -454,3 +454,57 @@ export function backtrackTarget(
   const last = history[n - 1]
   return { nodeId: history[n - 2].nodeId, view: { zoom: last.zoom, cx: last.cx, cy: last.cy } }
 }
+
+export interface FitBox {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
+export interface FitCaps {
+  maxZoom: number
+  maxAutoZoom: number
+}
+
+/** Bounding box of the nodes that have a layout position, or null if none do. */
+export function boundingBox(
+  nodes: ReadonlyArray<{ x?: number; y?: number }>,
+): FitBox | null {
+  let box: FitBox | null = null
+  for (const n of nodes) {
+    if (typeof n.x !== 'number' || typeof n.y !== 'number') continue
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue
+    if (box === null) box = { minX: n.x, minY: n.y, maxX: n.x, maxY: n.y }
+    else {
+      box.minX = Math.min(box.minX, n.x)
+      box.minY = Math.min(box.minY, n.y)
+      box.maxX = Math.max(box.maxX, n.x)
+      box.maxY = Math.max(box.maxY, n.y)
+    }
+  }
+  return box
+}
+
+/**
+ * Camera for fitting `bbox` into the canvas with `pad` on every side and an extra
+ * `inset` reserved at the TOP only (an overlay covers it). Centering shifts the box
+ * down into the free area; the zoom is capped like a normal auto-fit.
+ */
+export function fitView(
+  bbox: FitBox,
+  canvas: { width: number; height: number },
+  inset: number,
+  pad: number,
+  caps: FitCaps,
+): { zoom: number; center: { x: number; y: number } } {
+  const bw = bbox.maxX - bbox.minX
+  const bh = bbox.maxY - bbox.minY
+  const availW = Math.max(1, canvas.width - 2 * pad)
+  const availH = Math.max(1, canvas.height - inset - 2 * pad)
+  const raw = Math.min(bw > 0 ? availW / bw : Infinity, bh > 0 ? availH / bh : Infinity)
+  const zoom = Math.min(raw, caps.maxZoom, caps.maxAutoZoom)
+  const cx = (bbox.minX + bbox.maxX) / 2
+  const cy = (bbox.minY + bbox.maxY) / 2
+  return { zoom, center: { x: cx, y: cy - inset / 2 / zoom } }
+}
