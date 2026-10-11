@@ -62,7 +62,14 @@ vi.mock('../api', () => ({
   },
 }))
 
-import { listKbProjects, listKbContributors, getMapsIndex, getGraphFull } from '../api'
+import {
+  listKbProjects,
+  listKbContributors,
+  getMapsIndex,
+  getGraphFull,
+  browseRecent,
+  browseProjects,
+} from '../api'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -109,6 +116,14 @@ describe('Home page', () => {
         { name: 'bob', entry_count: 20 },
       ],
     })
+    vi.mocked(browseRecent).mockResolvedValue({ ...EMPTY_PAGE, total: 55 })
+    vi.mocked(browseProjects).mockResolvedValue({
+      ...EMPTY_PAGE,
+      items: [
+        { project_ref: 'proj-a', entry_count: 42, counts_by_type: {}, last_activity: '' },
+        { project_ref: 'proj-b', entry_count: 8, counts_by_type: {}, last_activity: '' },
+      ],
+    })
     vi.mocked(getMapsIndex).mockResolvedValue({
       projects: [
         {
@@ -123,9 +138,12 @@ describe('Home page', () => {
 
     renderHome()
 
-    // Entries = 42 + 8 = 50
+    // Entries = unfiltered browse total (55); 42 + 8 in projects, 5 without
     await waitFor(() =>
-      expect(screen.getByTestId('stat-value-entries').textContent).toBe('50'),
+      expect(screen.getByTestId('stat-value-entries').textContent).toBe('55'),
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId('stat-value-no project').textContent).toBe('5'),
     )
     // Projects = 2 items
     expect(screen.getByTestId('stat-value-projects').textContent).toBe('2')
@@ -137,6 +155,7 @@ describe('Home page', () => {
 
   it('partial failure: failed stat renders em dash, page still works', async () => {
     vi.mocked(listKbProjects).mockRejectedValue(new Error('Network error'))
+    vi.mocked(browseRecent).mockRejectedValue(new Error('Network error'))
     vi.mocked(listKbContributors).mockResolvedValue({
       items: [{ name: 'alice', entry_count: 5 }],
     })

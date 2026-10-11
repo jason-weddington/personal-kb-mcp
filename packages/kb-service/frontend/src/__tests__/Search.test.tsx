@@ -155,6 +155,33 @@ describe('Search page', () => {
     expect(screen.getByText('1 result')).toBeInTheDocument()
   })
 
+  it('counts the rendered results, not filtered_count', async () => {
+    const base = SEARCH_RESPONSE.results[0]
+    vi.mocked(searchKb).mockResolvedValue({
+      results: Array.from({ length: 8 }, (_, i) => ({
+        ...base,
+        entry: { ...base.entry, id: `kb-0010${i}`, short_title: `Entry ${i}` },
+      })),
+      filtered_count: 0,
+    })
+    const user = userEvent.setup()
+    renderSearch()
+    await user.type(screen.getByLabelText(/query/i), 'test')
+    await user.click(screen.getByRole('button', { name: /^search$/i }))
+    expect(await screen.findByText('8 results')).toBeInTheDocument()
+    expect(screen.queryByText(/hidden as stale/)).toBeNull()
+  })
+
+  it('reports stale-hidden results on a second line', async () => {
+    vi.mocked(searchKb).mockResolvedValue({ ...SEARCH_RESPONSE, filtered_count: 3 })
+    const user = userEvent.setup()
+    renderSearch()
+    await user.type(screen.getByLabelText(/query/i), 'test')
+    await user.click(screen.getByRole('button', { name: /^search$/i }))
+    expect(await screen.findByText('1 result')).toBeInTheDocument()
+    expect(screen.getByText('3 hidden as stale')).toBeInTheDocument()
+  })
+
   it('renders staleness_warning as Alert when non-null', async () => {
     vi.mocked(searchKb).mockResolvedValue(SEARCH_RESPONSE_WITH_STALENESS)
     const user = userEvent.setup()

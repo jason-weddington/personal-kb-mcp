@@ -46,6 +46,31 @@ export function Layout() {
     <EntryDrawerProvider>
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <CssBaseline />
+      <Box
+        component="a"
+        href="#main-content"
+        sx={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          width: '1px',
+          height: '1px',
+          overflow: 'hidden',
+          clip: 'rect(0 0 0 0)',
+          whiteSpace: 'nowrap',
+          '&:focus': {
+            width: 'auto',
+            height: 'auto',
+            clip: 'auto',
+            p: 1,
+            zIndex: (t) => t.zIndex.drawer + 2,
+            bgcolor: 'background.paper',
+            color: 'text.primary',
+          },
+        }}
+      >
+        Skip to content
+      </Box>
       <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
         <Toolbar>
           <IconButton
@@ -60,10 +85,14 @@ export function Layout() {
           <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
             Personal KB
           </Typography>
-          <IconButton color="inherit" onClick={toggleTheme}>
+          <IconButton
+            color="inherit"
+            onClick={toggleTheme}
+            aria-label="Toggle light/dark theme"
+          >
             {mode === 'dark' ? <Brightness7Icon /> : <Brightness4Icon />}
           </IconButton>
-          <IconButton color="inherit" onClick={handleUserMenuOpen}>
+          <IconButton color="inherit" onClick={handleUserMenuOpen} aria-label="Account">
             <AccountCircleIcon />
           </IconButton>
           <Menu
@@ -92,6 +121,8 @@ export function Layout() {
 
       <Box
         component="main"
+        id="main-content"
+        tabIndex={-1}
         sx={{
           flexGrow: 1,
           mt: '64px',

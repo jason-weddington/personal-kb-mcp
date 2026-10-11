@@ -178,10 +178,17 @@ export function Search() {
         </Alert>
       )}
 
-      {filteredCount !== null && (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          {filteredCount} result{filteredCount !== 1 ? 's' : ''}
-        </Typography>
+      {results && (
+        <Box sx={{ mb: 1 }}>
+          <Typography variant="body2" color="text.secondary">
+            {results.length} result{results.length !== 1 ? 's' : ''}
+          </Typography>
+          {filteredCount !== null && filteredCount > 0 && (
+            <Typography variant="body2" color="text.secondary">
+              {filteredCount} hidden as stale
+            </Typography>
+          )}
+        </Box>
       )}
 
       {results && (

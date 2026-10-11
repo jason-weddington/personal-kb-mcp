@@ -12,7 +12,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import type { Ref } from 'react'
+import type { Ref, RefObject } from 'react'
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 import Divider from '@mui/material/Divider'
@@ -21,6 +21,7 @@ import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
+import { alpha } from '@mui/material/styles'
 import ForceGraph2D from 'react-force-graph-2d'
 import type { ForceGraphMethods, LinkObject, NodeObject } from 'react-force-graph-2d'
 import { useEntryDrawer } from '../contexts/EntryDrawerContext'
@@ -92,11 +93,15 @@ export interface GraphExplorerProps {
   /** Called first on Escape; return true to consume it. */
   onEscape?: () => boolean
   perf?: { loadMs: number | null }
+  /** Overlay at the top of the canvas; fits are padded by its measured bottom edge. */
+  fitInsetRef?: RefObject<HTMLElement | null>
   ref?: Ref<GraphExplorerHandle>
 }
 
 const KEY_GUARD_SELECTOR =
   'input, textarea, select, [contenteditable="true"], [role="presentation"], [role="dialog"]'
+
+const RESIZE_FIT_DELAY_MS = 200
 
 type Latest = {
   state: ExplorerState
@@ -114,6 +119,7 @@ export function GraphExplorer({
   traversal = EMPTY_TRAVERSAL,
   onEscape,
   perf,
+  fitInsetRef,
   ref,
 }: GraphExplorerProps) {
   const { openEntry } = useEntryDrawer()
@@ -185,6 +191,7 @@ export function GraphExplorer({
   const timersRef = useRef(new Set<ReturnType<typeof setTimeout>>())
   const drawerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const graphFitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const resizeFitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const schedule = useCallback((fn: () => void, ms: number) => {
     const id = setTimeout(() => {
@@ -223,16 +230,28 @@ export function GraphExplorer({
   )
 
   const fit = useCallback(
-    (ms: number, pad: number) => {
+    (ms: number, basePad: number) => {
       const fg = fgRef.current
       if (!fg) return
+      let pad = basePad
+      const overlay = fitInsetRef?.current
+      const container = containerRef.current
+      if (overlay && container) {
+        const inset = overlay.getBoundingClientRect().bottom - container.getBoundingClientRect().top
+        if (inset > 0) pad += inset
+      }
       const adj = latestRef.current.adjacency
       const connectedFilter = adj.size > 0 ? (n: FgNode) => adj.has(n.id) : undefined
       fg.zoomToFit(ms, pad, connectedFilter)
       clampLater(ms)
     },
-    [clampLater],
+    [clampLater, fitInsetRef],
   )
+
+  const fitRef = useRef(fit)
+  useLayoutEffect(() => {
+    fitRef.current = fit
+  })
 
   const showDetails = useCallback((node: ExplorerNode) => {
     if (node.type === 'entry') {
@@ -327,12 +346,26 @@ export function GraphExplorer({
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+    let first = true
     const obs = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect
       setSize({ width: rect?.width || 800, height: rect?.height || 600 })
+      if (first) {
+        first = false
+        return
+      }
+      // Re-fit after a resize settles, unless a node is focused.
+      if (resizeFitTimerRef.current !== null) clearTimeout(resizeFitTimerRef.current)
+      resizeFitTimerRef.current = setTimeout(() => {
+        resizeFitTimerRef.current = null
+        if (latestRef.current.state.focusedId === null) fitRef.current(FIT_MS, FIT_PADDING)
+      }, RESIZE_FIT_DELAY_MS)
     })
     obs.observe(el)
-    return () => obs.disconnect()
+    return () => {
+      obs.disconnect()
+      if (resizeFitTimerRef.current !== null) clearTimeout(resizeFitTimerRef.current)
+    }
   }, [])
 
   // ── Graph changes: prune state, refit, perf start ────────────────────────
@@ -529,6 +562,23 @@ export function GraphExplorer({
         </Box>
       )}
 
+      <Box
+        data-testid="graph-right-column"
+        sx={{
+          position: 'absolute',
+          top: '12px',
+          right: '12px',
+          bottom: '56px',
+          zIndex: 2,
+          maxWidth: 'calc(100% - 24px)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: 1,
+          pointerEvents: 'none',
+          '& > *': { pointerEvents: 'auto' },
+        }}
+      >
       {panelNode && (
         <NodePanel
           node={panelNode}
@@ -542,16 +592,16 @@ export function GraphExplorer({
         role="group"
         aria-label="Solo node type"
         sx={{
-          position: 'absolute',
-          bottom: '12px',
-          right: '12px',
-          zIndex: 1,
-          fontSize: '16px',
+          marginTop: 'auto',
+          flexShrink: 0,
+          maxWidth: '100%',
+          boxSizing: 'border-box',
+          fontSize: { xs: '13px', sm: '16px' },
           color: '#888',
           display: 'flex',
-          gap: '16px',
+          gap: { xs: '8px 12px', sm: '16px' },
           flexWrap: 'wrap',
-          background: 'rgba(10,10,15,0.5)',
+          bgcolor: (t) => alpha(t.palette.background.paper, 0.85),
           padding: '8px 12px',
           borderRadius: '6px',
         }}
@@ -586,6 +636,7 @@ export function GraphExplorer({
           </Box>
         ))}
       </Box>
+      </Box>
 
       {perf && <PerfReadout read={readPerf} />}
     </Box>
@@ -610,14 +661,12 @@ function NodePanel({
       aria-label="Node details"
       elevation={8}
       sx={{
-        position: 'absolute',
-        top: '12px',
-        right: '12px',
         width: NODE_PANEL_W,
-        maxHeight: 'calc(100% - 24px)',
+        maxWidth: '100%',
+        flexShrink: 1,
+        minHeight: 0,
         overflowY: 'auto',
         p: 2,
-        zIndex: 2,
       }}
     >
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start">

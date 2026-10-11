@@ -9,6 +9,7 @@ import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Select from '@mui/material/Select'
 import Stack from '@mui/material/Stack'
+import { alpha, darken } from '@mui/material/styles'
 import { getGraphFull } from '../api'
 import { GraphExplorer } from '../components/GraphExplorer'
 import type { GraphExplorerHandle } from '../components/GraphExplorer'
@@ -28,6 +29,7 @@ const EMPTY_PAYLOAD: GraphFullResponse = {
 
 export function Graph() {
   const explorerRef = useRef<GraphExplorerHandle>(null)
+  const controlsRef = useRef<HTMLDivElement>(null)
   const [payload, setPayload] = useState<GraphFullResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -126,6 +128,7 @@ export function Graph() {
         traversal={traversal}
         onEscape={handleEscape}
         perf={perfOn ? { loadMs } : undefined}
+        fitInsetRef={controlsRef}
       />
 
       <Box
@@ -144,7 +147,7 @@ export function Graph() {
           '& > *': { pointerEvents: 'auto' },
         }}
       >
-        <Paper sx={{ p: 1.5, flexShrink: 0 }}>
+        <Paper ref={controlsRef} sx={{ p: 1.5, flexShrink: 0 }}>
           <Stack spacing={1.5}>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <GraphSearch
@@ -195,6 +198,12 @@ export function Graph() {
                     sx={{
                       bgcolor: on ? NODE_COLORS[type] : undefined,
                       color: on ? '#000' : undefined,
+                      borderColor: on ? undefined : NODE_COLORS[type],
+                      '&:hover, &.Mui-focusVisible': {
+                        bgcolor: on
+                          ? darken(NODE_COLORS[type], 0.15)
+                          : alpha(NODE_COLORS[type], 0.18),
+                      },
                     }}
                   />
                 )

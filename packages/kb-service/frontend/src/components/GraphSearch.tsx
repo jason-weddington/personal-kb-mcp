@@ -63,11 +63,17 @@ export function GraphSearch({
               component="span"
               sx={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, bgcolor: nodeColor(o.type) }}
             />
-            <Typography component="span" variant="body2" sx={{ flexGrow: 1 }}>
+            <Typography component="span" variant="body2" sx={{ flexGrow: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
               {o.label}
             </Typography>
             {o.id !== o.label && (
-              <Typography component="span" variant="caption" color="text.secondary">
+              <Typography
+                component="span"
+                variant="caption"
+                color="text.secondary"
+                sx={{ whiteSpace: 'nowrap' }}
+              >
                 {o.id}
               </Typography>
             )}

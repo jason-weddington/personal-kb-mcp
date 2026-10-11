@@ -22,12 +22,13 @@ export function TypeSelect({
 }) {
   return (
     <FormControl size="small" sx={{ minWidth: 180 }}>
-      <InputLabel id={labelId}>Type</InputLabel>
+      <InputLabel id={labelId} shrink>Type</InputLabel>
       <Select
         labelId={labelId}
         label="Type"
         value={value ?? ''}
         displayEmpty
+        notched
         SelectDisplayProps={{ 'aria-labelledby': labelId }}
         onChange={(e) => onChange(parseEntryType(e.target.value))}
       >

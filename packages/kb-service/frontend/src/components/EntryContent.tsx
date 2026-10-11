@@ -205,7 +205,7 @@ export function EntryContent({ entry, pointerRot, onOpenEntry }: Props) {
 
       <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 2 }}>
         <Chip
-          label={entry.entry_type}
+          label={entry.entry_type.replace(/_/g, ' ')}
           color={ENTRY_TYPE_COLORS[entry.entry_type] ?? 'default'}
           size="small"
         />
