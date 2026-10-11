@@ -130,6 +130,7 @@ _DETECTOR_LLM_CACHE: dict[str, LLMProvider] = {}
 
 SURPRISE_DISTILLER_DEFAULT_MODEL = "claude-sonnet-5-5"
 _DISTILLER_LLM_CACHE: dict[str, LLMProvider] = {}
+_DISTILLER_SYSTEM_CACHE_1H: frozenset[LLMPurpose] = frozenset({"surprise_distiller"})
 
 SURPRISE_CRITIC_DEFAULT_MODEL = "claude-sonnet-5-5"
 _CRITIC_LLM_CACHE: dict[str, LLMProvider] = {}
@@ -194,7 +195,9 @@ def get_distiller_llm() -> LLMProvider | None:
     the detector: never calls ``get_detector_llm``, never reads
     ``KB_SURPRISE_DETECTOR_MODEL`` or the KB's synthesis/query providers, and
     ignores ``KB_QUERY_PROVIDER``. None (nothing cached) when the Anthropic
-    client cannot be imported.
+    client cannot be imported. The surprise distiller's system block (purpose
+    surprise_distiller) gets the 1-hour cache TTL; the store distiller shares
+    this client and keeps the 5-minute default.
     """
     model = (
         os.environ.get("KB_SURPRISE_DISTILL_MODEL", "").strip()
@@ -208,7 +211,9 @@ def get_distiller_llm() -> LLMProvider | None:
     except ImportError:
         return None
     client = AnthropicLLMClient(
-        build_anthropic_config(model=model), recorder=record_llm_call
+        build_anthropic_config(model=model),
+        recorder=record_llm_call,
+        system_cache_1h_purposes=_DISTILLER_SYSTEM_CACHE_1H,
     )
     _DISTILLER_LLM_CACHE[model] = client
     return client

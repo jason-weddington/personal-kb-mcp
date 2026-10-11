@@ -706,8 +706,7 @@ no LLM means FTS-only search, no enrichment, no dedup).
 
 ### Concrete providers (all optional)
 
-- `kb_core/llm/anthropic.py::AnthropicLLMClient` — wraps the
-  `anthropic` SDK's Messages API. Requires the `anthropic` extra.
+- `kb_core/llm/anthropic.py::AnthropicLLMClient` — wraps the `anthropic` SDK's Messages API. Requires the `anthropic` extra. Prompt caching uses explicit breakpoints only (the system block, plus the last block of the last message in generate_chat, each with the 5-minute TTL); the client never sends top-level `cache_control` (automatic caching); and the constructor's `system_cache_1h_purposes` gives the system block the 1-hour TTL (written at 2x base input) for the listed purposes, which kb-service uses for `surprise_distiller` only.
 - `kb_core/llm/bedrock.py::BedrockLLMClient` — wraps
   `aws-sdk-bedrock-runtime` (Smithy). Requires the `aws` extra.
   Handles AWS profile resolution, env credential detection, and an

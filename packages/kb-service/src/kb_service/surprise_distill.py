@@ -1,6 +1,7 @@
 """Surprise capture: pure helpers that distill candidates into KB lessons.
 
-No I/O, no DB access and no logging here: ``distill_candidates`` in
+No I/O and no DB access here; the only log lines are the bad_lesson_ttl and
+tripwire=non_turn_shape warnings: ``distill_candidates`` in
 ``kb_service.surprise_worker`` calls the model, reads and writes the KB and
 records each decision in ``surprise_distillations``. This module builds the
 distiller prompt, parses its reply, builds and parses the critic pass that
@@ -23,7 +24,8 @@ from kb_core.llm.json_parser import parse_json_object
 from kb_service.prevention import Resolution
 from kb_service.surprise import SurpriseCandidate
 
-# bump on ANY change to SURPRISE_DISTILLER_SYSTEM, DISTILLER_INSTRUCTIONS,
+# bump on ANY change to SURPRISE_DISTILLER_SYSTEM, SURPRISE_DISTILLER_ROLE,
+# DISTILLER_INPUT_LINE, DISTILLER_SHAPES, DISTILLER_INSTRUCTIONS,
 # DISTILLER_SCHEMA_LINE, LESSON_CLASSES, LESSON_CLASS_DEFINITIONS,
 # LESSON_CLASS_PROMPT, SHAPE_DESCRIPTIONS, build_distill_prompt,
 # parse_distill_response, build_resolution, build_knowledge_details,
@@ -31,7 +33,7 @@ from kb_service.surprise import SurpriseCandidate
 # merged_surprise_hint or the S0-S13 order
 # (LESSON_CLASSES, LESSON_CLASS_PROMPT and SHAPE_DESCRIPTIONS also feed
 # store_distill.py: bump STORE_DISTILLER_VERSION too)
-SURPRISE_DISTILLER_VERSION: int = 8
+SURPRISE_DISTILLER_VERSION: int = 9
 
 # bump on ANY change to SURPRISE_CRITIC_SYSTEM, CRITIC_INSTRUCTIONS,
 # CRITIC_SCHEMA_LINE, build_critic_prompt or parse_critic_response
@@ -92,10 +94,21 @@ RESOLUTION_EVIDENCE_MAX = 500
 SURPRISE_HINT_LIST_CAP = 100
 SURPRISE_EVENT_IDS_CAP = 20
 
-SURPRISE_DISTILLER_SYSTEM = (
+SURPRISE_DISTILLER_ROLE = (
     "You turn corrected beliefs from coding-agent sessions into durable"
     " knowledge-base lessons. Reply with exactly one JSON object and nothing"
     " else."
+)
+
+# The shapes the turn distiller receives; shape 5 goes to store_distill. A
+# literal: store_distill imports this module, so importing
+# STORE_CANDIDATE_SHAPE here would be circular.
+DISTILLER_SHAPES: tuple[int, ...] = (1, 2, 3, 4)
+
+DISTILLER_INPUT_LINE = (
+    "Each user message describes one correction in five labelled fields: Shape"
+    " (a number from the list below), Project, Wrong belief, Corrected fact and"
+    " Evidence."
 )
 
 DISTILLER_INSTRUCTIONS = (
@@ -212,6 +225,18 @@ SHAPE_DESCRIPTIONS: dict[int, str] = {
     ),
 }
 
+# One static system block: byte-identical on every call, so it caches as a prefix.
+SURPRISE_DISTILLER_SYSTEM = "\n".join(
+    [
+        SURPRISE_DISTILLER_ROLE,
+        DISTILLER_INPUT_LINE,
+        *(f"Shape {n}: {SHAPE_DESCRIPTIONS[n]}" for n in DISTILLER_SHAPES),
+        DISTILLER_INSTRUCTIONS,
+        LESSON_CLASS_PROMPT,
+        DISTILLER_SCHEMA_LINE,
+    ]
+)
+
 SURPRISE_CRITIC_SYSTEM = (
     "You review drafted knowledge-base lessons from coding-agent sessions"
     " against the evidence they were drawn from. Reply with exactly one JSON"
@@ -288,17 +313,28 @@ def _output_str(candidate: SurpriseCandidate, key: str) -> str:
 
 
 def build_distill_prompt(candidate: SurpriseCandidate) -> str:
-    """Build the distiller's user prompt from the candidate's detector output."""
+    """Build the distiller's per-candidate user prompt from the detector output.
+
+    The static instructions live in ``SURPRISE_DISTILLER_SYSTEM`` so that they
+    form one cached prefix.
+    """
+    if candidate.shape not in DISTILLER_SHAPES:
+        logger.warning(
+            "surprise_distill tripwire=non_turn_shape candidate_id=%d shape=%d",
+            candidate.id,
+            candidate.shape,
+        )
+        raise ValueError(
+            f"build_distill_prompt: shape {candidate.shape} is not a"
+            " turn-distiller shape"
+        )
     return "\n".join(
         [
-            SHAPE_DESCRIPTIONS[candidate.shape],
+            f"Shape: {candidate.shape}",
             f"Project: {candidate.project}",
             f"Wrong belief: {_output_str(candidate, 'wrong_belief')}",
             f"Corrected fact: {_output_str(candidate, 'corrected_fact')}",
             f"Evidence: {_output_str(candidate, 'evidence_excerpt')}",
-            DISTILLER_INSTRUCTIONS,
-            LESSON_CLASS_PROMPT,
-            DISTILLER_SCHEMA_LINE,
         ]
     )
 

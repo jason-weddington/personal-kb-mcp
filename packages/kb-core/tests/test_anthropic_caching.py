@@ -1,7 +1,8 @@
 """Payload-assertion tests for prompt-caching in AnthropicLLMClient.
 
-Verifies that cache breakpoints are placed on CONTENT BLOCKS, not as a
-top-level ``cache_control`` kwarg (which the Anthropic API silently ignores).
+Verifies that cache breakpoints are placed on CONTENT BLOCKS and that no request
+carries a top-level ``cache_control`` (the API treats that as automatic caching,
+a cache write on every one-shot prompt).
 
 Cases covered:
   (a) generate() with system prompt — cache_control nested in the system block
@@ -9,6 +10,8 @@ Cases covered:
   (c) generate_chat() with system — cache_control in system block AND in last message block
   (d) generate_chat() without system — no system key; rolling breakpoint on last message block
   (e) generate_chat() second agentic turn — rolling breakpoint present on both turns
+  (f)-(i) system_cache_1h_purposes: the system block gets ttl 1h for a listed
+      purpose only; the rolling message breakpoint stays 5 minutes
 
 All tests are hermetic — the Anthropic SDK is never contacted.
 """
@@ -295,3 +298,75 @@ async def test_agentic_loop_second_turn_carries_rolling_breakpoint() -> None:
         assert last_block.get("cache_control") == {"type": "ephemeral"}, (
             f"Turn {i + 1}: rolling breakpoint missing from last message block"
         )
+
+
+# ---------------------------------------------------------------------------
+# (f)-(i) system_cache_1h_purposes
+# ---------------------------------------------------------------------------
+
+
+def _make_1h_client() -> AnthropicLLMClient:
+    return AnthropicLLMClient(
+        AnthropicProviderConfig(model="claude-haiku-4-5", api_key="test-key"),
+        system_cache_1h_purposes=frozenset({"surprise_distiller"}),
+    )
+
+
+def test_system_cache_1h_purposes_default_empty() -> None:
+    assert _make_client()._system_cache_1h_purposes == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_generate_system_block_ttl_keyed_on_purpose() -> None:
+    with patch("kb_core.llm.anthropic.AnthropicLLMClient._get_client") as mock_get:
+        sdk_client: Any = AsyncMock()
+        sdk_client.messages.create = AsyncMock(return_value=_mock_response())
+        mock_get.return_value = sdk_client
+
+        llm = _make_1h_client()
+        await llm.generate("p", purpose="surprise_distiller", system="S")
+        await llm.generate("p", purpose="store_distiller", system="S")
+
+    first = sdk_client.messages.create.call_args_list[0].kwargs
+    second = sdk_client.messages.create.call_args_list[1].kwargs
+    assert first["system"] == [
+        {"type": "text", "text": "S", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+    ]
+    assert second["system"] == [
+        {"type": "text", "text": "S", "cache_control": {"type": "ephemeral"}}
+    ]
+    assert "cache_control" not in first
+    assert "cache_control" not in second
+
+
+@pytest.mark.asyncio
+async def test_generate_1h_client_without_system_sends_no_cache_control() -> None:
+    with patch("kb_core.llm.anthropic.AnthropicLLMClient._get_client") as mock_get:
+        sdk_client: Any = AsyncMock()
+        sdk_client.messages.create = AsyncMock(return_value=_mock_response())
+        mock_get.return_value = sdk_client
+
+        await _make_1h_client().generate("p", purpose="surprise_distiller")
+
+    kwargs = sdk_client.messages.create.call_args.kwargs
+    assert "system" not in kwargs
+    assert "cache_control" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_1h_system_block_with_5m_rolling_breakpoint() -> None:
+    with patch("kb_core.llm.anthropic.AnthropicLLMClient._get_client") as mock_get:
+        sdk_client: Any = AsyncMock()
+        sdk_client.messages.create = AsyncMock(return_value=_mock_response())
+        mock_get.return_value = sdk_client
+
+        await _make_1h_client().generate_chat(
+            [{"role": "user", "content": "q"}], purpose="surprise_distiller", system="S"
+        )
+
+    kwargs = sdk_client.messages.create.call_args.kwargs
+    assert kwargs["system"] == [
+        {"type": "text", "text": "S", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+    ]
+    assert _last_message_last_block(kwargs)["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in kwargs

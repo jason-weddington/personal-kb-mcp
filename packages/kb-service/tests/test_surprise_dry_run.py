@@ -666,7 +666,8 @@ async def test_shadow_shape4_would_write(
     payload = json.loads(r["payload"])
     assert payload["cue"] is None
     assert payload["critic_version"] == SURPRISE_CRITIC_VERSION
-    assert llm.generate_calls[0][0].split("\n")[0] == SHAPE_DESCRIPTIONS[4]
+    assert llm.generate_calls[0][0].split("\n")[0] == "Shape: 4"
+    assert SHAPE_DESCRIPTIONS[4] not in llm.generate_calls[0][0]
     assert "[tool_result]" not in critic.generate_calls[0][0]
     assert await _lessons(kb) == 0
 

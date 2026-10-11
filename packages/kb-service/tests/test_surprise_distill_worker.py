@@ -13,7 +13,9 @@ import sys
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +28,7 @@ from kb_service import surprise_worker
 from kb_service.db_sqlite import SqlitePool
 from kb_service.main import app
 from kb_service.prevention import build_gate_index, build_slice, load_resolutions
+from kb_service.store_distill import STORE_DISTILLER_SYSTEM
 from kb_service.surprise import (
     SURPRISE_DETECTOR_SYSTEM,
     DistillResult,
@@ -37,6 +40,7 @@ from kb_service.surprise_distill import (
     SURPRISE_DISTILLER_SYSTEM,
     SURPRISE_DISTILLER_VERSION,
     SURPRISE_HINT_KEY,
+    build_distill_prompt,
     build_knowledge_details,
     build_resolution,
     lesson_ttl_days,
@@ -379,6 +383,60 @@ def test_get_distiller_llm_ignores_query_provider(
     assert llm._config.model == "claude-sonnet-5-5"  # type: ignore[union-attr]
 
 
+def test_get_distiller_llm_system_cache_1h(
+    fresh_caches: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(surprise_worker, "_CRITIC_LLM_CACHE", {})
+    distiller = surprise_worker.get_distiller_llm()
+    detector = surprise_worker.get_detector_llm()
+    critic = _REAL_GET_CRITIC_LLM()
+    assert distiller is not None
+    assert detector is not None
+    assert critic is not None
+    assert distiller._system_cache_1h_purposes == frozenset(  # type: ignore[attr-defined]
+        {"surprise_distiller"}
+    )
+    assert detector._system_cache_1h_purposes == frozenset()  # type: ignore[attr-defined]
+    assert critic._system_cache_1h_purposes == frozenset()  # type: ignore[attr-defined]
+
+
+async def test_distiller_client_system_block_ttl(
+    fresh_caches: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = surprise_worker.get_distiller_llm()
+    assert llm is not None
+    monkeypatch.setattr(llm, "_recorder", None)
+    sdk = AsyncMock()
+    sdk.messages.create = AsyncMock(
+        return_value=SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="{}")], stop_reason="end_turn"
+        )
+    )
+    monkeypatch.setattr(llm, "_get_client", lambda: sdk)
+    await llm.generate(
+        "p", purpose="surprise_distiller", system=SURPRISE_DISTILLER_SYSTEM
+    )
+    await llm.generate("p", purpose="store_distiller", system=STORE_DISTILLER_SYSTEM)
+    first = sdk.messages.create.call_args_list[0].kwargs
+    second = sdk.messages.create.call_args_list[1].kwargs
+    assert first["system"] == [
+        {
+            "type": "text",
+            "text": SURPRISE_DISTILLER_SYSTEM,
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ]
+    assert second["system"] == [
+        {
+            "type": "text",
+            "text": STORE_DISTILLER_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert "cache_control" not in first
+    assert "cache_control" not in second
+
+
 def test_get_distiller_llm_import_error(
     fresh_caches: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -466,6 +524,14 @@ async def test_write_merge_same_session_sequence(
     assert row["raw_response_excerpt"] == D
     assert row["prompt_chars"] > 0
     assert llm.generate_calls[0][1] == SURPRISE_DISTILLER_SYSTEM
+    assert llm.generate_calls[0] == (
+        build_distill_prompt(c1),
+        SURPRISE_DISTILLER_SYSTEM,
+    )
+    assert llm.purposes[0] == "surprise_distiller"
+    assert row["prompt_chars"] == len(SURPRISE_DISTILLER_SYSTEM) + len(
+        build_distill_prompt(c1)
+    )
     summary = _summary(logs)
     assert summary.startswith(
         f"surprise_distill summary distiller_version={SURPRISE_DISTILLER_VERSION}"
@@ -1821,7 +1887,8 @@ async def test_shape4_write_then_exact_merge(
         "event_id": "s4:0",
     }
     assert "(shape 4, candidate" in entry.knowledge_details
-    assert llm.generate_calls[0][0].split("\n")[0] == SHAPE_DESCRIPTIONS[4]
+    assert llm.generate_calls[0][0].split("\n")[0] == "Shape: 4"
+    assert SHAPE_DESCRIPTIONS[4] not in llm.generate_calls[0][0]
     assert critic.generate_calls[0][0].split("\n")[0] == SHAPE_DESCRIPTIONS[4]
     (row,) = await _rows(pool)
     assert row["outcome"] == "written"

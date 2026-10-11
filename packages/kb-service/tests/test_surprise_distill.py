@@ -1,6 +1,7 @@
 """Pure tests for kb_service.surprise_distill (no DB, no network)."""
 
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -17,6 +18,7 @@ from kb_service.surprise_distill import (
     DISTILLER_SCHEMA_LINE,
     SHAPE_DESCRIPTIONS,
     SURPRISE_CRITIC_SYSTEM,
+    SURPRISE_DISTILLER_ROLE,
     SURPRISE_DISTILLER_SYSTEM,
     CriticVerdict,
     DistillVerdict,
@@ -97,7 +99,7 @@ def _valid(**kw: Any) -> str:
 
 
 def test_pinned_literals() -> None:
-    assert SURPRISE_DISTILLER_SYSTEM == (
+    assert SURPRISE_DISTILLER_ROLE == (
         "You turn corrected beliefs from coding-agent sessions into durable "
         "knowledge-base lessons. Reply with exactly one JSON object and nothing "
         "else."
@@ -136,7 +138,7 @@ def test_pinned_literals() -> None:
         "A coding agent in an unattended (headless or autonomous) session asked "
         "to store this knowledge-base entry, and no human reviewed it."
     )
-    assert sd.SURPRISE_DISTILLER_VERSION == 8
+    assert sd.SURPRISE_DISTILLER_VERSION == 9
     assert sd.SURPRISE_EVENT_IDS_CAP == 20
     assert sd.SURPRISE_HINT_LIST_CAP == 100
 
@@ -145,22 +147,67 @@ def test_pinned_literals() -> None:
 
 
 def test_build_distill_prompt_shape1() -> None:
+    assert build_distill_prompt(_cand()) == (
+        "Shape: 1\nProject: p\nWrong belief: git push origin main\n"
+        "Corrected fact: git push origin HEAD:main\nEvidence: rejected"
+    )
     prompt = build_distill_prompt(_cand())
-    assert SHAPE_DESCRIPTIONS[1] in prompt
-    assert "Project: p" in prompt
-    assert "Wrong belief: git push origin main" in prompt
-    assert "Corrected fact: git push origin HEAD:main" in prompt
-    assert "Evidence: rejected" in prompt
-    assert DISTILLER_INSTRUCTIONS in prompt
-    assert '"durable"' in prompt
-    assert prompt.rstrip().endswith(DISTILLER_SCHEMA_LINE)
-    assert prompt.split("\n")[0] == SHAPE_DESCRIPTIONS[1]
+    assert DISTILLER_INSTRUCTIONS not in prompt
+    assert DISTILLER_SCHEMA_LINE not in prompt
+    assert sd.LESSON_CLASS_PROMPT not in prompt
+    for description in SHAPE_DESCRIPTIONS.values():
+        assert description not in prompt
 
 
 def test_build_distill_prompt_shape2() -> None:
     prompt = build_distill_prompt(_cand(shape=2))
-    assert SHAPE_DESCRIPTIONS[2] in prompt
-    assert SHAPE_DESCRIPTIONS[1] not in prompt
+    assert prompt.split("\n")[0] == "Shape: 2"
+    assert SHAPE_DESCRIPTIONS[2] not in prompt
+
+
+def test_build_distill_prompt_rejects_store_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="kb_service.surprise_distill")
+    with pytest.raises(ValueError, match="not a turn-distiller shape"):
+        build_distill_prompt(_cand(shape=5))
+    assert sum("tripwire=non_turn_shape" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_distiller_system_block() -> None:
+    from kb_service.store_distill import STORE_CANDIDATE_SHAPE
+
+    assert (
+        "\n".join(
+            [
+                SURPRISE_DISTILLER_ROLE,
+                sd.DISTILLER_INPUT_LINE,
+                *(f"Shape {n}: {SHAPE_DESCRIPTIONS[n]}" for n in (1, 2, 3, 4)),
+                DISTILLER_INSTRUCTIONS,
+                sd.LESSON_CLASS_PROMPT,
+                DISTILLER_SCHEMA_LINE,
+            ]
+        )
+        == SURPRISE_DISTILLER_SYSTEM
+    )
+    assert sd.DISTILLER_SHAPES == (1, 2, 3, 4)
+    assert set(sd.DISTILLER_SHAPES) == set(SHAPE_DESCRIPTIONS) - {STORE_CANDIDATE_SHAPE}
+    order = [
+        SURPRISE_DISTILLER_SYSTEM.index(x)
+        for x in [
+            sd.DISTILLER_INPUT_LINE,
+            "Shape 1: ",
+            "Shape 4: ",
+            DISTILLER_INSTRUCTIONS,
+            sd.LESSON_CLASS_PROMPT,
+            DISTILLER_SCHEMA_LINE,
+        ]
+    ]
+    assert order == sorted(set(order))
+    assert SURPRISE_DISTILLER_SYSTEM.endswith(DISTILLER_SCHEMA_LINE)
+    assert SHAPE_DESCRIPTIONS[5] not in SURPRISE_DISTILLER_SYSTEM
+    # Keeps the block above the 512-token cache minimum of claude-sonnet-5-5.
+    assert len(SURPRISE_DISTILLER_SYSTEM) >= 3000
 
 
 def test_build_distill_prompt_missing_keys() -> None:
@@ -364,7 +411,7 @@ def test_distiller_instructions_durability_test() -> None:
     ) in DISTILLER_INSTRUCTIONS
     examples_end = DISTILLER_INSTRUCTIONS.index("leave the other fields empty.")
     assert DISTILLER_INSTRUCTIONS.index("Also set durable to false") > examples_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 8
+    assert sd.SURPRISE_DISTILLER_VERSION == 9
 
 
 _SCOPE_RULE = (
@@ -385,8 +432,9 @@ def test_distiller_instructions_scope_rule() -> None:
         "would plausibly hold the same wrong belief."
     )
     assert DISTILLER_INSTRUCTIONS.index(_SCOPE_RULE) > durability_end
-    assert sd.SURPRISE_DISTILLER_VERSION == 8
-    assert _SCOPE_RULE in build_distill_prompt(_cand())
+    assert sd.SURPRISE_DISTILLER_VERSION == 9
+    assert _SCOPE_RULE in SURPRISE_DISTILLER_SYSTEM
+    assert _SCOPE_RULE not in build_distill_prompt(_cand())
 
 
 # --- critic -------------------------------------------------------------------
@@ -725,9 +773,8 @@ def test_lesson_classes_pinned() -> None:
     assert sd.LESSON_CLASS_DEFINITIONS["project_tooling"] == (
         "how one specific project is built, tested, released or deployed"
     )
-    prompt = build_distill_prompt(_cand())
     for name, definition in sd.LESSON_CLASS_DEFINITIONS.items():
-        assert f"{name}: {definition}" in prompt
+        assert f"{name}: {definition}" in SURPRISE_DISTILLER_SYSTEM
 
 
 def test_parse_accepts_each_class() -> None:
@@ -761,7 +808,8 @@ def test_shape_descriptions_match_surprise_shapes() -> None:
 
 def test_shape4_distill_prompt() -> None:
     p = build_distill_prompt(_cand(shape=4, output=S4_OUT))
-    assert p.split("\n")[0] == SHAPE_DESCRIPTIONS[4]
+    assert p.split("\n")[0] == "Shape: 4"
+    assert f"Shape 4: {SHAPE_DESCRIPTIONS[4]}" in SURPRISE_DISTILLER_SYSTEM
     assert "Corrected fact: Bash uv run ruff format src/a.py; run_checks" in p
 
 

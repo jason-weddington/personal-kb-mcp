@@ -206,10 +206,16 @@ class AnthropicLLMClient:
         config: AnthropicProviderConfig,
         *,
         recorder: LLMCallRecorder | None = None,
+        system_cache_1h_purposes: frozenset[LLMPurpose] = frozenset(),
     ) -> None:
-        """Initialize with an explicit provider config and an optional call recorder."""
+        """Initialize with an explicit provider config and an optional call recorder.
+
+        ``system_cache_1h_purposes`` lists the purposes whose system block gets
+        the 1-hour cache TTL instead of the 5-minute default.
+        """
         self._config = config
         self._recorder = recorder
+        self._system_cache_1h_purposes = system_cache_1h_purposes
         self._client: Any = None
         self._available: bool | None = None
         self._diagnostics_disabled: bool = False
@@ -230,6 +236,17 @@ class AnthropicLLMClient:
         except Exception:
             return False
 
+    def _system_block(self, system: str, purpose: LLMPurpose) -> list[dict[str, Any]]:
+        """Build the system content-block array with an explicit cache breakpoint."""
+        # Explicit breakpoint on the system block. Never send top-level
+        # cache_control: the API treats it as automatic caching, puts the
+        # breakpoint on the last cacheable block and writes the whole prompt,
+        # including a one-shot user message, at the cache-write premium.
+        cache_control = {"type": "ephemeral"}
+        if purpose in self._system_cache_1h_purposes:
+            cache_control["ttl"] = "1h"
+        return [{"type": "text", "text": system, "cache_control": cache_control}]
+
     async def generate(
         self,
         prompt: str,
@@ -249,11 +266,7 @@ class AnthropicLLMClient:
                 "messages": [{"role": "user", "content": prompt}],
             }
             if system is not None:
-                # Use content-block array form so the cache breakpoint is placed
-                # on the system block itself (top-level cache_control is not valid).
-                kwargs["system"] = [
-                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-                ]
+                kwargs["system"] = self._system_block(system, purpose)
 
             response = await self._create(client, kwargs, purpose=purpose)
             result = _extract_text(response)
@@ -276,13 +289,18 @@ class AnthropicLLMClient:
     ) -> str | None:
         """Generate text from a conversation history.
 
-        Prompt caching is placed on content blocks — not as a top-level kwarg
-        (which is not a valid Anthropic Messages API field and is silently
-        ignored).  Two breakpoints are set per request:
+        Prompt caching uses explicit breakpoints on content blocks. The client
+        never sends top-level ``cache_control``: the API treats that as
+        automatic caching, which places a breakpoint on the last cacheable
+        block and charges the cache-write premium (1.25x base input for the
+        5-minute TTL, 2x for 1 hour) on a prefix a one-shot call never reads
+        back.  Two breakpoints are set per request:
 
         1. **System block** (when ``system`` is provided): the system prompt is
-           sent as a content-block array with ``cache_control`` attached, so
-           the stable system prefix is cached across turns.
+           sent as a content-block array with ``cache_control`` attached, with
+           the 5-minute TTL, or 1 hour when ``purpose`` is in
+           ``system_cache_1h_purposes``, so the stable system prefix is cached
+           across turns.
         2. **Rolling message breakpoint**: the last content block of the last
            message carries ``cache_control`` so each turn reuses the prefix
            built by the previous turn (5-min TTL, refreshed on read).  If the
@@ -320,9 +338,7 @@ class AnthropicLLMClient:
                 "messages": api_messages,
             }
             if system is not None:
-                kwargs["system"] = [
-                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-                ]
+                kwargs["system"] = self._system_block(system, purpose)
 
             response = await self._create(client, kwargs, purpose=purpose)
             result = _extract_text(response)
