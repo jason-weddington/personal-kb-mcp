@@ -40,6 +40,7 @@ async def test_kb_explore_local_mode_returns_hosted_message(monkeypatch):
     result = await kb_explore(ctx=ctx)
 
     assert "KB explorer is hosted at" in result
+    assert "http://127.0.0.1:8765/graph — " in result
     assert "open it in a browser" in result
 
 
@@ -52,8 +53,19 @@ async def test_kb_explore_http_mode_includes_url(monkeypatch):
     ctx = _make_ctx()
     result = await kb_explore(ctx=ctx)
 
-    assert "KB explorer is hosted at https://kb.example.com" in result
+    assert "KB explorer is hosted at https://kb.example.com/graph — " in result
     assert "open it in a browser" in result
+
+
+@pytest.mark.asyncio
+async def test_kb_explore_strips_trailing_slash(monkeypatch):
+    """A trailing slash on PERSONAL_KB_URL does not double the separator."""
+    monkeypatch.setenv("PERSONAL_KB_URL", "https://kb.example.com/")
+
+    kb_explore = _register_tool()
+    result = await kb_explore(ctx=_make_ctx())
+
+    assert "https://kb.example.com/graph — " in result
 
 
 @pytest.mark.asyncio

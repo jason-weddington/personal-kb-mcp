@@ -25,5 +25,5 @@ def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
         if ctx is None:
             raise RuntimeError("Context not injected")
 
-        url = get_personal_kb_url() or "the KB service"
-        return f"KB explorer is hosted at {url} — open it in a browser."
+        base = get_personal_kb_url().rstrip("/")
+        return f"KB explorer is hosted at {base}/graph — open it in a browser."

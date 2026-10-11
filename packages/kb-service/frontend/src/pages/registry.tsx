@@ -1,4 +1,7 @@
+import { lazy, Suspense } from 'react'
 import type { ReactElement } from 'react'
+import Box from '@mui/material/Box'
+import CircularProgress from '@mui/material/CircularProgress'
 import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer'
 import SettingsIcon from '@mui/icons-material/Settings'
 import SearchIcon from '@mui/icons-material/Search'
@@ -7,8 +10,9 @@ import ChatIcon from '@mui/icons-material/Chat'
 import { Home } from './Home'
 import { Settings } from './Settings'
 import { Search } from './Search'
-import { Graph } from './Graph'
 import { Chat } from './Chat'
+
+const GraphPage = lazy(() => import('./Graph').then((m) => ({ default: m.Graph })))
 
 export interface AppPage {
   path: string
@@ -49,7 +53,17 @@ export const appPages: AppPage[] = [
     path: '/graph',
     label: 'Graph',
     icon: <BubbleChartIcon />,
-    element: <Graph />,
+    element: (
+      <Suspense
+        fallback={
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
+            <CircularProgress />
+          </Box>
+        }
+      >
+        <GraphPage />
+      </Suspense>
+    ),
   },
   {
     path: '/settings',

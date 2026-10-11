@@ -247,7 +247,7 @@ Ingest a web page into the knowledge base (only available when `KB_MANAGER=TRUE`
 
 ### `kb_explore`
 
-Open an interactive graph visualization in your browser. The explorer auto-starts on MCP server startup (available at `http://localhost:8767` immediately, no tool call needed — use the tool to relaunch or change ports). Type a question in the search bar and watch the agent traverse the graph in real time via SSE streaming. Questions routed to `summarize` mode open a multi-turn chat panel where you can ask follow-up questions grounded in the retrieved KB entries, with iMessage-style message bubbles and clickable `[kb-XXXXX]` citations that fly to nodes in the graph. The chat panel supports write-back tools — update entries or ingest URLs directly from the conversation. The toolbar also provides file upload and multi-URL ingestion for bulk import without leaving the browser.
+Returns the URL of the hosted web UI's Graph page (`<service url>/graph`); open it in a browser. The page is an interactive graph explorer with zoom-aware labels, click-to-focus on a node and its neighbours, ArrowLeft backtrack, a solo legend that shows one node type at a time, and node search.
 
 ### `kb_feedback`
 
@@ -606,7 +606,7 @@ Most team members want both a **shared team KB** (decisions, architecture, patte
 }
 ```
 
-The explorer auto-starts on both instances. Personal gets the default port (`8767`), team gets `8768`. Bookmark both — or use `kb_explore` to swap which KB is on which port at any time.
+Each instance serves its own web UI, and `kb_explore` returns that instance's Graph page URL.
 
 `KB_INSTANCE_ROLE` controls two things:
 
@@ -685,7 +685,7 @@ uv sync
 uv run pytest                    # run tests
 uv run ruff check src/ tests/    # lint
 uv run personal-kb               # run server directly
-uv run personal-kb-web           # launch graph explorer web UI
+uv run kb-service serve          # run kb-service (API and web UI)
 ```
 
 For Bedrock support: `uv sync --extra aws`. For secret/PII detection in `kb_ingest`: `uv sync --extra safety`. For PostgreSQL: `uv sync --extra postgres`.

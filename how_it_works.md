@@ -776,7 +776,7 @@ Tools: `get_entry` (read-only; adds the entry to context); `update_entry` (requi
 
 ## 24. Web UI
 
-The SPA lives in `packages/kb-service/frontend/` (Vite, React 19, MUI 7, react-router 7, react-markdown, and react-force-graph-2d bundled by Vite). It is served by the same kb-service process.
+The SPA lives in `packages/kb-service/frontend/` (Vite, React 19, MUI 7, react-router 7, react-markdown, and react-force-graph-2d bundled by Vite). react-force-graph-2d and the Graph page's search Autocomplete load in the Graph page's lazily loaded chunk (`registry.tsx` imports `pages/Graph` with `React.lazy`), so other pages do not download them. It is served by the same kb-service process.
 
 Pages:
 
@@ -793,7 +793,7 @@ Pages:
 
 **Static serving.** `main.resolve_static_dir` picks `KB_SERVICE_STATIC_DIR`, else the checkout's `frontend/dist`, else the UI packaged in the wheel at `kb_service/static`. `mount_frontend` serves `/assets` and an SPA catch-all that 404s `api/*` and `.well-known/*` and never serves a path outside the dist directory. The packaged copy is committed: `scripts/build_static_ui.sh` (run by `release.sh`) builds it, copies it into `kb_service/static` and writes `.source-hash`, and `scripts/check_static_ui_fresh.sh` fails when the recorded hash differs from the current frontend source.
 
-**kb_explore** only returns the URL: `KB explorer is hosted at <url> — open it in a browser.` The stdio tool uses `PERSONAL_KB_URL`; the `/mcp` twin derives the URL from the request through `public_base_url`, which honours `KB_SERVICE_PUBLIC_URL`. No explorer process is started per MCP session.
+**kb_explore** only returns the Graph page URL: `KB explorer is hosted at <url>/graph — open it in a browser.` The stdio tool uses `PERSONAL_KB_URL` with any trailing slash stripped; the `/mcp` twin derives the URL from the request through `public_base_url`, which honours `KB_SERVICE_PUBLIC_URL`. No explorer process is started per MCP session.
 
 ### 24a. Graph page data
 
@@ -813,7 +813,7 @@ The Graph page draws a force-directed canvas with one colour per node type:
 | note | `#78909c` |
 | unknown types (always shown) | `#666` |
 
-It offers type toggle chips, a project filter (entry nodes by `project_ref`, keeping their connected non-entry nodes), and a node drawer with id, label, type, val, properties and an Open entry button that opens the entry drawer.
+The Graph page is the tuned standalone explorer ported into the app shell (`components/GraphExplorer.tsx`, `graph/explorerModel.ts`, `graph/drawNode.ts`): it fills the viewport under the 64 px app bar with the sidebar still present, on the dark `#0a0a0f` canvas in both themes. Each node is a circle of radius `sqrt(val) * 2.5` (plus 6 when highlighted, 3 for a query result, plus a 600 ms pulse of up to 6), and highlighted, visited and result nodes glow (shadow blur 25, 20 and 30). Labels sit on a dark pill below the node and fade in with zoom from scale 3.0 to 5.0 (1.5 to 3.0 while a type is soloed), are truncated to 20 characters below scale 2.0, and are always shown for the hovered node, the highlighted node and the focused node's neighbourhood. Clicking a node focuses it: only the node and its one-hop neighbours (and the links touching it) stay visible, the camera moves over 800 ms to zoom 4 (an entry is shifted 80 units so it sits left of the 640 px entry drawer when the canvas is at least 960 px wide), and at 850 ms an entry opens the entry drawer while any other node opens the non-modal node panel (type, label, id, val, properties and up to 30 connections, each clickable to focus that neighbour). Escape and a background click reset the focus and fit the connected nodes with `zoomToFit(400, 40)`, then clamp the zoom to 6 if the fit zoomed in further; while the entry drawer is open, the first Escape only closes it. ArrowLeft backtracks to the previously focused node with the camera it had just before you left it. The legend in the bottom-right corner is a solo control: clicking a type shows only nodes of that type and hides links until it is clicked again (a focused node still wins). The search box ranks nodes client-side by label, id, long title, tags, entry type and project, putting an exact label match first, then higher connection count (`val`), and shows 12 results; picking one (or Enter) flies to that node. Type chips switch node types on and off. Scope limits the canvas to one project's entries plus their one-hop non-entry neighbours of an active type; unknown types are always shown. A stats line reads `<rendered> of <total> nodes · <rendered> of <total> edges`. Adding `?perf=1` to the URL shows an FPS, settle-time and load-time readout and logs one `[graph-perf]` console line per graph with node and link counts, `settle_ms`, `load_ms` and `fps`.
 
 ## 25. MCP surfaces
 

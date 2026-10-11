@@ -22,5 +22,5 @@ def register_kb_explore(mcp: FastMCP, prefix: str = "kb_") -> None:
     )
     async def kb_explore() -> str:
         """Return the hosted KB explorer URL."""
-        url = public_base_url(get_http_request())
-        return f"KB explorer is hosted at {url} — open it in a browser."
+        base = public_base_url(get_http_request())
+        return f"KB explorer is hosted at {base}/graph — open it in a browser."

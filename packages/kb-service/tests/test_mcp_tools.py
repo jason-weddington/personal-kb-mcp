@@ -173,11 +173,11 @@ def test_explore_uses_public_url(
     mcp_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert text(call(mcp_client, "kb_explore")) == (
-        "KB explorer is hosted at http://testserver — open it in a browser."
+        "KB explorer is hosted at http://testserver/graph — open it in a browser."
     )
     monkeypatch.setenv("KB_SERVICE_PUBLIC_URL", "https://kb.example.com/")
     assert text(call(mcp_client, "kb_explore")) == (
-        "KB explorer is hosted at https://kb.example.com — open it in a browser."
+        "KB explorer is hosted at https://kb.example.com/graph — open it in a browser."
     )
 
 
