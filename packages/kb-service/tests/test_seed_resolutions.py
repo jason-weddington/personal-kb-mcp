@@ -91,9 +91,13 @@ class FakeLLM:
     def __init__(self, replies: dict[str, Any]) -> None:
         self.replies = replies
         self.calls = 0
+        self.purposes: list[str] = []
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(
+        self, prompt: str, *, purpose: str, system: str | None = None
+    ) -> str | None:
         self.calls += 1
+        self.purposes.append(purpose)
         for eid, reply in self.replies.items():
             if f"title {eid}" in prompt:
                 return reply if isinstance(reply, str) else json.dumps(reply)
@@ -152,6 +156,7 @@ async def test_dry_run_reports_and_writes_nothing() -> None:
     pin = next(p for p in rep.proposals if p["entry_id"] == PIN_ID)
     assert pin["args_prefix"] == "add"
     assert llm.calls == 1
+    assert llm.purposes == ["seed_resolutions"]
 
 
 async def test_apply_writes_pinned_deliberate() -> None:

@@ -770,7 +770,8 @@ async def listener(
     3. Rule A — drop candidates whose ``project_ref == cwd_project``.
     4. Rule B — drop candidates whose ``operated_via`` hint is in ``body.operating``.
     5. Short-circuit — return null if no candidates remain or no LLM available.
-    6. LLM gate — fire 3 concurrent ``kb.synthesis_llm.generate(prompt)`` calls,
+    6. LLM gate — fire 3 concurrent
+       ``kb.synthesis_llm.generate(prompt, purpose="listener_vote")`` calls,
        each returning a SET of candidate ids (GTD 66ea1fe4 reframe).
     7. Verdict — a candidate is emitted iff it appears in >= 2 of the 3
        returned sets (majority); ordered by evidence rank, any pointer past
@@ -806,7 +807,7 @@ async def listener(
             reason="kill-switch: KB_LISTENER_ENABLED!=TRUE",
         )
 
-    kb = request.app.state.kb
+    kb: KnowledgeBase = request.app.state.kb
 
     # ── Candidate retrieval (lexical + detail-match, merged) ─────────────────
     candidates, used_fallback, evidence, signal_source = await _retrieve_candidates(
@@ -898,9 +899,9 @@ async def listener(
     valid_ids = {e.id for e in entries}
 
     raw_votes = await asyncio.gather(
-        kb.synthesis_llm.generate(prompt),
-        kb.synthesis_llm.generate(prompt),
-        kb.synthesis_llm.generate(prompt),
+        kb.synthesis_llm.generate(prompt, purpose="listener_vote"),
+        kb.synthesis_llm.generate(prompt, purpose="listener_vote"),
+        kb.synthesis_llm.generate(prompt, purpose="listener_vote"),
     )
 
     vote_sets = [_parse_vote_set(v, valid_ids) for v in raw_votes]

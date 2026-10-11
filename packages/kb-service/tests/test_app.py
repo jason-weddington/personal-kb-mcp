@@ -178,6 +178,7 @@ async def test_open_kb_postgres_branch_when_url_set(
     # The Postgres branch is the only aiosqlite-connection-sharing-free
     # deployment, so it's the only one the embedding retry worker may run on.
     assert postgres_calls[0][1]["embedding_retry"].enabled is True
+    assert postgres_calls[0][1]["llm_recorder"] is main_module.record_llm_call
 
 
 async def test_open_kb_sqlite_branch_with_default_path(
@@ -216,6 +217,7 @@ async def test_open_kb_sqlite_branch_with_default_path(
     # The SQLite branch shares one aiosqlite connection with every request
     # handler, so the worker is always off here regardless of env.
     assert kwargs["embedding_retry"].enabled is False
+    assert kwargs["llm_recorder"] is main_module.record_llm_call
 
 
 async def test_open_kb_sqlite_branch_when_url_empty(
@@ -337,6 +339,41 @@ async def test_lifespan_shutdown_runs_on_clean_exit(
     assert fake_kb.start_embedding_worker_calls == 1
     assert fake_kb.stop_embedding_worker_calls == 1
     assert fake_kb.close_calls == 1
+
+
+async def test_lifespan_drains_llm_calls_between_kb_close_and_close_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pending llm_calls inserts drain after the KB closes and before the pool does."""
+    fake_kb = FakeKnowledgeBase(results=[], filtered_count=0)
+    order: list[str] = []
+
+    async def _fake_init_db() -> None:
+        return None
+
+    async def _fake_kb_close() -> None:
+        order.append("close")
+
+    async def _fake_drain() -> None:
+        order.append("drain")
+
+    async def _fake_close_db() -> None:
+        order.append("close_db")
+
+    async def _fake_create_postgres(*args: Any, **kwargs: Any) -> FakeKnowledgeBase:
+        return fake_kb
+
+    monkeypatch.setenv("KB_DATABASE_URL", "postgresql://test/test")
+    monkeypatch.setattr(main_module, "init_db", _fake_init_db)
+    monkeypatch.setattr(fake_kb, "close", _fake_kb_close)
+    monkeypatch.setattr(main_module, "drain_pending_llm_calls", _fake_drain)
+    monkeypatch.setattr(main_module, "close_db", _fake_close_db)
+    monkeypatch.setattr(main_module, "create_postgres", _fake_create_postgres)
+
+    async with main_module.lifespan(app):
+        pass
+
+    assert order[-3:] == ["close", "drain", "close_db"]
 
 
 async def test_lifespan_starts_and_stops_surprise_worker(

@@ -44,7 +44,7 @@ def _make_llm_with_responses(summary: str, entries: list[dict]) -> FakeLLM:
             self._responses = list(responses)
             self._call_index = 0
 
-        async def generate(self, prompt, *, system=None):
+        async def generate(self, prompt, *, purpose, system=None):
             self.last_prompt = prompt
             self.last_system = system
             self.generate_count += 1
@@ -518,7 +518,7 @@ class TestIngestDirectory:
                     json.dumps(entries_json),
                 ]
 
-            async def generate(self, prompt, *, system=None):
+            async def generate(self, prompt, *, purpose, system=None):
                 self.generate_count += 1
                 if self._call_index < len(self._responses):
                     resp = self._responses[self._call_index]
@@ -568,7 +568,7 @@ class TestIngestDirectory:
                     json.dumps(entries_json),
                 ]
 
-            async def generate(self, prompt, *, system=None):
+            async def generate(self, prompt, *, purpose, system=None):
                 self.generate_count += 1
                 if self._call_index < len(self._responses):
                     resp = self._responses[self._call_index]

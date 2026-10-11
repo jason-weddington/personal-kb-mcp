@@ -145,7 +145,7 @@ class DedupAgent:
             f"{entries_text}"
         )
 
-        raw = await self._llm.generate(prompt, system=_DEDUP_SYSTEM_PROMPT)
+        raw = await self._llm.generate(prompt, purpose="dedup_agent", system=_DEDUP_SYSTEM_PROMPT)
         if raw is None:
             return DedupResult(action="extract", reason="LLM returned no response")
 

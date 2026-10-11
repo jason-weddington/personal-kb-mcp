@@ -466,6 +466,7 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | `ANTHROPIC_API_KEY` | _(unset)_ | API key — required for Anthropic provider |
 | `KB_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Model for graph enrichment, query planning, and synthesis |
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Request timeout in seconds |
+| `KB_LLM_DIAGNOSTICS` | `1` | kb-service: set `0` (or `false`, `off`, `no`) to stop sending the Claude API cache-diagnostics object; kb-service still records every Anthropic call in `llm_calls` |
 | **Ollama (local LLM)** | | |
 | `KB_OLLAMA_URL` | `http://localhost:11434` | Ollama API base URL |
 | `KB_OLLAMA_MODEL` | `qwen3:4b` | Model for generation tasks |

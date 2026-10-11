@@ -104,7 +104,7 @@ class FakeLLM:
     async def is_available(self) -> bool:
         return self._available
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(self, prompt: str, *, purpose: str, system: str | None = None) -> str | None:
         self.last_prompt = prompt
         self.last_system = system
         self.generate_count += 1
@@ -116,6 +116,7 @@ class FakeLLM:
         self,
         messages: list[dict[str, str]],
         *,
+        purpose: str,
         system: str | None = None,
     ) -> str | None:
         # Delegate to generate with last user message for compatibility
@@ -123,7 +124,7 @@ class FakeLLM:
             (m["content"] for m in reversed(messages) if m["role"] == "user"),
             "",
         )
-        return await self.generate(last_user, system=system)
+        return await self.generate(last_user, purpose=purpose, system=system)
 
     async def close(self) -> None:
         pass
@@ -144,7 +145,7 @@ class ScriptedLLM:
     async def is_available(self) -> bool:
         return True
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(self, prompt: str, *, purpose: str, system: str | None = None) -> str | None:
         self.calls.append({"prompt": prompt, "system": system})
         if self._responses:
             return self._responses.pop(0)
@@ -154,6 +155,7 @@ class ScriptedLLM:
         self,
         messages: list[dict[str, str]],
         *,
+        purpose: str,
         system: str | None = None,
     ) -> str | None:
         # Flatten to single string for recording, then delegate
@@ -161,7 +163,7 @@ class ScriptedLLM:
             (m["content"] for m in reversed(messages) if m["role"] == "user"),
             "",
         )
-        return await self.generate(last_user, system=system)
+        return await self.generate(last_user, purpose=purpose, system=system)
 
     async def close(self) -> None:
         pass

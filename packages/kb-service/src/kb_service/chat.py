@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from kb_core import Attribution
+    from kb_core.llm.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,7 @@ class ChatSession:
     def __init__(
         self,
         kb: Any,
-        llm: Any,
+        llm: LLMProvider,
         attribution: Attribution,
         user_id: str,
         session_id: str | None = None,
@@ -197,7 +198,7 @@ class ChatSession:
         chat_id: str,
         messages: list[dict[str, str]],
         kb: Any,
-        llm: Any,
+        llm: LLMProvider,
         attribution: Attribution,
         user_id: str,
     ) -> ChatSession:
@@ -486,7 +487,7 @@ class ChatSession:
 
         # 6. First LLM call
         response: str | None = await self.llm.generate_chat(
-            self.messages, system=system
+            self.messages, purpose="chat", system=system
         )
 
         if response is None:
@@ -529,7 +530,7 @@ class ChatSession:
 
             # Second LLM call for the final answer
             response2: str | None = await self.llm.generate_chat(
-                self.messages, system=system
+                self.messages, purpose="chat", system=system
             )
             final = response2 if response2 is not None else result.message
             self.messages.append({"role": "assistant", "content": final})

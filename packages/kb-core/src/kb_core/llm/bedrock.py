@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kb_core.config import BedrockProviderConfig
-    from kb_core.llm.provider import Message
+    from kb_core.llm.provider import LLMPurpose, Message
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,13 @@ class BedrockLLMClient:
         except Exception:
             return False
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        purpose: LLMPurpose,
+        system: str | None = None,
+    ) -> str | None:
         """Generate text from a prompt. Returns None if unavailable."""
         try:
             client = self._get_client()
@@ -225,6 +231,7 @@ class BedrockLLMClient:
         self,
         messages: list[Message],
         *,
+        purpose: LLMPurpose,
         system: str | None = None,
     ) -> str | None:
         """Generate text from a conversation history."""

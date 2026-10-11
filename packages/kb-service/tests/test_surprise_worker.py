@@ -657,8 +657,41 @@ def test_drain_llm_returns_none(
     assert sum("detector_failed" in m for m in warnings) == 2
 
 
+def test_detector_calls_carry_shape_purposes(
+    local_client: TestClient, ctx: _Ctx
+) -> None:
+    """A digest where both model shapes run tags each call with its shape purpose."""
+    _seed(local_client, "s1", 0, user_prompt="hi", final_message="port 8080 is free")
+    _seed(
+        local_client,
+        "s1",
+        1,
+        user_prompt="no, 8080 is taken, use 8081",
+        final_message="Pushed on 8081.",
+        items=[
+            {
+                "kind": "tool_call",
+                "tool_use_id": "t2",
+                "tool": "Bash",
+                "target": "git push origin HEAD:main",
+                "target_class": "git push",
+            },
+            {
+                "kind": "tool_result",
+                "tool_use_id": "t2",
+                "is_error": False,
+                "excerpt": "ok",
+            },
+        ],
+    )
+    _drain(local_client)
+    assert ctx.llm.purposes == ["surprise_detector_shape2", "surprise_detector_shape3"]
+
+
 class _RaisingLLM(FakeLLM):
-    async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+    async def generate(
+        self, prompt: Any, *, purpose: str, system: Any = None
+    ) -> str | None:
         raise RuntimeError("down")
 
 

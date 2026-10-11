@@ -53,7 +53,7 @@ class _MultiChunkLLM(FakeLLM):
             self._responses.append(json.dumps(entries))
         self._call_index = 0
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(self, prompt: str, *, purpose: str, system: str | None = None) -> str | None:
         self.last_prompt = prompt
         self.last_system = system
         self.generate_count += 1
@@ -147,7 +147,9 @@ class TestChunkedIngestion:
                     json.dumps([_make_entry_json("beta concept")]),
                 ]
 
-            async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+            async def generate(
+                self, prompt: str, *, purpose: str, system: str | None = None
+            ) -> str | None:
                 self.generate_count += 1
                 self.system_prompts.append(system)
                 if self._call_index < len(self._responses):

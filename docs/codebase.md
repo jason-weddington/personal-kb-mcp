@@ -165,7 +165,7 @@ Advisory locks ensure atomicity on Postgres multi-instance deployments.
 All LLM clients implement `LLMProvider`:
 
 ```python
-result = await llm.generate(prompt)
+result = await llm.generate(prompt, purpose="planner")
 if result is None:
     # LLM unavailable — skip enrichment or fall back
     return

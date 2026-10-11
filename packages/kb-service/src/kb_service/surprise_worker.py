@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kb_core.ingest.safety import detect_secrets_in_content, redact_secrets
-from kb_core.llm.provider import LLMProvider
+from kb_core.llm.provider import LLMProvider, LLMPurpose
 from kb_core.models.entry import EntryType
 
 from kb_service.config import (
@@ -41,6 +41,7 @@ from kb_service.config import (
 )
 from kb_service.database import get_db
 from kb_service.db_types import DbPool
+from kb_service.llm_calls import prune_llm_calls, record_llm_call
 from kb_service.models import SurpriseCaptureMode
 from kb_service.prevention import load_resolutions
 from kb_service.resolution_hint import (
@@ -178,7 +179,9 @@ def get_detector_llm() -> LLMProvider | None:
         from kb_core.llm.anthropic import AnthropicLLMClient
     except ImportError:
         return None
-    client = AnthropicLLMClient(build_anthropic_config(model=model))
+    client = AnthropicLLMClient(
+        build_anthropic_config(model=model), recorder=record_llm_call
+    )
     _DETECTOR_LLM_CACHE[model] = client
     return client
 
@@ -204,7 +207,9 @@ def get_distiller_llm() -> LLMProvider | None:
         from kb_core.llm.anthropic import AnthropicLLMClient
     except ImportError:
         return None
-    client = AnthropicLLMClient(build_anthropic_config(model=model))
+    client = AnthropicLLMClient(
+        build_anthropic_config(model=model), recorder=record_llm_call
+    )
     _DISTILLER_LLM_CACHE[model] = client
     return client
 
@@ -228,7 +233,9 @@ def get_critic_llm() -> LLMProvider | None:
         from kb_core.llm.anthropic import AnthropicLLMClient
     except ImportError:
         return None
-    client = AnthropicLLMClient(build_anthropic_config(model=model))
+    client = AnthropicLLMClient(
+        build_anthropic_config(model=model), recorder=record_llm_call
+    )
     _CRITIC_LLM_CACHE[model] = client
     return client
 
@@ -348,6 +355,7 @@ async def _model_record(
     turn_event_ids: list[str],
     threshold: float,
     *,
+    purpose: LLMPurpose,
     extra_details: dict[str, Any] | None = None,
     reasoning_sources: list[str] | None = None,
 ) -> DetectionRecord:
@@ -356,7 +364,9 @@ async def _model_record(
     prompt_chars = len(SURPRISE_DETECTOR_SYSTEM) + len(prompt)
     start = time.monotonic()
     try:
-        raw = await llm.generate(prompt, system=SURPRISE_DETECTOR_SYSTEM)
+        raw = await llm.generate(
+            prompt, purpose=purpose, system=SURPRISE_DETECTOR_SYSTEM
+        )
     except Exception:
         return DetectionRecord(
             shape=shape,
@@ -477,6 +487,7 @@ async def detect_digest(
                 [cur.user_prompt or ""],
                 [prev.event_id, cur.event_id],
                 floor(2),
+                purpose="surprise_detector_shape2",
             )
         )
 
@@ -511,6 +522,7 @@ async def detect_digest(
                 sources,
                 [cur.event_id],
                 floor(3),
+                purpose="surprise_detector_shape3",
                 extra_details={
                     **shape3_prompt_details(cur),
                     **shape3_reasoning_details(cur),
@@ -1103,7 +1115,9 @@ async def _decide_one(
     start = time.monotonic()
     raw: str | None
     try:
-        raw = await llm.generate(prompt, system=SURPRISE_DISTILLER_SYSTEM)
+        raw = await llm.generate(
+            prompt, purpose="surprise_distiller", system=SURPRISE_DISTILLER_SYSTEM
+        )
     except Exception:
         raw, llm_reason = None, "exception"
     else:
@@ -1255,7 +1269,9 @@ async def _decide_store_one(
     start = time.monotonic()
     raw: str | None
     try:
-        raw = await llm.generate(prompt, system=STORE_DISTILLER_SYSTEM)
+        raw = await llm.generate(
+            prompt, purpose="store_distiller", system=STORE_DISTILLER_SYSTEM
+        )
     except Exception:
         raw, llm_reason = None, "exception"
     else:
@@ -1344,7 +1360,9 @@ async def _run_store_critic(
     start = time.monotonic()
     raw: str | None
     try:
-        raw = await critic.generate(prompt, system=STORE_CRITIC_SYSTEM)
+        raw = await critic.generate(
+            prompt, purpose="store_critic", system=STORE_CRITIC_SYSTEM
+        )
     except Exception:
         raw, llm_reason = None, "exception"
     else:
@@ -1418,7 +1436,9 @@ async def _run_critic(
     start = time.monotonic()
     raw: str | None
     try:
-        raw = await critic.generate(prompt, system=SURPRISE_CRITIC_SYSTEM)
+        raw = await critic.generate(
+            prompt, purpose="surprise_critic", system=SURPRISE_CRITIC_SYSTEM
+        )
     except Exception:
         raw, llm_reason = None, "exception"
     else:
@@ -1701,6 +1721,13 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         return DrainResult(0, [], [], [])
 
     pruned = await prune_turn_events(pool)
+    try:
+        n = await prune_llm_calls(pool)
+    except Exception:
+        logger.warning("llm_calls prune failed", exc_info=True)
+    else:
+        if n > 0:
+            logger.info("llm_calls pruned=%d", n)
     floors = detector_min_confidence_by_shape()
     floor2, floor3 = floors[2], floors[3]
     llm = get_detector_llm()

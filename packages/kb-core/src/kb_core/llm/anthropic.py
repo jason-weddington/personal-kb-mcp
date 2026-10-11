@@ -9,18 +9,104 @@ class itself never touches ``os.environ``.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
+import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+
+from kb_core.llm.provider import LLMCallRecord
 
 if TYPE_CHECKING:
     from kb_core.config import AnthropicProviderConfig
-    from kb_core.llm.provider import Message
+    from kb_core.llm.provider import (
+        DiagnosticsState,
+        LLMCallOutcome,
+        LLMCallRecorder,
+        LLMPurpose,
+        Message,
+    )
 
 logger = logging.getLogger(__name__)
 
 
 _SONNET_MODEL = "claude-sonnet-4-6"
 """Default model identifier for the human-facing synthesis role."""
+
+_PREVIOUS_IDS: dict[tuple[str, str], str] = {}
+"""Last response id per ``(purpose, model)``, sent as the diagnostics ``previous_message_id``.
+
+Process-wide and unlocked: concurrent calls on one key each send the value
+present when they start, and the last to complete wins.
+"""
+
+_UNPARSED_WARNED: set[str] = set()
+"""Models already warned about an unparsed diagnostics shape (once per model per process)."""
+
+_DIAGNOSTICS_RAW_MAX = 2000
+"""Longest diagnostics_raw text stored per record."""
+
+
+def _has_text(response: Any) -> bool:
+    """Whether a response has at least one text block (``_extract_text``'s predicate, silent)."""
+    try:
+        blocks = list(response.content)
+    except Exception:
+        return False
+    return any(
+        getattr(b, "type", None) == "text" and isinstance(getattr(b, "text", None), str)
+        for b in blocks
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Keep ``value`` only when it is a real int (not a bool)."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _str_or_none(value: Any) -> str | None:
+    """Keep ``value`` only when it is a str."""
+    return value if isinstance(value, str) else None
+
+
+def _is_diagnostics_400(exc: BaseException) -> bool:
+    """Whether ``exc`` is a 400 that names the diagnostics field."""
+    return getattr(exc, "status_code", None) == 400 and "diagnostics" in str(exc).lower()
+
+
+def _parse_diagnostics(
+    response: Any, *, model: str, purpose: str
+) -> tuple[str | None, int | None, str | None]:
+    """Return ``(cache_miss_reason, cache_missed_input_tokens, diagnostics_raw)``."""
+    extra = getattr(response, "model_extra", None)
+    if not isinstance(extra, dict) or "diagnostics" not in extra:
+        return None, None, None
+    diag = extra["diagnostics"]
+    raw = json.dumps(diag, separators=(",", ":"), default=str)[:_DIAGNOSTICS_RAW_MAX]
+    if diag is None:
+        return None, None, raw
+    if isinstance(diag, dict) and "cache_miss_reason" in diag:
+        reason = diag["cache_miss_reason"]
+        if reason is None:
+            return "pending", None, raw
+        if isinstance(reason, dict) and isinstance(reason.get("type"), str):
+            return reason["type"], _int_or_none(reason.get("cache_missed_input_tokens")), raw
+    if model not in _UNPARSED_WARNED:
+        _UNPARSED_WARNED.add(model)
+        logger.warning("llm-diagnostics unparsed shape model=%s purpose=%s", model, purpose)
+    return "unparsed", None, raw
+
+
+def _system_sha256(kwargs: dict[str, Any]) -> str | None:
+    """Short stable hash of the request's system blocks, or None without a system."""
+    if "system" not in kwargs:
+        return None
+    payload = json.dumps(kwargs["system"], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def _extract_text(response: Any) -> str | None:
@@ -45,14 +131,88 @@ def _extract_text(response: Any) -> str | None:
     return "".join(texts)
 
 
+def _build_record(
+    model: str,
+    kwargs: dict[str, Any],
+    *,
+    purpose: LLMPurpose,
+    start: float,
+    state: DiagnosticsState,
+    prev: str | None,
+    response: Any,
+    error: BaseException | None,
+) -> LLMCallRecord:
+    """Build the :class:`LLMCallRecord` for one ``_create`` call."""
+    latency_ms = int((time.monotonic() - start) * 1000)
+    ts = datetime.now(UTC).isoformat(timespec="seconds")
+    outcome: LLMCallOutcome
+    usage_fields: list[int | None] = [None] * 5
+    response_id = stop_reason = None
+    miss_reason: str | None = None
+    missed_tokens: int | None = None
+    raw: str | None = None
+    if error is not None:
+        outcome = "error"
+    else:
+        outcome = "ok" if _has_text(response) else "no_text"
+        response_id = _str_or_none(getattr(response, "id", None))
+        stop_reason = _str_or_none(getattr(response, "stop_reason", None))
+        usage = getattr(response, "usage", None)
+        usage_fields = [
+            _int_or_none(getattr(usage, "input_tokens", None)),
+            _int_or_none(getattr(usage, "output_tokens", None)),
+            _int_or_none(getattr(usage, "cache_creation_input_tokens", None)),
+            _int_or_none(
+                getattr(
+                    getattr(usage, "cache_creation", None),
+                    "ephemeral_1h_input_tokens",
+                    None,
+                )
+            ),
+            _int_or_none(getattr(usage, "cache_read_input_tokens", None)),
+        ]
+        if state == "sent":
+            miss_reason, missed_tokens, raw = _parse_diagnostics(
+                response, model=model, purpose=purpose
+            )
+    return LLMCallRecord(
+        ts=ts,
+        purpose=purpose,
+        model=model,
+        outcome=outcome,
+        error_type=type(error).__name__ if error is not None else None,
+        response_id=response_id,
+        stop_reason=stop_reason,
+        input_tokens=usage_fields[0],
+        output_tokens=usage_fields[1],
+        cache_creation_input_tokens=usage_fields[2],
+        cache_creation_1h_input_tokens=usage_fields[3],
+        cache_read_input_tokens=usage_fields[4],
+        diagnostics_state=state,
+        previous_message_id=prev if state == "sent" else None,
+        cache_miss_reason=miss_reason,
+        cache_missed_input_tokens=missed_tokens,
+        diagnostics_raw=raw,
+        system_sha256=_system_sha256(kwargs),
+        latency_ms=latency_ms,
+    )
+
+
 class AnthropicLLMClient:
     """Generates text via the Anthropic Messages API."""
 
-    def __init__(self, config: AnthropicProviderConfig) -> None:
-        """Initialize with an explicit provider config."""
+    def __init__(
+        self,
+        config: AnthropicProviderConfig,
+        *,
+        recorder: LLMCallRecorder | None = None,
+    ) -> None:
+        """Initialize with an explicit provider config and an optional call recorder."""
         self._config = config
+        self._recorder = recorder
         self._client: Any = None
         self._available: bool | None = None
+        self._diagnostics_disabled: bool = False
 
     async def is_available(self) -> bool:
         """Check availability. Only caches success — retries on failure.
@@ -70,7 +230,13 @@ class AnthropicLLMClient:
         except Exception:
             return False
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        purpose: LLMPurpose,
+        system: str | None = None,
+    ) -> str | None:
         """Generate text from a prompt. Returns None if unavailable."""
         try:
             client = self._get_client()
@@ -89,10 +255,7 @@ class AnthropicLLMClient:
                     {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
                 ]
 
-            response = await client.messages.create(
-                **kwargs,
-                timeout=self._config.timeout,
-            )
+            response = await self._create(client, kwargs, purpose=purpose)
             result = _extract_text(response)
             if result is None:
                 self._available = None
@@ -108,6 +271,7 @@ class AnthropicLLMClient:
         self,
         messages: list[Message],
         *,
+        purpose: LLMPurpose,
         system: str | None = None,
     ) -> str | None:
         """Generate text from a conversation history.
@@ -160,10 +324,7 @@ class AnthropicLLMClient:
                     {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
                 ]
 
-            response = await client.messages.create(
-                **kwargs,
-                timeout=self._config.timeout,
-            )
+            response = await self._create(client, kwargs, purpose=purpose)
             result = _extract_text(response)
             if result is None:
                 self._available = None
@@ -174,6 +335,78 @@ class AnthropicLLMClient:
             logger.warning("Anthropic chat generation failed", exc_info=True)
             self._available = None
             return None
+
+    async def _create(self, client: Any, kwargs: dict[str, Any], *, purpose: LLMPurpose) -> Any:
+        """Call ``messages.create``, recording usage and cache diagnostics when a recorder is set.
+
+        Never mutates ``kwargs``. Returns the SDK response or re-raises the
+        final exception unchanged. With diagnostics on, a 400 naming the
+        diagnostics field disables it for this client and retries once
+        without it.
+        """
+        timeout = self._config.timeout
+        if self._recorder is None:
+            return await client.messages.create(**kwargs, timeout=timeout)
+
+        recorder = self._recorder
+        model = self._config.model
+        key = (purpose, model)
+        state: DiagnosticsState
+        prev: str | None = None
+        if self._config.diagnostics is False:
+            state = "off_config"
+        elif self._diagnostics_disabled:
+            state = "off_disabled"
+        else:
+            state = "sent"
+            prev = _PREVIOUS_IDS.get(key)
+
+        def emit(response: Any, error: BaseException | None) -> None:
+            try:
+                recorder(
+                    _build_record(
+                        model,
+                        kwargs,
+                        purpose=purpose,
+                        start=start,
+                        state=state,
+                        prev=prev,
+                        response=response,
+                        error=error,
+                    )
+                )
+            except Exception:
+                logger.warning("llm-call recorder failed purpose=%s", purpose, exc_info=True)
+
+        start = time.monotonic()
+        try:
+            if state == "sent":
+                try:
+                    response = await client.messages.create(
+                        **kwargs,
+                        extra_body={"diagnostics": {"previous_message_id": prev}},
+                        timeout=timeout,
+                    )
+                except Exception as exc:
+                    if not _is_diagnostics_400(exc):
+                        raise
+                    if not self._diagnostics_disabled:
+                        self._diagnostics_disabled = True
+                        logger.warning("llm-diagnostics disabled model=%s reason=400", model)
+                    state = "fallback"
+                    response = await client.messages.create(**kwargs, timeout=timeout)
+            else:
+                response = await client.messages.create(**kwargs, timeout=timeout)
+        except (Exception, asyncio.CancelledError) as exc:
+            emit(None, exc)
+            raise
+
+        if state == "sent":
+            response_id = getattr(response, "id", None)
+            if isinstance(response_id, str):
+                _PREVIOUS_IDS[key] = response_id
+        emit(response, None)
+        return response
 
     def _get_client(self) -> Any:
         """Lazily create the AsyncAnthropic client. Returns None if SDK missing."""

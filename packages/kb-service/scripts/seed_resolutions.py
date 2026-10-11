@@ -53,6 +53,8 @@ from kb_core.llm.json_parser import parse_json_object
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from kb_core.llm.provider import LLMPurpose
+
 from kb_service.resolution_hint import (
     ResolutionHintError,
     validate_and_stamp_resolution,
@@ -126,7 +128,13 @@ _REPLY_STR_KEYS = (
 class LLM(Protocol):
     """Minimal LLM surface the seeder needs."""
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        purpose: LLMPurpose,
+        system: str | None = None,
+    ) -> str | None:
         """Return the model reply, or None when unavailable."""
         ...
 
@@ -423,7 +431,7 @@ async def run(
         entry = entries[eid] or {}
         started = time.monotonic()
         try:
-            raw = await llm.generate(_build_prompt(entry))
+            raw = await llm.generate(_build_prompt(entry), purpose="seed_resolutions")
         except Exception as exc:
             print(f"{eid}: llm error: {exc}", file=sys.stderr)
             raw = None

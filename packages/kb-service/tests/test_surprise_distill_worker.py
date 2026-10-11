@@ -778,7 +778,9 @@ async def test_llm_exception(
     pool: SqlitePool, kb: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class Boom(FakeLLM):
-        async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+        async def generate(
+            self, prompt: Any, *, purpose: str, system: Any = None
+        ) -> str | None:
             raise RuntimeError("boom")
 
     monkeypatch.setattr(surprise_worker, "get_distiller_llm", Boom)
@@ -1538,7 +1540,9 @@ async def test_critic_exception_prevents_write(
     pool: SqlitePool, kb: Any, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class Boom(FakeLLM):
-        async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+        async def generate(
+            self, prompt: Any, *, purpose: str, system: Any = None
+        ) -> str | None:
             raise RuntimeError("boom")
 
     monkeypatch.setattr(surprise_worker, "get_critic_llm", Boom)

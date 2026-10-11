@@ -72,7 +72,9 @@ async def test_generate_system_block_has_cache_control() -> None:
         mock_get.return_value = sdk_client
 
         llm = _make_client()
-        result = await llm.generate("Summarize this.", system="You are a summarizer.")
+        result = await llm.generate(
+            "Summarize this.", system="You are a summarizer.", purpose="planner"
+        )
 
     assert result == "generated text"
     call_kwargs = sdk_client.messages.create.call_args.kwargs
@@ -110,7 +112,7 @@ async def test_generate_without_system_no_cache_control() -> None:
         mock_get.return_value = sdk_client
 
         llm = _make_client()
-        result = await llm.generate("Summarize this document.")
+        result = await llm.generate("Summarize this document.", purpose="planner")
 
     assert result == "generated text"
     call_kwargs = sdk_client.messages.create.call_args.kwargs
@@ -138,7 +140,7 @@ async def test_generate_chat_system_block_has_cache_control() -> None:
             {"role": "assistant", "content": "hi there"},
             {"role": "user", "content": "how are you?"},
         ]
-        result = await llm.generate_chat(msgs, system="You are helpful.")
+        result = await llm.generate_chat(msgs, system="You are helpful.", purpose="planner")
 
     assert result == "ok"
     call_kwargs = sdk_client.messages.create.call_args.kwargs
@@ -171,7 +173,7 @@ async def test_generate_chat_last_message_block_has_cache_control() -> None:
             {"role": "assistant", "content": "hi there"},
             {"role": "user", "content": "how are you?"},
         ]
-        await llm.generate_chat(msgs, system="You are helpful.")
+        await llm.generate_chat(msgs, system="You are helpful.", purpose="planner")
 
     call_kwargs = sdk_client.messages.create.call_args.kwargs
     last_block = _last_message_last_block(call_kwargs)
@@ -196,7 +198,7 @@ async def test_generate_chat_earlier_messages_not_modified() -> None:
             {"role": "assistant", "content": "hi there"},
             {"role": "user", "content": "how are you?"},
         ]
-        await llm.generate_chat(msgs, system="You are helpful.")
+        await llm.generate_chat(msgs, system="You are helpful.", purpose="planner")
 
     call_kwargs = sdk_client.messages.create.call_args.kwargs
     api_msgs = call_kwargs["messages"]
@@ -221,7 +223,7 @@ async def test_generate_chat_without_system_rolling_breakpoint_present() -> None
 
         llm = _make_client()
         msgs: list[Message] = [{"role": "user", "content": "ping"}]
-        await llm.generate_chat(msgs)
+        await llm.generate_chat(msgs, purpose="planner")
 
     call_kwargs = sdk_client.messages.create.call_args.kwargs
 
@@ -264,7 +266,7 @@ async def test_agentic_loop_second_turn_carries_rolling_breakpoint() -> None:
 
         # Turn 1 — initial question
         msgs_turn1: list[Message] = [{"role": "user", "content": "Question: find python async"}]
-        result1 = await llm.generate_chat(msgs_turn1, system=agent_system)
+        result1 = await llm.generate_chat(msgs_turn1, system=agent_system, purpose="planner")
 
         # Turn 2 — after tool result appended
         msgs_turn2: list[Message] = [
@@ -272,7 +274,7 @@ async def test_agentic_loop_second_turn_carries_rolling_breakpoint() -> None:
             {"role": "assistant", "content": '{"tool": "hybrid_search", "args": {}}'},
             {"role": "user", "content": "hybrid_search result: no entries found"},
         ]
-        result2 = await llm.generate_chat(msgs_turn2, system=agent_system)
+        result2 = await llm.generate_chat(msgs_turn2, system=agent_system, purpose="planner")
 
     assert result1 == "first"
     assert result2 == "second"

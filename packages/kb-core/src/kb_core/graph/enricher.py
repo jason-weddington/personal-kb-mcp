@@ -146,7 +146,7 @@ class GraphEnricher:
             return 0
 
         prompt = self._build_prompt(entry)
-        raw = await self._llm.generate(prompt, system=_SYSTEM_PROMPT)
+        raw = await self._llm.generate(prompt, purpose="enricher", system=_SYSTEM_PROMPT)
         if raw is None:
             return 0
 
@@ -174,7 +174,9 @@ class GraphEnricher:
             return 0
 
         prompt = self._build_batch_prompt(entries)
-        raw = await self._llm.generate(prompt, system=_BATCH_SYSTEM_PROMPT)
+        raw = await self._llm.generate(
+            prompt, purpose="enricher_batch", system=_BATCH_SYSTEM_PROMPT
+        )
         if raw is None:
             return 0
 

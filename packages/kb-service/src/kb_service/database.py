@@ -507,6 +507,38 @@ _SCHEMA_STATEMENTS: list[str] = [
             f"ALTER TABLE {t} ADD CONSTRAINT {t}_shape_check {_SURPRISE_SHAPE_CHECK}",
         )
     ),
+    # LLM call ledger: one row per recorded Claude API call (usage and cache
+    # diagnostics, by purpose), written by kb_service.llm_calls and pruned
+    # after 90 days by the surprise drain. There is deliberately no CHECK on
+    # purpose: the kb_core LLMPurpose Literal is the gate, and a purpose CHECK
+    # would need a DROP/ADD and a SQLite rebuild for every new purpose.
+    # Widening the outcome or diagnostics_state CHECK later needs the DROP/ADD
+    # CONSTRAINT pair plus a _SQLITE_CHECK_REBUILDS entry, as for the tables
+    # above.
+    "CREATE TABLE IF NOT EXISTS llm_calls ("
+    "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+    "ts TEXT NOT NULL, "
+    "purpose TEXT NOT NULL, "
+    "model TEXT NOT NULL, "
+    "outcome TEXT NOT NULL CHECK (outcome IN ('ok', 'no_text', 'error')), "
+    "error_type TEXT, "
+    "response_id TEXT, "
+    "stop_reason TEXT, "
+    "input_tokens INTEGER, "
+    "output_tokens INTEGER, "
+    "cache_creation_input_tokens INTEGER, "
+    "cache_creation_1h_input_tokens INTEGER, "
+    "cache_read_input_tokens INTEGER, "
+    "diagnostics_state TEXT NOT NULL CHECK (diagnostics_state IN "
+    "('sent', 'off_config', 'off_disabled', 'fallback')), "
+    "previous_message_id TEXT, "
+    "cache_miss_reason TEXT, "
+    "cache_missed_input_tokens INTEGER, "
+    "diagnostics_raw TEXT, "
+    "system_sha256 TEXT, "
+    "latency_ms INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_calls_purpose_ts ON llm_calls(purpose, ts)",
 ]
 
 
@@ -604,6 +636,11 @@ async def get_db() -> DbPool:
                 "KB_SERVICE_DATABASE_URL is not set; the service-auth database "
                 "is required unless KB_AUTH_MODE=none (local mode)."
             )
+    return _pool
+
+
+def current_pool() -> DbPool | None:
+    """Return the service pool if one is open; never creates one."""
     return _pool
 
 

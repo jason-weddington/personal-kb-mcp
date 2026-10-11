@@ -760,7 +760,7 @@ class _SequenceLLM:
     async def is_available(self) -> bool:
         return True
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(self, prompt: str, *, purpose: str, system: str | None = None) -> str | None:
         resp = self._responses[min(self._idx, len(self._responses) - 1)]
         self._idx += 1
         return resp
@@ -769,10 +769,12 @@ class _SequenceLLM:
         self,
         messages: list[dict[str, str]],
         *,
+        purpose: str,
         system: str | None = None,
     ) -> str | None:
         return await self.generate(
             next((m["content"] for m in reversed(messages) if m["role"] == "user"), ""),
+            purpose=purpose,
             system=system,
         )
 
@@ -968,5 +970,56 @@ async def test_enrichment_failure_is_observable_at_error_level(
         assert batch_errors, (
             "store_batch() enrichment failure was not logged at ERROR with the marker"
         )
+    finally:
+        await kb.close()
+
+
+# ---------------------------------------------------------------------------
+# LLM call recorder injection
+# ---------------------------------------------------------------------------
+
+
+def _recorder(record: Any) -> None:
+    """Stand-in recorder; identity is all the tests check."""
+
+
+def test_build_llm_passes_recorder_to_anthropic() -> None:
+    from kb_core.config import ProviderRoleConfig
+    from kb_core.knowledge_base import _build_llm
+    from kb_core.llm.anthropic import AnthropicLLMClient
+
+    llm = _build_llm(ProviderRoleConfig(provider="anthropic"), _recorder)
+    assert isinstance(llm, AnthropicLLMClient)
+    assert llm._recorder is _recorder
+    plain = _build_llm(ProviderRoleConfig(provider="anthropic"))
+    assert isinstance(plain, AnthropicLLMClient)
+    assert plain._recorder is None
+
+
+def test_build_llm_bedrock_and_ollama_still_build() -> None:
+    from kb_core.config import ProviderRoleConfig
+    from kb_core.knowledge_base import _build_llm
+    from kb_core.llm.bedrock import BedrockLLMClient
+    from kb_core.llm.ollama import OllamaLLMClient
+
+    assert isinstance(
+        _build_llm(ProviderRoleConfig(provider="bedrock"), _recorder), BedrockLLMClient
+    )
+    assert isinstance(_build_llm(ProviderRoleConfig(provider="ollama"), _recorder), OllamaLLMClient)
+
+
+async def test_create_sqlite_forwards_llm_recorder(tmp_path: Any) -> None:
+    from kb_core.config import ProviderConfig, ProviderRoleConfig
+
+    anthropic = ProviderRoleConfig(provider="anthropic")
+    kb = await create_sqlite(
+        tmp_path / "k.db",
+        embedding=None,
+        providers=ProviderConfig(extraction=anthropic, query=anthropic, synthesis=anthropic),
+        llm_recorder=_recorder,
+    )
+    try:
+        assert kb.extraction_llm._recorder is _recorder  # type: ignore[union-attr]
+        assert kb.query_llm._recorder is _recorder  # type: ignore[union-attr]
     finally:
         await kb.close()

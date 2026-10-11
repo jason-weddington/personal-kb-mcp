@@ -14,7 +14,7 @@ import httpx
 
 if TYPE_CHECKING:
     from kb_core.config import OllamaProviderConfig
-    from kb_core.llm.provider import Message
+    from kb_core.llm.provider import LLMPurpose, Message
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,13 @@ class OllamaLLMClient:
             self._available = None
         return self._available is True
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        purpose: LLMPurpose,
+        system: str | None = None,
+    ) -> str | None:
         """Generate text from a prompt. Returns None if unavailable."""
         if not await self.is_available():
             return None
@@ -78,6 +84,7 @@ class OllamaLLMClient:
         self,
         messages: list[Message],
         *,
+        purpose: LLMPurpose,
         system: str | None = None,
     ) -> str | None:
         """Generate text from a conversation history via /api/chat."""

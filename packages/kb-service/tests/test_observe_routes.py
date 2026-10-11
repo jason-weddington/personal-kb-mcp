@@ -21,7 +21,7 @@ _SCRUB_ENV = (
     "ANTHROPIC_API_KEY",
     "KB_AWS_PROFILE",
 )
-_PATHS = ("turn-events", "failure-events", "surprise-detections")
+_PATHS = ("turn-events", "failure-events", "surprise-detections", "llm-calls")
 _TABLES = {
     "turn-events": ("turn_events", "received_ts", models.ObserveTurnEventRow),
     "failure-events": ("failure_events", "received_ts", models.ObserveFailureEventRow),
@@ -30,6 +30,7 @@ _TABLES = {
         "ts",
         models.ObserveSurpriseDetectionRow,
     ),
+    "llm-calls": ("llm_calls", "ts", models.ObserveLlmCallRow),
 }
 _ITEMS = [{"kind": "assistant_text", "text": "hi"}]
 
@@ -113,11 +114,21 @@ def _insert_detection(n: int, ts: str = "2026-10-09T12:00:00+00:00") -> None:
     )
 
 
+def _insert_llm_call(n: int, ts: str = "2026-10-09T12:00:00+00:00") -> None:
+    _sql(
+        "INSERT INTO llm_calls (ts, purpose, model, outcome, diagnostics_state,"
+        " latency_ms) VALUES (?, 'planner', 'claude-haiku-4-5', 'ok', 'sent', ?)",
+        ts,
+        n,
+    )
+
+
 def _seed(client: TestClient, n: int = 3) -> None:
     for i in range(n):
         _post_turn(client, i)
         _post_failure(client, i)
         _insert_detection(i)
+        _insert_llm_call(i)
 
 
 def test_paging_limit_2(local_client: TestClient) -> None:
@@ -145,6 +156,7 @@ def test_since_until_window(local_client: TestClient) -> None:
         " WHERE id = 1"
     )
     _sql("UPDATE surprise_detections SET ts = '2026-01-01T00:00:00+00:00' WHERE id = 1")
+    _sql("UPDATE llm_calls SET ts = '2026-01-01T00:00:00+00:00' WHERE id = 1")
     _sql(
         "UPDATE turn_events SET received_ts = '2026-03-01T00:00:00+00:00' WHERE id = 3"
     )
@@ -153,6 +165,7 @@ def test_since_until_window(local_client: TestClient) -> None:
         " WHERE id = 3"
     )
     _sql("UPDATE surprise_detections SET ts = '2026-03-01T00:00:00+00:00' WHERE id = 3")
+    _sql("UPDATE llm_calls SET ts = '2026-03-01T00:00:00+00:00' WHERE id = 3")
     for path in _PATHS:
         _, col, _ = _TABLES[path]
         _sql(

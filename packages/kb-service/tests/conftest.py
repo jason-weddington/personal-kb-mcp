@@ -962,18 +962,25 @@ class FakeLLM:
         # MANDATORY call recording (mirrors FakeKnowledgeBase.search_calls).
         # Each entry is (prompt, system) for generate(); tests assert on this.
         self.generate_calls: list[tuple[Any, Any]] = []
+        # Every call's purpose, from both generate and generate_chat.
+        self.purposes: list[str] = []
 
     def enqueue(self, response: str | None) -> None:
         """Add *response* to the tail of the response queue."""
         self._responses.append(response)
 
-    async def generate_chat(self, messages: Any, *, system: Any = None) -> str | None:
+    async def generate_chat(
+        self, messages: Any, *, purpose: str, system: Any = None
+    ) -> str | None:
         """Pop and return the next scripted response (None when exhausted)."""
+        self.purposes.append(purpose)
         if self._responses:
             return self._responses.pop(0)
         return None
 
-    async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+    async def generate(
+        self, prompt: Any, *, purpose: str, system: Any = None
+    ) -> str | None:
         """Record (prompt, system) then pop and return the next scripted response.
 
         Mirrors the ``AnthropicLLMClient.generate`` signature (anthropic.py:51-76).
@@ -981,6 +988,7 @@ class FakeLLM:
         and inspect the prompt text.
         """
         self.generate_calls.append((prompt, system))
+        self.purposes.append(purpose)
         if self._responses:
             return self._responses.pop(0)
         return None
@@ -1015,9 +1023,12 @@ class FakeCritic(FakeLLM):
     the pre-critic behaviour.
     """
 
-    async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+    async def generate(
+        self, prompt: Any, *, purpose: str, system: Any = None
+    ) -> str | None:
         """Record the call; pop a scripted reply, else accept."""
         self.generate_calls.append((prompt, system))
+        self.purposes.append(purpose)
         if self._responses:
             return self._responses.pop(0)
         return CRITIC_ACCEPT
@@ -1409,6 +1420,7 @@ _AMBIENT_MCP_VARS = (
 
 # The write-policy default surface must not leak in from a developer shell.
 _AMBIENT_WRITE_POLICY_VARS = ("KB_WRITE_POLICY_DEFAULT_SURFACE",)
+_AMBIENT_LLM_VARS = ("KB_LLM_DIAGNOSTICS",)
 
 
 @pytest.fixture(autouse=True)
@@ -1418,5 +1430,6 @@ def _no_ambient_production_db(monkeypatch: pytest.MonkeyPatch) -> None:
         + _AMBIENT_SURPRISE_VARS
         + _AMBIENT_MCP_VARS
         + _AMBIENT_WRITE_POLICY_VARS
+        + _AMBIENT_LLM_VARS
     ):
         monkeypatch.delenv(var, raising=False)

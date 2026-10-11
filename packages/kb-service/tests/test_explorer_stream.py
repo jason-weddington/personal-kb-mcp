@@ -127,7 +127,9 @@ def test_query_stream_summarize_path(
 
     # Stub LLM that returns "summarize" → triggers summarize path
     class _LLMStub:
-        async def generate(self, prompt: str, *, system: str | None = None) -> str:
+        async def generate(
+            self, prompt: str, *, purpose: str, system: str | None = None
+        ) -> str:
             return "summarize"
 
     fake_kb.query_llm = _LLMStub()
@@ -214,7 +216,9 @@ class _GenStub:
         self._response = response
         self._raise = raise_exc
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(
+        self, prompt: str, *, purpose: str, system: str | None = None
+    ) -> str | None:
         if self._raise:
             raise ValueError("llm error")
         return self._response

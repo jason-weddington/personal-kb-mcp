@@ -326,7 +326,7 @@ async def agentic_query(
     for turn_num in range(max_tool_calls):
         # Build prompt from messages
         await _emit({"type": "thinking", "turn": turn_num + 1})
-        raw = await llm.generate_chat(messages, system=_AGENT_SYSTEM_PROMPT)
+        raw = await llm.generate_chat(messages, purpose="agent", system=_AGENT_SYSTEM_PROMPT)
 
         if raw is None:
             logger.warning("Agent LLM returned None — falling back to fast-path results")

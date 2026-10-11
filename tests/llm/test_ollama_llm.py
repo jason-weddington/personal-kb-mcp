@@ -34,7 +34,7 @@ async def test_generate_success():
     transport = httpx.MockTransport(_default_handler)
     client = _make_client(transport)
     try:
-        result = await client.generate("hello")
+        result = await client.generate("hello", purpose="planner")
         assert result == "test output"
     finally:
         await client.close()
@@ -48,7 +48,7 @@ async def test_generate_unavailable():
     transport = httpx.MockTransport(fail_handler)
     client = _make_client(transport)
     try:
-        result = await client.generate("hello")
+        result = await client.generate("hello", purpose="planner")
         assert result is None
     finally:
         await client.close()
@@ -72,7 +72,7 @@ async def test_generate_with_system_prompt():
     transport = httpx.MockTransport(capture_handler)
     client = _make_client(transport)
     try:
-        await client.generate("hello", system="be helpful")
+        await client.generate("hello", system="be helpful", purpose="planner")
         assert len(captured) == 1
         assert captured[0]["system"] == "be helpful"
         assert captured[0]["prompt"] == "hello"

@@ -41,7 +41,9 @@ async def classify_query(llm: LLMProvider, question: str) -> str:
         ``'explore'`` or ``'summarize'``.
     """
     try:
-        result = await llm.generate(question, system=_CLASSIFIER_SYSTEM)
+        result = await llm.generate(
+            question, purpose="classifier", system=_CLASSIFIER_SYSTEM
+        )
     except Exception:
         return "explore"
     if result is not None:

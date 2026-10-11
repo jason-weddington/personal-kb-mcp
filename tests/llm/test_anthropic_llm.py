@@ -39,7 +39,7 @@ def mock_anthropic_class(mock_response):
 async def test_generate_success(mock_anthropic_class, mock_response):
     """Successful generate returns text and sets available."""
     llm = _client()
-    result = await llm.generate("test prompt")
+    result = await llm.generate("test prompt", purpose="planner")
     assert result == "Hello from Haiku"
     assert llm._available is True
 
@@ -48,7 +48,7 @@ async def test_generate_success(mock_anthropic_class, mock_response):
 async def test_generate_with_system_prompt(mock_anthropic_class):
     """System prompt is sent as a content-block array with a cache breakpoint."""
     llm = _client()
-    await llm.generate("test prompt", system="You are helpful")
+    await llm.generate("test prompt", system="You are helpful", purpose="planner")
     call_kwargs = mock_anthropic_class.messages.create.call_args
     system_blocks = call_kwargs.kwargs.get("system")
     assert isinstance(system_blocks, list), "system should be a content-block list"
@@ -62,7 +62,7 @@ async def test_generate_with_system_prompt(mock_anthropic_class):
 async def test_generate_without_system_prompt(mock_anthropic_class):
     """No system kwarg when system is None."""
     llm = _client()
-    await llm.generate("test prompt")
+    await llm.generate("test prompt", purpose="planner")
     call_kwargs = mock_anthropic_class.messages.create.call_args
     assert "system" not in call_kwargs.kwargs
 
@@ -77,7 +77,7 @@ async def test_generate_failure_returns_none():
 
         llm = _client()
         llm._available = True
-        result = await llm.generate("test")
+        result = await llm.generate("test", purpose="planner")
         assert result is None
         assert llm._available is None
 
@@ -89,7 +89,7 @@ async def test_generate_returns_none_when_client_none():
         mock_get.return_value = None
 
         llm = _client()
-        result = await llm.generate("test")
+        result = await llm.generate("test", purpose="planner")
         assert result is None
 
 
@@ -97,7 +97,7 @@ async def test_generate_returns_none_when_client_none():
 async def test_is_available_caches_success(mock_anthropic_class):
     """After successful generate, is_available returns True."""
     llm = _client()
-    await llm.generate("test")
+    await llm.generate("test", purpose="planner")
     assert await llm.is_available() is True
 
 
@@ -145,7 +145,7 @@ async def test_close_noop_when_no_client():
 async def test_model_override(mock_anthropic_class):
     """Model passed via config is used in API calls."""
     llm = _client(model="claude-sonnet-4-6")
-    await llm.generate("test")
+    await llm.generate("test", purpose="planner")
     call_kwargs = mock_anthropic_class.messages.create.call_args
     assert call_kwargs.kwargs.get("model") == "claude-sonnet-4-6"
 
@@ -154,7 +154,7 @@ async def test_model_override(mock_anthropic_class):
 async def test_model_default(mock_anthropic_class):
     """Without explicit model, the config default is used."""
     llm = AnthropicLLMClient(AnthropicProviderConfig())
-    await llm.generate("test")
+    await llm.generate("test", purpose="planner")
     call_kwargs = mock_anthropic_class.messages.create.call_args
     # The dataclass default is the same as the env default.
     assert call_kwargs.kwargs.get("model") == "claude-haiku-4-5"
@@ -187,7 +187,7 @@ async def test_generate_skips_leading_thinking_block(mock_anthropic_class):
     mock_anthropic_class.messages.create.return_value = _resp(
         _block("thinking"), _block("text", "answer")
     )
-    assert await _client().generate("p") == "answer"
+    assert await _client().generate("p", purpose="planner") == "answer"
 
 
 @pytest.mark.asyncio
@@ -195,7 +195,7 @@ async def test_generate_concatenates_text_blocks(mock_anthropic_class):
     mock_anthropic_class.messages.create.return_value = _resp(
         _block("text", "foo"), _block("text", "bar")
     )
-    assert await _client().generate("p") == "foobar"
+    assert await _client().generate("p", purpose="planner") == "foobar"
 
 
 @pytest.mark.asyncio
@@ -203,7 +203,7 @@ async def test_generate_only_thinking_returns_none(mock_anthropic_class):
     mock_anthropic_class.messages.create.return_value = _resp(_block("thinking"))
     llm = _client()
     llm._available = True
-    assert await llm.generate("p") is None
+    assert await llm.generate("p", purpose="planner") is None
     assert llm._available is None
 
 
@@ -212,13 +212,19 @@ async def test_generate_chat_skips_leading_thinking_block(mock_anthropic_class):
     mock_anthropic_class.messages.create.return_value = _resp(
         _block("redacted_thinking"), _block("text", "a"), _block("text", "b")
     )
-    assert await _client().generate_chat([{"role": "user", "content": "hi"}]) == "ab"
+    assert (
+        await _client().generate_chat([{"role": "user", "content": "hi"}], purpose="planner")
+        == "ab"
+    )
 
 
 @pytest.mark.asyncio
 async def test_generate_chat_only_thinking_returns_none(mock_anthropic_class):
     mock_anthropic_class.messages.create.return_value = _resp(_block("thinking"))
-    assert await _client().generate_chat([{"role": "user", "content": "hi"}]) is None
+    assert (
+        await _client().generate_chat([{"role": "user", "content": "hi"}], purpose="planner")
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -227,7 +233,7 @@ async def test_no_text_block_logs_stop_reason(mock_anthropic_class, caplog):
     resp.stop_reason = "refusal"
     mock_anthropic_class.messages.create.return_value = resp
     with caplog.at_level("WARNING"):
-        assert await _client().generate("p") is None
+        assert await _client().generate("p", purpose="planner") is None
     assert "stop_reason=refusal" in caplog.text
 
 
@@ -237,5 +243,5 @@ async def test_no_text_block_without_stop_reason_attr(mock_anthropic_class, capl
     resp.content = []
     mock_anthropic_class.messages.create.return_value = resp
     with caplog.at_level("WARNING"):
-        assert await _client().generate("p") is None
+        assert await _client().generate("p", purpose="planner") is None
     assert "stop_reason=None" in caplog.text

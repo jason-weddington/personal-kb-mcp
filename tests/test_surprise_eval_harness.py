@@ -88,7 +88,7 @@ class StubLLM:
         self._config = types.SimpleNamespace(model=model)
         self.closed = False
 
-    async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+    async def generate(self, prompt: str, *, purpose: str, system: str | None = None) -> str | None:
         StubLLM.calls.append((self._config.model, prompt, system))
         if StubLLM.delay:
             await asyncio.sleep(StubLLM.delay)
@@ -97,7 +97,9 @@ class StubLLM:
                 return value
         return StubLLM.default
 
-    async def generate_chat(self, messages: Any, *, system: str | None = None) -> str | None:
+    async def generate_chat(
+        self, messages: Any, *, purpose: str, system: str | None = None
+    ) -> str | None:
         return None
 
     async def is_available(self) -> bool:

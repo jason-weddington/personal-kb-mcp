@@ -600,6 +600,7 @@ async def _action_summarize_feedback(
         try:
             summary = await query_llm.generate(
                 f"Feedback entries ({len(rows)} total):\n\n{feedback_text}",
+                purpose="feedback_summary",
                 system=_FEEDBACK_SUMMARY_SYSTEM,
             )
             if summary:

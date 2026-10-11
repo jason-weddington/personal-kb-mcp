@@ -119,7 +119,9 @@ async def test_assess_graceful_on_exception():
         async def is_available(self) -> bool:
             return True
 
-        async def generate(self, prompt: str, *, system: str | None = None) -> str | None:
+        async def generate(
+            self, prompt: str, *, purpose: str, system: str | None = None
+        ) -> str | None:
             raise RuntimeError("LLM exploded")
 
         async def close(self) -> None:

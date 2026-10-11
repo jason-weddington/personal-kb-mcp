@@ -303,7 +303,7 @@ async def _synthesize(
 
     entries_text = "\n\n".join(entry_blocks)
     prompt = f"Question: {question}\n\nRetrieved entries:\n{entries_text}"
-    return await llm.generate(prompt, system=_SYNTHESIS_SYSTEM_PROMPT)
+    return await llm.generate(prompt, purpose="query_synthesis", system=_SYNTHESIS_SYSTEM_PROMPT)
 
 
 def _merge_entries(

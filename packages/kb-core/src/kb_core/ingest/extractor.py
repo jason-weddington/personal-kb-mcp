@@ -205,7 +205,7 @@ async def summarize_file(llm: LLMProvider, file_path: str, content: str) -> str 
     elif _is_prose_file(file_path):
         system += _SUMMARIZE_PROSE_SUPPLEMENT
 
-    return await llm.generate(prompt, system=system)
+    return await llm.generate(prompt, purpose="ingest_summarize", system=system)
 
 
 async def extract_entries(
@@ -256,7 +256,7 @@ async def extract_entries(
             "extract NEW knowledge not covered below:\n" + titles
         )
 
-    raw = await llm.generate(prompt, system=system)
+    raw = await llm.generate(prompt, purpose="ingest_extract", system=system)
     if raw is None:
         return []
 

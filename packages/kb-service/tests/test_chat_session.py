@@ -164,3 +164,25 @@ async def test_dispatch_unknown_tool() -> None:
     result = await session._dispatch_tool({"tool": "no_such_tool", "args": {}})
     assert result.success is False
     assert "Unknown tool: no_such_tool" in result.message
+
+
+# ─── ChatSession.reply — LLM purpose ──────────────────────────────────────────
+
+
+async def test_reply_plain_uses_chat_purpose() -> None:
+    """A plain reply makes one generate_chat call with purpose "chat"."""
+    llm = FakeLLM()
+    llm.enqueue("Just an answer.")
+    session = ChatSession(_make_fake_kb(), llm, _make_attribution(), "user-1")
+    assert await session.reply("hello") == "Just an answer."
+    assert llm.purposes == ["chat"]
+
+
+async def test_reply_tool_turn_uses_chat_purpose_twice() -> None:
+    """A tool-call turn makes two generate_chat calls, both with purpose "chat"."""
+    llm = FakeLLM()
+    llm.enqueue('```json\n{"tool": "get_entry", "args": {"entry_id": "kb-99999"}}\n```')
+    llm.enqueue("Final answer.")
+    session = ChatSession(_make_fake_kb(), llm, _make_attribution(), "user-1")
+    assert await session.reply("look it up") == "Final answer."
+    assert llm.purposes == ["chat", "chat"]

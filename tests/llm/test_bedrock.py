@@ -63,7 +63,7 @@ def mock_bedrock_client(mock_converse_response):
 async def test_generate_success(mock_bedrock_client):
     """Successful generate returns text and sets available."""
     llm = _client()
-    result = await llm.generate("test prompt")
+    result = await llm.generate("test prompt", purpose="planner")
     assert result == "Hello from Bedrock"
     assert llm._available is True
 
@@ -73,7 +73,7 @@ async def test_generate_success(mock_bedrock_client):
 async def test_generate_with_system_prompt(mock_bedrock_client):
     """System prompt is passed through to the Converse API."""
     llm = _client()
-    await llm.generate("test prompt", system="You are helpful")
+    await llm.generate("test prompt", system="You are helpful", purpose="planner")
     call_args = mock_bedrock_client.converse.call_args
     converse_input = call_args[0][0]
     assert converse_input.system is not None
@@ -86,7 +86,7 @@ async def test_generate_with_system_prompt(mock_bedrock_client):
 async def test_generate_without_system_prompt(mock_bedrock_client):
     """No system field when system is None."""
     llm = _client()
-    await llm.generate("test prompt")
+    await llm.generate("test prompt", purpose="planner")
     call_args = mock_bedrock_client.converse.call_args
     converse_input = call_args[0][0]
     assert converse_input.system is None
@@ -105,7 +105,7 @@ async def test_generate_failure_returns_none():
 
         llm = _client()
         llm._available = True
-        result = await llm.generate("test")
+        result = await llm.generate("test", purpose="planner")
         assert result is None
         assert llm._available is None
         # 1 initial + 3 retries = 4 total calls
@@ -127,7 +127,7 @@ async def test_generate_retries_on_transient_failure(mock_converse_response):
         mock_get.return_value = client
 
         llm = _client()
-        result = await llm.generate("test")
+        result = await llm.generate("test", purpose="planner")
         assert result == "Hello from Bedrock"
         assert client.converse.call_count == 2
 
@@ -139,7 +139,7 @@ async def test_generate_returns_none_when_client_none():
         mock_get.return_value = None
 
         llm = _client()
-        result = await llm.generate("test")
+        result = await llm.generate("test", purpose="planner")
         assert result is None
 
 
@@ -147,7 +147,7 @@ async def test_generate_returns_none_when_client_none():
 async def test_is_available_caches_success(mock_bedrock_client):
     """After successful generate, is_available returns True."""
     llm = _client()
-    await llm.generate("test")
+    await llm.generate("test", purpose="planner")
     assert await llm.is_available() is True
 
 
@@ -196,7 +196,7 @@ async def test_is_available_false_when_sdk_missing():
 async def test_generate_passes_newlines_through(mock_bedrock_client):
     """Newlines are passed through directly (smithy-json now handles escaping)."""
     llm = _client()
-    await llm.generate("line 1\nline 2\nline 3", system="rule 1\nrule 2")
+    await llm.generate("line 1\nline 2\nline 3", system="rule 1\nrule 2", purpose="planner")
     call_args = mock_bedrock_client.converse.call_args
     converse_input = call_args[0][0]
     prompt_value = converse_input.messages[0].content[0].value
@@ -359,7 +359,7 @@ async def _generate_with(response):
         client = MagicMock()
         client.converse = AsyncMock(return_value=response)
         mock_get.return_value = client
-        return await _client().generate("test"), client
+        return await _client().generate("test", purpose="planner"), client
 
 
 @pytest.mark.asyncio

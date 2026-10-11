@@ -664,7 +664,11 @@ def _r4(x: float | None) -> float | None:
 
 
 def make_llm(model: str, timeout: float | None) -> Any:
-    """Build the detector client exactly as production does.
+    """Build the detector client exactly as production does, minus the recorder.
+
+    Production also attaches the llm_calls recorder, which makes the client
+    send the Claude API cache-diagnostics object; this eval client has no
+    recorder, so it sends no diagnostics and writes no llm_calls rows.
 
     Args:
         model: The Anthropic model id.

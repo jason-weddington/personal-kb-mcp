@@ -326,6 +326,19 @@ def build_embedding_retry_config() -> "EmbeddingRetryConfig":
     )
 
 
+_LLM_DIAGNOSTICS_OFF = frozenset({"0", "false", "off", "no"})
+
+
+def get_llm_diagnostics() -> bool:
+    """Whether recorded Anthropic calls send the cache-diagnostics object.
+
+    ``KB_LLM_DIAGNOSTICS`` set to 0, false, off or no (any case) turns it off;
+    anything else, including unset or empty, leaves it on.
+    """
+    raw = os.environ.get("KB_LLM_DIAGNOSTICS", "").strip().lower()
+    return raw not in _LLM_DIAGNOSTICS_OFF
+
+
 def build_anthropic_config(*, model: str | None = None) -> "AnthropicProviderConfig":
     """Snapshot env-driven Anthropic config into the explicit dataclass."""
     from kb_core.config import AnthropicProviderConfig
@@ -334,6 +347,7 @@ def build_anthropic_config(*, model: str | None = None) -> "AnthropicProviderCon
         model=model or get_anthropic_model(),
         timeout=get_anthropic_timeout(),
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
+        diagnostics=get_llm_diagnostics(),
     )
 
 

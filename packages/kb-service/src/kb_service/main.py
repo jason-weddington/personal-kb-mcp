@@ -28,6 +28,7 @@ from kb_service.config import (
     build_provider_config,
 )
 from kb_service.database import check_database_config, close_db, init_db
+from kb_service.llm_calls import drain_pending_llm_calls, record_llm_call
 from kb_service.mcp_server import McpEndpoint, create_mcp_server
 from kb_service.mcp_server.observability import MCP_ENDPOINT_MARKER
 from kb_service.mcp_server.server import _get_tool_prefix as _mcp_prefix
@@ -170,6 +171,7 @@ async def _open_kb() -> "KnowledgeBase":
             agentic=build_agentic_config(),
             attribution=Attribution(),
             embedding_retry=build_embedding_retry_config(),
+            llm_recorder=record_llm_call,
         )
 
     sqlite_path = os.environ.get("KB_DB_PATH", _DEFAULT_KB_DB_PATH)
@@ -186,6 +188,7 @@ async def _open_kb() -> "KnowledgeBase":
         # transaction (see KnowledgeBase.start_embedding_worker's docstring).
         # The worker is Postgres-only; always off here regardless of env.
         embedding_retry=EmbeddingRetryConfig(enabled=False),
+        llm_recorder=record_llm_call,
     )
 
 
@@ -274,6 +277,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await app.state.surprise_worker.stop()
         await app.state.kb.stop_embedding_worker()
         await app.state.kb.close()
+        await drain_pending_llm_calls()
         await close_db()
 
 

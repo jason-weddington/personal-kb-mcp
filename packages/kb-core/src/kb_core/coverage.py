@@ -70,7 +70,7 @@ async def _do_assess(
 
     prompt = f"Question: {question}\n\nRetrieved entries ({len(entries)}):\n{entries_text}"
 
-    raw = await llm.generate(prompt, system=_COVERAGE_SYSTEM_PROMPT)
+    raw = await llm.generate(prompt, purpose="coverage", system=_COVERAGE_SYSTEM_PROMPT)
     if raw is None:
         return CoverageResult(has_gaps=False, reason="LLM returned no response")
 

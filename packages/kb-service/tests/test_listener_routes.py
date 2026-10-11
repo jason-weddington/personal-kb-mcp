@@ -196,6 +196,7 @@ def test_listener_rule_a_keeps_other_project(
         "pointers": [{"id": "kb-00001", "short_title": "Other Map"}],
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
+    assert fake_llm.purposes == ["listener_vote"] * 3
 
 
 # ─── (e) rule B: operating context filter ───────────────────────────────────

@@ -1,7 +1,9 @@
 """Admin-only, read-only, keyset-paginated raw-signal feeds for the observatory.
 
-``GET /api/kb/observe/{turn-events,failure-events,surprise-detections}``.
-Nothing here writes or marks anything.
+``GET /api/kb/observe/{turn-events,failure-events,surprise-detections,llm-calls}``.
+``llm-calls`` filters on ``ts`` and returns ``diagnostics_raw`` as the stored
+text (not parsed), so the text ``null`` and SQL NULL stay distinct. Nothing
+here writes or marks anything.
 """
 
 import json
@@ -16,6 +18,8 @@ from kb_service.database import get_db
 from kb_service.models import (
     ObserveFailureEventRow,
     ObserveFailureEventsResponse,
+    ObserveLlmCallRow,
+    ObserveLlmCallsResponse,
     ObserveSurpriseDetectionRow,
     ObserveSurpriseDetectionsResponse,
     ObserveTurnEventRow,
@@ -169,4 +173,28 @@ async def observe_surprise_detections(
     )
     return ObserveSurpriseDetectionsResponse(
         rows=[ObserveSurpriseDetectionRow(**r) for r in rows], next_after_id=next_id
+    )
+
+
+@router.get("/llm-calls", response_model=ObserveLlmCallsResponse)
+async def observe_llm_calls(
+    admin: Annotated[User, Depends(require_admin)],
+    since: _Since = None,
+    until: _Until = None,
+    after_id: _AfterId = 0,
+    limit: _Limit = DEFAULT_LIMIT,
+) -> ObserveLlmCallsResponse:
+    """Recorded Claude API calls by ``ts``, ``id`` ascending."""
+    rows, next_id = await _page(
+        table="llm_calls",
+        ts_column="ts",
+        json_columns={},
+        admin=admin,
+        since=since,
+        until=until,
+        after_id=after_id,
+        limit=limit,
+    )
+    return ObserveLlmCallsResponse(
+        rows=[ObserveLlmCallRow(**r) for r in rows], next_after_id=next_id
     )

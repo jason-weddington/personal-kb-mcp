@@ -179,6 +179,13 @@ class AnthropicProviderConfig:
     api_key: str | None = None
     """API key. ``None`` lets the underlying SDK find credentials elsewhere."""
 
+    diagnostics: bool = True
+    """Send the Claude API cache-diagnostics object on recorded calls.
+
+    Only takes effect when the client has a call recorder; ``False`` never
+    sends it. The client also stops sending it after a 400 that names it.
+    """
+
 
 @dataclass(frozen=True)
 class BedrockProviderConfig:

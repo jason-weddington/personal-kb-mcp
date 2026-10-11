@@ -2073,6 +2073,31 @@ class ObserveSurpriseDetectionRow(BaseModel):
     ts: str
 
 
+class ObserveLlmCallRow(BaseModel):
+    """One ``llm_calls`` row; ``diagnostics_raw`` is returned as the stored text."""
+
+    id: int
+    ts: str
+    purpose: str
+    model: str
+    outcome: str
+    error_type: str | None = None
+    response_id: str | None = None
+    stop_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    cache_creation_1h_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    diagnostics_state: str
+    previous_message_id: str | None = None
+    cache_miss_reason: str | None = None
+    cache_missed_input_tokens: int | None = None
+    diagnostics_raw: str | None = None
+    system_sha256: str | None = None
+    latency_ms: int
+
+
 class ObserveTurnEventsResponse(BaseModel):
     """A keyset page of turn events."""
 
@@ -2091,4 +2116,11 @@ class ObserveSurpriseDetectionsResponse(BaseModel):
     """A keyset page of surprise detections."""
 
     rows: list[ObserveSurpriseDetectionRow]
+    next_after_id: int | None = None
+
+
+class ObserveLlmCallsResponse(BaseModel):
+    """A keyset page of recorded LLM calls."""
+
+    rows: list[ObserveLlmCallRow]
     next_after_id: int | None = None

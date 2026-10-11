@@ -373,6 +373,40 @@ async def test_drain_other_modes_record_no_dry_run(
     assert llm.generate_calls == []
 
 
+_LLM_CALL_SQL = (
+    "INSERT INTO llm_calls (ts, purpose, model, outcome, diagnostics_state,"
+    " latency_ms) VALUES ($1, 'planner', 'claude-haiku-4-5', 'ok', 'sent', 1)"
+)
+
+
+async def test_drain_prunes_stale_llm_calls(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(surprise_worker, "get_detector_llm", lambda: None)
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    now = datetime.now(UTC)
+    old_ts = (now - timedelta(days=100)).isoformat(timespec="seconds")
+    fresh_ts = (now - timedelta(days=1)).isoformat(timespec="seconds")
+    await pool.execute(_LLM_CALL_SQL, old_ts)
+    await pool.execute(_LLM_CALL_SQL, fresh_ts)
+    await drain_once(pool, kb)
+    rows = await pool.fetch("SELECT ts FROM llm_calls")
+    assert [r["ts"] for r in rows] == [fresh_ts]
+
+
+async def test_drain_survives_llm_calls_prune_failure(
+    pool: SqlitePool, kb: Any, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _boom(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("prune down")
+
+    monkeypatch.setattr(surprise_worker, "get_detector_llm", lambda: None)
+    monkeypatch.setattr(surprise_worker, "prune_llm_calls", _boom)
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    res = await drain_once(pool, kb)
+    assert isinstance(res, surprise_worker.DrainResult)
+
+
 # --- schema -------------------------------------------------------------------
 
 _DRY_RUN_PREFIX = "CREATE TABLE IF NOT EXISTS surprise_dry_runs ("

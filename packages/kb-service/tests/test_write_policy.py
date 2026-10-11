@@ -889,7 +889,9 @@ def _cand(output: dict[str, Any], project: str = "p") -> SurpriseCandidate:
 class _BoomLLM:
     model = "boom"
 
-    async def generate(self, prompt: Any, *, system: Any = None) -> str | None:
+    async def generate(
+        self, prompt: Any, *, purpose: str, system: Any = None
+    ) -> str | None:
         raise RuntimeError("down")
 
 

@@ -79,7 +79,7 @@ class QueryPlanner:
     async def plan(self, question: str) -> QueryPlan | None:
         """Generate a query plan for a question. Returns None on failure."""
         context = await self._build_context(question)
-        raw = await self._llm.generate(context, system=_SYSTEM_PROMPT)
+        raw = await self._llm.generate(context, purpose="planner", system=_SYSTEM_PROMPT)
         if raw is None:
             return None
         return self._parse_plan(raw)

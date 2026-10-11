@@ -234,6 +234,7 @@ Format: `type(optional-scope): description`
 | `ANTHROPIC_API_KEY` | (unset) | Anthropic API key (enrichment, planning, synthesis) |
 | `KB_ANTHROPIC_MODEL` | `claude-haiku-4-5` | Anthropic model for planning/synthesis |
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Anthropic timeout (seconds) |
+| `KB_LLM_DIAGNOSTICS` | `1` | kb-service: set `0` (or `false`, `off`, `no`) to stop sending the Claude API cache-diagnostics object; kb-service still records every Anthropic call in `llm_calls` |
 | `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model ID (cross-region inference profile) |
 | `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
 | `KB_BEDROCK_TIMEOUT` | `60.0` | Bedrock timeout (seconds) |

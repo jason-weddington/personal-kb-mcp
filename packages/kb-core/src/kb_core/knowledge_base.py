@@ -94,7 +94,7 @@ if TYPE_CHECKING:
     from kb_core.embedding_retry import EmbeddingQueueStats
     from kb_core.graph.enricher import GraphEnricher
     from kb_core.ingest.ingester import FileIngester, FileResult, IngestResult
-    from kb_core.llm.provider import LLMProvider
+    from kb_core.llm.provider import LLMCallRecorder, LLMProvider
     from kb_core.map_delete import DeletedMapRecord
     from kb_core.map_eligibility import MapEligibilityOverride, MapEligibilityVerdict
     from kb_core.models.search import SearchQuery, SearchResult
@@ -269,8 +269,13 @@ async def _open_database(cfg: DatabaseConfig) -> Database:
     raise TypeError(msg)
 
 
-def _build_llm(role: ProviderRoleConfig) -> LLMProvider | None:
+def _build_llm(
+    role: ProviderRoleConfig, recorder: LLMCallRecorder | None = None
+) -> LLMProvider | None:
     """Build the LLM client for a single role, or ``None`` if unsupported.
+
+    ``recorder`` is attached to Anthropic clients only; Bedrock and Ollama
+    clients record nothing.
 
     Provider modules are imported lazily so that a bare ``import kb_core``
     never pulls anthropic/boto3/smithy (enforced by the purity guard).
@@ -278,7 +283,7 @@ def _build_llm(role: ProviderRoleConfig) -> LLMProvider | None:
     if role.provider == "anthropic":
         from kb_core.llm.anthropic import AnthropicLLMClient
 
-        return AnthropicLLMClient(role.anthropic)
+        return AnthropicLLMClient(role.anthropic, recorder=recorder)
     if role.provider == "bedrock":
         from kb_core.llm.bedrock import BedrockLLMClient
 
@@ -363,6 +368,7 @@ class KnowledgeBase:
         extraction_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
         query_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
         synthesis_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
+        llm_recorder: LLMCallRecorder | None = None,
     ) -> KnowledgeBase:
         """Open every dependency the engine needs from a :class:`KbConfig`.
 
@@ -377,6 +383,10 @@ class KnowledgeBase:
         instance or ``None`` to bypass that piece entirely; the sentinel
         default means "derive from ``config``". Overridden instances are
         NOT closed by :meth:`close` — the caller owns them.
+
+        ``llm_recorder`` is attached to every Anthropic client built from
+        ``config.providers`` (never to the pre-built overrides) and receives
+        one :class:`~kb_core.llm.provider.LLMCallRecord` per API call.
         """
         db = await _open_database(config.database)
 
@@ -394,21 +404,25 @@ class KnowledgeBase:
         # LLMs.
         owned_extraction = False
         if isinstance(extraction_llm, _UseConfig):
-            resolved_extraction: LLMProvider | None = _build_llm(config.providers.extraction)
+            resolved_extraction: LLMProvider | None = _build_llm(
+                config.providers.extraction, llm_recorder
+            )
             owned_extraction = resolved_extraction is not None
         else:
             resolved_extraction = extraction_llm
 
         owned_query = False
         if isinstance(query_llm, _UseConfig):
-            resolved_query: LLMProvider | None = _build_llm(config.providers.query)
+            resolved_query: LLMProvider | None = _build_llm(config.providers.query, llm_recorder)
             owned_query = resolved_query is not None
         else:
             resolved_query = query_llm
 
         owned_synthesis = False
         if isinstance(synthesis_llm, _UseConfig):
-            resolved_synthesis: LLMProvider | None = _build_llm(config.providers.synthesis)
+            resolved_synthesis: LLMProvider | None = _build_llm(
+                config.providers.synthesis, llm_recorder
+            )
             owned_synthesis = resolved_synthesis is not None
         else:
             resolved_synthesis = synthesis_llm
@@ -1595,6 +1609,7 @@ async def create_sqlite(
     extraction_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
     query_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
     synthesis_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
+    llm_recorder: LLMCallRecorder | None = None,
 ) -> KnowledgeBase:
     """Open a SQLite-backed :class:`KnowledgeBase`.
 
@@ -1624,6 +1639,7 @@ async def create_sqlite(
         extraction_llm=extraction_llm,
         query_llm=query_llm,
         synthesis_llm=synthesis_llm,
+        llm_recorder=llm_recorder,
     )
 
 
@@ -1645,6 +1661,7 @@ async def create_postgres(
     extraction_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
     query_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
     synthesis_llm: LLMProvider | None | _UseConfig = _USE_CONFIG,
+    llm_recorder: LLMCallRecorder | None = None,
 ) -> KnowledgeBase:
     """Open a Postgres-backed :class:`KnowledgeBase` (requires the ``postgres`` extra).
 
@@ -1674,6 +1691,7 @@ async def create_postgres(
         extraction_llm=extraction_llm,
         query_llm=query_llm,
         synthesis_llm=synthesis_llm,
+        llm_recorder=llm_recorder,
     )
 
 
