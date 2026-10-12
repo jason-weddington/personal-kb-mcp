@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v1.12.0 (2026-10-12)
+
+### Bug Fixes
+
+- **graph**: Links leave hit-testing, so the particle flow no longer hitches every 800 ms
+  ([`095e39e`](https://github.com/jason-weddington/personal-kb-mcp/commit/095e39e5bd24fde56add6cd843d9b6f4e25c213d))
+
+### Features
+
+- **a6481170**: Every connection chip in the entry drawer is clickable, and Graph opens focused on a
+  node from ?focus
+  ([`74dc6b9`](https://github.com/jason-weddington/personal-kb-mcp/commit/74dc6b92217562121acec9237f1419d15ae4c5b7))
+
+
 ## v1.11.0 (2026-10-11)
 
 ### Bug Fixes
