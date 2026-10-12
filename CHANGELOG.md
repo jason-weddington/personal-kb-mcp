@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v1.13.0 (2026-10-12)
+
+### Features
+
+- **b127a66a**: Large connection groups in the Graph inspector narrow by title, entry type, project
+  and co-occurring tags
+  ([`bc1dedb`](https://github.com/jason-weddington/personal-kb-mcp/commit/bc1dedbc036467a9d3713e1c44c339502c5b3cb4))
+
+- **edbacfde**: One inspector for every Graph node, with connections grouped by edge type as pills
+  or a scrolling list of summary rows
+  ([`53bdc89`](https://github.com/jason-weddington/personal-kb-mcp/commit/53bdc89671bc1eeac9e7dd4d43a1fddc709b671d))
+
+- **fc7ef26f**: Graph back and forward buttons and arrow keys walk a browser-style history that
+  restores the camera and inspector
+  ([`fed8fb6`](https://github.com/jason-weddington/personal-kb-mcp/commit/fed8fb6c72713d8dcd47e22ad7d752c422552cc4))
+
+
 ## v1.12.0 (2026-10-12)
 
 ### Bug Fixes
