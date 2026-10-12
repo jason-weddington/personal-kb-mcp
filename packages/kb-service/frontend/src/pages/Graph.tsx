@@ -7,15 +7,18 @@ import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
 import FormControl from '@mui/material/FormControl'
+import IconButton from '@mui/material/IconButton'
 import InputLabel from '@mui/material/InputLabel'
 import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Select from '@mui/material/Select'
 import Stack from '@mui/material/Stack'
 import { alpha, darken } from '@mui/material/styles'
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
+import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import { getGraphFull } from '../api'
 import { GraphExplorer } from '../components/GraphExplorer'
-import type { GraphExplorerHandle } from '../components/GraphExplorer'
+import type { GraphExplorerHandle, HistoryInfo } from '../components/GraphExplorer'
 import { GraphAskBar } from '../components/GraphAskBar'
 import { GraphQueryPanel } from '../components/GraphQueryPanel'
 import { GraphChatPanel } from '../components/GraphChatPanel'
@@ -37,6 +40,10 @@ export function Graph() {
   const explorerRef = useRef<GraphExplorerHandle>(null)
   const controlsRef = useRef<HTMLDivElement>(null)
   const [payload, setPayload] = useState<GraphFullResponse | null>(null)
+  const [historyInfo, setHistoryInfo] = useState<HistoryInfo>(() => ({
+    canBack: false,
+    canForward: false,
+  }))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [loadMs, setLoadMs] = useState<number | null>(null)
@@ -270,6 +277,7 @@ export function Graph() {
         graph={graph}
         traversal={traversal}
         onEscape={handleEscape}
+        onHistoryChange={setHistoryInfo}
         perf={perfOn ? { loadMs } : undefined}
         fitInsetRef={controlsRef}
         rightInset={chatSeed ? GRAPH_CHAT_W : 0}
@@ -294,6 +302,20 @@ export function Graph() {
         <Paper ref={controlsRef} sx={{ p: 1.5, flexShrink: 0 }}>
           <Stack spacing={1.5}>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <IconButton
+                aria-label="Back"
+                disabled={!historyInfo.canBack}
+                onClick={() => explorerRef.current?.back()}
+              >
+                <ChevronLeftIcon />
+              </IconButton>
+              <IconButton
+                aria-label="Forward"
+                disabled={!historyInfo.canForward}
+                onClick={() => explorerRef.current?.forward()}
+              >
+                <ChevronRightIcon />
+              </IconButton>
               <GraphSearch
                 nodes={graph.nodes}
                 placeholder="Search nodes or ask a question..."

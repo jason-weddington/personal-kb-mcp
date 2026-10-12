@@ -18,6 +18,7 @@ import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import CheckIcon from '@mui/icons-material/Check'
 import CloseIcon from '@mui/icons-material/Close'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { getEntries } from '../api'
@@ -128,11 +129,14 @@ function MemberRow({
   group,
   onOpenNode,
   onHover,
+  visited,
 }: {
   member: InspectorMember
   group: ConnectionGroup
   onOpenNode: (id: string) => void
   onHover: ((id: string | null) => void) | undefined
+  /** The member's node was focused earlier this page session. */
+  visited?: boolean
 }) {
   const m: InspectorMember = { ...member, edgeType: group.edgeType, dir: group.dir }
   const isEntry = m.nodeType === 'entry'
@@ -216,6 +220,9 @@ function MemberRow({
       {dot}
       {body}
       {typeChip}
+      {visited ? (
+        <CheckIcon data-testid="visited-check" fontSize="small" sx={{ flexShrink: 0, mt: '2px' }} />
+      ) : null}
     </Box>
   )
   return maybeTooltip(m, row)
@@ -226,11 +233,14 @@ function MemberPill({
   group,
   onOpenNode,
   onHover,
+  visited,
 }: {
   member: InspectorMember
   group: ConnectionGroup
   onOpenNode: (id: string) => void
   onHover: ((id: string | null) => void) | undefined
+  /** The member's node was focused earlier this page session. */
+  visited?: boolean
 }) {
   const m: InspectorMember = { ...member, edgeType: group.edgeType, dir: group.dir }
   const chip = (
@@ -239,6 +249,7 @@ function MemberPill({
       size="small"
       clickable
       onClick={() => onOpenNode(m.nodeId)}
+      icon={visited ? <CheckIcon data-testid="visited-check" /> : undefined}
       {...hoverable(onHover, m.nodeId)}
     />
   )
@@ -325,10 +336,13 @@ export function InspectorConnections({
   filtering,
   revealedFacetGroups,
   onRevealFacetGroup,
+  visited,
 }: {
   groups: ReadonlyArray<ConnectionGroup>
   membersById: ReadonlyMap<string, InspectorMember>
   onOpenNode: (id: string) => void
+  /** Node ids focused earlier this page session (visited check marks). */
+  visited?: ReadonlySet<string>
   /** Writes the member node id / null into the caller's hover state. */
   onHover?: (id: string | null) => void
   /** Controlled view state (Graph page); uncontrolled when omitted (drawer). */
@@ -435,6 +449,7 @@ export function InspectorConnections({
                     group={g}
                     onOpenNode={onOpenNode}
                     onHover={onHover}
+                    visited={visited?.has(m.nodeId)}
                   />
                 ))}
               </Stack>
@@ -553,6 +568,7 @@ export function InspectorConnections({
                   group={g}
                   onOpenNode={onOpenNode}
                   onHover={onHover}
+                  visited={visited?.has(m.nodeId)}
                 />
               ))}
               {filtering !== undefined && active && shown.length === 0 && (
@@ -599,6 +615,8 @@ export type GraphNodeInspectorProps = {
    */
   adjacency?: ReadonlyMap<string, ReadonlyArray<{ node: string; type: string }>>
   view: InspectorViewState
+  /** Node ids focused earlier this page session (visited check marks). */
+  visited?: ReadonlySet<string>
   onViewChange: (view: InspectorViewState) => void
   /** The select path a canvas click on that node takes. */
   onOpenNode: (id: string) => void
@@ -613,6 +631,7 @@ export function GraphNodeInspector({
   nodeById,
   adjacency,
   view,
+  visited,
   onViewChange,
   onOpenNode,
   onHover,
@@ -823,6 +842,7 @@ export function GraphNodeInspector({
             membersById={membersById}
             onOpenNode={onOpenNode}
             onHover={onHover}
+            visited={visited}
             view={view}
             onViewChange={onViewChange}
             filtering={

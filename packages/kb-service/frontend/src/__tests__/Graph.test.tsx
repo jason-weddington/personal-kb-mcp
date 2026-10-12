@@ -280,8 +280,28 @@ describe('Graph page', () => {
     expect(h.mockOpenEntry).not.toHaveBeenCalled()
   })
 
-  it('(f) Escape fits and clamps at 450 ms', async () => {
+  it('(f) Escape keeps the history: Back restores the node and camera you left', async () => {
     await renderPage()
+    click('kb-00001')
+    click('kb-00002')
+    // Back rewrites kb-00002's record with the live camera and restores
+    // kb-00001's record: the pre-move camera (4, 65, 20)
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Alpha decision')
+        .length,
+    ).toBeGreaterThan(0)
+    // the first Escape closes ONLY the inspector; cursor 0 keeps Back disabled
+    clearFg()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Node inspector' })).toBeNull()
+    expect(fg.zoom).not.toHaveBeenCalled()
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
+    // the next Escape unfocuses (history and cursor kept) and fits + clamps
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
     h.fgState.k = 8
@@ -289,6 +309,17 @@ describe('Graph page', () => {
     expect(fg.zoom).not.toHaveBeenCalledWith(6, 300)
     advance(1)
     expect(fg.zoom).toHaveBeenCalledWith(6, 300)
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    // Back while nothing is focused re-focuses the record at the cursor
+    clearFg()
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Alpha decision')
+        .length,
+    ).toBeGreaterThan(0)
   })
 
   it('(g) the solo legend shows one type and hides links', async () => {
@@ -361,16 +392,37 @@ describe('Graph page', () => {
     click('kb-00002')
     expect(fg.centerAt).toHaveBeenCalledWith(85, 40, 800)
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
-    expect(fg.centerAt).toHaveBeenCalledWith(expect.anything(), expect.anything(), 600)
+    // tag:alpha's leave-camera: a non-entry focus has no camera shift
+    expect(fg.centerAt).toHaveBeenLastCalledWith(50, 60, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('alpha').length,
+    ).toBeGreaterThan(0)
     // the first Escape closes ONLY the inspector
     clearFg()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('region', { name: 'Node inspector' })).toBeNull()
     expect(fg.zoom).not.toHaveBeenCalled()
     expect(fg.centerAt).not.toHaveBeenCalled()
-    // the next Escape resets the view
+    // the next Escape unfocuses (history kept) and fits + clamps
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
+    h.fgState.k = 8
+    advance(449)
+    expect(fg.zoom).not.toHaveBeenCalledWith(6, 300)
+    advance(1)
+    expect(fg.zoom).toHaveBeenCalledWith(6, 300)
+    // nothing focused: Back re-focuses the record at the cursor (tag:alpha)
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    clearFg()
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(50, 60, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('alpha').length,
+    ).toBeGreaterThan(0)
   })
 
   it('(m) narrowing Scope drops a focus on an unrendered node', async () => {
@@ -379,9 +431,172 @@ describe('Graph page', () => {
     chooseScope('p1')
     expect(visible('kb-00001')).toBe(true)
     expect(visible('tag:alpha')).toBe(true)
-    fg.centerAt.mockClear()
+    // the focused node is unrendered: the whole history clears, so Back is
+    // disabled and ArrowLeft produces no camera call at all
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
+    clearFg()
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
     expect(fg.centerAt).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
+  })
+
+  it('(b1) the Back and Forward buttons mirror the history cursor', async () => {
+    await renderPage()
+    const back = screen.getByRole('button', { name: 'Back' })
+    const forward = screen.getByRole('button', { name: 'Forward' })
+    expect(back).toBeDisabled()
+    expect(forward).toBeDisabled()
+    click('kb-00001')
+    advance(850)
+    // focused at cursor 0: nothing to walk back to yet
+    expect(back).toBeDisabled()
+    expect(forward).toBeDisabled()
+    click('kb-00002')
+    expect(back).toBeEnabled()
+    expect(forward).toBeDisabled()
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    advance(650)
+    expect(back).toBeDisabled()
+    expect(forward).toBeEnabled()
+    fireEvent.keyDown(document, { key: 'ArrowRight' })
+    advance(650)
+    expect(back).toBeEnabled()
+    expect(forward).toBeDisabled()
+  })
+
+  it('(b2) Back restores the camera and the inspector of the node you left', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    await renderPage()
+    click('kb-00001')
+    advance(850)
+    click('kb-00002')
+    advance(850)
+    clearFg()
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    // kb-00001's record was rewritten with the pre-move camera (4, 65, 20)
+    expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Alpha decision')
+        .length,
+    ).toBeGreaterThan(0)
+    expect(h.mockOpenEntry).not.toHaveBeenCalled()
+    // telemetry: the walk and the restore, with the pinned payload shape
+    const selectCalls = info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-history] select')
+    expect(selectCalls).toHaveLength(2)
+    expect(selectCalls[0][1]).toMatchObject({
+      node_id: 'kb-00001',
+      cursor: 0,
+      history_len: 1,
+      truncated: 0,
+      dropped_oldest: false,
+      can_back: false,
+      can_forward: false,
+      visited_count: 1,
+    })
+    expect(selectCalls[1][1]).toMatchObject({
+      node_id: 'kb-00002',
+      cursor: 1,
+      history_len: 2,
+      truncated: 0,
+      can_back: true,
+      can_forward: false,
+      visited_count: 2,
+    })
+    const backCalls = info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-history] back')
+    expect(backCalls).toHaveLength(1)
+    expect(backCalls[0][1]).toMatchObject({
+      node_id: 'kb-00001',
+      cursor: 0,
+      history_len: 2,
+      can_back: false,
+      can_forward: true,
+      visited_count: 2,
+    })
+  })
+
+  it('(b3) Forward restores the Back-leave snapshot, by arrow key and by button', async () => {
+    await renderPage()
+    click('kb-00001')
+    advance(850)
+    click('kb-00002')
+    advance(850)
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    advance(650)
+    // Forward by arrow key: kb-00001's record takes the outgoing camera
+    // (65, 20, 4) and kb-00002's record restores (85, 40)
+    clearFg()
+    fireEvent.keyDown(document, { key: 'ArrowRight' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(85, 40, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Beta lesson')
+        .length,
+    ).toBeGreaterThan(0)
+    // Forward by button click, from cursor 0 again
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    advance(650)
+    clearFg()
+    fireEvent.click(screen.getByRole('button', { name: 'Forward' }))
+    expect(fg.centerAt).toHaveBeenLastCalledWith(85, 40, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Beta lesson')
+        .length,
+    ).toBeGreaterThan(0)
+    // back to cursor 0, then a further Back is a reducer no-op with no fg call
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    advance(650)
+    clearFg()
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
+  })
+
+  it('(h3) arrow keys in the search input never walk the history', async () => {
+    await renderPage()
+    const input = screen.getByPlaceholderText(
+      'Search nodes or ask a question...',
+    ) as HTMLInputElement
+    input.focus()
+    clearFg()
+    fireEvent.keyDown(input, { key: 'ArrowLeft' })
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
+  })
+
+  it('(h4) a search pick truncates everything forward of the cursor', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    await renderPage()
+    click('kb-00001')
+    click('kb-00002')
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    advance(650)
+    // back at cursor 0 on kb-00001; the search pick flies to tag:beta and
+    // drops the forward record (kb-00002) from the history
+    const input = screen.getByPlaceholderText('Search nodes or ask a question...')
+    fireEvent.change(input, { target: { value: 'beta' } })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(fg.centerAt).toHaveBeenCalledWith(70, 80, 800)
+    expect(screen.getByRole('button', { name: 'Forward' })).toBeDisabled()
+    clearFg()
+    fireEvent.keyDown(document, { key: 'ArrowRight' })
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
+    const selectCalls = info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-history] select')
+    expect(selectCalls.at(-1)![1]).toMatchObject({
+      node_id: 'tag:beta',
+      cursor: 1,
+      history_len: 2,
+      truncated: 1,
+      can_back: true,
+      can_forward: false,
+    })
   })
 
   it('(n) all chips off shows the empty state', async () => {
@@ -512,8 +727,9 @@ describe('Graph page — node inspector', () => {
     clearFg()
     act(() => h.lastProps.onBackgroundClick())
     expect(screen.queryByRole('region', { name: 'Node inspector' })).toBeNull()
+    // the unfocus reads the leave-camera, but no camera move happens before the fit
     advance(99)
-    expect(fg.zoom).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalledWith(expect.any(Number), 400)
     advance(1)
     expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
   })
@@ -603,6 +819,34 @@ describe('Graph page — node inspector', () => {
     expect(region).toBeInTheDocument()
     expect(region.scrollTop).toBe(0)
   })
+
+  it('(v1) visited members carry a check that survives an unfocus', async () => {
+    await renderPage()
+    click('kb-00001')
+    advance(850)
+    click('kb-00002')
+    advance(850)
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    advance(650)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    // kb-00002 was focused this session: its related_to:out member pill shows
+    // the leading check
+    const betaPill = within(region).getByRole('button', { name: 'Beta lesson' })
+    expect(within(betaPill).getByTestId('visited-check')).toBeInTheDocument()
+    // the entry-header tag pill is excluded from visited marks (and tag:alpha
+    // was never walked)
+    const alphaPill = within(region).getByRole('button', { name: 'alpha' })
+    expect(within(alphaPill).queryByTestId('visited-check')).toBeNull()
+    // Escape-unfocus (inspector close, then reset) keeps the session set
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    advance(500)
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    advance(650)
+    const reopened = screen.getByRole('region', { name: 'Node inspector' })
+    const betaPillAgain = within(reopened).getByRole('button', { name: 'Beta lesson' })
+    expect(within(betaPillAgain).getByTestId('visited-check')).toBeInTheDocument()
+  })
 })
 
 // select() reads centerAt() then moves it: one fly is one call with coordinates
@@ -649,6 +893,20 @@ describe('Graph page — connection chips', () => {
     await screen.findByText('4 of 4 nodes · 3 of 3 edges')
     expect(flies()).toBe(1)
     await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/graph'))
+    // the fly is a walk: Back is enabled and restores the walked entry
+    vi.useFakeTimers()
+    click('kb-00001')
+    click('kb-00002')
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    clearFg()
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Alpha decision')
+        .length,
+    ).toBeGreaterThan(0)
   })
 })
 
@@ -796,6 +1054,86 @@ describe('GraphExplorer handle', () => {
     click('tag:alpha')
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
     expect(fg.centerAt).toHaveBeenLastCalledWith(12.5, 20, 600)
+  })
+
+  it('(j11) a background click unfocuses but keeps the history for Back', () => {
+    const info: Array<{ canBack: boolean; canForward: boolean }> = []
+    renderExplorer(undefined, {
+      onHistoryChange: (i) => info.push({ canBack: i.canBack, canForward: i.canForward }),
+    })
+    click('kb-00001')
+    click('kb-00002')
+    clearFg()
+    act(() => h.lastProps.onBackgroundClick())
+    // nothing focused with history behind: Back can re-focus the node just left
+    expect(info.at(-1)).toEqual({ canBack: true, canForward: false })
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(85, 40, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Beta lesson')
+        .length,
+    ).toBeGreaterThan(0)
+  })
+
+  it('(j12) resetAll keeps the history: Back re-focuses the captured camera', () => {
+    const { ref } = renderExplorer()
+    click('kb-00001')
+    click('kb-00002')
+    advance(850)
+    expect(screen.getByRole('region', { name: 'Node inspector' })).toBeInTheDocument()
+    act(() => ref.current!.resetAll())
+    expect(screen.queryByRole('region', { name: 'Node inspector' })).toBeNull()
+    clearFg()
+    let ok: boolean | undefined
+    act(() => {
+      ok = ref.current!.back()
+    })
+    expect(ok).toBe(true)
+    expect(fg.centerAt).toHaveBeenCalledWith(85, 40, 600)
+    expect(fg.zoom).toHaveBeenCalledWith(4, 600)
+    // a second Back walks to cursor 0, and Forward returns true and restores
+    // the kb-00002 record again
+    let okBack: boolean | undefined
+    let okForward: boolean | undefined
+    clearFg()
+    act(() => {
+      okBack = ref.current!.back()
+    })
+    expect(okBack).toBe(true)
+    clearFg()
+    act(() => {
+      okForward = ref.current!.forward()
+    })
+    expect(okForward).toBe(true)
+    expect(fg.centerAt).toHaveBeenLastCalledWith(85, 40, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Beta lesson')
+        .length,
+    ).toBeGreaterThan(0)
+  })
+
+  it('(j13) back and forward return false and stay silent on an empty history', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const { ref } = renderExplorer()
+    let back: boolean | undefined
+    let forward: boolean | undefined
+    act(() => {
+      back = ref.current!.back()
+    })
+    act(() => {
+      forward = ref.current!.forward()
+    })
+    expect(back).toBe(false)
+    expect(forward).toBe(false)
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
+    expect(
+      info.mock.calls.filter((c: unknown[]) => String(c[0]).startsWith('[graph-history]')),
+    ).toHaveLength(0)
   })
 })
 
@@ -968,5 +1306,53 @@ describe('GraphExplorer — group filters', () => {
     ).toHaveLength(1)
     expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
     expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(0)
+  })
+})
+
+// ── History: the inspector view snapshot round trip (item B) ────────────────
+
+describe('GraphExplorer — history view-state round trip', () => {
+  function renderNarrowExplorer() {
+    const f = fixtureNarrow()
+    const graph = filterGraph(f.nodes, f.edges, new Set(Object.keys(NODE_COLORS)), '')
+    vi.useFakeTimers()
+    render(<GraphExplorer graph={graph} />)
+    clearFg()
+    return graph
+  }
+
+  it('Back restores the camera, the expanded group, the filter and the scroll', () => {
+    renderNarrowExplorer()
+    act(() => h.lastProps.onNodeClick(nodeOf('tag:mass')))
+    advance(850)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    fireEvent.click(within(region).getByRole('button', { name: 'has_tag:in ← 15' }))
+    fireEvent.click(within(region).getByRole('button', { name: 'p1 6' }))
+    expect(within(region).getByText('6 of 15')).toBeInTheDocument()
+    // the same scroll container item A's scrollTop round-trip test uses
+    act(() => {
+      region.scrollTop = 120
+    })
+    fireEvent.scroll(region)
+    // walk to kb-00100 through the shared select path a row click takes
+    fireEvent.click(within(region).getByRole('button', { name: /Mass entry 0/ }))
+    clearFg()
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    // tag:mass's record kept the pre-move camera: a non-entry focus has no
+    // camera shift, so (4, 40, 70)
+    expect(fg.centerAt).toHaveBeenLastCalledWith(40, 70, 600)
+    expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
+    advance(650)
+    const reopened = screen.getByRole('region', { name: 'Node inspector' })
+    // the restored filter keeps the '<matching> of <total>' in the summary
+    expect(
+      within(reopened).getByRole('button', { name: /has_tag:in ← 15/ }),
+    ).toHaveAttribute('aria-expanded', 'true')
+    expect(within(reopened).getByRole('button', { name: 'p1 6' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(within(reopened).getByText('6 of 15')).toBeInTheDocument()
+    expect(reopened.scrollTop).toBe(120)
   })
 })

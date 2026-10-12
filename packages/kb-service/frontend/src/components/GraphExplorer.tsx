@@ -1,7 +1,8 @@
 // The tuned graph explorer (ported from personal_kb 47afec7 explorer.js):
-// labels by zoom, click-to-focus, solo legend, ArrowLeft backtrack, Escape
-// reset, the non-modal node inspector. Query-mode traversal is rendered from
-// the `traversal` prop; it is populated elsewhere.
+// labels by zoom, click-to-focus, solo legend, a browser-style Back/Forward
+// history walked with ArrowLeft/ArrowRight, Escape unfocus (the inspector
+// closes first), the non-modal node inspector. Query-mode traversal is
+// rendered from the `traversal` prop; it is populated elsewhere.
 import {
   useCallback,
   useEffect,
@@ -47,7 +48,6 @@ import {
   PERF_WINDOW_MS,
   RESET_FIT_DELAY_MS,
   activeNeighborSet,
-  backtrackTarget,
   buildAdjacency,
   computeFocusSet,
   endpointId,
@@ -56,6 +56,8 @@ import {
   boundingBox,
   fitView,
   fpsFromFrameTimes,
+  historyInvariantError,
+  HISTORY_MAX,
   initialExplorerState,
   isLinkVisible,
   isNodeVisible,
@@ -65,9 +67,12 @@ import {
 } from '../graph/explorerModel'
 import type {
   Adjacency,
+  ExplorerAction,
   ExplorerLink,
   ExplorerNode,
   ExplorerState,
+  HistoryRecord,
+  NavSnapshot,
   TraversalState,
 } from '../graph/explorerModel'
 
@@ -84,6 +89,15 @@ export interface GraphExplorerHandle {
   resetView(): void
   clearSelection(): void
   resetAll(): void
+  /** Walk one step back through the focus history; false at the boundary. */
+  back(): boolean
+  /** Walk one step forward through the focus history; false at the boundary. */
+  forward(): boolean
+}
+
+export interface HistoryInfo {
+  canBack: boolean
+  canForward: boolean
 }
 
 export interface GraphExplorerProps {
@@ -91,6 +105,8 @@ export interface GraphExplorerProps {
   traversal?: TraversalState
   /** Called first on Escape; return true to consume it. */
   onEscape?: () => boolean
+  /** Mirrors the Back/Forward enable state after every history change. */
+  onHistoryChange?: (info: HistoryInfo) => void
   perf?: { loadMs: number | null }
   /** Overlay at the top of the canvas; fits are padded by its measured bottom edge. */
   fitInsetRef?: RefObject<HTMLElement | null>
@@ -109,6 +125,14 @@ const EMPTY_EXCLUDED: ReadonlySet<string> = new Set()
 
 function sameFacets(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
   return a.length === b.length && a.every((k, i) => k === b[i])
+}
+
+/** True when a back/forward dispatch cannot change the state at all. */
+function walkIsNoop(state: ExplorerState, dir: 'back' | 'forward'): boolean {
+  if (state.history.length === 0) return true
+  // while nothing is focused, Back re-focuses the record at the cursor
+  if (dir === 'back') return state.focusedId !== null && state.cursor === 0
+  return state.cursor === state.history.length - 1
 }
 
 // force-graph repaints its hit-test canvas every 800 ms for as long as the
@@ -135,6 +159,7 @@ export function GraphExplorer({
   graph,
   traversal = EMPTY_TRAVERSAL,
   onEscape,
+  onHistoryChange,
   perf,
   fitInsetRef,
   rightInset = 0,
@@ -146,7 +171,27 @@ export function GraphExplorer({
   const [state, dispatch] = useReducer(explorerReducer, initialExplorerState)
   const [panelNode, setPanelNode] = useState<ExplorerNode | null>(null)
   const [inspectorView, setInspectorView] = useState<InspectorViewState>(DEFAULT_INSPECTOR_VIEW)
-  const { focusedId, highlightedId, soloType } = state
+  // Every node focused this page session (walk or history restore); never
+  // cleared except by unmount. Distinct from the query-mode traversal
+  // 'visited' NodeState, which drawNode paints on the canvas.
+  const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set())
+  const { focusedId, highlightedId, soloType, history, cursor } = state
+  const canBack = focusedId !== null ? cursor > 0 : history.length > 0
+  const canForward = cursor < history.length - 1
+
+  useEffect(() => {
+    onHistoryChange?.({ canBack, canForward })
+  }, [onHistoryChange, focusedId, cursor, history.length, canBack, canForward])
+
+  // Refs mirroring the lifted view state, so the walk handlers read the live
+  // values without re-subscribing the document keydown listener on every
+  // inspector scroll.
+  const inspectorViewRef = useRef(inspectorView)
+  const visitedRef = useRef(visited)
+  useLayoutEffect(() => {
+    inspectorViewRef.current = inspectorView
+    visitedRef.current = visited
+  })
 
   // Close the node panel when a filter change stops rendering its node
   // (adjusting state while rendering, the React-recommended alternative to
@@ -362,12 +407,12 @@ export function GraphExplorer({
     fitRef.current = fit
   })
 
-  const showDetails = useCallback((node: ExplorerNode) => {
+  const showDetails = useCallback((node: ExplorerNode, view: InspectorViewState = DEFAULT_INSPECTOR_VIEW) => {
     // One inspector for every rendered node type. The view state resets in the
-    // same update that changes the target (not in an effect), so a later
-    // caller can set a saved snapshot here without an effect overwriting it.
+    // same update that changes the target (not in an effect), so a history
+    // restore passes its saved snapshot here and nothing overwrites it.
     setPanelNode(node)
-    setInspectorView(DEFAULT_INSPECTOR_VIEW)
+    setInspectorView(view)
     const conns: ConnInput[] = (latestRef.current.adjacency.get(node.id) ?? []).map((n) => ({
       nodeId: n.node,
       edgeType: n.type,
@@ -382,13 +427,69 @@ export function GraphExplorer({
     })
   }, [])
 
+  // ── History helpers ──────────────────────────────────────────────────────
+
+  /** The live camera plus the live lifted inspector view, at press time. */
+  const liveSnapshot = useCallback((): NavSnapshot | null => {
+    const fg = fgRef.current
+    if (!fg) return null
+    const c = fg.centerAt()
+    return { zoom: fg.zoom(), cx: c.x, cy: c.y, view: inspectorViewRef.current }
+  }, [])
+
+  /**
+   * Dispatch a navigation action and tripwire the resulting state: the pure
+   * reducer stays side-effect-free, the warn fires from this dispatch site.
+   */
+  const dispatchNav = useCallback((action: ExplorerAction): ExplorerState => {
+    const prev = latestRef.current.state
+    const next = explorerReducer(prev, action)
+    dispatch(action)
+    if (next !== prev) {
+      const opts =
+        action.type === 'prune' ? { renderedIds: action.renderedIds } : undefined
+      if (historyInvariantError(next, opts) !== null) {
+        console.warn('[graph-history] invariant violated', {
+          action: action.type,
+          cursor: next.cursor,
+          history_len: next.history.length,
+        })
+      }
+    }
+    return next
+  }, [])
+
+  const addVisited = useCallback((id: string) => {
+    setVisited((prev) => (prev.has(id) ? prev : new Set([...prev, id])))
+  }, [])
+
+  /** Visited count as it stands once `id` is added (telemetry only). */
+  const visitedCountWith = useCallback((id: string) => {
+    const cur = visitedRef.current
+    return cur.has(id) ? cur.size : cur.size + 1
+  }, [])
+
   const select = useCallback(
     (node: ExplorerNode) => {
       clearDrawerTimer()
       const fg = fgRef.current
       if (!fg) return
-      const c = fg.centerAt()
-      dispatch({ type: 'select', nodeId: node.id, view: { zoom: fg.zoom(), cx: c.x, cy: c.y } })
+      const snapshot = liveSnapshot()
+      if (snapshot === null) return
+      const prev = latestRef.current.state
+      const truncated = Math.max(0, prev.history.length - (prev.cursor + 1))
+      const next = dispatchNav({ type: 'select', nodeId: node.id, snapshot })
+      addVisited(node.id)
+      console.info('[graph-history] select', {
+        node_id: node.id,
+        cursor: next.cursor,
+        history_len: next.history.length,
+        truncated,
+        dropped_oldest: prev.history.length - truncated + 1 > HISTORY_MAX,
+        can_back: next.focusedId !== null ? next.cursor > 0 : next.history.length > 0,
+        can_forward: next.cursor < next.history.length - 1,
+        visited_count: visitedCountWith(node.id),
+      })
       const fc = focusCenter(
         node,
         node.type === 'entry',
@@ -408,40 +509,74 @@ export function GraphExplorer({
         showDetails(node)
       }, DRAWER_DELAY_MS)
     },
-    [clearDrawerTimer, showDetails],
+    [clearDrawerTimer, showDetails, liveSnapshot, dispatchNav, addVisited, visitedCountWith],
   )
 
   const resetView = useCallback(() => {
     clearDrawerTimer()
     stopFollow()
-    dispatch({ type: 'reset' })
+    // The leave-camera is read BEFORE the fit, so Back after Escape restores
+    // what was on screen at Escape time.
+    const snapshot = liveSnapshot()
+    dispatchNav({ type: 'unfocus', snapshot: snapshot ?? undefined })
     setPanelNode(null)
     fit(FIT_MS, FIT_PADDING)
-  }, [clearDrawerTimer, stopFollow, fit])
+  }, [clearDrawerTimer, stopFollow, fit, liveSnapshot, dispatchNav])
 
-  const backtrack = useCallback(() => {
-    const t = backtrackTarget(latestRef.current.state.history)
-    if (t === null) return
-    clearDrawerTimer()
-    stopFollow()
-    dispatch({ type: 'backtrack' })
-    const fg = fgRef.current
-    fg?.centerAt(t.view.cx, t.view.cy, BACKTRACK_MS)
-    fg?.zoom(t.view.zoom, BACKTRACK_MS)
-    drawerTimerRef.current = setTimeout(() => {
-      drawerTimerRef.current = null
-      const node = latestRef.current.nodeById.get(t.nodeId)
-      if (node) showDetails(node)
-    }, BACKTRACK_DRAWER_DELAY_MS)
-  }, [clearDrawerTimer, stopFollow, showDetails])
+  /**
+   * One Back or Forward step. The outgoing snapshot rewrites the record at
+   * the cursor, the restored record's camera and inspector view are applied
+   * together, and a boundary (or an empty history) is a silent no-op that
+   * never touches the camera.
+   */
+  const walkHistory = useCallback(
+    (dir: 'back' | 'forward'): boolean => {
+      if (walkIsNoop(latestRef.current.state, dir)) return false
+      const fg = fgRef.current
+      const snapshot = liveSnapshot()
+      if (fg === undefined || snapshot === null) return false
+      const prev = latestRef.current.state
+      const next = dispatchNav({ type: dir, snapshot })
+      if (next === prev) return false
+      const record: HistoryRecord | undefined = next.history[next.cursor]
+      const node = record !== undefined ? latestRef.current.nodeById.get(record.nodeId) : undefined
+      if (record === undefined || node === undefined) {
+        console.warn('[graph-history] restore target not in payload', {
+          node_id: record?.nodeId ?? null,
+          cursor: next.cursor,
+        })
+        return false
+      }
+      clearDrawerTimer()
+      stopFollow()
+      fg.centerAt(record.cx, record.cy, BACKTRACK_MS)
+      fg.zoom(record.zoom, BACKTRACK_MS)
+      addVisited(record.nodeId)
+      drawerTimerRef.current = setTimeout(() => {
+        drawerTimerRef.current = null
+        showDetails(node, record.view)
+      }, BACKTRACK_DRAWER_DELAY_MS)
+      console.info(dir === 'back' ? '[graph-history] back' : '[graph-history] forward', {
+        node_id: record.nodeId,
+        cursor: next.cursor,
+        history_len: next.history.length,
+        can_back: next.focusedId !== null ? next.cursor > 0 : next.history.length > 0,
+        can_forward: next.cursor < next.history.length - 1,
+        visited_count: visitedCountWith(record.nodeId),
+      })
+      return true
+    },
+    [clearDrawerTimer, stopFollow, showDetails, liveSnapshot, dispatchNav, addVisited, visitedCountWith],
+  )
 
   const handleBackgroundClick = useCallback(() => {
     clearDrawerTimer()
     stopFollow()
-    dispatch({ type: 'unfocus' })
+    const snapshot = liveSnapshot()
+    dispatchNav({ type: 'unfocus', snapshot: snapshot ?? undefined })
     setPanelNode(null)
     schedule(() => fit(FIT_MS, FIT_PADDING), RESET_FIT_DELAY_MS)
-  }, [clearDrawerTimer, stopFollow, fit, schedule])
+  }, [clearDrawerTimer, stopFollow, fit, schedule, liveSnapshot, dispatchNav])
 
   const toggleSolo = useCallback(
     (nodeType: string) => {
@@ -459,10 +594,10 @@ export function GraphExplorer({
     [select],
   )
 
-  // ── Keyboard: Escape resets, ArrowLeft backtracks ────────────────────────
+  // ── Keyboard: Escape unfocuses (inspector first), ArrowLeft/Right walk ────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' && e.key !== 'ArrowLeft') return
+      if (e.key !== 'Escape' && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
       const target = e.target
       if (target instanceof Element && target.closest(KEY_GUARD_SELECTOR)) return
       if (e.key === 'Escape') {
@@ -472,13 +607,15 @@ export function GraphExplorer({
           return
         }
         resetView()
+      } else if (e.key === 'ArrowLeft') {
+        walkHistory('back')
       } else {
-        backtrack()
+        walkHistory('forward')
       }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [resetView, backtrack])
+  }, [resetView, walkHistory])
 
   // ── Camera follow: user input on the canvas ends it ──────────────────────
   useEffect(() => {
@@ -539,7 +676,7 @@ export function GraphExplorer({
   useEffect(() => {
     const renderedIds = new Set(graph.nodes.map((n) => n.id))
     const renderedTypes = new Set(graph.nodes.map((n) => n.type))
-    dispatch({ type: 'prune', renderedIds, renderedTypes })
+    dispatchNav({ type: 'prune', renderedIds, renderedTypes })
     graphStartRef.current = performance.now()
 
     if (!initialFitScheduledRef.current && graph.nodes.length === 0) return
@@ -553,7 +690,7 @@ export function GraphExplorer({
         fit(FIT_MS, FIT_PADDING)
       }
     }, INITIAL_FIT_DELAY_MS)
-  }, [graph, fit])
+  }, [graph, fit, dispatchNav])
 
   // ── Imperative handle ────────────────────────────────────────────────────
   useImperativeHandle(
@@ -596,13 +733,22 @@ export function GraphExplorer({
       },
       resetAll() {
         stopFollow()
-        dispatch({ type: 'clearAll' })
+        // The live camera + view are read BEFORE the fit, so Back after a
+        // query/chat close restores the camera that was on screen.
+        const snapshot = liveSnapshot()
+        dispatchNav({ type: 'clearAll', snapshot: snapshot ?? undefined })
         clearDrawerTimer()
         setPanelNode(null)
         fit(FIT_MS, FIT_PADDING)
       },
+      back() {
+        return walkHistory('back')
+      },
+      forward() {
+        return walkHistory('forward')
+      },
     }),
-    [select, fitTo, resetView, clearDrawerTimer, stopFollow, fit],
+    [select, fitTo, resetView, clearDrawerTimer, stopFollow, fit, liveSnapshot, dispatchNav, walkHistory],
   )
 
   // ── ForceGraph accessors ─────────────────────────────────────────────────
@@ -814,6 +960,7 @@ export function GraphExplorer({
           nodeById={nodeById}
           adjacency={adjacency}
           view={inspectorView}
+          visited={visited}
           onViewChange={onInspectorViewChange}
           onOpenNode={selectById}
           onHover={onInspectorHover}

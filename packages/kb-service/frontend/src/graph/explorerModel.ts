@@ -2,6 +2,8 @@
 // the navigation reducer. Ported from the tuned standalone explorer
 // (personal_kb 47afec7 src/personal_kb/explorer/static/explorer.js).
 import type { GraphFullNode } from '../kbTypes'
+import { DEFAULT_INSPECTOR_VIEW } from '../components/GraphNodeInspector'
+import type { InspectorViewState } from '../components/GraphNodeInspector'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -361,15 +363,24 @@ export function filterGraph(
 
 // ── Navigation reducer ───────────────────────────────────────────────────────
 
-/** Camera from BEFORE moving to nodeId. */
-export type NavRecord = { nodeId: string; zoom: number; cx: number; cy: number }
-export type CameraView = { zoom: number; cx: number; cy: number }
+/**
+ * Camera plus lifted inspector view state at the moment a walk leaves a node.
+ * A history record stores the snapshot taken BEFORE moving away, so Back
+ * restores what was on screen when you left that node.
+ */
+export type NavSnapshot = { zoom: number; cx: number; cy: number; view: InspectorViewState }
+export type HistoryRecord = { nodeId: string } & NavSnapshot
+
+/** Records kept in the history; beyond this the oldest record drops. */
+export const HISTORY_MAX = 500
 
 export type ExplorerState = {
   focusedId: string | null
   highlightedId: string | null
   soloType: string | null
-  history: NavRecord[]
+  history: HistoryRecord[]
+  /** 0-based index into history of the record the walk is at. */
+  cursor: number
 }
 
 export const initialExplorerState: ExplorerState = {
@@ -377,37 +388,99 @@ export const initialExplorerState: ExplorerState = {
   highlightedId: null,
   soloType: null,
   history: [],
+  cursor: 0,
 }
 
 export type ExplorerAction =
-  | { type: 'select'; nodeId: string; view: CameraView }
-  | { type: 'backtrack' }
-  | { type: 'reset' }
-  | { type: 'unfocus' }
+  | { type: 'select'; nodeId: string; snapshot: NavSnapshot }
+  | { type: 'back'; snapshot: NavSnapshot }
+  | { type: 'forward'; snapshot: NavSnapshot }
+  | { type: 'unfocus'; snapshot?: NavSnapshot }
   | { type: 'toggleSolo'; nodeType: string }
   | { type: 'clearSolo' }
-  | { type: 'clearAll' }
+  | { type: 'clearAll'; snapshot?: NavSnapshot }
   | { type: 'prune'; renderedIds: ReadonlySet<string>; renderedTypes: ReadonlySet<string> }
+
+/** Rewrite the record at the cursor with the outgoing live snapshot. */
+function rewriteAtCursor(state: ExplorerState, snapshot: NavSnapshot): HistoryRecord[] {
+  if (state.history.length === 0) return state.history
+  return state.history.map((r, i) => (i === state.cursor ? { ...r, ...snapshot } : r))
+}
 
 export function explorerReducer(state: ExplorerState, action: ExplorerAction): ExplorerState {
   switch (action.type) {
-    case 'select':
+    case 'select': {
+      // the record at the cursor keeps the camera + inspector view we are
+      // leaving; everything forward of the cursor is dropped, then the new
+      // node appends with the same (pre-move) camera and a fresh view.
+      const rewritten = rewriteAtCursor(state, action.snapshot)
+      const kept = rewritten.slice(0, state.cursor + 1)
+      const appended: HistoryRecord = {
+        nodeId: action.nodeId,
+        zoom: action.snapshot.zoom,
+        cx: action.snapshot.cx,
+        cy: action.snapshot.cy,
+        view: DEFAULT_INSPECTOR_VIEW,
+      }
+      let history = [...kept, appended]
+      let cursor = history.length - 1
+      if (history.length > HISTORY_MAX) {
+        history = history.slice(1)
+        cursor = history.length - 1
+      }
+      return { ...state, focusedId: action.nodeId, highlightedId: action.nodeId, history, cursor }
+    }
+    case 'back': {
+      const { history, cursor, focusedId } = state
+      if (history.length === 0) return state
+      if (focusedId !== null) {
+        if (cursor === 0) return state
+        const next = rewriteAtCursor(state, action.snapshot)
+        const nextCursor = cursor - 1
+        return {
+          ...state,
+          focusedId: next[nextCursor].nodeId,
+          highlightedId: next[nextCursor].nodeId,
+          history: next,
+          cursor: nextCursor,
+        }
+      }
+      // nothing focused: Back re-focuses the record at the cursor (the node
+      // you just left) without touching the record or moving the cursor.
       return {
         ...state,
-        focusedId: action.nodeId,
-        highlightedId: action.nodeId,
-        history: [...state.history, { nodeId: action.nodeId, ...action.view }],
+        focusedId: history[cursor].nodeId,
+        highlightedId: history[cursor].nodeId,
       }
-    case 'backtrack': {
-      if (state.history.length <= 1) return state
-      const history = state.history.slice(0, -1)
-      const last = history[history.length - 1].nodeId
-      return { ...state, focusedId: last, highlightedId: last, history }
     }
-    case 'reset':
-      return { ...state, focusedId: null, highlightedId: null, history: [] }
-    case 'unfocus':
-      return { ...state, focusedId: null, highlightedId: null }
+    case 'forward': {
+      const { history, cursor, focusedId } = state
+      if (history.length === 0) return state
+      if (cursor === history.length - 1) return state
+      if (focusedId !== null) {
+        const next = rewriteAtCursor(state, action.snapshot)
+        const nextCursor = cursor + 1
+        return {
+          ...state,
+          focusedId: next[nextCursor].nodeId,
+          highlightedId: next[nextCursor].nodeId,
+          history: next,
+          cursor: nextCursor,
+        }
+      }
+      const nextCursor = cursor + 1
+      return {
+        ...state,
+        focusedId: history[nextCursor].nodeId,
+        highlightedId: history[nextCursor].nodeId,
+        cursor: nextCursor,
+      }
+    }
+    case 'unfocus': {
+      const history =
+        action.snapshot !== undefined ? rewriteAtCursor(state, action.snapshot) : state.history
+      return { ...state, focusedId: null, highlightedId: null, history }
+    }
     case 'toggleSolo':
       return {
         ...state,
@@ -417,18 +490,38 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
       }
     case 'clearSolo':
       return state.soloType === null ? state : { ...state, soloType: null }
-    case 'clearAll':
-      return { focusedId: null, highlightedId: null, soloType: null, history: [] }
+    case 'clearAll': {
+      // Only a page reload clears history (the prune branch is the one
+      // in-page exception): focus, highlight and solo clear, the walk stays.
+      const history =
+        action.snapshot !== undefined ? rewriteAtCursor(state, action.snapshot) : state.history
+      return { focusedId: null, highlightedId: null, soloType: null, history, cursor: state.cursor }
+    }
     case 'prune': {
       const { renderedIds, renderedTypes } = action
-      let { focusedId, highlightedId, history, soloType } = state
+      let { focusedId, highlightedId, history, soloType, cursor } = state
       if (focusedId !== null && !renderedIds.has(focusedId)) {
         focusedId = null
         highlightedId = null
-        history = history.length === 0 ? history : []
+        history = []
+        cursor = 0
       } else {
-        const kept = history.filter((r) => renderedIds.has(r.nodeId))
-        if (kept.length !== history.length) history = kept
+        if (history.length > 0) {
+          const atCursor = history[Math.min(cursor, history.length - 1)]
+          const kept = history.filter((r) => renderedIds.has(r.nodeId))
+          if (kept.length !== history.length) {
+            if (renderedIds.has(atCursor.nodeId)) {
+              // the record at the cursor survives: shift with its branch
+              const droppedBefore = history
+                .slice(0, cursor)
+                .filter((r) => !renderedIds.has(r.nodeId)).length
+              cursor = cursor - droppedBefore
+            } else {
+              cursor = kept.length === 0 ? 0 : Math.min(cursor, kept.length - 1)
+            }
+            history = kept
+          }
+        }
         if (highlightedId !== null && !renderedIds.has(highlightedId)) highlightedId = null
       }
       if (soloType !== null && !renderedTypes.has(soloType)) soloType = null
@@ -436,22 +529,40 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
         focusedId === state.focusedId &&
         highlightedId === state.highlightedId &&
         history === state.history &&
-        soloType === state.soloType
+        soloType === state.soloType &&
+        cursor === state.cursor
       ) {
         return state
       }
-      return { focusedId, highlightedId, soloType, history }
+      return { focusedId, highlightedId, soloType, history, cursor }
     }
   }
 }
 
-export function backtrackTarget(
-  history: NavRecord[],
-): { nodeId: string; view: CameraView } | null {
-  const n = history.length
-  if (n <= 1) return null
-  const last = history[n - 1]
-  return { nodeId: history[n - 2].nodeId, view: { zoom: last.zoom, cx: last.cx, cy: last.cy } }
+/**
+ * Coherence tripwire for the history: null when the cursor is in range, the
+ * record at the cursor exists and (when renderedIds is given) every history
+ * record's node is still rendered; otherwise a human-readable reason.
+ */
+export function historyInvariantError(
+  state: ExplorerState,
+  opts?: { renderedIds?: ReadonlySet<string> },
+): string | null {
+  const { history, cursor } = state
+  if (history.length === 0) {
+    return cursor === 0 ? null : `cursor ${cursor} out of range for an empty history`
+  }
+  if (cursor < 0 || cursor > history.length - 1) {
+    return `cursor ${cursor} out of range 0..${history.length - 1}`
+  }
+  if (history[cursor] === undefined) return `record at cursor ${cursor} is missing`
+  const renderedIds = opts?.renderedIds
+  if (renderedIds !== undefined) {
+    for (const r of history) {
+      if (!renderedIds.has(r.nodeId)) return `history node ${r.nodeId} not rendered`
+    }
+  }
+  return null
 }
 
 export interface FitBox {

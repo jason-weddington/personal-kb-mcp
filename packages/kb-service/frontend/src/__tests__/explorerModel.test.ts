@@ -10,15 +10,16 @@ import {
   EMPTY_TRAVERSAL,
   IDLE_LINK_STYLE,
   activeNeighborSet,
-  backtrackTarget,
-  buildAdjacency,
-  computeFocusSet,
-  endpointId,
   explorerReducer,
   filterGraph,
   focusCenter,
   fpsFromFrameTimes,
+  historyInvariantError,
+  HISTORY_MAX,
   initialExplorerState,
+  buildAdjacency,
+  computeFocusSet,
+  endpointId,
   isLinkVisible,
   isNodeVisible,
   labelOpacity,
@@ -33,9 +34,12 @@ import {
 import type {
   ExplorerNode,
   ExplorerState,
-  NavRecord,
+  HistoryRecord,
+  NavSnapshot,
   TraversalState,
 } from '../graph/explorerModel'
+import { DEFAULT_INSPECTOR_VIEW } from '../components/GraphNodeInspector'
+import type { InspectorViewState } from '../components/GraphNodeInspector'
 
 const base = {
   hovered: false,
@@ -339,93 +343,285 @@ describe('filterGraph', () => {
   })
 })
 
+
+// ── Navigation reducer: one cursor-based browser history ────────────────────
+
 describe('explorerReducer', () => {
-  const view = { zoom: 2, cx: 1, cy: 3 }
-  const rec = (nodeId: string, zoom = 1): NavRecord => ({ nodeId, zoom, cx: 0, cy: 0 })
-
-  it('select pushes history and focuses', () => {
-    const s = explorerReducer(initialExplorerState, { type: 'select', nodeId: 'a', view })
-    expect(s).toEqual({
-      focusedId: 'a',
-      highlightedId: 'a',
-      soloType: null,
-      history: [{ nodeId: 'a', zoom: 2, cx: 1, cy: 3 }],
-    })
+  const view = (i: number): InspectorViewState => ({
+    expanded: { [`g${i}`]: true },
+    filters: { [`g${i}`]: { text: `t${i}`, facets: [`f${i}`] } },
+    scrollTop: i * 10,
+  })
+  const v0 = view(0)
+  const v1 = view(1)
+  const v2 = view(2)
+  const v4 = view(4)
+  const v5 = view(5)
+  const v6 = view(6)
+  const snap = (zoom: number, cx: number, cy: number, v: InspectorViewState): NavSnapshot => ({
+    zoom,
+    cx,
+    cy,
+    view: v,
+  })
+  const rec = (
+    nodeId: string,
+    zoom: number,
+    cx: number,
+    cy: number,
+    v: InspectorViewState,
+  ): HistoryRecord => ({ nodeId, zoom, cx, cy, view: v })
+  const D = DEFAULT_INSPECTOR_VIEW
+  const walked = (): ExplorerState => ({
+    focusedId: 'c',
+    highlightedId: 'c',
+    soloType: null,
+    history: [
+      rec('a', 4, 10, 20, v1),
+      rec('b', 4, 30, 40, v2),
+      rec('c', 4, 30, 40, D),
+    ],
+    cursor: 2,
   })
 
-  it('backtrack', () => {
-    const one: ExplorerState = { ...initialExplorerState, focusedId: 'a', history: [rec('a')] }
-    expect(explorerReducer(one, { type: 'backtrack' })).toBe(one)
-    const two: ExplorerState = {
-      ...initialExplorerState,
-      focusedId: 'b',
-      highlightedId: 'b',
-      history: [rec('a'), rec('b')],
-    }
-    const s = explorerReducer(two, { type: 'backtrack' })
-    expect(s.focusedId).toBe('a')
-    expect(s.highlightedId).toBe('a')
-    expect(s.history).toEqual([rec('a')])
+  it('select rewrites the record at the cursor, truncates forward and appends', () => {
+    let s = explorerReducer(initialExplorerState, {
+      type: 'select',
+      nodeId: 'a',
+      snapshot: snap(1, 0, 0, v0),
+    })
+    s = explorerReducer(s, { type: 'select', nodeId: 'b', snapshot: snap(4, 10, 20, v1) })
+    s = explorerReducer(s, { type: 'select', nodeId: 'c', snapshot: snap(4, 30, 40, v2) })
+    expect(s.focusedId).toBe('c')
+    expect(s.highlightedId).toBe('c')
+    expect(s.cursor).toBe(2)
+    expect(s.history).toHaveLength(3)
+    // a's record was rewritten by the select of b (the camera from before the move)
+    expect(s.history[0]).toEqual(rec('a', 4, 10, 20, v1))
+    // c's record carries the select-c snapshot camera and the default view
+    expect(s.history[2]).toEqual(rec('c', 4, 30, 40, D))
+    expect(historyInvariantError(s)).toBeNull()
   })
 
-  it('reset, unfocus, toggleSolo, clearSolo, clearAll', () => {
-    const s: ExplorerState = {
-      focusedId: 'a',
-      highlightedId: 'a',
-      soloType: 'tag',
-      history: [rec('a')],
+  it('back and forward rewrite the outgoing record and move the cursor', () => {
+    const s = walked()
+    const afterBack = explorerReducer(s, { type: 'back', snapshot: snap(1, 50, 50, v4) })
+    expect(afterBack.history[2]).toEqual(rec('c', 1, 50, 50, v4))
+    expect(afterBack.cursor).toBe(1)
+    expect(afterBack.focusedId).toBe('b')
+    expect(afterBack.highlightedId).toBe('b')
+    expect(historyInvariantError(afterBack)).toBeNull()
+
+    const afterForward = explorerReducer(afterBack, { type: 'forward', snapshot: snap(2, 60, 60, v5) })
+    expect(afterForward.history[1]).toEqual(rec('b', 2, 60, 60, v5))
+    expect(afterForward.cursor).toBe(2)
+    expect(afterForward.focusedId).toBe('c')
+    expect(historyInvariantError(afterForward)).toBeNull()
+
+    // from the post-back state, a select truncates everything forward of the cursor
+    const branched = explorerReducer(afterBack, {
+      type: 'select',
+      nodeId: 'd',
+      snapshot: snap(5, 7, 9, v6),
+    })
+    expect(branched.history[1]).toEqual(rec('b', 5, 7, 9, v6))
+    expect(branched.history.map((r) => r.nodeId)).toEqual(['a', 'b', 'd'])
+    expect(branched.cursor).toBe(2)
+    expect(branched.focusedId).toBe('d')
+    expect(historyInvariantError(branched)).toBeNull()
+  })
+
+  it('caps history at HISTORY_MAX records, dropping the oldest', () => {
+    expect(HISTORY_MAX).toBe(500)
+    let s = initialExplorerState
+    for (let i = 0; i < HISTORY_MAX; i++) {
+      s = explorerReducer(s, {
+        type: 'select',
+        nodeId: `n${i}`,
+        snapshot: snap(1, i, 0, D),
+      })
     }
-    expect(explorerReducer(s, { type: 'reset' })).toEqual({
-      focusedId: null,
-      highlightedId: null,
-      soloType: 'tag',
-      history: [],
-    })
-    expect(explorerReducer(s, { type: 'unfocus' })).toEqual({
-      focusedId: null,
-      highlightedId: null,
-      soloType: 'tag',
-      history: [rec('a')],
-    })
+    expect(s.history).toHaveLength(HISTORY_MAX)
+    expect(s.cursor).toBe(HISTORY_MAX - 1)
+    s = explorerReducer(s, { type: 'select', nodeId: 'extra', snapshot: snap(1, 500, 0, D) })
+    expect(s.history).toHaveLength(HISTORY_MAX)
+    expect(s.history[0].nodeId).toBe('n1')
+    expect(s.cursor).toBe(HISTORY_MAX - 1)
+    expect(historyInvariantError(s)).toBeNull()
+  })
+
+  it('unfocus keeps history and cursor; a snapshot rewrites the record at the cursor', () => {
+    const s = walked()
+    const u = explorerReducer(s, { type: 'unfocus' })
+    expect(u.focusedId).toBeNull()
+    expect(u.highlightedId).toBeNull()
+    expect(u.history).toEqual(s.history)
+    expect(u.cursor).toBe(2)
+    const withSnap = explorerReducer(s, { type: 'unfocus', snapshot: snap(9, 8, 7, v1) })
+    expect(withSnap.focusedId).toBeNull()
+    expect(withSnap.highlightedId).toBeNull()
+    expect(withSnap.history[2]).toEqual(rec('c', 9, 8, 7, v1))
+    expect(withSnap.history[0]).toEqual(rec('a', 4, 10, 20, v1))
+    expect(withSnap.cursor).toBe(2)
+  })
+
+  it('toggleSolo and clearSolo keep history and cursor', () => {
+    const s: ExplorerState = { ...walked(), soloType: 'tag' }
     expect(explorerReducer(s, { type: 'toggleSolo', nodeType: 'tag' })).toEqual({
       focusedId: null,
       highlightedId: null,
       soloType: null,
-      history: [rec('a')],
+      history: s.history,
+      cursor: 2,
     })
     expect(explorerReducer(s, { type: 'toggleSolo', nodeType: 'entry' }).soloType).toBe('entry')
-    expect(explorerReducer(s, { type: 'clearSolo' }).soloType).toBeNull()
-    expect(explorerReducer(s, { type: 'clearAll' })).toEqual(initialExplorerState)
+    const solo = explorerReducer(s, { type: 'toggleSolo', nodeType: 'entry' })
+    const cleared = explorerReducer(solo, { type: 'clearSolo' })
+    expect(cleared.soloType).toBeNull()
+    expect(cleared.history).toEqual(s.history)
+    expect(cleared.cursor).toBe(2)
   })
 
-  it('prune', () => {
-    const types = new Set(['entry', 'tag'])
+  it('clearAll clears focus, highlight and solo but keeps history and cursor', () => {
+    const s: ExplorerState = { ...walked(), soloType: 'tag' }
+    const out = explorerReducer(s, { type: 'clearAll' })
+    expect(out.focusedId).toBeNull()
+    expect(out.highlightedId).toBeNull()
+    expect(out.soloType).toBeNull()
+    expect(out.history).toEqual(s.history)
+    expect(out.cursor).toBe(2)
+    const withSnap = explorerReducer(s, { type: 'clearAll', snapshot: snap(7, 1, 2, v2) })
+    expect(withSnap.focusedId).toBeNull()
+    expect(withSnap.soloType).toBeNull()
+    expect(withSnap.history[2]).toEqual(rec('c', 7, 1, 2, v2))
+    expect(withSnap.cursor).toBe(2)
+  })
+
+  it('back while unfocused re-focuses the record at the cursor', () => {
     const s: ExplorerState = {
+      focusedId: null,
+      highlightedId: null,
+      soloType: null,
+      history: [rec('a', 1, 0, 0, D), rec('b', 2, 1, 3, D)],
+      cursor: 1,
+    }
+    const action = { type: 'back' as const, snapshot: snap(3, 4, 5, v0) }
+    const out = explorerReducer(s, action)
+    expect(out.focusedId).toBe('b')
+    expect(out.highlightedId).toBe('b')
+    expect(out.cursor).toBe(1)
+    // the record at the cursor is NOT rewritten by the unfocused re-focus
+    expect(out.history[1]).toEqual(rec('b', 2, 1, 3, D))
+    // an identical dispatch against the same unfocused state lands the same
+    // result: the re-focus is idempotent while nothing is focused
+    expect(explorerReducer(s, action)).toEqual(out)
+    expect(historyInvariantError(out)).toBeNull()
+  })
+
+  it('forward while unfocused moves the cursor and re-focuses', () => {
+    const s: ExplorerState = {
+      focusedId: null,
+      highlightedId: null,
+      soloType: null,
+      history: [rec('a', 1, 0, 0, D), rec('b', 2, 1, 3, D)],
+      cursor: 0,
+    }
+    const out = explorerReducer(s, { type: 'forward', snapshot: snap(3, 4, 5, v0) })
+    expect(out.focusedId).toBe('b')
+    expect(out.highlightedId).toBe('b')
+    expect(out.cursor).toBe(1)
+    expect(historyInvariantError(out)).toBeNull()
+  })
+
+  it('boundary and empty-history walks return the same state object', () => {
+    const one: ExplorerState = {
+      focusedId: 'a',
+      highlightedId: 'a',
+      soloType: null,
+      history: [rec('a', 1, 0, 0, D)],
+      cursor: 0,
+    }
+    expect(explorerReducer(one, { type: 'back', snapshot: snap(2, 1, 1, v0) })).toBe(one)
+    const two: ExplorerState = {
+      focusedId: 'b',
+      highlightedId: 'b',
+      soloType: null,
+      history: [rec('a', 1, 0, 0, D), rec('b', 2, 1, 3, D)],
+      cursor: 1,
+    }
+    expect(explorerReducer(two, { type: 'forward', snapshot: snap(2, 1, 1, v0) })).toBe(two)
+    // forward while unfocused at the last record is also a no-op
+    const atEnd: ExplorerState = { ...two, focusedId: null, highlightedId: null }
+    expect(explorerReducer(atEnd, { type: 'forward', snapshot: snap(2, 1, 1, v0) })).toBe(atEnd)
+    expect(explorerReducer(initialExplorerState, { type: 'back', snapshot: snap(2, 1, 1, v0) })).toBe(
+      initialExplorerState,
+    )
+    expect(
+      explorerReducer(initialExplorerState, { type: 'forward', snapshot: snap(2, 1, 1, v0) }),
+    ).toBe(initialExplorerState)
+  })
+
+  it('prune keeps the cursor pointing at the same logical record', () => {
+    const types = new Set(['entry', 'tag'])
+    // focused node removed: the whole history clears (the one in-page clear)
+    const focused: ExplorerState = {
       focusedId: 'b',
       highlightedId: 'b',
       soloType: 'tag',
-      history: [rec('a'), rec('b')],
+      history: [rec('a', 1, 0, 0, D), rec('b', 1, 0, 0, D)],
+      cursor: 1,
     }
-    // focused node removed
     expect(
-      explorerReducer(s, { type: 'prune', renderedIds: new Set(['a']), renderedTypes: types }),
-    ).toEqual({ focusedId: null, highlightedId: null, soloType: 'tag', history: [] })
+      explorerReducer(focused, { type: 'prune', renderedIds: new Set(['a']), renderedTypes: types }),
+    ).toEqual({
+      focusedId: null,
+      highlightedId: null,
+      soloType: 'tag',
+      history: [],
+      cursor: 0,
+    })
+    // records dropped while the record at the cursor survives: cursor shifts
+    const s: ExplorerState = {
+      focusedId: 'b',
+      highlightedId: 'b',
+      soloType: null,
+      history: [rec('a', 1, 0, 0, D), rec('b', 1, 0, 0, D), rec('c', 1, 0, 0, D)],
+      cursor: 1,
+    }
+    const shifted = explorerReducer(s, {
+      type: 'prune',
+      renderedIds: new Set(['b', 'c']),
+      renderedTypes: types,
+    })
+    expect(shifted.history.map((r) => r.nodeId)).toEqual(['b', 'c'])
+    expect(shifted.cursor).toBe(0)
+    expect(shifted.focusedId).toBe('b')
+    expect(historyInvariantError(shifted)).toBeNull()
+    // record at the cursor dropped while unfocused: cursor clamps
+    const u: ExplorerState = {
+      focusedId: null,
+      highlightedId: null,
+      soloType: null,
+      history: [rec('a', 1, 0, 0, D), rec('b', 1, 0, 0, D)],
+      cursor: 1,
+    }
+    const clamped = explorerReducer(u, {
+      type: 'prune',
+      renderedIds: new Set(['a']),
+      renderedTypes: types,
+    })
+    expect(clamped.history.map((r) => r.nodeId)).toEqual(['a'])
+    expect(clamped.cursor).toBe(0)
+    expect(clamped.focusedId).toBeNull()
+    expect(historyInvariantError(clamped)).toBeNull()
     // solo type removed
     expect(
-      explorerReducer(s, {
+      explorerReducer(focused, {
         type: 'prune',
         renderedIds: new Set(['a', 'b']),
         renderedTypes: new Set(['entry']),
       }).soloType,
     ).toBeNull()
-    // history filter
-    const h = explorerReducer(s, {
-      type: 'prune',
-      renderedIds: new Set(['b']),
-      renderedTypes: types,
-    })
-    expect(h.history).toEqual([rec('b')])
-    expect(h.focusedId).toBe('b')
     // highlighted but unfocused node removed
     const hl: ExplorerState = { ...initialExplorerState, highlightedId: 'z' }
     expect(
@@ -436,20 +632,37 @@ describe('explorerReducer', () => {
     expect(
       explorerReducer(s, {
         type: 'prune',
-        renderedIds: new Set(['a', 'b']),
+        renderedIds: new Set(['a', 'b', 'c']),
         renderedTypes: types,
       }),
     ).toBe(s)
   })
 
-  it('backtrackTarget returns the previous node with the last camera', () => {
-    expect(backtrackTarget([])).toBeNull()
-    expect(backtrackTarget([rec('a')])).toBeNull()
-    const A = { nodeId: 'A', zoom: 1, cx: 0, cy: 0 }
-    const B = { nodeId: 'B', zoom: 4, cx: 90, cy: 20 }
-    expect(backtrackTarget([A, B])).toEqual({ nodeId: 'A', view: { zoom: 4, cx: 90, cy: 20 } })
+  it('historyInvariantError reports a corrupted cursor or an unrendered record', () => {
+    expect(historyInvariantError(initialExplorerState)).toBeNull()
+    const ok: ExplorerState = {
+      focusedId: 'b',
+      highlightedId: 'b',
+      soloType: null,
+      history: [rec('a', 1, 0, 0, D), rec('b', 2, 1, 3, D)],
+      cursor: 1,
+    }
+    expect(historyInvariantError(ok)).toBeNull()
+    expect(historyInvariantError(ok, { renderedIds: new Set(['a', 'b']) })).toBeNull()
+    // cursor out of range
+    expect(historyInvariantError({ ...ok, cursor: 2 })).toMatch(/cursor/)
+    expect(historyInvariantError({ ...ok, cursor: -1 })).toMatch(/cursor/)
+    // empty history with a nonzero cursor
+    expect(
+      historyInvariantError({ ...initialExplorerState, history: [], cursor: 1 }),
+    ).toMatch(/cursor/)
+    // a history record whose node is not rendered
+    expect(historyInvariantError(ok, { renderedIds: new Set(['a']) })).toMatch(/not rendered/)
+    // the record at the cursor must exist
+    expect(historyInvariantError({ ...ok, history: [] })).toMatch(/cursor/)
   })
 })
+
 
 describe('fitView', () => {
   const caps = { maxZoom: MAX_ZOOM, maxAutoZoom: MAX_AUTO_ZOOM }

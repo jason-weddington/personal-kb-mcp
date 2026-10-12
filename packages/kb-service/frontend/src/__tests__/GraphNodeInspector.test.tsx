@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useState } from 'react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import {
   DEFAULT_INSPECTOR_VIEW,
   GraphNodeInspector,
@@ -1061,5 +1061,96 @@ describe('GraphNodeInspector group filters', () => {
     expect(screen.queryByRole('button', { name: 'p15 1' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'p08 1' })).toBeNull()
     expect(screen.getByRole('button', { name: 'p07 1' })).toBeInTheDocument()
+  })
+})
+
+// ── Visited check marks: nodes focused earlier this page session ─────────────
+
+describe('visited check marks', () => {
+  const visited = new Set(['kb-00001'])
+  const pillMembers = [
+    entryNode('kb-00001'),
+    entryNode('kb-00002'),
+    entryNode('kb-00003'),
+  ]
+  const rowMembers = [entryNode('kb-00001'), ...manyEntriesOf(12)]
+
+  function renderVisited() {
+    const conns: ConnInput[] = [
+      ...pillMembers.map((m) => conn(m.id, 'related_to', 'out')),
+      ...rowMembers.map((m) => conn(m.id, 'has_tag', 'in')),
+    ]
+    render(
+      <InspectorConnections
+        groups={groupNeighbors(conns)}
+        membersById={memberMap(
+          [...pillMembers, ...rowMembers].map((n) => [
+            n.id,
+            entryMember(n, { label: n.label }),
+          ]),
+        )}
+        onOpenNode={() => {}}
+        visited={visited}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'has_tag:in ← 13' }))
+  }
+
+  it('marks only the visited member: a leading check on the pill, a trailing one on the row', () => {
+    renderVisited()
+    const checks = screen.getAllByTestId('visited-check')
+    expect(checks).toHaveLength(2)
+    for (const check of checks) {
+      // keyed on the member's node id, never on a row position or count
+      expect(check.closest('button, [role="button"]')?.textContent).toContain('Title kb-00001')
+    }
+    for (const btn of screen.getAllByRole('button', { name: /Title kb-/ })) {
+      if ((btn.textContent ?? '').includes('Title kb-00001')) {
+        expect(within(btn).getByTestId('visited-check')).toBeInTheDocument()
+      } else {
+        expect(within(btn).queryByTestId('visited-check')).toBeNull()
+      }
+    }
+  })
+
+  it('renders no check for any member without a visited set', () => {
+    renderVisited()
+    cleanup()
+    // the previous render's set is gone: a plain render marks nobody
+    const conns: ConnInput[] = [...pillMembers.map((m) => conn(m.id, 'related_to', 'out'))]
+    render(
+      <InspectorConnections
+        groups={groupNeighbors(conns)}
+        membersById={memberMap(pillMembers.map((n) => [n.id, entryMember(n)]))}
+        onOpenNode={() => {}}
+      />,
+    )
+    expect(screen.queryByTestId('visited-check')).toBeNull()
+  })
+
+  it('excludes the entry-header tag pills and the project pill from visited marks', () => {
+    const node = entryNode('kb-00001')
+    const tag = tagNode('tag:alpha')
+    const project = projectNode('p1')
+    const other = entryNode('kb-00002')
+    const conns: ConnInput[] = [
+      conn(tag.id, 'has_tag', 'out'),
+      conn(project.id, 'in_project', 'out'),
+      conn(other.id, 'related_to', 'out'),
+    ]
+    renderInspector({
+      node,
+      groups: groupNeighbors(conns),
+      nodeById: nodeMap([node, tag, project, other]),
+      // every member was visited: the header pills must still show no check
+      visited: new Set([tag.id, project.id, other.id]),
+    })
+    const regionEl = region()
+    const alphaPill = within(regionEl).getByRole('button', { name: 'alpha' })
+    expect(within(alphaPill).queryByTestId('visited-check')).toBeNull()
+    const projectPill = within(regionEl).getByRole('button', { name: 'p1' })
+    expect(within(projectPill).queryByTestId('visited-check')).toBeNull()
+    const relatedPill = within(regionEl).getByRole('button', { name: 'Title kb-00002' })
+    expect(within(relatedPill).getByTestId('visited-check')).toBeInTheDocument()
   })
 })
