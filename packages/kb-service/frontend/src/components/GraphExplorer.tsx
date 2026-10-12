@@ -21,10 +21,10 @@ import type { ForceGraphMethods, LinkObject, NodeObject } from 'react-force-grap
 import { RESULTS_FIT_MS, RESULTS_FIT_PADDING } from '../graph/queryModel'
 import { drawNode } from '../graph/drawNode'
 import type { NodeRenderState } from '../graph/drawNode'
-import { GraphNodeInspector, DEFAULT_INSPECTOR_VIEW } from './GraphNodeInspector'
-import type { InspectorViewState } from './GraphNodeInspector'
-import { groupNeighbors } from '../graph/inspectorModel'
-import type { ConnInput } from '../graph/inspectorModel'
+import { GraphNodeInspector, DEFAULT_INSPECTOR_VIEW, memberFromNode } from './GraphNodeInspector'
+import type { InspectorMember, InspectorViewState } from './GraphNodeInspector'
+import { excludedMemberIds, groupNeighbors, memberMatches } from '../graph/inspectorModel'
+import type { ConnInput, GroupFilter } from '../graph/inspectorModel'
 import {
   BACKGROUND,
   BACKTRACK_DRAWER_DELAY_MS,
@@ -104,6 +104,13 @@ const KEY_GUARD_SELECTOR =
 
 const RESIZE_FIT_DELAY_MS = 200
 
+/** Shared empty set: with no inspector target there is no narrowing. */
+const EMPTY_EXCLUDED: ReadonlySet<string> = new Set()
+
+function sameFacets(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
+  return a.length === b.length && a.every((k, i) => k === b[i])
+}
+
 // force-graph repaints its hit-test canvas every 800 ms for as long as the
 // canvas keeps redrawing, which here is always (particles, autoPauseRedraw
 // off). Painting every link into it (27k on the live KB) made a long frame
@@ -158,6 +165,72 @@ export function GraphExplorer({
     () => activeNeighborSet(traversal.nodeStates, adjacency),
     [traversal, adjacency],
   )
+
+  const panelGroups = useMemo(() => {
+    if (panelNode === null) return []
+    const conns: ConnInput[] = (adjacency.get(panelNode.id) ?? []).map((n) => ({
+      nodeId: n.node,
+      edgeType: n.type,
+      dir: n.dir,
+    }))
+    return groupNeighbors(conns)
+  }, [panelNode, adjacency])
+
+  // Member metadata for the panel target's groups, from the loaded payload:
+  // the excludedMemberIds match callback and the filter telemetry both need
+  // the same shape the inspector's rows are built from.
+  const panelMembersById = useMemo(() => {
+    const byNode = new Map<string, InspectorMember>()
+    for (const g of panelGroups) {
+      for (const m of g.members) {
+        if (byNode.has(m.nodeId)) continue
+        const n = nodeById.get(m.nodeId)
+        if (n === undefined) continue // InspectorConnections warns and falls back
+        byNode.set(
+          m.nodeId,
+          memberFromNode(n, { nodeId: m.nodeId, edgeType: g.edgeType, dir: g.dir }),
+        )
+      }
+    }
+    return byNode
+  }, [panelGroups, nodeById])
+
+  const neighborIdSet = useCallback(
+    (nodeId: string) => new Set((adjacency.get(nodeId) ?? []).map((n) => n.node)),
+    [adjacency],
+  )
+
+  const memberPasses = useCallback(
+    (nodeId: string, groupKey: string, filters: Record<string, GroupFilter>): boolean => {
+      const filter = filters[groupKey] ?? { text: '', facets: [] }
+      const member = panelMembersById.get(nodeId)
+      const m: InspectorMember =
+        member !== undefined
+          ? member
+          : {
+              nodeId,
+              label: nodeId,
+              nodeType: 'unknown',
+              edgeType: '',
+              dir: 'in',
+              entryType: null,
+              projectRef: null,
+            }
+      return memberMatches(m, filter, neighborIdSet(nodeId))
+    },
+    [panelMembersById, neighborIdSet],
+  )
+
+  // Canvas narrowing (item C): while an inspector target is focused, the
+  // members of its actively filtered groups that fail the group's filter drop
+  // out of the visible focus neighbourhood — the focused node itself is
+  // guarded inside excludedMemberIds and never drops out.
+  const excludedIds = useMemo(() => {
+    if (focusedId === null) return EMPTY_EXCLUDED
+    return excludedMemberIds(focusedId, panelGroups, inspectorView.filters, (nodeId, groupKey) =>
+      memberPasses(nodeId, groupKey, inspectorView.filters),
+    )
+  }, [focusedId, panelGroups, inspectorView.filters, memberPasses])
 
   // ── Refs read by handlers and timers ─────────────────────────────────────
   const renderRef = useRef<NodeRenderState>({
@@ -533,13 +606,26 @@ export function GraphExplorer({
   )
 
   // ── ForceGraph accessors ─────────────────────────────────────────────────
+  // nodeVisibility subtracts the excluded members (excludedMemberIds) from
+  // the focusSet memo, so a narrowed member drops out of the visible focus
+  // neighbourhood; linkVisibility additionally hides a link whose non-focused
+  // endpoint is an excluded member (isLinkVisible alone only compares the
+  // endpoints against focusedId).
   const nodeVisibility = useCallback(
-    (n: FgNode) => isNodeVisible(n, focusSet, soloType),
-    [focusSet, soloType],
+    (n: FgNode) => isNodeVisible(n, focusSet, soloType) && !excludedIds.has(n.id),
+    [focusSet, soloType, excludedIds],
   )
   const linkVisibility = useCallback(
-    (l: FgLink) => isLinkVisible(endpointId(l.source), endpointId(l.target), focusedId, soloType),
-    [focusedId, soloType],
+    (l: FgLink) => {
+      const s = endpointId(l.source)
+      const t = endpointId(l.target)
+      if (excludedIds.size > 0) {
+        if (s !== focusedId && excludedIds.has(s)) return false
+        if (t !== focusedId && excludedIds.has(t)) return false
+      }
+      return isLinkVisible(s, t, focusedId, soloType)
+    },
+    [focusedId, soloType, excludedIds],
   )
   const linkColor = useCallback((l: FgLink) => linkStyle(l, traversal).color, [traversal])
   const linkWidth = useCallback((l: FgLink) => linkStyle(l, traversal).width, [traversal])
@@ -607,15 +693,44 @@ export function GraphExplorer({
     [],
   )
 
-  const panelGroups = useMemo(() => {
-    if (panelNode === null) return []
-    const conns: ConnInput[] = (adjacency.get(panelNode.id) ?? []).map((n) => ({
-      nodeId: n.node,
-      edgeType: n.type,
-      dir: n.dir,
-    }))
-    return groupNeighbors(conns)
-  }, [panelNode, adjacency])
+
+  // Filter edits write only filters[groupKey]; expanded and scrollTop writes
+  // flow through here too, so the filter telemetry diffs before emitting.
+  const onInspectorViewChange = (next: InspectorViewState) => {
+    const prevFilters = inspectorView.filters
+    setInspectorView(next)
+    if (panelNode === null) return
+    const changed = panelGroups.filter((g) => {
+      const f = next.filters[g.key]
+      if (f === undefined) return false
+      const p = prevFilters[g.key]
+      return p === undefined || p.text !== f.text || !sameFacets(p.facets, f.facets)
+    })
+    if (changed.length === 0) return
+    const excluded = excludedMemberIds(
+      panelNode.id,
+      panelGroups,
+      next.filters,
+      (nodeId, groupKey) => memberPasses(nodeId, groupKey, next.filters),
+    )
+    for (const g of changed) {
+      const filter = next.filters[g.key]
+      const members = g.members.map((m) => panelMembersById.get(m.nodeId))
+      const matching = members.reduce(
+        (sum, m) => sum + (m !== undefined && memberPasses(m.nodeId, g.key, next.filters) ? 1 : 0),
+        0,
+      )
+      console.info('[graph-inspector] filter', {
+        node_id: panelNode.id,
+        group_key: g.key,
+        text: filter.text,
+        facets: filter.facets,
+        matching,
+        total: g.members.length,
+        canvas_excluded: excluded.size,
+      })
+    }
+  }
 
   // Rows and pills write the same hover field onNodeHover writes, so drawNode
   // highlights an inspector-hovered member exactly like a canvas hover.
@@ -697,8 +812,9 @@ export function GraphExplorer({
           node={panelNode}
           groups={panelGroups}
           nodeById={nodeById}
+          adjacency={adjacency}
           view={inspectorView}
-          onViewChange={setInspectorView}
+          onViewChange={onInspectorViewChange}
           onOpenNode={selectById}
           onHover={onInspectorHover}
           onClose={() => setPanelNode(null)}

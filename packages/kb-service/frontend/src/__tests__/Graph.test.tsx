@@ -798,3 +798,175 @@ describe('GraphExplorer handle', () => {
     expect(fg.centerAt).toHaveBeenLastCalledWith(12.5, 20, 600)
   })
 })
+
+// ── Group filters: narrowing a large connection group (item C) ─────────────
+
+function fixtureNarrow(): GraphFullResponse {
+  const nodes: ExplorerNode[] = [
+    { id: 'tag:mass', type: 'tag', label: 'mass', val: 15, properties: {}, x: 40, y: 70 },
+  ]
+  const edges = []
+  for (let i = 0; i < 15; i++) {
+    const n = String(i).padStart(2, '0')
+    const deep = i === 0 ? 'Deep background for mass entry 0' : `Mass entry ${i} detail`
+    nodes.push({
+      id: `kb-001${n}`,
+      type: 'entry',
+      label: `Mass entry ${i}`,
+      val: 1,
+      properties: {
+        project_ref: i <= 5 ? 'p1' : 'p2',
+        short_title: `Mass entry ${i}`,
+        long_title: deep,
+        entry_type: i <= 5 ? 'decision' : i <= 12 ? 'factual_reference' : 'lesson_learned',
+      },
+      x: 20 + i * 2,
+      y: 70,
+    })
+    edges.push({ source: `kb-001${n}`, target: 'tag:mass', type: 'has_tag', properties: {} })
+  }
+  return {
+    nodes,
+    edges,
+    stats: { node_count: 16, edge_count: 15 },
+  }
+}
+
+describe('GraphExplorer — group filters', () => {
+  const narrowId = (i: number) => `kb-001${String(i).padStart(2, '0')}`
+  const p1Ids = Array.from({ length: 6 }, (_, i) => narrowId(i))
+  const nonP1Ids = Array.from({ length: 9 }, (_, i) => narrowId(i + 6))
+  const allNarrowIds = [...p1Ids, ...nonP1Ids]
+
+  function renderNarrow() {
+    const f = fixtureNarrow()
+    const graph = filterGraph(f.nodes, f.edges, new Set(Object.keys(NODE_COLORS)), '')
+    vi.useFakeTimers()
+    render(<GraphExplorer graph={graph} />)
+    clearFg()
+    return graph
+  }
+
+  /** Focus tag:mass, wait for the inspector, expand its has_tag:in group. */
+  function openNarrowInspector() {
+    act(() => h.lastProps.onNodeClick(nodeOf('tag:mass')))
+    advance(850)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    fireEvent.click(within(region).getByRole('button', { name: 'has_tag:in ← 15' }))
+    return region
+  }
+
+  it('(c1) expanding the has_tag:in group shows the filter input and the pinned facets', () => {
+    renderNarrow()
+    const region = openNarrowInspector()
+    const input = within(region).getByTestId('group-filter-has_tag:in')
+    expect(input).toBeInTheDocument()
+    expect(within(region).getByTestId('group-filter-has_tag:in')).toHaveAccessibleName(
+      'Filter has_tag by title',
+    )
+    expect(
+      within(region)
+        .queryAllByRole('button', { name: /\S.* \d+$/ })
+        .filter((c) => c.getAttribute('aria-pressed') !== null)
+        .map((c) => c.textContent),
+    ).toEqual(['p2 9', 'factual reference 7', 'decision 6', 'p1 6', 'lesson learned 2'])
+    // every member's only non-entry neighbour is tag:mass itself, excluded as
+    // the inspected node — so there are no node facets and no +N chip
+    expect(within(region).queryByRole('button', { name: /^\+\d+$/ })).toBeNull()
+  })
+
+  it('(c2) the p1 facet narrows the canvas, the rows and the header; Clear restores', () => {
+    const graph = renderNarrow()
+    const region = openNarrowInspector()
+    for (const id of allNarrowIds) expect(visible(id)).toBe(true)
+    fireEvent.click(within(region).getByRole('button', { name: 'p1 6' }))
+    for (const id of p1Ids) expect(visible(id)).toBe(true)
+    for (const id of nonP1Ids) expect(visible(id)).toBe(false)
+    expect(visible('tag:mass')).toBe(true)
+    for (const l of graph.links) {
+      const linkVisible = h.lastProps.linkVisibility(l)
+      if (p1Ids.includes(l.source)) expect(linkVisible).toBe(true)
+      else expect(linkVisible).toBe(false)
+    }
+    expect(within(region).getByText('6 of 15')).toBeInTheDocument()
+    expect(within(region).getAllByRole('button', { name: /Mass entry \d+/ })).toHaveLength(6)
+    // Clear restores every member and its links
+    fireEvent.click(within(region).getByTestId('group-clear-has_tag:in'))
+    for (const id of allNarrowIds) expect(visible(id)).toBe(true)
+    for (const l of graph.links) expect(h.lastProps.linkVisibility(l)).toBe(true)
+    expect(within(region).queryByText(/^\d+ of \d+$/)).toBeNull()
+    expect(within(region).getAllByRole('button', { name: /Mass entry \d+/ })).toHaveLength(15)
+  })
+
+  it('(c3) emptying the title text restores every member', () => {
+    const graph = renderNarrow()
+    const region = openNarrowInspector()
+    const input = within(region).getByTestId('group-filter-has_tag:in') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'deep background' } })
+    for (const id of allNarrowIds) if (id !== 'kb-00100') expect(visible(id)).toBe(false)
+    expect(visible('kb-00100')).toBe(true)
+    expect(within(region).getAllByRole('button', { name: /Mass entry \d+/ })).toHaveLength(1)
+    fireEvent.change(input, { target: { value: '' } })
+    for (const id of allNarrowIds) expect(visible(id)).toBe(true)
+    for (const l of graph.links) expect(h.lastProps.linkVisibility(l)).toBe(true)
+  })
+
+  it('(c4) a facet click never walks: no camera calls and no re-open', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    renderNarrow()
+    const region = openNarrowInspector()
+    clearFg()
+    fireEvent.click(within(region).getByRole('button', { name: 'decision 6' }))
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    expect(fg.zoom).not.toHaveBeenCalled()
+    expect(
+      info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] open'),
+    ).toHaveLength(1)
+  })
+
+  it('(c5) Escape with focus in the filter input keeps the inspector and the focus', () => {
+    renderNarrow()
+    const region = openNarrowInspector()
+    const input = within(region).getByTestId('group-filter-has_tag:in') as HTMLInputElement
+    input.focus()
+    clearFg()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(screen.getByRole('region', { name: 'Node inspector' })).toBeInTheDocument()
+    expect(fg.zoom).not.toHaveBeenCalled()
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('(c6) filtering fetches nothing and emits the pinned filter line per change', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    renderNarrow()
+    const region = openNarrowInspector()
+    const input = within(region).getByTestId('group-filter-has_tag:in') as HTMLInputElement
+    fireEvent.click(within(region).getByRole('button', { name: 'p1 6' }))
+    fireEvent.change(input, { target: { value: 'mass' } })
+    fireEvent.click(within(region).getByTestId('group-clear-has_tag:in'))
+    const filterCalls = info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] filter')
+    expect(filterCalls).toHaveLength(3)
+    expect(filterCalls[0][1]).toEqual({
+      node_id: 'tag:mass',
+      group_key: 'has_tag:in',
+      text: '',
+      facets: ['project:p1'],
+      matching: 6,
+      total: 15,
+      canvas_excluded: 9,
+    })
+    expect(filterCalls[1][1]).toMatchObject({ text: 'mass', canvas_excluded: 9 })
+    expect(filterCalls[2][1]).toMatchObject({
+      text: '',
+      facets: [],
+      matching: 15,
+      canvas_excluded: 0,
+    })
+    expect(
+      info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] open'),
+    ).toHaveLength(1)
+    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
+    expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(0)
+  })
+})

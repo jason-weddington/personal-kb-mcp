@@ -12,7 +12,7 @@ import { drawNode } from '../graph/drawNode'
 import type { NodeRenderState } from '../graph/drawNode'
 import { EMPTY_TRAVERSAL, labelOpacity } from '../graph/explorerModel'
 import type { ExplorerNode } from '../graph/explorerModel'
-import { INSPECTOR_PILL_MAX, groupNeighbors } from '../graph/inspectorModel'
+import { INSPECTOR_PILL_MAX, FACET_TOP_N, groupNeighbors } from '../graph/inspectorModel'
 import type { ConnInput } from '../graph/inspectorModel'
 import type { GetResponse, KnowledgeEntry } from '../kbTypes'
 
@@ -632,3 +632,434 @@ describe('InspectorViewState', () => {
 function manyEntriesOf(n: number): ExplorerNode[] {
   return Array.from({ length: n }, (_, i) => entryNode(`kb-9${String(i).padStart(4, '0')}`))
 }
+
+// ── Group filters (item C) ─────────────────────────────────────────────────
+
+type MemberSpec = {
+  id: string
+  label?: string
+  longTitle?: string | null
+  entryType?: string | null
+  projectRef?: string | null
+  neighbors?: string[]
+}
+
+/** A big-group fixture: the members, their group, the graph nodes and adjacency. */
+function buildGroup(specs: MemberSpec[], edgeType = 'has_tag', dir: 'in' | 'out' = 'in') {
+  const groups = groupNeighbors(specs.map((s) => conn(s.id, edgeType, dir)))
+  const membersById = new Map<string, InspectorMember>()
+  const nodeById = new Map<string, { id: string; label: string; type: string }>()
+  const adjacency = new Map<string, Array<{ node: string; type: string }>>()
+  for (const s of specs) {
+    const longTitle = s.longTitle ?? null
+    membersById.set(s.id, {
+      nodeId: s.id,
+      label: s.label ?? s.id,
+      nodeType: 'entry',
+      edgeType,
+      dir,
+      tooltip: longTitle !== null && longTitle.length > 0 ? longTitle : undefined,
+      entryType: s.entryType ?? null,
+      projectRef: s.projectRef ?? null,
+      longTitle,
+    })
+    nodeById.set(s.id, { id: s.id, label: s.label ?? s.id, type: 'entry' })
+    adjacency.set(
+      s.id,
+      (s.neighbors ?? []).map((n) => ({ node: n, type: edgeType })),
+    )
+    for (const n of s.neighbors ?? []) {
+      if (nodeById.has(n)) continue
+      const sep = n.indexOf(':')
+      nodeById.set(n, {
+        id: n,
+        label: sep === -1 ? n : n.slice(sep + 1),
+        type: sep === -1 ? 'unknown' : n.slice(0, sep),
+      })
+    }
+  }
+  return { groups, membersById, nodeById, adjacency }
+}
+
+const massSpecs = (): MemberSpec[] => {
+  const out: MemberSpec[] = []
+  for (let i = 0; i < 15; i++) {
+    out.push({
+      id: `kb-001${String(i).padStart(2, '0')}`,
+      label: `Mass entry ${i}`,
+      entryType: i <= 5 ? 'decision' : i <= 12 ? 'factual_reference' : 'lesson_learned',
+      projectRef: i <= 5 ? 'p1' : 'p2',
+    })
+  }
+  return out
+}
+
+const KEY = 'has_tag:in'
+const SUMMARY = `${KEY} ← 15`
+const rowButtons = (pattern: RegExp = /Mass entry \d+/) =>
+  screen.queryAllByRole('button', { name: pattern })
+const chipButtons = () =>
+  screen
+    .queryAllByRole('button', { name: /\S.* \d+$/ })
+    .filter((c) => c.getAttribute('aria-pressed') !== null)
+const expandedView = (filters: InspectorViewState['filters'] = {}): InspectorViewState => ({
+  expanded: { [KEY]: true },
+  filters,
+  scrollTop: 0,
+})
+
+function renderFiltered(
+  specs: MemberSpec[],
+  opts: { initialView?: InspectorViewState; filtering?: boolean } = {},
+) {
+  const { groups, membersById, nodeById, adjacency } = buildGroup(specs)
+  const views: InspectorViewState[] = []
+  const filtering = opts.filtering ?? true
+  function Harness() {
+    const [view, setView] = useState(opts.initialView ?? DEFAULT_INSPECTOR_VIEW)
+    const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set())
+    return (
+      <InspectorConnections
+        groups={groups}
+        membersById={membersById}
+        onOpenNode={() => {}}
+        view={view}
+        onViewChange={(v: InspectorViewState) => {
+          views.push(v)
+          setView(v)
+        }}
+        filtering={
+          filtering
+            ? {
+                viewState: view,
+                onViewChange: (v: InspectorViewState) => {
+                  views.push(v)
+                  setView(v)
+                },
+                nodeById,
+                adjacency,
+                inspectedNodeId: 'tag:mass',
+              }
+            : undefined
+        }
+        revealedFacetGroups={revealed}
+        onRevealFacetGroup={(key) => setRevealed(new Set([...revealed, key]))}
+      />
+    )
+  }
+  const result = render(<Harness />)
+  return { views, container: result.container }
+}
+
+describe('InspectorConnections group filters', () => {
+  it('a 15-member group WITHOUT the filtering prop renders no filter UI and no of-N header', () => {
+    const { container } = renderFiltered(massSpecs(), { filtering: false })
+    expect(screen.getByRole('button', { name: SUMMARY })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(container.querySelectorAll('[aria-pressed]')).toHaveLength(0)
+    expect(screen.queryByText(/^\d+ of \d+$/)).toBeNull()
+  })
+
+  it('a group with <= INSPECTOR_PILL_MAX members renders no filter UI even with filtering present', () => {
+    const { container } = renderFiltered(massSpecs().slice(0, 5))
+    expect(container.querySelectorAll('[role="textbox"], input[type="text"]')).toHaveLength(0)
+    expect(container.querySelectorAll('[aria-pressed]')).toHaveLength(0)
+  })
+
+  it('a 15-member group with filtering renders the filter input and the pinned facet order', () => {
+    renderFiltered(massSpecs(), { initialView: expandedView() })
+    const input = screen.getByTestId(`group-filter-${KEY}`)
+    expect(input).toBeInTheDocument()
+    expect(screen.queryAllByRole('textbox')).toHaveLength(1)
+    expect(chipButtons().map((c) => c.textContent)).toEqual([
+      'p2 9',
+      'factual reference 7',
+      'decision 6',
+      'p1 6',
+      'lesson learned 2',
+    ])
+    expect(screen.queryByText(/^\+?\d+$/)).toBeNull()
+    expect(screen.queryByText(/^\d+ of \d+$/)).toBeNull()
+  })
+
+  it('shows the top FACET_TOP_N facets plus a +N chip that reveals the rest', () => {
+    const specs = Array.from({ length: 15 }, (_, i) => ({
+      id: `kb-002${String(i).padStart(2, '0')}`,
+      label: `Deep ${i}`,
+      entryType: 'decision',
+      projectRef: `p${String(i + 1).padStart(2, '0')}`,
+    }))
+    renderFiltered(specs, { initialView: expandedView() })
+    const chip = (name: string) => screen.getByRole('button', { name })
+    expect(chip('decision 15')).toBeInTheDocument()
+    expect(chip('p01 1')).toBeInTheDocument()
+    expect(chip('p07 1')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'p08 1' })).toBeNull()
+    expect(chip(`+${16 - FACET_TOP_N}`)).toBeInTheDocument()
+    fireEvent.click(chip(`+${16 - FACET_TOP_N}`))
+    expect(chip('p08 1')).toBeInTheDocument()
+    expect(chip('p15 1')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: `+${16 - FACET_TOP_N}` })).toBeNull()
+  })
+
+  it('facet chips carry the legend colour of their node type and the exact label-count text', () => {
+    const specs = massSpecs().map((s, i) => (i < 7 ? { ...s, neighbors: ['tag:rust'] } : s))
+    renderFiltered(specs, { initialView: expandedView() })
+    const project = screen.getByRole('button', { name: 'p2 9' })
+    expect(project).toHaveStyle({ backgroundColor: '#ff9800', color: '#0a0a0f' })
+    expect(project).toHaveTextContent('p2 9')
+    const tag = screen.getByRole('button', { name: 'rust 7' })
+    expect(tag).toHaveStyle({ backgroundColor: '#00bcd4', color: '#0a0a0f' })
+    expect(tag).toHaveTextContent('rust 7')
+    const entryType = screen.getByRole('button', { name: 'factual reference 7' })
+    expect(entryType).toHaveTextContent('factual reference 7')
+  })
+
+  it('clicking a facet chip toggles aria-pressed and writes the facet key through onViewChange', () => {
+    const { views } = renderFiltered(massSpecs(), { initialView: expandedView() })
+    const chip = screen.getByRole('button', { name: 'decision 6' })
+    expect(chip).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(chip)
+    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', facets: ['entry_type:decision'] } })
+    expect(chip).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(chip)
+    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', facets: [] } })
+    expect(chip).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('selected facets AND with each other and with the text filter over the rendered rows', () => {
+    const specs: MemberSpec[] = [
+      { id: 'kb-01000', label: 'ollama alpha', entryType: 'decision', projectRef: 'p1' },
+      { id: 'kb-01001', label: 'beta', entryType: 'decision', projectRef: 'p1' },
+      { id: 'kb-01002', label: 'ollama gamma', entryType: 'decision', projectRef: 'p2' },
+      { id: 'kb-01003', label: 'ollama delta', entryType: 'factual_reference', projectRef: 'p1' },
+      ...Array.from({ length: 11 }, (_, i) => ({
+        id: `kb-011${String(i).padStart(2, '0')}`,
+        label: `padding ${i}`,
+        entryType: 'decision',
+        projectRef: 'p2',
+      })),
+    ]
+    renderFiltered(specs, {
+      initialView: expandedView({
+        [KEY]: { text: 'ollama', facets: ['entry_type:decision', 'project:p1'] },
+      }),
+    })
+    expect(rowButtons(/ollama alpha|beta|ollama gamma|ollama delta|padding \d+/)).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /ollama alpha/ })).toBeInTheDocument()
+    expect(screen.queryByTestId(`inspector-empty-${KEY}`)).toBeNull()
+  })
+
+  it('after selecting a facet chip, the rendered row count equals the chip count', () => {
+    renderFiltered(massSpecs(), { initialView: expandedView() })
+    fireEvent.click(screen.getByRole('button', { name: 'decision 6' }))
+    expect(rowButtons()).toHaveLength(6)
+  })
+
+  it('zero matches renders No matching members. and zero rows', () => {
+    renderFiltered(massSpecs(), { initialView: expandedView({ [KEY]: { text: 'zzz', facets: [] } }) })
+    const empty = screen.getByTestId(`inspector-empty-${KEY}`)
+    expect(empty).toHaveTextContent('No matching members.')
+    expect(rowButtons()).toHaveLength(0)
+  })
+
+  it('the header shows <matching> of <total> while a filter is active and Clear resets it', () => {
+    const { views } = renderFiltered(massSpecs(), { initialView: expandedView() })
+    fireEvent.click(screen.getByRole('button', { name: 'decision 6' }))
+    expect(screen.getByText('6 of 15')).toBeInTheDocument()
+    const clear = screen.getByTestId(`group-clear-${KEY}`)
+    expect(clear).toHaveAccessibleName('Clear')
+    fireEvent.click(clear)
+    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', facets: [] } })
+    expect(screen.queryByText(/^\d+ of \d+$/)).toBeNull()
+    expect(screen.queryByTestId(`group-clear-${KEY}`)).toBeNull()
+    expect(rowButtons()).toHaveLength(15)
+  })
+
+  it('filter edits write only filters[groupKey]: expanded and scrollTop are untouched', () => {
+    const { views } = renderFiltered(massSpecs(), { initialView: expandedView() })
+    const input = screen.getByTestId(`group-filter-${KEY}`) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'mass' } })
+    fireEvent.click(screen.getByRole('button', { name: 'decision 6' }))
+    fireEvent.click(screen.getByRole('button', { name: 'p1 6' }))
+    for (const v of views) {
+      expect(v.expanded).toEqual({ [KEY]: true })
+      expect(v.scrollTop).toBe(0)
+      expect(Object.keys(v.filters)).toEqual([KEY])
+    }
+  })
+
+  it('typing three characters over a missing member warns once, not three times', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const specs = massSpecs()
+    const { groups, membersById, nodeById, adjacency } = buildGroup(specs)
+    membersById.delete('kb-00107')
+    function Harness() {
+      const [view, setView] = useState<InspectorViewState>(expandedView())
+      return (
+        <InspectorConnections
+          groups={groups}
+          membersById={membersById}
+          onOpenNode={() => {}}
+          filtering={{
+            viewState: view,
+            onViewChange: setView,
+            nodeById,
+            adjacency,
+            inspectedNodeId: 'tag:mass',
+          }}
+        />
+      )
+    }
+    render(<Harness />)
+    const input = screen.getByTestId(`group-filter-${KEY}`)
+    for (const value of ['m', 'ma', 'mas']) {
+      fireEvent.change(input, { target: { value } })
+    }
+    expect(
+      warn.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] member not in payload'),
+    ).toHaveLength(1)
+  })
+})
+
+describe('GraphNodeInspector group filters', () => {
+  function massFixture() {
+    const nodes: ExplorerNode[] = [
+      { id: 'tag:mass', type: 'tag', label: 'mass', val: 15, properties: {}, x: 40, y: 70 },
+      ...Array.from({ length: 15 }, (_, i) => {
+        const id = `kb-001${String(i).padStart(2, '0')}`
+        const deep = i === 0 ? 'Deep background for mass entry 0' : `Mass entry ${i} detail`
+        return {
+          id,
+          type: 'entry',
+          label: `Mass entry ${i}`,
+          val: 1,
+          properties: {
+            project_ref: i <= 5 ? 'p1' : 'p2',
+            short_title: `Mass entry ${i}`,
+            long_title: deep,
+            entry_type: i <= 5 ? 'decision' : i <= 12 ? 'factual_reference' : 'lesson_learned',
+          },
+          x: 20 + i * 2,
+          y: 70,
+        }
+      }),
+    ]
+    const links = Array.from({ length: 15 }, (_, i) => ({
+      source: `kb-001${String(i).padStart(2, '0')}`,
+      target: 'tag:mass',
+      type: 'has_tag',
+    }))
+    const adjacency = new Map<string, Array<{ node: string; type: string }>>()
+    for (const l of links) {
+      adjacency.set(l.source, [{ node: l.target, type: l.type }])
+      adjacency.set(l.target, [
+        ...(adjacency.get(l.target) ?? []),
+        { node: l.source, type: l.type },
+      ])
+    }
+    return { nodes, links, adjacency }
+  }
+
+  function renderMassHarness(
+    connsByNode: Record<string, ConnInput[]>,
+    nodeById: Map<string, ExplorerNode>,
+    adjacency: Map<string, Array<{ node: string; type: string }>>,
+    start: ExplorerNode,
+  ) {
+    function Harness() {
+      const [node, setNode] = useState(start)
+      const [view, setView] = useState<InspectorViewState>(DEFAULT_INSPECTOR_VIEW)
+      const retarget = (n: ExplorerNode) => {
+        setNode(n)
+        setView(DEFAULT_INSPECTOR_VIEW)
+      }
+      return (
+        <GraphNodeInspector
+          node={node}
+          groups={groupNeighbors(connsByNode[node.id] ?? [])}
+          nodeById={nodeById}
+          adjacency={adjacency}
+          view={view}
+          onViewChange={setView}
+          onOpenNode={(id) => {
+            const n = nodeById.get(id)
+            if (n) retarget(n)
+          }}
+          onHover={() => {}}
+          onClose={() => {}}
+        />
+      )
+    }
+    return render(<Harness />)
+  }
+
+  it('typing in the title filter narrows the rows via the member longTitle from node.properties', () => {
+    const { nodes, adjacency } = massFixture()
+    const nodeById = nodeMap(nodes)
+    const conns: Record<string, ConnInput[]> = {
+      'tag:mass': Array.from({ length: 15 }, (_, i) =>
+        conn(`kb-001${String(i).padStart(2, '0')}`, 'has_tag', 'in'),
+      ),
+    }
+    renderMassHarness(conns, nodeById, adjacency, nodes[0])
+    fireEvent.click(screen.getByRole('button', { name: SUMMARY }))
+    const input = screen.getByTestId(`group-filter-${KEY}`) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'deep background' } })
+    expect(input.value).toBe('deep background')
+    expect(rowButtons()).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /Mass entry 0/ })).toBeInTheDocument()
+  })
+
+  it('re-targeting clears the filter text, the facet selection and the +N reveal', () => {
+    // 15 members with 15 distinct project refs: 16 facets, so the +8 reveal
+    // chip exists and carries over only if the reset is broken.
+    const members = Array.from({ length: 15 }, (_, i) => {
+      const id = `kb-003${String(i).padStart(2, '0')}`
+      return {
+        id,
+        type: 'entry' as const,
+        label: `Member ${i}`,
+        val: 1,
+        properties: {
+          project_ref: `p${String(i + 1).padStart(2, '0')}`,
+          short_title: `Member ${i}`,
+          long_title: `Member ${i} detail`,
+          entry_type: 'decision',
+        },
+        x: 20,
+        y: 70,
+      }
+    })
+    const hubA: ExplorerNode = { id: 'tag:hub-a', type: 'tag', label: 'hub-a', val: 15, properties: {} }
+    const hubB: ExplorerNode = { id: 'tag:hub-b', type: 'tag', label: 'hub-b', val: 15, properties: {} }
+    const nodeById = nodeMap([hubA, hubB, ...members])
+    const memberConns = members.map((m) => conn(m.id, 'has_tag', 'in'))
+    const conns: Record<string, ConnInput[]> = {
+      'tag:hub-a': [...memberConns, conn('tag:hub-b', 'related_to', 'out')],
+      'tag:hub-b': memberConns,
+    }
+    renderMassHarness(conns, nodeById, new Map(), hubA)
+    fireEvent.click(screen.getByRole('button', { name: 'has_tag:in ← 15' }))
+    fireEvent.click(screen.getByRole('button', { name: `+${16 - FACET_TOP_N}` }))
+    expect(screen.getByRole('button', { name: 'p15 1' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'p01 1' }))
+    const input = screen.getByTestId(`group-filter-${KEY}`) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'member' } })
+    expect(input.value).toBe('member')
+    expect(screen.getByRole('button', { name: 'p01 1' })).toHaveAttribute('aria-pressed', 'true')
+    // walk to hub-b through the same select path a member click uses
+    fireEvent.click(screen.getByRole('button', { name: 'hub-b' }))
+    // hub-b's group renders collapsed again after the reset: expand it
+    fireEvent.click(screen.getByRole('button', { name: 'has_tag:in ← 15' }))
+    const inputB = screen.getByTestId(`group-filter-${KEY}`) as HTMLInputElement
+    expect(inputB.value).toBe('')
+    expect(screen.queryByText(/^\d+ of \d+$/)).toBeNull()
+    for (const c of chipButtons()) expect(c).toHaveAttribute('aria-pressed', 'false')
+    // the reveal reset: the +8 chip is back and only the top 8 facets show
+    expect(screen.getByRole('button', { name: `+${16 - FACET_TOP_N}` })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'p15 1' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'p08 1' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'p07 1' })).toBeInTheDocument()
+  })
+})

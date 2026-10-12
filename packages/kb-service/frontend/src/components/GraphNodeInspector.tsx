@@ -3,7 +3,7 @@
 // variant reuses. All member metadata comes from the caller — the Graph page
 // feeds the loaded graph payload, the drawer variant the neighbors API — so
 // the connections section itself never fetches.
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import Accordion from '@mui/material/Accordion'
 import AccordionDetails from '@mui/material/AccordionDetails'
@@ -25,10 +25,16 @@ import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import { MarkdownBody } from './ResponseCard'
 import { ENTRY_TYPE_COLORS, entryTypeLabel } from '../entryTypes'
 import type { ChipColor } from '../entryTypes'
-import { INSPECTOR_W, nodeColor } from '../graph/explorerModel'
+import { BACKGROUND, INSPECTOR_W, nodeColor } from '../graph/explorerModel'
 import type { ExplorerNode } from '../graph/explorerModel'
-import { INSPECTOR_PILL_MAX, entrySummary } from '../graph/inspectorModel'
-import type { ConnectionGroup, ConnInput } from '../graph/inspectorModel'
+import {
+  FACET_TOP_N,
+  INSPECTOR_PILL_MAX,
+  computeFacets,
+  entrySummary,
+  memberMatches,
+} from '../graph/inspectorModel'
+import type { ConnectionGroup, ConnInput, Facet, GroupFilter } from '../graph/inspectorModel'
 import type { GetEntryResult, KnowledgeEntry, PointerRotTarget } from '../kbTypes'
 
 /** ── View state (lifted to GraphExplorer so history steps can snapshot it) ── */
@@ -59,6 +65,8 @@ export type InspectorMember = {
   tooltip?: string
   entryType: string | null
   projectRef: string | null
+  /** The graph-variant member builder always sets it; the drawer variant does not. */
+  longTitle?: string | null
 }
 
 // ENTRY_TYPE_COLORS is total over EntryType, so the 'info' fallback is dead
@@ -68,7 +76,13 @@ const dotPaletteColor = (entryType: string): Exclude<ChipColor, 'default'> =>
   (ENTRY_TYPE_COLORS as Partial<Record<string, Exclude<ChipColor, 'default'>>>)[entryType] ??
   'info'
 
-function memberFromNode(node: ExplorerNode, conn: ConnInput): InspectorMember {
+/**
+ * The Graph-page member builder: metadata comes straight from the loaded node
+ * payload, so the connections section never fetches. `longTitle` is always
+ * set (null when the payload carries none) because the group title filter
+ * matches over it.
+ */
+export function memberFromNode(node: ExplorerNode, conn: ConnInput): InspectorMember {
   const p = (node.properties ?? {}) as Record<string, unknown>
   const longTitle = typeof p.long_title === 'string' && p.long_title.length > 0 ? p.long_title : undefined
   return {
@@ -80,6 +94,7 @@ function memberFromNode(node: ExplorerNode, conn: ConnInput): InspectorMember {
     tooltip: longTitle,
     entryType: node.type === 'entry' && typeof p.entry_type === 'string' ? p.entry_type : null,
     projectRef: typeof p.project_ref === 'string' ? p.project_ref : null,
+    longTitle: typeof p.long_title === 'string' ? p.long_title : null,
   }
 }
 
@@ -230,6 +245,74 @@ function MemberPill({
   return maybeTooltip(m, chip)
 }
 
+/** ── Facet chips (item C: narrowing large connection groups) ─────────────── */
+
+/**
+ * One facet chip: exactly `${label} ${count}` text, the legend colour of its
+ * node type (the entry-type palette colour for entry types), and an
+ * aria-pressed selected state. Clicking toggles the facet; it never walks to
+ * the facet's node.
+ */
+function FacetChip({
+  facet,
+  selected,
+  onToggle,
+}: {
+  facet: Facet
+  selected: boolean
+  onToggle: () => void
+}) {
+  const label = `${facet.label} ${facet.count}`
+  if (facet.kind === 'entry_type') {
+    return (
+      <Chip
+        size="small"
+        clickable
+        label={label}
+        aria-pressed={selected}
+        // ENTRY_TYPE_COLORS is total over EntryType; Facet.value is string, so
+        // the cast (and the 'info' fallback) are the same shape Search.tsx
+        // uses for a bad value that must not crash.
+        color={(ENTRY_TYPE_COLORS as Record<string, ChipColor>)[facet.value] ?? 'info'}
+        onClick={onToggle}
+      />
+    )
+  }
+  const bg = facet.kind === 'project' ? nodeColor('project') : nodeColor(facet.nodeType ?? '')
+  return (
+    <Chip
+      size="small"
+      clickable
+      label={label}
+      aria-pressed={selected}
+      onClick={onToggle}
+      sx={{ bgcolor: bg, color: BACKGROUND }}
+    />
+  )
+}
+
+const EMPTY_GROUP_FILTER: GroupFilter = { text: '', facets: [] }
+
+/**
+ * The filter wiring the Graph page passes in: the lifted view state, the
+ * loaded graph's nodes and adjacency (from which computeFacets' inputs are
+ * derived), and the inspected node id (excluded from the co-occurring-node
+ * facets). The entry drawer variant passes none of it and gets no filter UI.
+ */
+export type InspectorFiltering = {
+  viewState: InspectorViewState
+  onViewChange: (next: InspectorViewState) => void
+  nodeById: ReadonlyMap<string, { id: string; label: string; type: string }>
+  adjacency: ReadonlyMap<string, ReadonlyArray<{ node: string; type: string }>>
+  inspectedNodeId: string
+}
+
+/** Write one group's filter and nothing else into the lifted view state. */
+function writeGroupFilter(filtering: InspectorFiltering, groupKey: string, next: GroupFilter) {
+  const { viewState, onViewChange } = filtering
+  onViewChange({ ...viewState, filters: { ...viewState.filters, [groupKey]: next } })
+}
+
 /** ── The shared grouped connections body ─────────────────────────────────── */
 
 export function InspectorConnections({
@@ -239,6 +322,9 @@ export function InspectorConnections({
   onHover,
   view,
   onViewChange,
+  filtering,
+  revealedFacetGroups,
+  onRevealFacetGroup,
 }: {
   groups: ReadonlyArray<ConnectionGroup>
   membersById: ReadonlyMap<string, InspectorMember>
@@ -248,6 +334,11 @@ export function InspectorConnections({
   /** Controlled view state (Graph page); uncontrolled when omitted (drawer). */
   view?: InspectorViewState
   onViewChange?: (view: InspectorViewState) => void
+  /** Present only on the Graph page: per-group filter wiring (item C). */
+  filtering?: InspectorFiltering
+  /** Group keys whose '+N' facet reveal is open (local to GraphNodeInspector). */
+  revealedFacetGroups?: ReadonlySet<string>
+  onRevealFacetGroup?: (groupKey: string) => void
 }) {
   const [localExpanded, setLocalExpanded] = useState<Record<string, boolean>>({})
   const warnedRef = useRef(new Set<string>())
@@ -271,6 +362,31 @@ export function InspectorConnections({
       })
     }
   }, [missing])
+  // computeFacets' inputs, derived once per mounted target from the loaded
+  // graph (the pinned Neighbor {node, type} → {id, type} mapping is explicit
+  // because adjacency values carry the edge type and direction).
+  const facetInputs = useMemo(() => {
+    if (filtering === undefined) return null
+    const members = groups.flatMap((g) => g.members)
+    const neighborByMember = new Map(
+      members.map((m) => [
+        m.nodeId,
+        (filtering.adjacency.get(m.nodeId) ?? []).map(({ node, type }) => ({ id: node, type })),
+      ]),
+    )
+    const nodeTypeById = new Map<string, string>()
+    const nodeLabelById = new Map<string, string>()
+    for (const n of filtering.nodeById.values()) {
+      nodeTypeById.set(n.id, n.type)
+      nodeLabelById.set(n.id, n.label || n.id)
+    }
+    return { neighborByMember, nodeTypeById, nodeLabelById }
+  }, [filtering, groups])
+  const neighborIdsOf = useCallback(
+    (nodeId: string) =>
+      new Set((facetInputs?.neighborByMember.get(nodeId) ?? []).map((n) => n.id)),
+    [facetInputs],
+  )
   const expandedFor = (g: ConnectionGroup): boolean => {
     const override = view !== undefined ? view.expanded[g.key] : localExpanded[g.key]
     if (override !== undefined) return override
@@ -325,6 +441,28 @@ export function InspectorConnections({
             </Box>
           )
         }
+        // Large group with the filter wiring: a title filter box and a facet
+        // chip row above the rows (item C). Without `filtering` (the drawer
+        // variant) this branch renders exactly the item A output.
+        const resolved = g.members.map((m) => resolve(g, m.nodeId))
+        const filter =
+          filtering !== undefined ? (filtering.viewState.filters[g.key] ?? EMPTY_GROUP_FILTER) : EMPTY_GROUP_FILTER
+        const active = filter.text.trim().length > 0 || filter.facets.length > 0
+        const facets =
+          filtering !== undefined && facetInputs !== null
+            ? computeFacets({
+                inspectedNodeId: filtering.inspectedNodeId,
+                members: resolved,
+                neighborByMember: facetInputs.neighborByMember,
+                nodeTypeById: facetInputs.nodeTypeById,
+                nodeLabelById: facetInputs.nodeLabelById,
+              })
+            : []
+        const shown = active
+          ? resolved.filter((m) => memberMatches(m, filter, neighborIdsOf(m.nodeId)))
+          : resolved
+        const revealed = revealedFacetGroups?.has(g.key) ?? false
+        const visibleFacets = revealed ? facets : facets.slice(0, FACET_TOP_N)
         return (
           <Accordion
             key={g.key}
@@ -335,17 +473,93 @@ export function InspectorConnections({
               <Typography variant="subtitle2" component="span">
                 {`${g.key} ${arrow(g.dir)} ${count}`}
               </Typography>
+              {filtering !== undefined && active && (
+                <>
+                  <Typography variant="subtitle2" component="span" sx={{ ml: 1 }}>
+                    {`${shown.length} of ${count}`}
+                  </Typography>
+                  {/* A Chip, not a Button: AccordionSummary renders a native
+                      <button> in MUI v7, and a nested native button is invalid
+                      DOM (a hydration error). The clickable Chip is a div
+                      with role="button" and the same keyboard handling, and
+                      stopPropagation keeps the accordion closed on clear. */}
+                  <Chip
+                    size="small"
+                    clickable
+                    label="Clear"
+                    data-testid={`group-clear-${g.key}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (filtering !== undefined) writeGroupFilter(filtering, g.key, { text: '', facets: [] })
+                    }}
+                    sx={{ ml: 'auto', flexShrink: 0 }}
+                  />
+                </>
+              )}
             </AccordionSummary>
             <AccordionDetails sx={{ py: 0, maxHeight: 320, overflowY: 'auto' }}>
-              {g.members.map((m) => (
+              {filtering !== undefined && (
+                <Box sx={{ mb: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                  <input
+                    data-testid={`group-filter-${g.key}`}
+                    type="text"
+                    value={filter.text}
+                    aria-label={`Filter ${g.edgeType} by title`}
+                    placeholder="Filter by title"
+                    onChange={(e) =>
+                      writeGroupFilter(filtering, g.key, { text: e.target.value, facets: filter.facets })
+                    }
+                    style={{
+                      width: '100%',
+                      padding: '4px 8px',
+                      borderRadius: 4,
+                      border: '1px solid rgba(128,128,128,0.5)',
+                      background: 'transparent',
+                      color: 'inherit',
+                      font: 'inherit',
+                    }}
+                  />
+                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                    {visibleFacets.map((facet) => (
+                      <FacetChip
+                        key={facet.key}
+                        facet={facet}
+                        selected={filter.facets.includes(facet.key)}
+                        onToggle={() =>
+                          writeGroupFilter(filtering, g.key, {
+                            text: filter.text,
+                            facets: filter.facets.includes(facet.key)
+                              ? filter.facets.filter((k) => k !== facet.key)
+                              : [...filter.facets, facet.key],
+                          })
+                        }
+                      />
+                    ))}
+                    {!revealed && facets.length > FACET_TOP_N && (
+                      <Chip
+                        size="small"
+                        clickable
+                        label={`+${facets.length - FACET_TOP_N}`}
+                        onClick={() => onRevealFacetGroup?.(g.key)}
+                      />
+                    )}
+                  </Stack>
+                </Box>
+              )}
+              {shown.map((m) => (
                 <MemberRow
                   key={m.nodeId}
-                  member={resolve(g, m.nodeId)}
+                  member={m}
                   group={g}
                   onOpenNode={onOpenNode}
                   onHover={onHover}
                 />
               ))}
+              {filtering !== undefined && active && shown.length === 0 && (
+                <Typography data-testid={`inspector-empty-${g.key}`} variant="body2" sx={{ py: 1 }}>
+                  No matching members.
+                </Typography>
+              )}
             </AccordionDetails>
           </Accordion>
         )
@@ -378,6 +592,12 @@ export type GraphNodeInspectorProps = {
   /** Grouped connections of the target, from the loaded graph payload. */
   groups: ReadonlyArray<ConnectionGroup>
   nodeById: ReadonlyMap<string, ExplorerNode>
+  /**
+   * The loaded graph's adjacency, keyed by node id (Neighbor values carry the
+   * edge type). Present only on the Graph page; it enables the per-group
+   * filter UI by feeding computeFacets.
+   */
+  adjacency?: ReadonlyMap<string, ReadonlyArray<{ node: string; type: string }>>
   view: InspectorViewState
   onViewChange: (view: InspectorViewState) => void
   /** The select path a canvas click on that node takes. */
@@ -391,6 +611,7 @@ export function GraphNodeInspector({
   node,
   groups,
   nodeById,
+  adjacency,
   view,
   onViewChange,
   onOpenNode,
@@ -410,10 +631,16 @@ export function GraphNodeInspector({
   const [targetId, setTargetId] = useState(node.id)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [details, setDetails] = useState<DetailsState | null>(null)
+  // The '+N' facet reveal is deliberately NOT in InspectorViewState (nothing
+  // persisted): local state that resets with the target like the rest.
+  const [revealedFacetGroups, setRevealedFacetGroups] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  )
   if (targetId !== node.id) {
     setTargetId(node.id)
     setDetailsOpen(false)
     setDetails(null)
+    setRevealedFacetGroups(new Set())
   }
   const shown = details !== null && details.id === node.id ? details : null
 
@@ -591,12 +818,28 @@ export function GraphNodeInspector({
         <>
           <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 1 }} />
           <InspectorConnections
+            key={node.id}
             groups={connGroups}
             membersById={membersById}
             onOpenNode={onOpenNode}
             onHover={onHover}
             view={view}
             onViewChange={onViewChange}
+            filtering={
+              adjacency === undefined
+                ? undefined
+                : {
+                    viewState: view,
+                    onViewChange,
+                    nodeById,
+                    adjacency,
+                    inspectedNodeId: node.id,
+                  }
+            }
+            revealedFacetGroups={revealedFacetGroups}
+            onRevealFacetGroup={(groupKey) =>
+              setRevealedFacetGroups(new Set([...revealedFacetGroups, groupKey]))
+            }
           />
         </>
       )}
