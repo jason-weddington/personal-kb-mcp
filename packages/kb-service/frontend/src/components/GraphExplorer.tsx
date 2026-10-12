@@ -212,6 +212,14 @@ export function GraphExplorer({
   const graphFitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const resizeFitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // While the layout is still settling (a focus right after load, or after a
+  // filter change), the camera follows the focused node so it stays in view.
+  // Any pointer or wheel input on the canvas hands the camera back.
+  const followRef = useRef<{ id: string; dx: number; dy: number; after: number } | null>(null)
+  const stopFollow = useCallback(() => {
+    followRef.current = null
+  }, [])
+
   const schedule = useCallback((fn: () => void, ms: number) => {
     const id = setTimeout(() => {
       timersRef.current.delete(id)
@@ -309,6 +317,12 @@ export function GraphExplorer({
       )
       fg.centerAt(fc.x, fc.y, FOCUS_MS)
       fg.zoom(FOCUS_ZOOM, FOCUS_MS)
+      followRef.current = {
+        id: node.id,
+        dx: fc.x - (node.x ?? 0),
+        dy: fc.y - (node.y ?? 0),
+        after: performance.now() + FOCUS_MS,
+      }
       drawerTimerRef.current = setTimeout(() => {
         drawerTimerRef.current = null
         showDetails(node)
@@ -319,15 +333,17 @@ export function GraphExplorer({
 
   const resetView = useCallback(() => {
     clearDrawerTimer()
+    stopFollow()
     dispatch({ type: 'reset' })
     setPanelNode(null)
     fit(FIT_MS, FIT_PADDING)
-  }, [clearDrawerTimer, fit])
+  }, [clearDrawerTimer, stopFollow, fit])
 
   const backtrack = useCallback(() => {
     const t = backtrackTarget(latestRef.current.state.history)
     if (t === null) return
     clearDrawerTimer()
+    stopFollow()
     dispatch({ type: 'backtrack' })
     const fg = fgRef.current
     fg?.centerAt(t.view.cx, t.view.cy, BACKTRACK_MS)
@@ -337,14 +353,15 @@ export function GraphExplorer({
       const node = latestRef.current.nodeById.get(t.nodeId)
       if (node) showDetails(node)
     }, BACKTRACK_DRAWER_DELAY_MS)
-  }, [clearDrawerTimer, showDetails])
+  }, [clearDrawerTimer, stopFollow, showDetails])
 
   const handleBackgroundClick = useCallback(() => {
     clearDrawerTimer()
+    stopFollow()
     dispatch({ type: 'unfocus' })
     setPanelNode(null)
     schedule(() => fit(FIT_MS, FIT_PADDING), RESET_FIT_DELAY_MS)
-  }, [clearDrawerTimer, fit, schedule])
+  }, [clearDrawerTimer, stopFollow, fit, schedule])
 
   const toggleSolo = useCallback(
     (nodeType: string) => {
@@ -378,6 +395,18 @@ export function GraphExplorer({
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [resetView, backtrack])
+
+  // ── Camera follow: user input on the canvas ends it ──────────────────────
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    el.addEventListener('pointerdown', stopFollow, true)
+    el.addEventListener('wheel', stopFollow, true)
+    return () => {
+      el.removeEventListener('pointerdown', stopFollow, true)
+      el.removeEventListener('wheel', stopFollow, true)
+    }
+  }, [stopFollow])
 
   // ── Sizing ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -475,19 +504,21 @@ export function GraphExplorer({
       },
       resetView,
       clearSelection() {
+        stopFollow()
         dispatch({ type: 'unfocus' })
         dispatch({ type: 'clearSolo' })
         clearDrawerTimer()
         setPanelNode(null)
       },
       resetAll() {
+        stopFollow()
         dispatch({ type: 'clearAll' })
         clearDrawerTimer()
         setPanelNode(null)
         fit(FIT_MS, FIT_PADDING)
       },
     }),
-    [select, fitTo, resetView, clearDrawerTimer, fit],
+    [select, fitTo, resetView, clearDrawerTimer, stopFollow, fit],
   )
 
   // ── ForceGraph accessors ─────────────────────────────────────────────────
@@ -519,6 +550,13 @@ export function GraphExplorer({
   )
   const onRenderFramePre = useCallback(() => {
     renderRef.current.now = performance.now()
+  }, [])
+  const onEngineTick = useCallback(() => {
+    const f = followRef.current
+    if (f === null || performance.now() < f.after) return
+    const node = latestRef.current.nodeById.get(f.id)
+    if (node?.x === undefined || node.y === undefined) return
+    fgRef.current?.centerAt(node.x + f.dx, node.y + f.dy)
   }, [])
   const onNodeHover = useCallback((n: FgNode | null) => {
     renderRef.current.hoveredId = n?.id ?? null
@@ -587,6 +625,7 @@ export function GraphExplorer({
           nodeVisibility={nodeVisibility}
           linkVisibility={linkVisibility}
           onNodeHover={onNodeHover}
+          onEngineTick={onEngineTick}
           onNodeClick={select}
           onBackgroundClick={handleBackgroundClick}
           onRenderFramePost={perf ? onRenderFramePost : undefined}

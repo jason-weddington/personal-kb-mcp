@@ -109,6 +109,8 @@ describe('Search page', () => {
     vi.mocked(useEntryDrawer).mockReturnValue({
       openEntry: openEntryMock,
       closeEntry: vi.fn(),
+      openNode: vi.fn(),
+      setNodeHandler: vi.fn(),
     })
   })
 

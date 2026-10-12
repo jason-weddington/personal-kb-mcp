@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, createRef, useImperativeHandle } from 'react'
 import type { Ref } from 'react'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { Graph } from '../pages/Graph'
 import { GraphExplorer } from '../components/GraphExplorer'
 import type { GraphExplorerHandle } from '../components/GraphExplorer'
@@ -31,6 +32,8 @@ const h = vi.hoisted(() => {
     fgMethods,
     lastProps: {} as Record<string, any>,
     mockOpenEntry: vi.fn(),
+    mockCloseEntry: vi.fn(),
+    nodeHandler: null as ((id: string) => void) | null,
     getGraphFull: vi.fn(),
     mockStreamSSE: vi.fn(() => new Promise<void>(() => {})),
   }
@@ -65,7 +68,14 @@ vi.mock('../contexts/AuthContext', () => ({
 }))
 
 vi.mock('../contexts/EntryDrawerContext', () => ({
-  useEntryDrawer: () => ({ openEntry: h.mockOpenEntry, closeEntry: vi.fn() }),
+  useEntryDrawer: () => ({
+    openEntry: h.mockOpenEntry,
+    closeEntry: h.mockCloseEntry,
+    openNode: vi.fn(),
+    setNodeHandler: (fn: ((id: string) => void) | null) => {
+      h.nodeHandler = fn
+    },
+  }),
 }))
 
 const roState = {
@@ -141,8 +151,18 @@ const advance = (ms: number) => act(() => vi.advanceTimersByTime(ms))
 const visible = (id: string) => h.lastProps.nodeVisibility(nodeOf(id))
 const clearFg = () => Object.values(fg).forEach((f) => f.mockClear())
 
-async function renderPage({ fake = true } = {}) {
-  render(<Graph />)
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="loc">{loc.pathname + loc.search}</div>
+}
+
+async function renderPage({ fake = true, url = '/graph' } = {}) {
+  render(
+    <MemoryRouter initialEntries={[url]}>
+      <Graph />
+      <LocationProbe />
+    </MemoryRouter>,
+  )
   await screen.findByText('4 of 4 nodes · 3 of 3 edges')
   clearFg()
   if (fake) vi.useFakeTimers()
@@ -162,6 +182,8 @@ beforeEach(() => {
   h.fgState.k = 1
   h.lastProps = {}
   h.mockOpenEntry.mockClear()
+  h.mockCloseEntry.mockClear()
+  h.nodeHandler = null
   h.mockStreamSSE.mockClear()
   clearFg()
   h.getGraphFull.mockImplementation(() => Promise.resolve(fixture()))
@@ -347,6 +369,53 @@ describe('Graph page', () => {
     expect(h.lastProps.onRenderFramePost).toBeUndefined()
     expect(h.lastProps.onEngineStop).toBeUndefined()
     expect(screen.queryByTestId('graph-perf')).toBeNull()
+  })
+})
+
+// select() reads centerAt() then moves it: one fly is one call with coordinates
+const flies = () => fg.centerAt.mock.calls.filter((c: unknown[]) => c.length > 0).length
+
+describe('Graph page — connection chips', () => {
+  it('(q1) registers a node handler that closes the drawer and flies', async () => {
+    await renderPage({ fake: false })
+    expect(h.nodeHandler).not.toBeNull()
+    act(() => h.nodeHandler!('tag:alpha'))
+    expect(h.mockCloseEntry).toHaveBeenCalledTimes(1)
+    expect(fg.centerAt).toHaveBeenCalled()
+  })
+
+  it('(q2) a filtered-out node resets filters and retries once', async () => {
+    await renderPage({ fake: false })
+    const group = screen.getByRole('group', { name: 'Node type filters' })
+    fireEvent.click(within(group).getByRole('button', { name: 'tag' }))
+    expect(screen.getByText('2 of 4 nodes · 1 of 3 edges')).toBeInTheDocument()
+    clearFg()
+    act(() => h.nodeHandler!('tag:alpha'))
+    expect(screen.getByText('4 of 4 nodes · 3 of 3 edges')).toBeInTheDocument()
+    expect(flies()).toBe(1)
+  })
+
+  it('(q3) an unknown id logs at debug and does nothing', async () => {
+    await renderPage({ fake: false })
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    clearFg()
+    act(() => h.nodeHandler!('tag:nope'))
+    expect(debug).toHaveBeenCalledWith('[graph] openNode: node not rendered', {
+      nodeId: 'tag:nope',
+    })
+    expect(fg.centerAt).not.toHaveBeenCalled()
+  })
+
+  it('(q4) ?focus flies to the node once and clears the param', async () => {
+    render(
+      <MemoryRouter initialEntries={['/graph?focus=tag%3Aalpha']}>
+        <Graph />
+        <LocationProbe />
+      </MemoryRouter>,
+    )
+    await screen.findByText('4 of 4 nodes · 3 of 3 edges')
+    expect(flies()).toBe(1)
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/graph'))
   })
 })
 

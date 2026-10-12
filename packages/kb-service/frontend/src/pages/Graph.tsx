@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
 import Snackbar from '@mui/material/Snackbar'
@@ -74,7 +75,8 @@ export function Graph() {
     [data, activeTypes, scope],
   )
 
-  const { openEntry } = useEntryDrawer()
+  const { openEntry, closeEntry, setNodeHandler } = useEntryDrawer()
+  const [searchParams, setSearchParams] = useSearchParams()
   const renderedIds = useMemo(() => new Set(graph.nodes.map((n) => n.id)), [graph])
   const allIds = useMemo(() => new Set((payload?.nodes ?? []).map((n) => n.id)), [payload])
   const graphIds = useMemo(() => ({ rendered: renderedIds, all: allIds }), [renderedIds, allIds])
@@ -171,6 +173,61 @@ export function Graph() {
     },
     [renderedIds, reveal],
   )
+
+  // Fly to a node; if it is filtered out, reset filters and retry once after
+  // the unfiltered graph has rendered.
+  const pendingFlyRef = useRef<string | null>(null)
+  const [retryTick, setRetryTick] = useState(0)
+  const flyOrReset = useCallback(
+    (id: string, canRetry: boolean) => {
+      if (explorerRef.current?.flyToNode(id) === true) return
+      if (canRetry && allIds.has(id)) {
+        setActiveTypes(new Set(NODE_TYPES))
+        setScope('')
+        pendingFlyRef.current = id
+        setRetryTick((t) => t + 1)
+        return
+      }
+      console.debug('[graph] openNode: node not rendered', { nodeId: id })
+    },
+    [allIds],
+  )
+
+  useEffect(() => {
+    const id = pendingFlyRef.current
+    if (id === null) return
+    pendingFlyRef.current = null
+    flyOrReset(id, false)
+  }, [retryTick, graph, flyOrReset])
+
+  const openNodeHandler = useCallback(
+    (id: string) => {
+      closeEntry()
+      flyOrReset(id, true)
+    },
+    [closeEntry, flyOrReset],
+  )
+  useEffect(() => {
+    setNodeHandler(openNodeHandler)
+    return () => setNodeHandler(null)
+  }, [setNodeHandler, openNodeHandler])
+
+  // ?focus=<node id>: fly once after the payload has loaded, then drop the param.
+  const focusParam = searchParams.get('focus')
+  const focusDoneRef = useRef(false)
+  useEffect(() => {
+    if (focusParam === null || payload === null || loading || focusDoneRef.current) return
+    focusDoneRef.current = true
+    flyOrReset(focusParam, true)
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('focus')
+        return next
+      },
+      { replace: true },
+    )
+  }, [focusParam, payload, loading, flyOrReset, setSearchParams])
 
   const toggleType = (type: string) => {
     setActiveTypes((prev) => {

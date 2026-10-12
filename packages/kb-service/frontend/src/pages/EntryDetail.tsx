@@ -10,7 +10,7 @@ import { EntryContent } from '../components/EntryContent'
 
 export function EntryDetail() {
   const { id } = useParams<{ id: string }>()
-  const { openEntry } = useEntryDrawer()
+  const { openEntry, openNode } = useEntryDrawer()
   const [entry, setEntry] = useState<KnowledgeEntry | null>(null)
   const [pointerRot, setPointerRot] = useState<PointerRotTarget[]>([])
   const [notFound, setNotFound] = useState(false)
@@ -70,7 +70,12 @@ export function EntryDetail() {
 
   return (
     <Box sx={{ maxWidth: 900 }}>
-      <EntryContent entry={entry} pointerRot={pointerRot} onOpenEntry={openEntry} />
+      <EntryContent
+        entry={entry}
+        pointerRot={pointerRot}
+        onOpenEntry={openEntry}
+        onOpenNode={openNode}
+      />
     </Box>
   )
 }

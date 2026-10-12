@@ -123,19 +123,19 @@ function useEntryNeighbors(entryId: string): ConnectionsState | null {
  * Renders the Connections section for an entry.
  *
  * Shows one-hop graph neighbors grouped by edge_type:
- *   - Entry-id neighbors (kb-NNNNN) → clickable chips "[id] short_title"
- *     that open the target in the entry drawer via onOpenEntry.
- *   - Non-entry nodes (tag:foo, tech:postgres, etc.) → muted non-clickable
- *     chips showing the prefixed id (informative only).
+ *   - Entry-id neighbors (kb-NNNNN) → clickable chips "[id] short_title".
+ *   - Non-entry nodes (tag:foo, tech:postgres, etc.) → clickable chips
+ *     showing the prefixed id.
+ *   Every chip calls onOpenNode (focus in the graph, or open the drawer/graph).
  *
  * Omitted entirely when loading, on fetch error, or when there are no neighbors.
  */
 function EntryConnections({
   entryId,
-  onOpenEntry,
+  onOpenNode,
 }: {
   entryId: string
-  onOpenEntry: (id: string) => void
+  onOpenNode: (id: string) => void
 }) {
   const connections = useEntryNeighbors(entryId)
 
@@ -164,17 +164,16 @@ function EntryConnections({
                 label={`[${item.id}] ${item.title ?? item.id}`}
                 size="small"
                 clickable
-                onClick={() => onOpenEntry(item.id)}
+                onClick={() => onOpenNode(item.id)}
               />
             ))}
             {nonEntryItems.map((id) => (
-              // Non-entry node: informative only, not navigable
               <Chip
                 key={id}
                 label={id}
                 size="small"
-                variant="outlined"
-                sx={{ opacity: 0.6 }}
+                clickable
+                onClick={() => onOpenNode(id)}
               />
             ))}
           </Stack>
@@ -188,9 +187,10 @@ interface Props {
   entry: KnowledgeEntry
   pointerRot: PointerRotTarget[]
   onOpenEntry: (id: string) => void
+  onOpenNode: (id: string) => void
 }
 
-export function EntryContent({ entry, pointerRot, onOpenEntry }: Props) {
+export function EntryContent({ entry, pointerRot, onOpenEntry, onOpenNode }: Props) {
   return (
     <Box>
       <Typography variant="h5" gutterBottom>
@@ -263,7 +263,7 @@ export function EntryContent({ entry, pointerRot, onOpenEntry }: Props) {
       </Stack>
 
       {/* Connections section: one-hop graph neighbors, between metadata and body */}
-      <EntryConnections entryId={entry.id} onOpenEntry={onOpenEntry} />
+      <EntryConnections entryId={entry.id} onOpenNode={onOpenNode} />
 
       <Divider sx={{ mb: 2 }} />
 

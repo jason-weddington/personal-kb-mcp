@@ -3,6 +3,7 @@ import { act, useImperativeHandle } from 'react'
 import type { Ref } from 'react'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { Graph } from '../pages/Graph'
 import type { ExplorerNode } from '../graph/explorerModel'
 import type { GraphFullResponse } from '../kbTypes'
@@ -71,7 +72,12 @@ vi.mock('../contexts/AuthContext', () => ({
   }),
 }))
 vi.mock('../contexts/EntryDrawerContext', () => ({
-  useEntryDrawer: () => ({ openEntry: h.mockOpenEntry, closeEntry: vi.fn() }),
+  useEntryDrawer: () => ({
+    openEntry: h.mockOpenEntry,
+    closeEntry: vi.fn(),
+    openNode: vi.fn(),
+    setNodeHandler: vi.fn(),
+  }),
 }))
 
 class ResizeObserverStub {
@@ -160,7 +166,11 @@ let debugSpy: ReturnType<typeof vi.spyOn>
 const infoCalls = () => infoSpy.mock.calls.filter((c: any[]) => c[0] === '[graph-query]')
 
 async function setup() {
-  const view = render(<Graph />)
+  const view = render(
+    <MemoryRouter>
+      <Graph />
+    </MemoryRouter>,
+  )
   await screen.findByText('4 of 4 nodes · 3 of 3 edges')
   await vi.waitFor(() => expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400), {
     timeout: 3000,

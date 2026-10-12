@@ -35,10 +35,13 @@ vi.mock('../contexts/AuthContext', () => ({
 
 // Mock EntryDrawerContext for isolation
 const openEntryMock = vi.fn()
+const openNodeMock = vi.fn()
 vi.mock('../contexts/EntryDrawerContext', () => ({
   useEntryDrawer: vi.fn(() => ({
     openEntry: openEntryMock,
     closeEntry: vi.fn(),
+    openNode: openNodeMock,
+    setNodeHandler: vi.fn(),
   })),
   EntryDrawerProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
@@ -111,5 +114,21 @@ describe('EntryDetail superseded_by → openEntry', () => {
     await user.click(supersededBtn)
 
     expect(openEntryMock).toHaveBeenCalledWith('kb-00002')
+  })
+
+  it('(h) connection chips route through openNode', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getGraphNeighbors).mockResolvedValue({
+      neighbors: [{ neighbor_id: 'tag:flux', edge_type: 'tagged', direction: 'outgoing' }],
+    })
+    render(
+      <MemoryRouter initialEntries={['/entries/kb-00001']}>
+        <Routes>
+          <Route path="/entries/:id" element={<EntryDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await user.click(await screen.findByRole('button', { name: 'tag:flux' }))
+    expect(openNodeMock).toHaveBeenCalledWith('tag:flux')
   })
 })

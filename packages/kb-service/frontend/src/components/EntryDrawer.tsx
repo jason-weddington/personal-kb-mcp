@@ -17,9 +17,10 @@ interface Props {
   onBack: () => void
   onClose: () => void
   onOpenEntry: (id: string) => void
+  onOpenNode: (id: string) => void
 }
 
-export function EntryDrawer({ stack, onBack, onClose, onOpenEntry }: Props) {
+export function EntryDrawer({ stack, onBack, onClose, onOpenEntry, onOpenNode }: Props) {
   const id = stack[stack.length - 1]
 
   const [entry, setEntry] = useState<KnowledgeEntry | null>(null)
@@ -119,6 +120,7 @@ export function EntryDrawer({ stack, onBack, onClose, onOpenEntry }: Props) {
               entry={entry}
               pointerRot={pointerRot}
               onOpenEntry={onOpenEntry}
+              onOpenNode={onOpenNode}
             />
           )}
         </Box>

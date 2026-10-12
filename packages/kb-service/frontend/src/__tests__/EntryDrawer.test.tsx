@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { useEffect } from 'react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { EntryDrawerProvider, useEntryDrawer } from '../contexts/EntryDrawerContext'
 import type { GetResponse } from '../kbTypes'
 
@@ -76,6 +77,11 @@ function OpenButton({ entryId }: { entryId: string }) {
   return (
     <button onClick={() => openEntry(entryId)}>Open {entryId}</button>
   )
+}
+
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="loc">{loc.pathname + loc.search}</div>
 }
 
 function renderWithProvider(children: React.ReactNode) {
@@ -263,32 +269,64 @@ describe('EntryDrawer — Connections section', () => {
     )
   })
 
-  // (g) Non-entry node chip is not clickable (no button role)
-  it('(g) non-entry neighbor chip is not clickable', async () => {
+  // (g) Non-entry chip is a button; with no handler it navigates to the graph
+  it('(g) non-entry chip navigates to /graph?focus=<id> without a handler', async () => {
     vi.mocked(getEntries).mockResolvedValue(
       makeGetResponse('kb-00001', { short_title: 'My Entry' }),
     )
     vi.mocked(getGraphNeighbors).mockResolvedValue({
       neighbors: [
-        { neighbor_id: 'tag:foo', edge_type: 'tagged', direction: 'outgoing' },
+        { neighbor_id: 'tag:flux', edge_type: 'tagged', direction: 'outgoing' },
       ],
     })
 
-    renderWithProvider(<OpenButton entryId="kb-00001" />)
+    renderWithProvider(
+      <>
+        <OpenButton entryId="kb-00001" />
+        <LocationProbe />
+      </>,
+    )
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
 
-    await waitFor(() =>
-      expect(screen.getAllByText('My Entry')[0]).toBeInTheDocument(),
-    )
+    const chip = await screen.findByRole('button', { name: 'tag:flux' })
+    await user.click(chip)
+    expect(screen.getByTestId('loc').textContent).toBe('/graph?focus=tag%3Aflux')
+  })
 
-    // Non-entry chip present
-    await waitFor(() =>
-      expect(screen.getByText('tag:foo')).toBeInTheDocument(),
+  // (g2) With a node handler registered, entry and non-entry chips call it
+  it('(g2) registered handler receives entry and non-entry chip clicks', async () => {
+    vi.mocked(getEntries).mockImplementation(async (ids: string[]) =>
+      makeGetResponse(ids[0], { short_title: 'T ' + ids[0] }),
     )
+    vi.mocked(getGraphNeighbors).mockResolvedValue({
+      neighbors: [
+        { neighbor_id: 'tag:flux', edge_type: 'tagged', direction: 'outgoing' },
+        { neighbor_id: 'kb-00002', edge_type: 'related', direction: 'outgoing' },
+      ],
+    })
+    const handler = vi.fn()
+    function Register() {
+      const { setNodeHandler } = useEntryDrawer()
+      useEffect(() => {
+        setNodeHandler(handler)
+        return () => setNodeHandler(null)
+      }, [setNodeHandler])
+      return null
+    }
 
-    // Non-entry chip must NOT be a button
-    expect(screen.queryByRole('button', { name: 'tag:foo' })).toBeNull()
+    renderWithProvider(
+      <>
+        <Register />
+        <OpenButton entryId="kb-00001" />
+      </>,
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
+    await user.click(await screen.findByRole('button', { name: 'tag:flux' }))
+    expect(handler).toHaveBeenCalledWith('tag:flux')
+    await user.click(await screen.findByRole('button', { name: '[kb-00002] T kb-00002' }))
+    expect(handler).toHaveBeenCalledWith('kb-00002')
   })
 
   // (h) getGraphNeighbors error → Connections section absent; entry body still renders
