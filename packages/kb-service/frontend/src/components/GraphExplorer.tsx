@@ -1,7 +1,7 @@
 // The tuned graph explorer (ported from personal_kb 47afec7 explorer.js):
 // labels by zoom, click-to-focus, solo legend, ArrowLeft backtrack, Escape
-// reset, non-modal node panel. Query-mode traversal is rendered from the
-// `traversal` prop; it is populated elsewhere.
+// reset, the non-modal node inspector. Query-mode traversal is rendered from
+// the `traversal` prop; it is populated elsewhere.
 import {
   useCallback,
   useEffect,
@@ -14,27 +14,23 @@ import {
 } from 'react'
 import type { Ref, RefObject } from 'react'
 import Box from '@mui/material/Box'
-import Chip from '@mui/material/Chip'
-import Divider from '@mui/material/Divider'
-import IconButton from '@mui/material/IconButton'
-import Paper from '@mui/material/Paper'
-import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
-import CloseIcon from '@mui/icons-material/Close'
 import { alpha } from '@mui/material/styles'
 import ForceGraph2D from 'react-force-graph-2d'
 import type { ForceGraphMethods, LinkObject, NodeObject } from 'react-force-graph-2d'
-import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import { RESULTS_FIT_MS, RESULTS_FIT_PADDING } from '../graph/queryModel'
 import { drawNode } from '../graph/drawNode'
 import type { NodeRenderState } from '../graph/drawNode'
+import { GraphNodeInspector, DEFAULT_INSPECTOR_VIEW } from './GraphNodeInspector'
+import type { InspectorViewState } from './GraphNodeInspector'
+import { groupNeighbors } from '../graph/inspectorModel'
+import type { ConnInput } from '../graph/inspectorModel'
 import {
   BACKGROUND,
   BACKTRACK_DRAWER_DELAY_MS,
   BACKTRACK_MS,
   CLAMP_AFTER_FIT_MS,
   CLAMP_MS,
-  CONNECTIONS_LIMIT,
   DRAWER_DELAY_MS,
   EMPTY_TRAVERSAL,
   FIT_MS,
@@ -46,7 +42,6 @@ import {
   MAX_AUTO_ZOOM,
   MAX_ZOOM,
   NODE_COLORS,
-  NODE_PANEL_W,
   NODE_TYPES,
   PERF_TICK_MS,
   PERF_WINDOW_MS,
@@ -73,9 +68,10 @@ import type {
   ExplorerLink,
   ExplorerNode,
   ExplorerState,
-  Neighbor,
   TraversalState,
 } from '../graph/explorerModel'
+
+export type { InspectorViewState } from './GraphNodeInspector'
 
 type FgNode = NodeObject<ExplorerNode>
 type FgLink = LinkObject<ExplorerNode, ExplorerLink>
@@ -122,7 +118,7 @@ type Latest = {
   adjacency: Adjacency
   width: number
   height: number
-  openEntry: (id: string) => void
+  panelNode: ExplorerNode | null
   onEscape: (() => boolean) | undefined
   perf: GraphExplorerProps['perf']
   rightInset: number
@@ -137,12 +133,12 @@ export function GraphExplorer({
   rightInset = 0,
   ref,
 }: GraphExplorerProps) {
-  const { openEntry } = useEntryDrawer()
   const fgRef = useRef<FgMethods | undefined>(undefined)
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 800, height: 600 })
   const [state, dispatch] = useReducer(explorerReducer, initialExplorerState)
   const [panelNode, setPanelNode] = useState<ExplorerNode | null>(null)
+  const [inspectorView, setInspectorView] = useState<InspectorViewState>(DEFAULT_INSPECTOR_VIEW)
   const { focusedId, highlightedId, soloType } = state
 
   // Close the node panel when a filter change stops rendering its node
@@ -180,7 +176,7 @@ export function GraphExplorer({
     adjacency,
     width: size.width,
     height: size.height,
-    openEntry,
+    panelNode,
     onEscape,
     perf,
     rightInset,
@@ -199,7 +195,7 @@ export function GraphExplorer({
       adjacency,
       width: size.width,
       height: size.height,
-      openEntry,
+      panelNode,
       onEscape,
       perf,
       rightInset,
@@ -294,12 +290,23 @@ export function GraphExplorer({
   })
 
   const showDetails = useCallback((node: ExplorerNode) => {
-    if (node.type === 'entry') {
-      setPanelNode(null)
-      latestRef.current.openEntry(node.id)
-    } else {
-      setPanelNode(node)
-    }
+    // One inspector for every rendered node type. The view state resets in the
+    // same update that changes the target (not in an effect), so a later
+    // caller can set a saved snapshot here without an effect overwriting it.
+    setPanelNode(node)
+    setInspectorView(DEFAULT_INSPECTOR_VIEW)
+    const conns: ConnInput[] = (latestRef.current.adjacency.get(node.id) ?? []).map((n) => ({
+      nodeId: n.node,
+      edgeType: n.type,
+      dir: n.dir,
+    }))
+    const groups = groupNeighbors(conns)
+    console.info('[graph-inspector] open', {
+      node_id: node.id,
+      node_type: node.type,
+      member_total: groups.reduce((sum, g) => sum + g.members.length, 0),
+      groups: groups.map((g) => ({ key: g.key, count: g.members.length })),
+    })
   }, [])
 
   const select = useCallback(
@@ -387,6 +394,10 @@ export function GraphExplorer({
       if (target instanceof Element && target.closest(KEY_GUARD_SELECTOR)) return
       if (e.key === 'Escape') {
         if (latestRef.current.onEscape?.()) return
+        if (latestRef.current.panelNode !== null) {
+          setPanelNode(null)
+          return
+        }
         resetView()
       } else {
         backtrack()
@@ -596,7 +607,21 @@ export function GraphExplorer({
     [],
   )
 
-  const panelConnections = panelNode ? (adjacency.get(panelNode.id) ?? []) : []
+  const panelGroups = useMemo(() => {
+    if (panelNode === null) return []
+    const conns: ConnInput[] = (adjacency.get(panelNode.id) ?? []).map((n) => ({
+      nodeId: n.node,
+      edgeType: n.type,
+      dir: n.dir,
+    }))
+    return groupNeighbors(conns)
+  }, [panelNode, adjacency])
+
+  // Rows and pills write the same hover field onNodeHover writes, so drawNode
+  // highlights an inspector-hovered member exactly like a canvas hover.
+  const onInspectorHover = useCallback((id: string | null) => {
+    renderRef.current.hoveredId = id
+  }, [])
 
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -668,11 +693,15 @@ export function GraphExplorer({
         }}
       >
       {panelNode && (
-        <NodePanel
+        <GraphNodeInspector
           node={panelNode}
-          connections={panelConnections}
+          groups={panelGroups}
+          nodeById={nodeById}
+          view={inspectorView}
+          onViewChange={setInspectorView}
+          onOpenNode={selectById}
+          onHover={onInspectorHover}
           onClose={() => setPanelNode(null)}
-          onSelect={selectById}
         />
       )}
 
@@ -736,111 +765,6 @@ export function GraphExplorer({
 
       {perf && <PerfReadout read={readPerf} />}
     </Box>
-  )
-}
-
-function NodePanel({
-  node,
-  connections,
-  onClose,
-  onSelect,
-}: {
-  node: ExplorerNode
-  connections: Neighbor[]
-  onClose: () => void
-  onSelect: (id: string) => void
-}) {
-  const props = node.properties ?? {}
-  return (
-    <Paper
-      role="region"
-      aria-label="Node details"
-      elevation={8}
-      sx={{
-        width: NODE_PANEL_W,
-        maxWidth: '100%',
-        flexShrink: 1,
-        minHeight: 0,
-        overflowY: 'auto',
-        p: 2,
-      }}
-    >
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
-        <Chip
-          label={node.type}
-          size="small"
-          sx={{ bgcolor: nodeColor(node.type), color: '#000', mb: 1 }}
-        />
-        <IconButton size="small" aria-label="Close node details" onClick={onClose}>
-          <CloseIcon fontSize="small" />
-        </IconButton>
-      </Stack>
-      <Typography variant="h6" sx={{ wordBreak: 'break-word' }}>
-        {node.label || node.id}
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        {node.id}
-      </Typography>
-      <Typography variant="body2">
-        <strong>Val:</strong> {node.val}
-      </Typography>
-      {Object.keys(props).length > 0 && (
-        <>
-          <Divider sx={{ my: 1 }} />
-          <Typography variant="subtitle2" gutterBottom>
-            Properties
-          </Typography>
-          <Stack spacing={0.5}>
-            {Object.entries(props).map(([k, v]) => (
-              <Typography key={k} variant="body2" sx={{ wordBreak: 'break-word' }}>
-                <strong>{k}:</strong>{' '}
-                {typeof v === 'object' ? JSON.stringify(v) : String(v ?? '')}
-              </Typography>
-            ))}
-          </Stack>
-        </>
-      )}
-      {connections.length > 0 && (
-        <>
-          <Divider sx={{ my: 1 }} />
-          <Typography variant="subtitle2" gutterBottom>
-            Connections ({connections.length})
-          </Typography>
-          <Stack>
-            {connections.slice(0, CONNECTIONS_LIMIT).map((c, i) => (
-              <Box
-                key={`${c.dir}-${c.type}-${c.node}-${i}`}
-                component="button"
-                type="button"
-                onClick={() => onSelect(c.node)}
-                sx={{
-                  background: 'none',
-                  border: 0,
-                  borderBottom: 1,
-                  borderColor: 'divider',
-                  color: 'text.secondary',
-                  font: 'inherit',
-                  fontSize: 12,
-                  textAlign: 'left',
-                  py: 0.5,
-                  px: 0,
-                  cursor: 'pointer',
-                  wordBreak: 'break-word',
-                  '&:hover': { color: 'text.primary' },
-                }}
-              >
-                {c.dir === 'out' ? '→' : '←'} <strong>{c.type}</strong> {c.node}
-              </Box>
-            ))}
-            {connections.length > CONNECTIONS_LIMIT && (
-              <Typography variant="body2" color="text.secondary">
-                ... and {connections.length - CONNECTIONS_LIMIT} more
-              </Typography>
-            )}
-          </Stack>
-        </>
-      )}
-    </Paper>
   )
 }
 

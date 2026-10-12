@@ -7,107 +7,119 @@ import MuiLink from '@mui/material/Link'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import { ResponseCard, MarkdownBody } from './ResponseCard'
+import { InspectorConnections } from './GraphNodeInspector'
+import type { InspectorMember } from './GraphNodeInspector'
 import { getEntries, getGraphNeighbors } from '../api'
+import { groupNeighbors, normalizeDirection } from '../graph/inspectorModel'
+import type { ConnectionGroup, ConnInput } from '../graph/inspectorModel'
 import type { KnowledgeEntry, PointerRotTarget } from '../kbTypes'
 import { ENTRY_TYPE_COLORS } from '../entryTypes'
 
 // Matches kb-core entry ids: kb-NNNNN (one or more digits)
 const ENTRY_ID_RE = /^kb-\d+$/
 
-interface NeighborItem {
-  id: string
-  title: string | undefined
-}
-
-interface ConnectionGroup {
-  edgeType: string
-  entryItems: NeighborItem[]
-  nonEntryItems: string[]
-}
+/** Entry-neighbour metadata lookups are chunked at 20 ids per request. */
+const NEIGHBOR_CHUNK = 20
 
 interface ConnectionsState {
   groups: ConnectionGroup[]
+  membersById: Map<string, InspectorMember>
 }
 
 /**
- * Fetches and groups one-hop graph neighbors for a KB entry.
+ * Fetches and groups one-hop graph neighbors for a KB entry for the shared
+ * inspector connections body. Neighbors come from getGraphNeighbors(id,
+ * 'both', 50); the API's 'outgoing'/'incoming' directions map onto the
+ * inspector's 'out'/'in' and the shared groupNeighbors helper groups them by
+ * `${edge_type}:${dir}`. Entry-id neighbours resolve their short_title,
+ * long_title, entry_type and project_ref through chunked getEntries({ touch:
+ * false }) lookups (they are not reads); non-entry members keep the raw
+ * neighbor_id as their label.
  *
- * Grouping strategy: neighbors are grouped by edge_type, with a small caption
- * per group so the section stays scannable without clutter.
- * Deduplication: neighbor_id is deduped (first occurrence wins for edge_type
- * assignment) before grouping, covering the case where the same node appears
- * in both directions.
- *
- * Returns null while loading or on error (section is simply omitted).
+ * Returns state=null while loading; on failure the hook reports the error so
+ * the section can show a warning instead of silently disappearing.
  */
-function useEntryNeighbors(entryId: string): ConnectionsState | null {
+function useEntryConnections(entryId: string): { state: ConnectionsState | null; error: string | null } {
   const [state, setState] = useState<ConnectionsState | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-
     void (async () => {
       setState(null)
+      setError(null)
       try {
         const resp = await getGraphNeighbors(entryId, 'both', 50)
         if (cancelled) return
-
-        // Dedupe by neighbor_id — first occurrence wins edge_type assignment
-        const seen = new Set<string>()
-        const deduped = resp.neighbors.filter((n) => {
-          if (seen.has(n.neighbor_id)) return false
-          seen.add(n.neighbor_id)
-          return true
-        })
-
-        if (deduped.length === 0) {
-          return // section absent when no neighbors
+        const conns: ConnInput[] = resp.neighbors.map((n) => ({
+          nodeId: n.neighbor_id,
+          edgeType: n.edge_type,
+          dir: normalizeDirection(n.direction),
+        }))
+        // Tags and the project render as the entry's own chips; the has_tag
+        // and in_project groups are not repeated as connections.
+        const groups = groupNeighbors(conns).filter(
+          (g) => g.edgeType !== 'has_tag' && g.edgeType !== 'in_project',
+        )
+        if (groups.length === 0) {
+          if (!cancelled) setState(null)
+          return
         }
 
-        // Resolve display titles for entry-id neighbors (chunked at 20 per request)
-        const entryNeighborIds = deduped
-          .filter((n) => ENTRY_ID_RE.test(n.neighbor_id))
-          .map((n) => n.neighbor_id)
-
-        const titleMap: Record<string, string> = {}
-        for (let i = 0; i < entryNeighborIds.length; i += 20) {
+        // Resolve display metadata for entry-id neighbours (chunked per request)
+        const entryNeighborIds = [...new Set(conns.map((c) => c.nodeId))].filter((id) =>
+          ENTRY_ID_RE.test(id),
+        )
+        const meta = new Map<string, KnowledgeEntry>()
+        for (let i = 0; i < entryNeighborIds.length; i += NEIGHBOR_CHUNK) {
           if (cancelled) return
-          const chunk = entryNeighborIds.slice(i, i + 20)
+          const chunk = entryNeighborIds.slice(i, i + NEIGHBOR_CHUNK)
           const batch = await getEntries(chunk, { touch: false })
+          if (cancelled) return
           for (const r of batch.results) {
-            if (r.found && r.entry) {
-              titleMap[r.id] = r.entry.short_title
-            }
+            if (r.found && r.entry) meta.set(r.id, r.entry)
           }
         }
-
         if (cancelled) return
 
-        // Group by edge_type (insertion order preserved by Map)
-        const groupMap = new Map<
-          string,
-          { entryItems: NeighborItem[]; nonEntryItems: string[] }
-        >()
-        for (const n of deduped) {
-          if (!groupMap.has(n.edge_type)) {
-            groupMap.set(n.edge_type, { entryItems: [], nonEntryItems: [] })
-          }
-          const g = groupMap.get(n.edge_type)!
-          if (ENTRY_ID_RE.test(n.neighbor_id)) {
-            g.entryItems.push({ id: n.neighbor_id, title: titleMap[n.neighbor_id] })
+        const membersById = new Map<string, InspectorMember>()
+        for (const c of conns) {
+          if (membersById.has(c.nodeId)) continue
+          if (ENTRY_ID_RE.test(c.nodeId)) {
+            const e = meta.get(c.nodeId)
+            membersById.set(c.nodeId, {
+              nodeId: c.nodeId,
+              label: e?.short_title ?? c.nodeId,
+              nodeType: 'entry',
+              edgeType: c.edgeType,
+              dir: c.dir,
+              tooltip: e?.long_title && e.long_title.length > 0 ? e.long_title : undefined,
+              entryType: e?.entry_type ?? null,
+              projectRef: e?.project_ref ?? null,
+            })
           } else {
-            g.nonEntryItems.push(n.neighbor_id)
+            membersById.set(c.nodeId, {
+              nodeId: c.nodeId,
+              label: c.nodeId,
+              nodeType: c.nodeId.includes(':') ? c.nodeId.split(':', 1)[0] : 'unknown',
+              edgeType: c.edgeType,
+              dir: c.dir,
+              entryType: null,
+              projectRef: null,
+            })
           }
         }
 
-        const groups: ConnectionGroup[] = Array.from(groupMap.entries()).map(
-          ([edgeType, items]) => ({ edgeType, ...items }),
-        )
-
-        setState({ groups })
-      } catch {
-        // Silent failure — section is simply absent on error
-        if (!cancelled) setState(null)
+        setState({ groups, membersById })
+      } catch (err) {
+        console.warn('[graph-inspector] connections fetch failed', {
+          node_id: entryId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err))
+          setState(null)
+        }
       }
     })()
 
@@ -116,19 +128,14 @@ function useEntryNeighbors(entryId: string): ConnectionsState | null {
     }
   }, [entryId])
 
-  return state
+  return { state, error }
 }
 
 /**
- * Renders the Connections section for an entry.
- *
- * Shows one-hop graph neighbors grouped by edge_type:
- *   - Entry-id neighbors (kb-NNNNN) → clickable chips "[id] short_title".
- *   - Non-entry nodes (tag:foo, tech:postgres, etc.) → clickable chips
- *     showing the prefixed id.
- *   Every chip calls onOpenNode (focus in the graph, or open the drawer/graph).
- *
- * Omitted entirely when loading, on fetch error, or when there are no neighbors.
+ * Renders the Connections section for an entry: one-hop graph neighbours
+ * grouped by edge type and direction through the shared inspector body
+ * (pills for small groups, a scrolling list of summary rows for big ones).
+ * Every pill and row calls onOpenNode with the member node id.
  */
 function EntryConnections({
   entryId,
@@ -137,48 +144,30 @@ function EntryConnections({
   entryId: string
   onOpenNode: (id: string) => void
 }) {
-  const connections = useEntryNeighbors(entryId)
+  const { state, error } = useEntryConnections(entryId)
 
-  if (!connections || connections.groups.length === 0) return null
+  if (error !== null) {
+    return (
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="subtitle2" gutterBottom>
+          Connections
+        </Typography>
+        <Alert severity="warning">Connections unavailable: {error}</Alert>
+      </Box>
+    )
+  }
+  if (state === null || state.groups.length === 0) return null
 
   return (
     <Box sx={{ mb: 2 }}>
       <Typography variant="subtitle2" gutterBottom>
         Connections
       </Typography>
-      {connections.groups.map(({ edgeType, entryItems, nonEntryItems }) => (
-        <Box key={edgeType} sx={{ mb: 1 }}>
-          {/* Small caption per group so edge_type is visible without taking up much space */}
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            component="div"
-            sx={{ mb: 0.5 }}
-          >
-            {edgeType}
-          </Typography>
-          <Stack direction="row" spacing={0.5} flexWrap="wrap">
-            {entryItems.map((item) => (
-              <Chip
-                key={item.id}
-                label={`[${item.id}] ${item.title ?? item.id}`}
-                size="small"
-                clickable
-                onClick={() => onOpenNode(item.id)}
-              />
-            ))}
-            {nonEntryItems.map((id) => (
-              <Chip
-                key={id}
-                label={id}
-                size="small"
-                clickable
-                onClick={() => onOpenNode(id)}
-              />
-            ))}
-          </Stack>
-        </Box>
-      ))}
+      <InspectorConnections
+        groups={state.groups}
+        membersById={state.membersById}
+        onOpenNode={onOpenNode}
+      />
     </Box>
   )
 }
@@ -210,7 +199,14 @@ export function EntryContent({ entry, pointerRot, onOpenEntry, onOpenNode }: Pro
           size="small"
         />
         {entry.tags.map((tag) => (
-          <Chip key={tag} label={tag} size="small" variant="outlined" />
+          <Chip
+            key={tag}
+            label={tag}
+            size="small"
+            variant="outlined"
+            clickable
+            onClick={() => onOpenNode(`tag:${tag}`)}
+          />
         ))}
       </Stack>
 

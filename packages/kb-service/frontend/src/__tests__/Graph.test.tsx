@@ -6,6 +6,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { Graph } from '../pages/Graph'
 import { GraphExplorer } from '../components/GraphExplorer'
 import type { GraphExplorerHandle } from '../components/GraphExplorer'
+import { getEntries, getGraphNeighbors } from '../api'
 import { NODE_COLORS, filterGraph } from '../graph/explorerModel'
 import type { ExplorerLink, ExplorerNode } from '../graph/explorerModel'
 import type { GraphFullResponse } from '../kbTypes'
@@ -35,6 +36,8 @@ const h = vi.hoisted(() => {
     mockCloseEntry: vi.fn(),
     nodeHandler: null as ((id: string) => void) | null,
     getGraphFull: vi.fn(),
+    getEntries: vi.fn(),
+    getGraphNeighbors: vi.fn(),
     mockStreamSSE: vi.fn(() => new Promise<void>(() => {})),
   }
 })
@@ -50,7 +53,12 @@ vi.mock('react-force-graph-2d', () => ({
   },
 }))
 
-vi.mock('../api', () => ({ getGraphFull: h.getGraphFull, getToken: () => null }))
+vi.mock('../api', () => ({
+  getGraphFull: h.getGraphFull,
+  getToken: () => null,
+  getEntries: h.getEntries,
+  getGraphNeighbors: h.getGraphNeighbors,
+}))
 
 vi.mock('../streaming', () => ({ streamSSE: h.mockStreamSSE }))
 
@@ -118,7 +126,14 @@ function fixture(): GraphFullResponse {
         type: 'entry',
         label: 'Alpha decision',
         val: 2,
-        properties: { project_ref: 'p1' },
+        properties: {
+          project_ref: 'p1',
+          short_title: 'Alpha decision',
+          long_title: 'Alpha decision, the long form',
+          entry_type: 'decision',
+          tags: ['alpha'],
+          confidence_level: 0.9,
+        },
         x: 10,
         y: 20,
       },
@@ -127,7 +142,14 @@ function fixture(): GraphFullResponse {
         type: 'entry',
         label: 'Beta lesson',
         val: 2,
-        properties: { project_ref: 'p2' },
+        properties: {
+          project_ref: 'p2',
+          short_title: 'Beta lesson',
+          long_title: 'Beta lesson, the long form',
+          entry_type: 'lesson_learned',
+          tags: ['beta'],
+          confidence_level: 0.9,
+        },
         x: 30,
         y: 40,
       },
@@ -185,6 +207,8 @@ beforeEach(() => {
   h.mockCloseEntry.mockClear()
   h.nodeHandler = null
   h.mockStreamSSE.mockClear()
+  vi.mocked(getEntries).mockReset()
+  vi.mocked(getGraphNeighbors).mockReset()
   clearFg()
   h.getGraphFull.mockImplementation(() => Promise.resolve(fixture()))
 })
@@ -233,24 +257,27 @@ describe('Graph page', () => {
     expect(h.lastProps.graphData.links).toHaveLength(1)
   })
 
-  it('(e) node click focuses and opens the drawer at 850 ms', async () => {
+  it('(e) node click focuses and opens the inspector at 850 ms', async () => {
     await renderPage()
     click('kb-00001')
-    expect(fg.centerAt).toHaveBeenCalledWith(90, 20, 800)
+    expect(fg.centerAt).toHaveBeenCalledWith(65, 20, 800)
     expect(fg.zoom).toHaveBeenCalledWith(4, 800)
     advance(849)
-    expect(h.mockOpenEntry).not.toHaveBeenCalled()
+    expect(screen.queryByRole('region', { name: 'Node inspector' })).toBeNull()
     advance(1)
-    expect(h.mockOpenEntry).toHaveBeenCalledWith('kb-00001')
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Alpha decision')
+        .length,
+    ).toBeGreaterThan(0)
+    expect(h.mockOpenEntry).not.toHaveBeenCalled()
 
     click('tag:alpha')
     expect(fg.centerAt).toHaveBeenCalledWith(50, 60, 800)
-    advance(849)
-    expect(screen.queryByRole('region', { name: 'Node details' })).toBeNull()
-    advance(1)
+    advance(850)
     expect(
-      within(screen.getByRole('region', { name: 'Node details' })).getAllByText('alpha').length,
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('alpha').length,
     ).toBeGreaterThan(0)
+    expect(h.mockOpenEntry).not.toHaveBeenCalled()
   })
 
   it('(f) Escape fits and clamps at 450 ms', async () => {
@@ -315,25 +342,35 @@ describe('Graph page', () => {
     click('kb-00001')
     click('tag:alpha')
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
-    expect(fg.centerAt).toHaveBeenLastCalledWith(90, 20, 600)
+    expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 600)
     expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
     expect(fg.centerAt).not.toHaveBeenCalledWith(0, 0, 600)
     advance(650)
-    expect(h.mockOpenEntry).toHaveBeenCalledWith('kb-00001')
+    expect(
+      within(screen.getByRole('region', { name: 'Node inspector' })).getAllByText('Alpha decision')
+        .length,
+    ).toBeGreaterThan(0)
+    expect(h.mockOpenEntry).not.toHaveBeenCalled()
   })
 
-  it('(k) the node panel is non-modal', async () => {
+  it('(k) the inspector is non-modal and Escape closes it before resetting', async () => {
     await renderPage()
     click('tag:alpha')
     advance(850)
-    expect(screen.getByRole('region', { name: 'Node details' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Node inspector' })).toBeInTheDocument()
     click('kb-00002')
-    expect(fg.centerAt).toHaveBeenCalledWith(110, 40, 800)
+    expect(fg.centerAt).toHaveBeenCalledWith(85, 40, 800)
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
     expect(fg.centerAt).toHaveBeenCalledWith(expect.anything(), expect.anything(), 600)
+    // the first Escape closes ONLY the inspector
+    clearFg()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Node inspector' })).toBeNull()
+    expect(fg.zoom).not.toHaveBeenCalled()
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    // the next Escape resets the view
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
-    expect(screen.queryByRole('region', { name: 'Node details' })).toBeNull()
   })
 
   it('(m) narrowing Scope drops a focus on an unrendered node', async () => {
@@ -369,6 +406,202 @@ describe('Graph page', () => {
     expect(h.lastProps.onRenderFramePost).toBeUndefined()
     expect(h.lastProps.onEngineStop).toBeUndefined()
     expect(screen.queryByTestId('graph-perf')).toBeNull()
+  })
+})
+
+function inspectorEntry(id: string) {
+  return {
+    id,
+    project_ref: 'p1',
+    short_title: 'Alpha decision',
+    long_title: 'Alpha decision, the long form',
+    knowledge_details: `Body for ${id}`,
+    entry_type: 'decision' as const,
+    source_context: null,
+    contributor: null,
+    team: null,
+    updated_by: null,
+    sensitivity: null,
+    confidence_level: 0.9,
+    tags: ['alpha'],
+    hints: {},
+    created_at: null,
+    updated_at: '2026-03-03T12:00:00Z',
+    last_accessed: null,
+    expires_at: null,
+    superseded_by: null,
+    is_active: true,
+    has_embedding: true,
+    version: 1,
+  }
+}
+
+describe('Graph page — node inspector', () => {
+  it('(n1) emits the [graph-inspector] open info event once per target', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    await renderPage()
+    click('tag:alpha')
+    advance(850)
+    const calls = info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] open')
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1]).toMatchObject({
+      node_id: 'tag:alpha',
+      node_type: 'tag',
+      member_total: 1,
+      groups: [{ key: 'has_tag:in', count: 1 }],
+    })
+  })
+
+  it('(n2) connections come from the payload; Details fetches the entry exactly once', async () => {
+    vi.mocked(getEntries).mockResolvedValue({
+      results: [{ id: 'kb-00001', found: true, entry: inspectorEntry('kb-00001'), pointer_rot: [] }],
+    })
+    await renderPage()
+    click('kb-00001')
+    advance(850)
+    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
+    expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(0)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    expect(within(region).getByText('p1 · 0.90')).toBeInTheDocument()
+    // the header tag pill and project pill ARE the has_tag:out/in_project:out groups
+    expect(within(region).getByRole('button', { name: 'alpha' })).toBeInTheDocument()
+    expect(within(region).queryByText(/has_tag:out/)).toBeNull()
+    fireEvent.click(within(region).getByText('Details'))
+    await act(async () => {})
+    expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(getEntries)).toHaveBeenCalledWith(['kb-00001'], { touch: false })
+    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
+    const date = new Date('2026-03-03T12:00:00Z').toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    })
+    expect(within(region).getByText(`p1 · 0.90 · updated ${date}`)).toBeInTheDocument()
+    // toggling Details closed and open again does not refetch
+    fireEvent.click(within(region).getByText('Details'))
+    fireEvent.click(within(region).getByText('Details'))
+    await act(async () => {})
+    expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
+  })
+
+  it('(n3) the first Escape closes only the inspector; the second resets the view', async () => {
+    await renderPage()
+    click('tag:alpha')
+    advance(850)
+    expect(screen.getByRole('region', { name: 'Node inspector' })).toBeInTheDocument()
+    clearFg()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Node inspector' })).toBeNull()
+    expect(fg.zoom).not.toHaveBeenCalled()
+    expect(fg.centerAt).not.toHaveBeenCalled()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
+    h.fgState.k = 8
+    advance(449)
+    expect(fg.zoom).not.toHaveBeenCalledWith(6, 300)
+    advance(1)
+    expect(fg.zoom).toHaveBeenCalledWith(6, 300)
+  })
+
+  it('(n4) a background click closes the inspector and fits after 100 ms', async () => {
+    await renderPage()
+    click('tag:alpha')
+    advance(850)
+    expect(screen.getByRole('region', { name: 'Node inspector' })).toBeInTheDocument()
+    clearFg()
+    act(() => h.lastProps.onBackgroundClick())
+    expect(screen.queryByRole('region', { name: 'Node inspector' })).toBeNull()
+    advance(99)
+    expect(fg.zoom).not.toHaveBeenCalled()
+    advance(1)
+    expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
+  })
+
+  it('(n5) the canvas stays interactive: re-targeting keeps the region mounted', async () => {
+    await renderPage()
+    click('tag:alpha')
+    advance(850)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    click('kb-00002')
+    expect(fg.centerAt).toHaveBeenCalledWith(85, 40, 800)
+    advance(850)
+    expect(region).toBeInTheDocument()
+    expect(within(region).getAllByText('Beta lesson').length).toBeGreaterThan(0)
+  })
+
+  it('(n6) a header tag pill click walks to the tag like a canvas click', async () => {
+    await renderPage()
+    click('kb-00001')
+    advance(850)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    clearFg()
+    fireEvent.click(within(region).getByRole('button', { name: 'alpha' }))
+    expect(fg.centerAt).toHaveBeenCalledWith(50, 60, 800)
+    // history pushed: ArrowLeft returns to the entry's camera
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 600)
+  })
+
+  it('(n7) a row click walks to the member like a canvas click on it', async () => {
+    const nodes: ExplorerNode[] = [
+      {
+        id: 'kb-00001',
+        type: 'entry',
+        label: 'Hub',
+        val: 2,
+        properties: { project_ref: 'p1' },
+        x: 10,
+        y: 20,
+      },
+      ...Array.from({ length: 13 }, (_, i) => ({
+        id: `kb-1000${i}`,
+        type: 'entry',
+        label: `Row ${i}`,
+        val: 1,
+        properties: { project_ref: 'p2' },
+        x: 30,
+        y: 40 + i,
+      })),
+    ]
+    const links = Array.from({ length: 13 }, (_, i) => ({
+      source: 'kb-00001',
+      target: `kb-1000${i}`,
+      type: 'related_to',
+    }))
+    vi.useFakeTimers()
+    render(<GraphExplorer graph={{ nodes, links }} />)
+    clearFg()
+    act(() => h.lastProps.onNodeClick(nodes[0]))
+    advance(850)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    fireEvent.click(within(region).getByRole('button', { name: 'related_to:out → 13' }))
+    expect(within(region).getAllByText(/Row \d+/).length).toBe(13)
+    clearFg()
+    fireEvent.click(within(region).getByRole('button', { name: /Row 5/ }))
+    // the same camera call a canvas click on kb-10005 produces
+    expect(fg.centerAt).toHaveBeenCalledWith(85, 45, 800)
+    // history pushed: ArrowLeft returns to the hub's camera
+    fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 600)
+  })
+
+  it('(n8) the inspector reports scrollTop and the reset restores it', async () => {
+    await renderPage()
+    click('tag:alpha')
+    advance(850)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    act(() => {
+      region.scrollTop = 120
+    })
+    fireEvent.scroll(region)
+    expect(region.scrollTop).toBe(120)
+    // re-targeting resets the lifted view state, so the scroll container
+    // snaps back to the top
+    click('kb-00002')
+    advance(850)
+    expect(region).toBeInTheDocument()
+    expect(region.scrollTop).toBe(0)
   })
 })
 
@@ -464,7 +697,7 @@ describe('GraphExplorer handle', () => {
     expect(visible('tag:alpha')).toBe(true)
     expect(visible('kb-00002')).toBe(true)
     expect(visible('tag:beta')).toBe(false)
-    expect(fg.centerAt).toHaveBeenCalledWith(90, 20, 800)
+    expect(fg.centerAt).toHaveBeenCalledWith(65, 20, 800)
   })
 
   it('(j3) fitNodes fits a subset and clamps at duration + 50 ms', () => {
@@ -525,7 +758,7 @@ describe('GraphExplorer handle', () => {
     act(() => {
       ref.current!.flyToNode('kb-00001')
     })
-    expect(fg.centerAt).toHaveBeenCalledWith(37.5, 20, 800)
+    expect(fg.centerAt).toHaveBeenCalledWith(12.5, 20, 800)
   })
 
   it('(j9) a width change during a traversal refits the results once', () => {
@@ -562,6 +795,6 @@ describe('GraphExplorer handle', () => {
     click('kb-00001')
     click('tag:alpha')
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
-    expect(fg.centerAt).toHaveBeenLastCalledWith(37.5, 20, 600)
+    expect(fg.centerAt).toHaveBeenLastCalledWith(12.5, 20, 600)
   })
 })

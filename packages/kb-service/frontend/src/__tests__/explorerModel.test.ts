@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
+  ENTRY_DRAWER_W,
   FIT_PADDING,
+  INSPECTOR_W,
   MAX_AUTO_ZOOM,
   MAX_ZOOM,
   boundingBox,
@@ -230,20 +232,28 @@ describe('camera helpers', () => {
   })
   it('focusCenter', () => {
     const n = { x: 10, y: 20 }
-    expect(focusCenter(n, true, 1200)).toEqual({ x: 90, y: 20 })
+    expect(focusCenter(n, true, 1200)).toEqual({ x: 65, y: 20 })
     expect(focusCenter(n, true, 959)).toEqual({ x: 10, y: 20 })
     expect(focusCenter(n, false, 1200)).toEqual({ x: 10, y: 20 })
   })
   it('focusCenter with a right inset', () => {
     const n = { x: 10, y: 20 }
     for (const w of [1200, 780, 959, 540]) {
-      expect(focusCenter(n, true, w, 420)).toEqual({ x: 37.5, y: 20 })
+      expect(focusCenter(n, true, w, 420)).toEqual({ x: 12.5, y: 20 })
     }
     expect(focusCenter(n, true, 539, 420)).toEqual({ x: 10, y: 20 })
     expect(focusCenter(n, true, 1200, 640)).toEqual({ x: 10, y: 20 })
     expect(focusCenter(n, true, 1200, 800)).toEqual({ x: 10, y: 20 })
     expect(focusCenter(n, false, 1200, 420)).toEqual({ x: 10, y: 20 })
-    expect(focusCenter(n, true, 1200)).toEqual({ x: 90, y: 20 })
+    expect(focusCenter(n, true, 1200)).toEqual({ x: 65, y: 20 })
+  })
+  it('entry camera shift constants', () => {
+    // the 440 px inspector drives the shift; the 640 px drawer stays for the
+    // off-graph drawer
+    expect(INSPECTOR_W).toBe(440)
+    expect(ENTRY_DRAWER_W).toBe(640)
+    expect((INSPECTOR_W - 0) / 2 / 4).toBe(55)
+    expect((INSPECTOR_W - 420) / 2 / 4).toBe(2.5)
   })
   it('fpsFromFrameTimes', () => {
     const now = 10_000

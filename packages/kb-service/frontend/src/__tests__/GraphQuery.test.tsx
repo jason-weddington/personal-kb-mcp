@@ -289,11 +289,13 @@ describe('Graph query mode', { timeout: 15000 }, () => {
 
     fg.centerAt.mockClear()
     fireEvent.click(within(panel).getByText('Alpha decision'))
-    expect(fg.centerAt).toHaveBeenCalledWith(90, 20, 800)
+    expect(fg.centerAt).toHaveBeenCalledWith(65, 20, 800)
     advance(849)
     expect(h.mockOpenEntry).not.toHaveBeenCalled()
     advance(1)
-    expect(h.mockOpenEntry).toHaveBeenCalledWith('kb-00001')
+    // the rendered entry opens the inspector, not the drawer
+    expect(h.mockOpenEntry).not.toHaveBeenCalled()
+    expect(screen.getByRole('region', { name: 'Node inspector' })).toBeInTheDocument()
 
     h.mockOpenEntry.mockClear()
     fg.centerAt.mockClear()
@@ -616,7 +618,7 @@ describe('Graph chat panel', { timeout: 15000 }, () => {
     fireEvent.click(
       within(region()!).getByRole('button', { name: 'Show kb-00001 on the graph' }),
     )
-    expect(fg.centerAt).toHaveBeenLastCalledWith(90, 20, 800)
+    expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 800)
   })
 
   it('(c3) explore opens the chat beside the query results', async () => {
@@ -639,15 +641,16 @@ describe('Graph chat panel', { timeout: 15000 }, () => {
     )
   })
 
-  it('(c4) a citation flies to its node and opens the drawer late', async () => {
+  it('(c4) a citation flies to its node and opens the inspector late', async () => {
     await open('jwt', SUMMARIZE)
     clearFg()
     fireEvent.click(within(panel()).getByRole('button', { name: 'Show kb-00001 on the graph' }))
-    expect(fg.centerAt).toHaveBeenLastCalledWith(37.5, 20, 800)
+    expect(fg.centerAt).toHaveBeenLastCalledWith(12.5, 20, 800)
     advance(849)
     expect(h.mockOpenEntry).not.toHaveBeenCalled()
     advance(1)
-    expect(h.mockOpenEntry).toHaveBeenCalledWith('kb-00001')
+    expect(h.mockOpenEntry).not.toHaveBeenCalled()
+    expect(screen.getByRole('region', { name: 'Node inspector' })).toBeInTheDocument()
   })
 
   it('(c5) an unrendered citation shows a snackbar', async () => {

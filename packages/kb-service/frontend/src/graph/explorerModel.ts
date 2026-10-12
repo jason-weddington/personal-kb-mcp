@@ -55,11 +55,10 @@ export const CLAMP_AFTER_FIT_MS = 50
 export const RESET_FIT_DELAY_MS = 100
 export const INITIAL_FIT_DELAY_MS = 1500
 export const SEARCH_LIMIT = 12
-export const CONNECTIONS_LIMIT = 30
 export const LINK_PARTICLES = 2
 export const ENTRY_DRAWER_W = 640
 export const ENTRY_OFFSET_MIN_WIDTH = 960
-export const NODE_PANEL_W = 340
+export const INSPECTOR_W = 440
 export const PERF_WINDOW_MS = 1000
 export const PERF_TICK_MS = 500
 
@@ -279,7 +278,7 @@ export function focusCenter(
   containerWidth: number,
   rightInset = 0,
 ): { x: number; y: number } {
-  const overlap = Math.max(0, ENTRY_DRAWER_W - rightInset)
+  const overlap = Math.max(0, INSPECTOR_W - rightInset)
   const shift =
     opensEntryDrawer && overlap > 0 && containerWidth + rightInset >= ENTRY_OFFSET_MIN_WIDTH
       ? overlap / 2 / FOCUS_ZOOM

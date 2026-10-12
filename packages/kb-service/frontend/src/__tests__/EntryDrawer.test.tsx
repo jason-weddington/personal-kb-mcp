@@ -255,9 +255,9 @@ describe('EntryDrawer — Connections section', () => {
       expect(screen.getByText('Connections')).toBeInTheDocument(),
     )
 
-    // Neighbor chip visible with resolved title; label: "[kb-00002] Neighbor Entry"
+    // Neighbor pill shows the resolved short_title, no [kb-id] prefix
     const neighborChip = await screen.findByRole('button', {
-      name: '[kb-00002] Neighbor Entry',
+      name: 'Neighbor Entry',
     })
     expect(neighborChip).toBeInTheDocument()
 
@@ -325,12 +325,13 @@ describe('EntryDrawer — Connections section', () => {
     await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
     await user.click(await screen.findByRole('button', { name: 'tag:flux' }))
     expect(handler).toHaveBeenCalledWith('tag:flux')
-    await user.click(await screen.findByRole('button', { name: '[kb-00002] T kb-00002' }))
+    await user.click(await screen.findByRole('button', { name: 'T kb-00002' }))
     expect(handler).toHaveBeenCalledWith('kb-00002')
   })
 
-  // (h) getGraphNeighbors error → Connections section absent; entry body still renders
-  it('(h) fetch error: Connections section absent, entry body unaffected', async () => {
+  // (h) getGraphNeighbors error → a warning Alert replaces the silent catch
+  it('(h) fetch error: Connections warns and shows a warning Alert; entry body unaffected', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.mocked(getEntries).mockResolvedValue(
       makeGetResponse('kb-00001', { short_title: 'My Entry' }),
     )
@@ -345,8 +346,15 @@ describe('EntryDrawer — Connections section', () => {
       expect(screen.getAllByText('My Entry')[0]).toBeInTheDocument(),
     )
 
-    // Connections header must be absent
-    expect(screen.queryByText('Connections')).toBeNull()
+    // The Connections section shows a visible warning instead of vanishing
+    expect(screen.getByText('Connections')).toBeInTheDocument()
+    expect(
+      screen.getByText('Connections unavailable: network error'),
+    ).toBeInTheDocument()
+    expect(warn).toHaveBeenCalledWith('[graph-inspector] connections fetch failed', {
+      node_id: 'kb-00001',
+      error: 'network error',
+    })
   })
 
   // (i) Switching entries (via within-drawer navigation) refreshes getGraphNeighbors
@@ -400,7 +408,7 @@ describe('EntryDrawer — Connections section', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
 
-    await screen.findByRole('button', { name: '[kb-00002] Neighbor Entry' })
+    await screen.findByRole('button', { name: 'Neighbor Entry' })
     expect(vi.mocked(getEntries).mock.calls[0]).toEqual([['kb-00001']])
     expect(vi.mocked(getEntries)).toHaveBeenCalledWith(['kb-00002'], { touch: false })
   })
