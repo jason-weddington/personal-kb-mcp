@@ -2,6 +2,50 @@
 
 <!-- version list -->
 
+## v1.11.0 (2026-10-11)
+
+### Bug Fixes
+
+- **4c58477a**: Home and Graph polish from the first verification pass (type label, consistent
+  totals, graph fit and legend, small viewports, Search count, a11y names)
+  ([`491109c`](https://github.com/jason-weddington/personal-kb-mcp/commit/491109c0690d80bb15dd9368266748fbf75589e0))
+
+- **86b39462**: The Graph fit keeps the graph full size on every viewport, the light-theme legend is
+  readable, and a skip link reaches the content
+  ([`c983f9c`](https://github.com/jason-weddington/personal-kb-mcp/commit/c983f9c77bed252bdac4a6e46219b03049861583))
+
+### Documentation
+
+- How_it_works.md covers the core KB, docs/intelligent-kb.md covers the automation layer, and a test
+  keeps both current
+  ([`23be2af`](https://github.com/jason-weddington/personal-kb-mcp/commit/23be2afd553ccae0c03c66fa7b8bc6061920b736))
+
+### Features
+
+- **2792f15b**: Graph query mode streams a question and animates the agent's traversal onto the
+  graph
+  ([`c251e7d`](https://github.com/jason-weddington/personal-kb-mcp/commit/c251e7d2b360571dda807341305337480085c1bc))
+
+- **2fa2d347**: The Graph page is the old tuned explorer again (labels, focus, solo legend, search,
+  backtrack) inside the current app shell
+  ([`2d500d1`](https://github.com/jason-weddington/personal-kb-mcp/commit/2d500d1398a014b9c13ab958daf9f7db035057a4))
+
+- **71221930**: Home is a browse page for inspecting the KB (new, top, stale, by project) beside the
+  KB stats, with no Ask panel
+  ([`277cc57`](https://github.com/jason-weddington/personal-kb-mcp/commit/277cc57f4a8a0fce19635a305cd8af969565ce23))
+
+- **bc3c532e**: Graph answers continue in a seeded chat side panel whose citations fly to their
+  nodes
+  ([`4a97bf0`](https://github.com/jason-weddington/personal-kb-mcp/commit/4a97bf09f13f2d8d259739ec9a310ba991653a28))
+
+### Testing
+
+- **0cac7fcc**: The docs coverage test checks hook events, MCP tools, tables, LLM purposes, contract
+  fixtures, code references and pinned constants, and release.sh refuses feature releases with
+  untouched docs
+  ([`9b1143e`](https://github.com/jason-weddington/personal-kb-mcp/commit/9b1143e25a89c625a7e03267bff113627ba74156))
+
+
 ## v1.10.0 (2026-10-11)
 
 ### Bug Fixes
