@@ -108,6 +108,13 @@ const KEY_GUARD_SELECTOR =
 
 const RESIZE_FIT_DELAY_MS = 200
 
+// force-graph repaints its hit-test canvas every 800 ms for as long as the
+// canvas keeps redrawing, which here is always (particles, autoPauseRedraw
+// off). Painting every link into it (27k on the live KB) made a long frame
+// and a major GC every repaint, the periodic hitch in the particle flow.
+// Links have no click handler, so they stay out of hit-testing.
+const NO_LINK_HIT_AREA = () => {}
+
 type Latest = {
   state: ExplorerState
   graph: GraphExplorerProps['graph']
@@ -576,7 +583,7 @@ export function GraphExplorer({
           linkDirectionalParticleWidth={particleWidth}
           linkDirectionalParticleColor={particleColor}
           linkDirectionalParticleSpeed={particleSpeed}
-          linkLabel="type"
+          linkPointerAreaPaint={NO_LINK_HIT_AREA}
           nodeVisibility={nodeVisibility}
           linkVisibility={linkVisibility}
           onNodeHover={onNodeHover}
