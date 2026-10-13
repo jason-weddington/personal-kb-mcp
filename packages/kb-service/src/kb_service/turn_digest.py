@@ -332,3 +332,30 @@ async def prune_turn_events(
         "DELETE FROM turn_events WHERE received_ts < $1", cutoff
     )
     return _count(status)
+
+
+async def prune_listener_vote_text(
+    pool: DbPool,
+    older_than_days: int = TURN_EVENTS_RETENTION_DAYS,
+    now: datetime | None = None,
+) -> int:
+    """NULL the vote-log text of decisions older than the retention window.
+
+    The listener's replay evidence (owner decision 2026-10-13, hypothesis
+    H-020) only needs to be fresh for the turn-events window: the decision
+    metadata and ``vote_model`` are kept forever, while ``vote_prompt`` /
+    ``vote_raw`` are set to NULL and ``vote_truncated`` reset to 0 on rows
+    whose ``decided_ts`` is older than *older_than_days*. Same cutoff
+    construction and cadence as :func:`prune_turn_events`.
+    """
+    cutoff = ((now or datetime.now(UTC)) - timedelta(days=older_than_days)).isoformat(
+        timespec="seconds"
+    )
+    status = await pool.execute(
+        "UPDATE listener_decisions"
+        " SET vote_prompt = NULL, vote_raw = NULL, vote_truncated = 0"
+        " WHERE decided_ts < $1"
+        " AND (vote_prompt IS NOT NULL OR vote_raw IS NOT NULL OR vote_truncated <> 0)",
+        cutoff,
+    )
+    return _count(status)

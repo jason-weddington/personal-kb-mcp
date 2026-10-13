@@ -170,7 +170,11 @@ _SCHEMA_STATEMENTS: list[str] = [
         reason TEXT NOT NULL CHECK (reason IN (
             'kill-switch', 'no-candidates', 'rule-a', 'rule-b', 'no-llm',
             'vote-split', 'vote-none', 'whispered', 'fallback-direct'
-        ))
+        )),
+        vote_model TEXT,
+        vote_prompt TEXT,
+        vote_raw TEXT,
+        vote_truncated INTEGER NOT NULL DEFAULT 0
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_listener_decisions_decided_ts"
@@ -257,6 +261,31 @@ _SCHEMA_STATEMENTS: list[str] = [
     # text_source: where the hook got the judged text
     # ('last_assistant_message' | 'transcript'); NULL on old rows/hooks.
     "ALTER TABLE listener_decisions ADD COLUMN IF NOT EXISTS text_source TEXT",
+    # Vote log (owner decision 2026-10-13, hypothesis H-020): the listener's
+    # three listener_vote calls are ~285 Sonnet calls a week, and the lab
+    # cannot build a replayable labelled set without the prompt the votes
+    # saw, the raw answers they gave, and which model ran them. Four columns,
+    # written ONLY on decisions that reached the three-vote LLM gate
+    # (NULL/0 on every other path):
+    #   vote_model      — the synthesis client's configured model id (from
+    #                     its _config.model), NULL when it cannot be read
+    #                     (kept forever: config metadata, not judged text)
+    #   vote_prompt     — the exact prompt string after secret redaction,
+    #                     capped at 16000 chars; NULL on non-voted rows and
+    #                     NULLed at the turn_events retention window
+    #   vote_raw        — json.dumps of exactly three post-redaction,
+    #                     post-cap (2000 chars) raw vote strings, in issue
+    #                     order (json null where a vote returned None);
+    #                     same retention as vote_prompt
+    #   vote_truncated  — 1 iff redaction's re-truncation cut ANY stored
+    #                     field, else 0 (the stored evidence is complete)
+    # Deliberately nullable with NO DEFAULT and NO CHECK, unlike the NOT NULL
+    # DEFAULT '' ADDs above: non-voted rows must store SQL NULL, not ''.
+    "ALTER TABLE listener_decisions ADD COLUMN IF NOT EXISTS vote_model TEXT",
+    "ALTER TABLE listener_decisions ADD COLUMN IF NOT EXISTS vote_prompt TEXT",
+    "ALTER TABLE listener_decisions ADD COLUMN IF NOT EXISTS vote_raw TEXT",
+    "ALTER TABLE listener_decisions"
+    " ADD COLUMN IF NOT EXISTS vote_truncated INTEGER NOT NULL DEFAULT 0",
     # failure_events: SERVICE DB sink for the failure-cue index. One row per
     # recorded post_tool failure (POST /api/kb/event); event_id is the
     # idempotency key (ON CONFLICT DO NOTHING). cue_key and every normalized

@@ -49,7 +49,11 @@ fire-and-forget from the caller's perspective: any DB failure is logged and
 swallowed so the listener response is never affected. The row also records
 (GTD be964e94) WHICH candidate signal (lexical / detail / fallback) produced
 a whispered pointer, via ``candidate_signal`` — see
-:func:`_record_listener_decision`.
+:func:`_record_listener_decision`. Decisions that reach the three-vote LLM
+gate additionally store the vote log (owner decision 2026-10-13, hypothesis
+H-020): the synthesis client's model id, the redacted prompt the votes saw
+and their three redacted raw answers — see :func:`_vote_model` and the
+gate section of :func:`listener`.
 """
 
 import asyncio
@@ -65,6 +69,7 @@ from fastapi import APIRouter, Depends, Request
 from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.search import SearchQuery
 
+from kb_service import turn_digest
 from kb_service.auth import get_current_user
 from kb_service.database import get_db
 from kb_service.models import (
@@ -88,10 +93,33 @@ _DECISION_INSERT_SQL = (
     "INSERT INTO listener_decisions ("
     "session_id, cwd_project, source_kb, decided_ts, candidates_considered,"
     " decision, reason, vote_shape, candidate_signal, candidate_ids,"
-    " whispered_ids, n_retrieved, n_after_a, n_after_b, retrieval_path, text_source"
+    " whispered_ids, n_retrieved, n_after_a, n_after_b, retrieval_path, text_source,"
+    " vote_model, vote_prompt, vote_raw, vote_truncated"
     ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,"
-    " $14, $15, $16)"
+    " $14, $15, $16, $17, $18, $19, $20)"
 )
+
+# Vote-log caps (owner decision 2026-10-13, hypothesis H-020): the prompt and
+# each raw vote answer are stored secret-redacted, then capped. The prompt cap
+# is generous (a replay needs the whole prompt); a raw vote is a short id
+# list, so 2000 chars is already an anomaly.
+_VOTE_PROMPT_LOG_MAX = 16000
+_VOTE_RAW_LOG_MAX = 2000
+
+
+def _vote_model(llm: Any) -> str | None:
+    """The configured model id of *llm*, or None when it cannot be read.
+
+    The same defensive read as ``surprise_worker.detector_model_name`` but
+    WITHOUT its class-name fallback: a stored vote_model must be a real model
+    id, never a ``'FakeLLM'``-style class name, so a config-less client stores
+    NULL (unknown) rather than a lie.
+    """
+    model = getattr(getattr(llm, "_config", None), "model", None)
+    if isinstance(model, str) and model:
+        return model
+    return None
+
 
 # retrieval_path values (GTD 268e2af3): whether the direct-mental_map-search
 # FALLBACK ran (see _retrieve_candidate_maps), split out of `reason` so the
@@ -600,6 +628,10 @@ async def _record_listener_decision(
     n_after_a: int = 0,
     n_after_b: int = 0,
     text_source: str | None = None,
+    vote_model: str | None = None,
+    vote_prompt: str | None = None,
+    vote_raw: str | None = None,
+    vote_truncated: int = 0,
 ) -> None:
     """Best-effort insert of one ``listener_decisions`` row. Never raises.
 
@@ -640,7 +672,16 @@ async def _record_listener_decision(
     the column comment in ``kb_service.database`` for the full vocabulary
     and the query it makes answerable).
 
-    A failure here (bad DSN, pool exhaustion, whatever) is logged at DEBUG
+    ``vote_model`` / ``vote_prompt`` / ``vote_raw`` / ``vote_truncated``
+    (owner decision 2026-10-13, hypothesis H-020) are the vote log: the
+    synthesis client's model id, the redacted prompt the three votes saw,
+    ``json.dumps`` of their three redacted raw answers (``None`` preserved
+    per slot), and whether the redactor re-truncated any stored field. They
+    are bound ONLY by the branches that reached the three-vote LLM gate —
+    every other path leaves all four at their NULL/0 defaults, and SQL NULL
+    (not ``''``) is the marker, unlike ``vote_shape``.
+
+    A failure here (bad DSN, pool exhaustion, whatever) is logged at WARNING
     and swallowed: this write must never fail or slow the listener response.
     """
     decision = "whisper" if reason == "whispered" else "declined"
@@ -665,9 +706,13 @@ async def _record_listener_decision(
             n_after_b,
             retrieval_path,
             text_source,
+            vote_model,
+            vote_prompt,
+            vote_raw,
+            vote_truncated,
         )
     except Exception as exc:  # best-effort telemetry: must never raise
-        logger.debug("listener decision write failed: %s", exc)
+        logger.warning("listener decision write failed: %s", exc, exc_info=True)
 
 
 def _basic_blocks(entries: list[KnowledgeEntry]) -> str:
@@ -904,6 +949,36 @@ async def listener(
         kb.synthesis_llm.generate(prompt, purpose="listener_vote"),
     )
 
+    # ── Vote log (owner decision 2026-10-13, hypothesis H-020) ───────────────
+    # Reuses turn_digest's redactor (redact-then-cap) so the vote log shares
+    # the exact secret-hygiene path the turn digests use. One redactor per
+    # request: a single fields_cut / unavailable state covers the prompt and
+    # all three raw answers. Best-effort by construction — a redaction
+    # failure stores nothing (never raw text) and never changes the decision.
+    red = turn_digest._Redactor()
+    logged_prompt = red(prompt, _VOTE_PROMPT_LOG_MAX)
+    logged_votes = [red(v, _VOTE_RAW_LOG_MAX) for v in raw_votes]
+    vote_model = _vote_model(kb.synthesis_llm)
+    if red.unavailable:
+        logger.warning(
+            "listener vote_log redaction-unavailable session_id=%s", body.session_id
+        )
+        vote_prompt: str | None = None
+        vote_raw: str | None = None
+        vote_truncated = 0
+    else:
+        vote_truncated = 1 if red.fields_cut > 0 else 0
+        if red.fields_cut > 0:
+            logger.info(
+                "listener vote_log retruncated session_id=%s"
+                " fields=%d chars_dropped=%d",
+                body.session_id,
+                red.fields_cut,
+                red.chars_dropped,
+            )
+        vote_prompt = logged_prompt
+        vote_raw = json.dumps(logged_votes)
+
     vote_sets = [_parse_vote_set(v, valid_ids) for v in raw_votes]
     # Recorded verbatim (as sorted lists for reproducible JSON) so the
     # reframed vote's effect is measurable straight off listener_decisions.
@@ -962,6 +1037,10 @@ async def listener(
             n_retrieved=n_retrieved,
             n_after_a=n_after_a,
             n_after_b=n_after_b,
+            vote_model=vote_model,
+            vote_prompt=vote_prompt,
+            vote_raw=vote_raw,
+            vote_truncated=vote_truncated,
         )
         reason_parts = [
             f"{e.id} ({'unanimous 3/3' if vote_counts[e.id] == 3 else 'majority 2/3'})"
@@ -999,5 +1078,9 @@ async def listener(
         n_retrieved=n_retrieved,
         n_after_a=n_after_a,
         n_after_b=n_after_b,
+        vote_model=vote_model,
+        vote_prompt=vote_prompt,
+        vote_raw=vote_raw,
+        vote_truncated=vote_truncated,
     )
     return ListenerResponse(pointer=None, pointers=[], reason=reason)

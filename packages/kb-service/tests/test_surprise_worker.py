@@ -6,6 +6,7 @@ POST /api/kb/surprise/drain with a scripted FakeLLM. No network.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import sqlite3
@@ -467,6 +468,31 @@ def _detections(event_id: str | None = None) -> list[sqlite3.Row]:
     )
 
 
+def _listener_row(session_id: str) -> sqlite3.Row:
+    rows = _query("SELECT * FROM listener_decisions WHERE session_id = ?", session_id)
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+def _insert_listener_vote_log(
+    session_id: str, decided_ts: str, *, vote_prompt: str = "gate prompt"
+) -> None:
+    """One voted listener_decisions row carrying vote text."""
+    _exec(
+        "INSERT INTO listener_decisions (session_id, source_kb, decided_ts,"
+        " candidates_considered, decision, reason, vote_shape, candidate_signal,"
+        " candidate_ids, whispered_ids, n_retrieved, n_after_a, n_after_b,"
+        " retrieval_path, vote_model, vote_prompt, vote_raw, vote_truncated)"
+        " VALUES (?, 'kb', ?, 1, 'whisper', 'whispered',"
+        ' \'[["kb-00001"], ["kb-00001"], ["kb-00001"]]\', \'fallback\','
+        " '[\"kb-00001\"]', '[\"kb-00001\"]', 1, 1, 1, 'fallback-direct',"
+        ' \'claude-sonnet-4-6\', ?, \'["kb-00001", "kb-00001", "kb-00001"]\', 1)',
+        session_id,
+        decided_ts,
+        vote_prompt,
+    )
+
+
 def _messages(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
     return [
         r.getMessage()
@@ -489,6 +515,10 @@ def test_drain_mode_off(
 ) -> None:
     _seed_f(local_client)
     assert len(_query("SELECT 1 FROM turn_events WHERE processed_at IS NULL")) == 2
+    old = (datetime.now(UTC) - timedelta(days=91)).isoformat(timespec="seconds")
+    recent = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
+    _insert_listener_vote_log("s-old", old, vote_prompt="old prompt")
+    _insert_listener_vote_log("s-new", recent, vote_prompt="new prompt")
     prune_calls: list[int] = []
     real_prune = surprise_worker.prune_turn_events
 
@@ -500,11 +530,30 @@ def test_drain_mode_off(
     monkeypatch.setenv("KB_SURPRISE_CAPTURE", "off")
     caplog.set_level(logging.INFO, logger=LOGGER)
     assert _drain(local_client) == _EMPTY
+    # Capture-off drains still touch nothing capture-shaped ...
     assert prune_calls == []
     assert ctx.llm.generate_calls == []
     assert len(_query("SELECT 1 FROM turn_events WHERE processed_at IS NULL")) == 2
     assert _detections() == []
-    assert [r for r in caplog.records if r.name == LOGGER] == []
+    # ... but the listener vote-text retention NULLing runs anyway (the
+    # listener writes vote text whatever the capture mode), so an old row's
+    # text goes and a recent row's stays.
+    assert "listener vote text pruned=1" in _messages(caplog, logging.INFO)
+    aged, fresh = _listener_row("s-old"), _listener_row("s-new")
+    assert aged["vote_prompt"] is None
+    assert aged["vote_raw"] is None
+    assert aged["vote_truncated"] == 0
+    assert aged["vote_model"] == "claude-sonnet-4-6"
+    assert fresh["vote_prompt"] == "new prompt"
+    assert fresh["vote_raw"] == '["kb-00001", "kb-00001", "kb-00001"]'
+    assert fresh["vote_truncated"] == 1
+    # No OTHER worker log line fired: the drain really was a no-op apart from
+    # the vote-text prune.
+    assert [
+        m
+        for m in _messages(caplog, logging.INFO)
+        if not m.startswith("listener vote text pruned=")
+    ] == []
 
 
 def _assert_shadow_pass(body: dict[str, Any], ctx: _Ctx) -> None:
@@ -988,8 +1037,44 @@ def test_worker_not_started_on_sqlite(
     monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
     with _local_client(tmp_path, monkeypatch) as client:
         assert app.state.surprise_worker is None
+        # No drain loop is scheduled on SQLite, but the listener vote-text
+        # retention still runs: the lifespan starts its own prune loop.
+        assert app.state.listener_vote_prune_task is not None
+        assert not app.state.listener_vote_prune_task.done()
         body = _drain(client)
         assert set(body) == set(_EMPTY)
+    # Shutdown cancelled the loop task.
+    assert app.state.listener_vote_prune_task is None
+
+
+async def test_prune_listener_vote_text_loop_prunes_each_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The startup-scheduled loop prunes once per interval, best-effort."""
+    sentinel = object()
+    calls: list[object] = []
+
+    async def _spy(pool: Any) -> int:
+        calls.append(pool)
+        return 1
+
+    async def _get_db() -> Any:
+        return sentinel
+
+    monkeypatch.setattr(surprise_worker, "prune_listener_vote_text", _spy)
+    monkeypatch.setattr(surprise_worker, "get_db", _get_db)
+    task = asyncio.create_task(
+        surprise_worker.prune_listener_vote_text_loop(poll_interval_seconds=0.001)
+    )
+    try:
+        await _wait_for(lambda: len(calls) >= 2)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert calls
+    assert all(pool is sentinel for pool in calls)
+    assert len(calls) >= 2
 
 
 def test_drain_prunes_first(
@@ -1000,10 +1085,14 @@ def test_drain_prunes_first(
 ) -> None:
     _seed_f(local_client)
     old = (datetime.now(UTC) - timedelta(days=91)).isoformat(timespec="seconds")
+    recent = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
     _exec("UPDATE turn_events SET received_ts = ? WHERE event_id = 's1:0'", old)
+    _insert_listener_vote_log("s-old", old, vote_prompt="old prompt")
+    _insert_listener_vote_log("s-new", recent, vote_prompt="new prompt")
     order: list[str] = []
     real_prune = surprise_worker.prune_turn_events
     real_list = surprise_worker.list_pending_turn_digests
+    real_vote_prune = surprise_worker.prune_listener_vote_text
 
     async def _prune(pool: Any) -> int:
         order.append("prune")
@@ -1013,16 +1102,33 @@ def test_drain_prunes_first(
         order.append("list_pending")
         return await real_list(pool)
 
+    async def _vote_prune(pool: Any) -> int:
+        order.append("vote_text_prune")
+        return await real_vote_prune(pool)
+
     monkeypatch.setattr(surprise_worker, "prune_turn_events", _prune)
     monkeypatch.setattr(surprise_worker, "list_pending_turn_digests", _list)
+    monkeypatch.setattr(surprise_worker, "prune_listener_vote_text", _vote_prune)
     _enqueue(ctx.llm, SCRIPT_B)
     caplog.set_level(logging.INFO, logger=LOGGER)
     body = _drain(local_client)
-    assert order[:2] == ["prune", "list_pending"]
+    # The listener vote-text prune runs first — before the mode check and
+    # before the turn_events prune, so it never depends on capture mode.
+    assert order[:3] == ["vote_text_prune", "prune", "list_pending"]
     assert _query("SELECT 1 FROM turn_events WHERE event_id = 's1:0'") == []
     assert body["digests_processed"] == 1
     assert _detections("s1:0") == []
     assert "pruned=1" in _info_line(caplog)
+    assert "listener vote text pruned=1" in _messages(caplog, logging.INFO)
+    # Only the OLD row's vote text is NULLed; vote_model stays on both.
+    aged, fresh = _listener_row("s-old"), _listener_row("s-new")
+    assert aged["vote_prompt"] is None
+    assert aged["vote_raw"] is None
+    assert aged["vote_truncated"] == 0
+    assert aged["vote_model"] == "claude-sonnet-4-6"
+    assert fresh["vote_prompt"] == "new prompt"
+    assert fresh["vote_raw"] == '["kb-00001", "kb-00001", "kb-00001"]'
+    assert fresh["vote_truncated"] == 1
 
 
 def test_drain_ignores_listener_switch(

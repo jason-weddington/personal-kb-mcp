@@ -1,6 +1,7 @@
 """Admin-only, read-only, keyset-paginated raw-signal feeds for the observatory.
 
-``GET /api/kb/observe/{turn-events,failure-events,surprise-detections,llm-calls}``.
+``GET /api/kb/observe/{turn-events,failure-events,surprise-detections,
+llm-calls,listener-decisions}``.
 ``llm-calls`` filters on ``ts`` and returns ``diagnostics_raw`` as the stored
 text (not parsed), so the text ``null`` and SQL NULL stay distinct. Nothing
 here writes or marks anything.
@@ -18,6 +19,8 @@ from kb_service.database import get_db
 from kb_service.models import (
     ObserveFailureEventRow,
     ObserveFailureEventsResponse,
+    ObserveListenerDecisionRow,
+    ObserveListenerDecisionsResponse,
     ObserveLlmCallRow,
     ObserveLlmCallsResponse,
     ObserveSurpriseDetectionRow,
@@ -197,4 +200,33 @@ async def observe_llm_calls(
     )
     return ObserveLlmCallsResponse(
         rows=[ObserveLlmCallRow(**r) for r in rows], next_after_id=next_id
+    )
+
+
+@router.get("/listener-decisions", response_model=ObserveListenerDecisionsResponse)
+async def observe_listener_decisions(
+    admin: Annotated[User, Depends(require_admin)],
+    since: _Since = None,
+    until: _Until = None,
+    after_id: _AfterId = 0,
+    limit: _Limit = DEFAULT_LIMIT,
+) -> ObserveListenerDecisionsResponse:
+    """Listener gate decisions (declines too) by ``decided_ts``, ``id`` ascending.
+
+    Includes the vote-log columns (owner decision 2026-10-13, hypothesis
+    H-020); a SQL-NULL ``vote_raw`` parses to ``[]``, matching the
+    ``candidate_ids`` / ``whispered_ids`` precedent.
+    """
+    rows, next_id = await _page(
+        table="listener_decisions",
+        ts_column="decided_ts",
+        json_columns={"candidate_ids": [], "whispered_ids": [], "vote_raw": []},
+        admin=admin,
+        since=since,
+        until=until,
+        after_id=after_id,
+        limit=limit,
+    )
+    return ObserveListenerDecisionsResponse(
+        rows=[ObserveListenerDecisionRow(**r) for r in rows], next_after_id=next_id
     )

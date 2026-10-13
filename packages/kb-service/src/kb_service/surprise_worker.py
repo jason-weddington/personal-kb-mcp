@@ -117,6 +117,7 @@ from kb_service.turn_digest import (
     get_session_turn_digests,
     list_pending_turn_digests,
     mark_turn_digests_processed,
+    prune_listener_vote_text,
     prune_turn_events,
     surprise_capture_mode,
 )
@@ -1715,13 +1716,26 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
     shadow candidates from the last ``DRY_RUN_LOOKBACK_SECONDS`` that have no
     ``surprise_dry_runs`` row yet; the response never lists them.
 
-    Mode 'off' returns zeros without touching the DB. Otherwise: prune old
-    digests first, then for each pending digest (by session, turn) run the
-    detectors, claim it via ``mark_turn_digests_processed`` (the atomic
-    per-row claim, deliberately outside the insert transaction) and insert
-    its rows. No model call runs while a connection is held.
+    Mode 'off' returns zeros without running the detectors; the only DB work
+    it still does is the listener vote-text retention NULLing (the listener
+    writes that text whatever the capture mode). Otherwise: prune old digests
+    first, then for each pending digest (by session, turn) run the detectors,
+    claim it via ``mark_turn_digests_processed`` (the atomic per-row claim,
+    deliberately outside the insert transaction) and insert its rows. No model
+    call runs while a connection is held.
     """
     mode = surprise_capture_mode()
+    # The listener writes vote-log text whether or not capture is on (owner
+    # decision 2026-10-13), so its retention NULLing must not depend on the
+    # capture mode: it runs BEFORE the mode-'off' early return, unlike the
+    # turn_events / llm_calls prunes below.
+    try:
+        vote_text_pruned = await prune_listener_vote_text(pool)
+    except Exception:
+        logger.warning("listener vote text prune failed", exc_info=True)
+    else:
+        if vote_text_pruned > 0:
+            logger.info("listener vote text pruned=%d", vote_text_pruned)
     if mode == "off":
         return DrainResult(0, [], [], [])
 
@@ -2008,3 +2022,27 @@ class SurpriseCaptureWorker:
             except Exception:
                 logger.exception("surprise_worker drain failed")
             await asyncio.sleep(self._poll)
+
+
+async def prune_listener_vote_text_loop(
+    poll_interval_seconds: float = SURPRISE_WORKER_POLL_SECONDS,
+) -> None:
+    """Keep the listener vote-text retention window when no drain loop runs.
+
+    ``SurpriseCaptureWorker`` only starts while capture is shadow/on, so a KB
+    with the listener on and capture off would otherwise never prune
+    ``listener_decisions`` vote text (the drain's ``prune_listener_vote_text``
+    is the only other caller). This loop closes that gap: it sleeps FIRST
+    (startup must not race the request path), then prunes once per
+    *poll_interval_seconds* — best-effort, mirroring the drain's prune block.
+    Cancelled at shutdown by the caller that created the task.
+    """
+    while True:
+        await asyncio.sleep(poll_interval_seconds)
+        try:
+            n = await prune_listener_vote_text(await get_db())
+        except Exception:
+            logger.warning("listener vote text prune failed", exc_info=True)
+        else:
+            if n > 0:
+                logger.info("listener vote text pruned=%d", n)

@@ -1,6 +1,7 @@
 """Personal KB web service — FastAPI application."""
 
 import asyncio
+import contextlib
 import importlib.metadata
 import logging
 import os
@@ -62,7 +63,9 @@ from kb_service.routes.turn_routes import record_validation_failure
 from kb_service.routes.turn_routes import router as turn_router
 from kb_service.supersession_log import log_reconcile_report
 from kb_service.surprise_worker import (
+    SURPRISE_WORKER_POLL_SECONDS,
     SurpriseCaptureWorker,
+    prune_listener_vote_text_loop,
     should_start_surprise_worker,
 )
 from kb_service.turn_digest import surprise_capture_mode
@@ -234,6 +237,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.surprise_drain_lock = asyncio.Lock()
     app.state.surprise_worker = None
     app.state.mcp_http_app = None
+    app.state.listener_vote_prune_task = None
     try:
         await app.state.kb.start_embedding_worker()
         mode = surprise_capture_mode()
@@ -246,6 +250,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "surprise_worker not started mode=%s (needs shadow/on and a"
                 " Postgres KB_DATABASE_URL; use POST /api/kb/surprise/drain)",
                 mode,
+            )
+            # The listener still writes vote-log text with capture off, so its
+            # retention NULLing needs its own loop when no drain loop runs.
+            app.state.listener_vote_prune_task = asyncio.create_task(
+                prune_listener_vote_text_loop()
+            )
+            logger.info(
+                "listener vote-text prune loop started poll=%ss",
+                SURPRISE_WORKER_POLL_SECONDS,
             )
         await write_policy.log_startup(
             mode, worker_started=app.state.surprise_worker is not None
@@ -276,6 +289,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.mcp_http_app = None
         if app.state.surprise_worker is not None:
             await app.state.surprise_worker.stop()
+        prune_task = app.state.listener_vote_prune_task
+        if prune_task is not None:
+            prune_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await prune_task
+            app.state.listener_vote_prune_task = None
         await app.state.kb.stop_embedding_worker()
         await app.state.kb.close()
         await drain_pending_llm_calls()

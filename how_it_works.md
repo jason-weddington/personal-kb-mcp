@@ -736,6 +736,7 @@ Auth values: **none** (unauthenticated); **user** (any authenticated user, JWT o
 | `/api/kb/observe/failure-events` | GET | `observe_routes.py` | admin | [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
 | `/api/kb/observe/surprise-detections` | GET | `observe_routes.py` | admin | [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
 | `/api/kb/observe/llm-calls` | GET | `observe_routes.py` | admin | §16, [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
+| `/api/kb/observe/listener-decisions` | GET | `observe_routes.py` | admin | [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
 | `/openapi.json` | GET | FastAPI default (`main.py`) | none | §21 |
 | `/docs` | GET | FastAPI default (`main.py`) | none | §21 |
 | `/docs/oauth2-redirect` | GET | FastAPI default (`main.py`) | none | §21 |

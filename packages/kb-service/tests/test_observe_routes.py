@@ -1,6 +1,7 @@
 """GET /api/kb/observe/*: admin-only paged raw-signal feeds (real SQLite)."""
 
 import sqlite3
+import types
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,8 @@ from kb_service import models
 from kb_service.auth import get_current_user
 from kb_service.main import app
 from kb_service.routes import event_routes, turn_routes
-from tests.conftest import fake_user
+from tests.conftest import FakeKnowledgeBase, FakeLLM, fake_user
+from tests.test_listener_decisions import _make_map_result
 
 _SCRUB_ENV = (
     "KB_SERVICE_DATABASE_URL",
@@ -21,7 +23,13 @@ _SCRUB_ENV = (
     "ANTHROPIC_API_KEY",
     "KB_AWS_PROFILE",
 )
-_PATHS = ("turn-events", "failure-events", "surprise-detections", "llm-calls")
+_PATHS = (
+    "turn-events",
+    "failure-events",
+    "surprise-detections",
+    "llm-calls",
+    "listener-decisions",
+)
 _TABLES = {
     "turn-events": ("turn_events", "received_ts", models.ObserveTurnEventRow),
     "failure-events": ("failure_events", "received_ts", models.ObserveFailureEventRow),
@@ -31,6 +39,11 @@ _TABLES = {
         models.ObserveSurpriseDetectionRow,
     ),
     "llm-calls": ("llm_calls", "ts", models.ObserveLlmCallRow),
+    "listener-decisions": (
+        "listener_decisions",
+        "decided_ts",
+        models.ObserveListenerDecisionRow,
+    ),
 }
 _ITEMS = [{"kind": "assistant_text", "text": "hi"}]
 
@@ -123,12 +136,30 @@ def _insert_llm_call(n: int, ts: str = "2026-10-09T12:00:00+00:00") -> None:
     )
 
 
+def _insert_listener_decision(n: int, ts: str = "2026-10-09T12:00:00+00:00") -> None:
+    _sql(
+        "INSERT INTO listener_decisions (session_id, cwd_project, source_kb,"
+        " decided_ts, candidates_considered, decision, reason, vote_shape,"
+        " candidate_signal, candidate_ids, whispered_ids, n_retrieved, n_after_a,"
+        " n_after_b, retrieval_path, text_source, vote_model, vote_prompt,"
+        " vote_raw, vote_truncated)"
+        " VALUES (?, 'p', 'kb', ?, 2, 'whisper', 'whispered',"
+        ' \'[["kb-00001"], ["kb-00001"], ["kb-00001"]]\', \'fallback\','
+        ' \'["kb-00001", "kb-00002"]\', \'["kb-00001"]\', 2, 2, 2,'
+        " 'fallback-direct', 'last_assistant_message', 'claude-sonnet-4-6',"
+        ' \'gate prompt text\', \'["kb-00001", "kb-00001", "kb-00001"]\', 0)',
+        f"s:{n}",
+        ts,
+    )
+
+
 def _seed(client: TestClient, n: int = 3) -> None:
     for i in range(n):
         _post_turn(client, i)
         _post_failure(client, i)
         _insert_detection(i)
         _insert_llm_call(i)
+        _insert_listener_decision(i)
 
 
 def test_paging_limit_2(local_client: TestClient) -> None:
@@ -158,6 +189,10 @@ def test_since_until_window(local_client: TestClient) -> None:
     _sql("UPDATE surprise_detections SET ts = '2026-01-01T00:00:00+00:00' WHERE id = 1")
     _sql("UPDATE llm_calls SET ts = '2026-01-01T00:00:00+00:00' WHERE id = 1")
     _sql(
+        "UPDATE listener_decisions SET decided_ts = '2026-01-01T00:00:00+00:00'"
+        " WHERE id = 1"
+    )
+    _sql(
         "UPDATE turn_events SET received_ts = '2026-03-01T00:00:00+00:00' WHERE id = 3"
     )
     _sql(
@@ -166,6 +201,10 @@ def test_since_until_window(local_client: TestClient) -> None:
     )
     _sql("UPDATE surprise_detections SET ts = '2026-03-01T00:00:00+00:00' WHERE id = 3")
     _sql("UPDATE llm_calls SET ts = '2026-03-01T00:00:00+00:00' WHERE id = 3")
+    _sql(
+        "UPDATE listener_decisions SET decided_ts = '2026-03-01T00:00:00+00:00'"
+        " WHERE id = 3"
+    )
     for path in _PATHS:
         _, col, _ = _TABLES[path]
         _sql(
@@ -190,6 +229,103 @@ def test_surprise_details_parsed(local_client: TestClient) -> None:
     _insert_detection(0)
     row = local_client.get("/api/kb/observe/surprise-detections").json()["rows"][0]
     assert row["details"] == {"k": 1}
+
+
+def test_listener_decisions_vote_log_round_trip(local_client: TestClient) -> None:
+    """The vote-log columns round-trip: parsed lists, preserved null slots."""
+    _insert_listener_decision(0)
+    # A second, NON-voted row: all three text columns are SQL NULL.
+    _sql(
+        "INSERT INTO listener_decisions (session_id, source_kb, decided_ts,"
+        " candidates_considered, decision, reason)"
+        " VALUES ('s:none', 'kb', '2026-10-09T12:00:01+00:00', 0, 'declined',"
+        " 'no-candidates')"
+    )
+    rows = local_client.get(
+        "/api/kb/observe/listener-decisions", params={"limit": 10}
+    ).json()["rows"]
+    assert [r["session_id"] for r in rows] == ["s:0", "s:none"]
+    voted, plain = rows
+    assert voted["vote_model"] == "claude-sonnet-4-6"
+    assert voted["vote_prompt"] == "gate prompt text"
+    assert voted["vote_raw"] == ["kb-00001", "kb-00001", "kb-00001"]
+    assert voted["vote_truncated"] == 0
+    assert voted["candidate_ids"] == ["kb-00001", "kb-00002"]
+    assert voted["whispered_ids"] == ["kb-00001"]
+    # SQL NULL parses to [] (never None) on the wire, matching candidate_ids.
+    assert plain["vote_model"] is None
+    assert plain["vote_prompt"] is None
+    assert plain["vote_raw"] == []
+    assert plain["vote_truncated"] == 0
+
+
+def test_listener_decisions_null_vote_slot_round_trip(
+    local_client: TestClient,
+) -> None:
+    """A json null vote slot survives as None inside the parsed list."""
+    _sql(
+        "INSERT INTO listener_decisions (session_id, source_kb, decided_ts,"
+        " candidates_considered, decision, reason, vote_raw)"
+        " VALUES ('s:split', 'kb', '2026-10-09T12:00:02+00:00', 2, 'declined',"
+        " 'vote-split', '[\"kb-00001\", \"kb-00002\", null]')"
+    )
+    row = local_client.get("/api/kb/observe/listener-decisions").json()["rows"][0]
+    assert row["vote_raw"] == ["kb-00001", "kb-00002", None]
+
+
+def test_listener_decision_row_from_real_listener_post(
+    local_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real POST /api/kb/listener row fetched back through the endpoint.
+
+    End-to-end shape of the vote log (owner decision 2026-10-13): the model
+    from the client's config, the redacted prompt the votes saw, and the
+    3-element raw list with the None slot preserved (hypothesis H-020 fixture).
+    """
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_kb = FakeKnowledgeBase(
+        results=[
+            _make_map_result("kb-00001", short_title="Map One"),
+            _make_map_result("kb-00002", short_title="Map Two"),
+        ],
+        filtered_count=2,
+    )
+    fake_llm = FakeLLM()
+    fake_llm._config = types.SimpleNamespace(model="claude-sonnet-4-6")
+    fake_llm.enqueue("kb-00001")
+    fake_llm.enqueue("kb-00002")
+    fake_llm.enqueue(None)
+    fake_kb.synthesis_llm = fake_llm
+    # A secret in the judged text proves redaction survives the whole round
+    # trip (assembled from fragments so no source line matches a rule).
+    secret = "sk-ant-api03-" + "abcdefghijklmnopqrstuvwxyz0123456789"
+    text = f"AWS_ACCESS_KEY_ID={'AKIA' + 'IOSFODNN7EXAMPLE'}\n{secret}"
+
+    real_kb = app.state.kb
+    app.state.kb = fake_kb
+    try:
+        resp = local_client.post(
+            "/api/kb/listener", json={"text": text, "session_id": "s-real"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["pointers"] == []
+        row = local_client.get("/api/kb/observe/listener-decisions").json()["rows"][0]
+    finally:
+        app.state.kb = real_kb
+
+    assert row["session_id"] == "s-real"
+    assert row["decision"] == "declined"
+    assert row["reason"] == "vote-split"
+    assert row["vote_shape"] == '[["kb-00001"], ["kb-00002"], []]'
+    assert row["vote_model"] == "claude-sonnet-4-6"
+    # Redacted, never raw — and not the unredacted prompt the votes saw.
+    assert row["vote_prompt"] != fake_llm.generate_calls[0][0]
+    assert secret not in row["vote_prompt"]
+    assert "AKIAIOSFODNN7EXAMPLE" not in row["vote_prompt"]
+    assert "[REDACTED:" in row["vote_prompt"]
+    assert row["vote_raw"] == ["kb-00001", "kb-00002", None]
+    assert row["vote_truncated"] == 0
 
 
 @pytest.mark.parametrize("path", _PATHS)

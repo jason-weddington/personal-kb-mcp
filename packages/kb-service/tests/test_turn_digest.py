@@ -29,6 +29,7 @@ from kb_service.turn_digest import (
     insert_turn_digest,
     list_pending_turn_digests,
     mark_turn_digests_processed,
+    prune_listener_vote_text,
     prune_turn_events,
     redact_turn_digest,
     surprise_capture_mode,
@@ -114,6 +115,76 @@ async def test_prune_strict_cutoff(pool: SqlitePool) -> None:
     assert await prune_turn_events(pool, now=now) == 1
     remaining = await get_session_turn_digests(pool, "s1")
     assert [r.turn_index for r in remaining] == [1, 2, 3]
+
+
+async def _insert_listener_decision(
+    pool: SqlitePool, session: str, decided_ts: str
+) -> None:
+    """One voted listener_decisions row carrying the full vote log."""
+    await pool.execute(
+        "INSERT INTO listener_decisions (session_id, cwd_project, source_kb,"
+        " decided_ts, candidates_considered, decision, reason, vote_shape,"
+        " candidate_signal, candidate_ids, whispered_ids, n_retrieved, n_after_a,"
+        " n_after_b, retrieval_path, text_source, vote_model, vote_prompt,"
+        " vote_raw, vote_truncated)"
+        " VALUES ($1, 'proj', 'kb', $2, 2, 'whisper', 'whispered',"
+        ' \'[["kb-00001"], ["kb-00001"], ["kb-00001"]]\', \'fallback\','
+        " '[\"kb-00001\"]', '[\"kb-00001\"]', 1, 1, 1, 'fallback-direct',"
+        " 'last_assistant_message', 'claude-sonnet-4-6', 'the prompt',"
+        ' \'["kb-00001", "kb-00001", "kb-00001"]\', 0)',
+        session,
+        decided_ts,
+    )
+
+
+async def test_prune_listener_vote_text_strict_cutoff(pool: SqlitePool) -> None:
+    """Vote text is NULLed on decided_ts-old rows only; metadata stays."""
+    now = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
+    old = (now - timedelta(days=91)).isoformat(timespec="seconds")
+    recent = (now - timedelta(days=1)).isoformat(timespec="seconds")
+    await _insert_listener_decision(pool, "s-old", old)
+    await _insert_listener_decision(pool, "s-new", recent)
+
+    assert await prune_listener_vote_text(pool, now=now) == 1
+    # A second pass matches nothing: already-cleared rows are not rewritten.
+    assert await prune_listener_vote_text(pool, now=now) == 0
+
+    rows = {
+        r["session_id"]: r
+        for r in await pool.fetch(
+            "SELECT * FROM listener_decisions ORDER BY session_id"
+        )
+    }
+    aged, fresh = rows["s-old"], rows["s-new"]
+    # Text goes, everything else stays — vote_model is metadata, kept forever.
+    assert aged["vote_prompt"] is None
+    assert aged["vote_raw"] is None
+    assert aged["vote_truncated"] == 0
+    assert aged["vote_model"] == "claude-sonnet-4-6"
+    for column in (
+        "cwd_project",
+        "source_kb",
+        "decision",
+        "reason",
+        "vote_shape",
+        "candidate_signal",
+        "candidate_ids",
+        "whispered_ids",
+        "n_retrieved",
+        "n_after_a",
+        "n_after_b",
+        "retrieval_path",
+        "text_source",
+    ):
+        assert aged[column] == fresh[column], column
+    assert fresh["vote_prompt"] == "the prompt"
+    assert fresh["vote_raw"] == '["kb-00001", "kb-00001", "kb-00001"]'
+    assert fresh["vote_truncated"] == 0
+    assert fresh["vote_model"] == "claude-sonnet-4-6"
+
+
+async def test_prune_listener_vote_text_no_rows(pool: SqlitePool) -> None:
+    assert await prune_listener_vote_text(pool) == 0
 
 
 async def test_retruncation_after_redaction(

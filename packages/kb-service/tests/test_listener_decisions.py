@@ -34,6 +34,8 @@ dedicated primary-path (no fallback) case (d) proves retrieval_path flips to
 """
 
 import json
+import logging
+import types
 from typing import Any
 
 import pytest
@@ -42,6 +44,7 @@ from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.search import SearchResult
 
 import kb_service.routes.listener_routes as listener_routes
+import kb_service.turn_digest as turn_digest
 from kb_service.auth import get_current_user
 from kb_service.main import app
 from tests.conftest import FakeKnowledgeBase, FakeLLM, fake_user
@@ -111,6 +114,7 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
     )
     sql, args = pool.calls[0]
     assert "INSERT INTO listener_decisions" in sql
+    assert len(args) == 20, f"expected 20 INSERT args, got {len(args)}"
     (
         session_id,
         cwd_project,
@@ -128,6 +132,10 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         n_after_b,
         retrieval_path,
         text_source,
+        vote_model,
+        vote_prompt,
+        vote_raw,
+        vote_truncated,
     ) = args
     return {
         "session_id": session_id,
@@ -146,7 +154,19 @@ def _decision_args(pool: _RecordingDecisionPool) -> dict[str, Any]:
         "n_after_b": n_after_b,
         "retrieval_path": retrieval_path,
         "text_source": text_source,
+        "vote_model": vote_model,
+        "vote_prompt": vote_prompt,
+        "vote_raw": vote_raw,
+        "vote_truncated": vote_truncated,
     }
+
+
+def _assert_no_vote_log(row: dict[str, Any]) -> None:
+    """Every branch that never reached the LLM gate stores NULLs, not ''."""
+    assert row["vote_model"] is None
+    assert row["vote_prompt"] is None
+    assert row["vote_raw"] is None
+    assert row["vote_truncated"] == 0
 
 
 # ─── (a) one row per branch ──────────────────────────────────────────────────
@@ -171,6 +191,7 @@ def test_decision_kill_switch(
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
     assert row["reason"] == "kill-switch"
+    _assert_no_vote_log(row)
     assert row["candidates_considered"] == 0
     assert row["candidate_signal"] == ""
     assert row["session_id"] == "sess-1"
@@ -227,6 +248,7 @@ def test_decision_no_candidates_from_retrieval(
     # GTD 268e2af3: reason stays granular even on the fallback path; the
     # fallback itself is recorded separately in retrieval_path.
     assert row["reason"] == "no-candidates"
+    _assert_no_vote_log(row)
     assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 0
     assert row["candidate_signal"] == ""  # decline branches never attribute a signal
@@ -257,6 +279,7 @@ def test_decision_rule_a(
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
     # THE load-bearing assertion (GTD 268e2af3): a rule-a decline still
+    _assert_no_vote_log(row)
     # records the FULL pre-filter candidate pool, non-empty.
     assert row["reason"] == "rule-a"
     assert row["retrieval_path"] == "fallback-direct"
@@ -291,6 +314,7 @@ def test_decision_rule_b(
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
     assert row["reason"] == "rule-b"
+    _assert_no_vote_log(row)
     assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 0
     assert row["candidate_signal"] == ""
@@ -321,6 +345,7 @@ def test_decision_no_llm(
     row = _decision_args(decision_pool)
     assert row["decision"] == "declined"
     assert row["reason"] == "no-llm"
+    _assert_no_vote_log(row)
     assert row["retrieval_path"] == "fallback-direct"
     assert row["candidates_considered"] == 1
     assert row["candidate_signal"] == ""
@@ -518,6 +543,7 @@ def test_decision_write_failure_does_not_break_response(
     client: TestClient,
     fake_kb: FakeKnowledgeBase,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A raising DB layer must still yield a normal 200 response.
 
@@ -532,6 +558,7 @@ def test_decision_write_failure_does_not_break_response(
     monkeypatch.setattr(listener_routes, "get_db", _fake_get_db)
     monkeypatch.setenv("KB_LISTENER_ENABLED", "FALSE")
     app.dependency_overrides[get_current_user] = fake_user
+    caplog.set_level(logging.WARNING, logger="kb_service.routes.listener_routes")
 
     resp = client.post(
         "/api/kb/listener", json={"text": "hello", "session_id": "sess-11"}
@@ -546,12 +573,24 @@ def test_decision_write_failure_does_not_break_response(
     # The pool recorded no successful call (it raised), proving the write was
     # attempted and swallowed rather than skipped.
     assert raising_pool.calls == []
+    # Exactly one INSERT attempt, surfaced at WARNING (with the traceback),
+    # never DEBUG: a silent sink is indistinguishable from a working one.
+    warnings = [
+        r
+        for r in caplog.records
+        if r.getMessage().startswith("listener decision write failed")
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert warnings[0].exc_info is not None
+    assert "db is down" in warnings[0].getMessage()
 
 
 def test_decision_write_failure_with_candidates_and_llm_path(
     client: TestClient,
     fake_kb: FakeKnowledgeBase,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Same as above, but on the unanimous-whisper path (post-LLM-gate write)."""
     raising_pool = _RecordingDecisionPool(raise_on_execute=RuntimeError("db is down"))
@@ -569,8 +608,9 @@ def test_decision_write_failure_with_candidates_and_llm_path(
     fake_kb.results = [_make_map_result("kb-00001", short_title="Home Network Map")]
     fake_kb.filtered_count = 1
     fake_kb.synthesis_llm = fake_llm
-
     app.dependency_overrides[get_current_user] = fake_user
+    caplog.set_level(logging.WARNING, logger="kb_service.routes.listener_routes")
+
     resp = client.post(
         "/api/kb/listener", json={"text": "hello", "session_id": "sess-12"}
     )
@@ -581,6 +621,12 @@ def test_decision_write_failure_with_candidates_and_llm_path(
         "pointers": [{"id": "kb-00001", "short_title": "Home Network Map"}],
         "reason": "matched kb-00001 (unanimous 3/3)",
     }
+    assert raising_pool.calls == []
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("listener decision write failed")
+    ]
 
 
 # ─── (d) primary (non-fallback) path: retrieval_path == "primary" ──────────
@@ -687,3 +733,284 @@ def test_decision_fallback_path_records_both_reason_and_retrieval_path(
 def test_listener_endpoint_still_mounted() -> None:
     paths = {route.path for route in app.routes}  # type: ignore[attr-defined]
     assert "/api/kb/listener" in paths
+
+
+# ─── vote log (owner decision 2026-10-13, hypothesis H-020) ──────────────────
+
+# Assembled from fragments (mirroring kb-core's test_redact_secrets) so no
+# source line in THIS file matches a scanner rule.
+_ANT_TOKEN = "sk-ant-api03-" + "abcdefghijklmnopqrstuvwxyz0123456789"
+_AWS_KEY_ID = "AKIA" + "IOSFODNN7EXAMPLE"
+
+
+def _voted_llm(*votes: str | None, model: str | None = "claude-sonnet-4-6") -> FakeLLM:
+    """A FakeLLM with three enqueued votes and an optional model config."""
+    fake_llm = FakeLLM()
+    if model is not None:
+        fake_llm._config = types.SimpleNamespace(model=model)
+    for vote in votes:
+        fake_llm.enqueue(vote)
+    return fake_llm
+
+
+def _two_candidate_kb(fake_kb: FakeKnowledgeBase, fake_llm: FakeLLM) -> None:
+    fake_kb.results = [
+        _make_map_result("kb-00001", short_title="Map One"),
+        _make_map_result("kb-00002", short_title="Map Two"),
+    ]
+    fake_kb.filtered_count = 2
+    fake_kb.synthesis_llm = fake_llm
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_vote_log_stored_on_voted_decision(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """A voted decision stores the model, the prompt and the 3 raw answers."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_llm = _voted_llm("kb-00001", "kb-00002", "kb-00001")
+    _two_candidate_kb(fake_kb, fake_llm)
+    app.dependency_overrides[get_current_user] = fake_user
+
+    resp = client.post(
+        "/api/kb/listener", json={"text": "hello", "session_id": "sess-v1"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["pointers"] == [{"id": "kb-00001", "short_title": "Map One"}]
+
+    row = _decision_args(decision_pool)
+    assert row["reason"] == "whispered"
+    # The model id comes from the client's config, verbatim.
+    assert row["vote_model"] == "claude-sonnet-4-6"
+    # The exact prompt string all three listener_vote calls received.
+    assert len(fake_llm.generate_calls) == 3
+    assert fake_llm.purposes == ["listener_vote"] * 3
+    assert row["vote_prompt"] == fake_llm.generate_calls[0][0]
+    # Three raw answers in issue order.
+    assert json.loads(row["vote_raw"]) == ["kb-00001", "kb-00002", "kb-00001"]
+    assert row["vote_truncated"] == 0
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_vote_log_model_none_for_config_less_client(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """A client whose config cannot be read stores NULL, never a class name."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_llm = _voted_llm("kb-00001", "kb-00001", "kb-00001", model=None)
+    _two_candidate_kb(fake_kb, fake_llm)
+    app.dependency_overrides[get_current_user] = fake_user
+
+    resp = client.post(
+        "/api/kb/listener", json={"text": "hello", "session_id": "sess-v2"}
+    )
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    assert row["reason"] == "whispered"
+    assert row["vote_model"] is None
+    assert row["vote_prompt"] == fake_llm.generate_calls[0][0]
+    assert json.loads(row["vote_raw"]) == ["kb-00001", "kb-00001", "kb-00001"]
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_vote_log_redacts_secrets_in_prompt_and_answers(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """A secret in the judged text or in an answer is stored only redacted."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_llm = _voted_llm(_ANT_TOKEN, "kb-00001", "kb-00001")
+    _two_candidate_kb(fake_kb, fake_llm)
+    app.dependency_overrides[get_current_user] = fake_user
+
+    resp = client.post(
+        "/api/kb/listener",
+        json={"text": f"AWS_ACCESS_KEY_ID={_AWS_KEY_ID}", "session_id": "sess-v3"},
+    )
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    assert row["reason"] == "whispered"
+    # Redacted, never raw — in the prompt...
+    assert _AWS_KEY_ID not in row["vote_prompt"]
+    assert "[REDACTED:" in row["vote_prompt"]
+    # ...and in each raw answer.
+    raw = json.loads(row["vote_raw"])
+    assert len(raw) == 3
+    assert _ANT_TOKEN not in raw[0]
+    assert raw[0].startswith("[REDACTED:")
+    assert raw[1] == "kb-00001"
+    assert raw[2] == "kb-00001"
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_vote_log_caps_prompt_after_redaction(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Redaction runs BEFORE the cap: a 17000-char prompt stores exactly 16000
+    redacted chars, and the re-truncation is visible in vote_truncated + INFO."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_llm = _voted_llm("kb-00001", "kb-00001", "kb-00001")
+    _two_candidate_kb(fake_kb, fake_llm)
+    app.dependency_overrides[get_current_user] = fake_user
+
+    text = _ANT_TOKEN + "\n" + "x" * 17000  # secret in the FIRST 500 chars
+    caplog.set_level(logging.INFO, logger="kb_service.routes.listener_routes")
+    resp = client.post("/api/kb/listener", json={"text": text, "session_id": "sess-v4"})
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    assert len(row["vote_prompt"]) == 16000
+    assert "[REDACTED:Anthropic API Key]" in row["vote_prompt"]
+    assert _ANT_TOKEN not in row["vote_prompt"]
+    assert row["vote_truncated"] == 1
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("listener vote_log retruncated")
+    ]
+    assert len(lines) == 1
+    assert "session_id=sess-v4" in lines[0]
+    assert "fields=1" in lines[0]
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_vote_log_caps_secret_free_prompt_at_16000(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """A secret-free over-long prompt stores exactly its first 16000 chars."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_llm = _voted_llm("kb-00001", "kb-00001", "kb-00001")
+    _two_candidate_kb(fake_kb, fake_llm)
+    app.dependency_overrides[get_current_user] = fake_user
+
+    resp = client.post(
+        "/api/kb/listener", json={"text": "y" * 17000, "session_id": "sess-v5"}
+    )
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    assert row["vote_prompt"] == fake_llm.generate_calls[0][0][:16000]
+    assert row["vote_truncated"] == 1
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_vote_log_caps_each_raw_vote_at_2000(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """A 2500-char answer stores exactly 2000 chars and flips vote_truncated."""
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_llm = _voted_llm("kb-00001", "z" * 2500, "kb-00001")
+    _two_candidate_kb(fake_kb, fake_llm)
+    app.dependency_overrides[get_current_user] = fake_user
+
+    resp = client.post(
+        "/api/kb/listener", json={"text": "hello", "session_id": "sess-v6"}
+    )
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    raw = json.loads(row["vote_raw"])
+    assert len(raw) == 3
+    assert raw[0] == "kb-00001"
+    assert raw[1] == "z" * 2000
+    assert raw[2] == "kb-00001"
+    assert row["vote_truncated"] == 1
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_vote_log_preserves_none_vote_slot(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+) -> None:
+    """A None answer stores json null in ITS slot on a genuine vote-split row.
+
+    Two DISTINCT ids are required: ('kb-00001', 'kb-00001', None) would reach
+    the whispered branch instead (2/3 majority), not a split.
+    """
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_llm = _voted_llm("kb-00001", "kb-00002", None)
+    _two_candidate_kb(fake_kb, fake_llm)
+    app.dependency_overrides[get_current_user] = fake_user
+
+    resp = client.post(
+        "/api/kb/listener", json={"text": "hello", "session_id": "sess-v7"}
+    )
+    assert resp.status_code == 200
+
+    row = _decision_args(decision_pool)
+    assert row["decision"] == "declined"
+    assert row["reason"] == "vote-split"
+    assert row["vote_shape"] == '[["kb-00001"], ["kb-00002"], []]'
+    raw = json.loads(row["vote_raw"])
+    assert len(raw) == 3
+    assert raw[0] == "kb-00001"
+    assert raw[1] == "kb-00002"
+    assert raw[2] is None
+
+
+@pytest.mark.usefixtures("_patch_decision_pool")
+def test_vote_log_redaction_unavailable_stores_no_text(
+    client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_pool: _RecordingDecisionPool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Redaction down: no vote text is stored (never raw), the decision stands.
+
+    The route reuses turn_digest's redactor, so turning its
+    ``redact_secrets`` into a None-returning stub (the production ImportError
+    shape) is enough to take the whole vote log down.
+    """
+    monkeypatch.setattr(turn_digest, "redact_secrets", lambda _c: None)
+    monkeypatch.setenv("KB_LISTENER_ENABLED", "TRUE")
+    fake_llm = _voted_llm("kb-00001", "kb-00001", "kb-00001")
+    _two_candidate_kb(fake_kb, fake_llm)
+    app.dependency_overrides[get_current_user] = fake_user
+
+    caplog.set_level(logging.WARNING, logger="kb_service.routes.listener_routes")
+    resp = client.post(
+        "/api/kb/listener", json={"text": "hello", "session_id": "sess-v8"}
+    )
+    assert resp.status_code == 200
+    # The decision itself is untouched by the redaction failure.
+    assert resp.json()["pointers"] == [{"id": "kb-00001", "short_title": "Map One"}]
+
+    row = _decision_args(decision_pool)
+    assert row["reason"] == "whispered"
+    # No redactor output from this request is ever stored...
+    assert row["vote_prompt"] is None
+    assert row["vote_raw"] is None
+    assert row["vote_truncated"] == 0
+    # ...but the model is config metadata, so the row stays distinguishable
+    # from a model-unknown row.
+    assert row["vote_model"] == "claude-sonnet-4-6"
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("listener vote_log redaction-unavailable")
+    ]
+    assert len(lines) == 1
+    assert "session_id=sess-v8" in lines[0]

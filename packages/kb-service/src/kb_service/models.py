@@ -2127,6 +2127,39 @@ class ObserveLlmCallRow(BaseModel):
     latency_ms: int
 
 
+class ObserveListenerDecisionRow(BaseModel):
+    """One ``listener_decisions`` row; JSON-text columns are returned parsed.
+
+    The vote-log columns (owner decision 2026-10-13) are only populated on
+    decisions that reached the three-vote LLM gate: ``vote_model`` /
+    ``vote_prompt`` are SQL NULL otherwise, and a SQL-NULL ``vote_raw`` column
+    parses to ``[]`` (never ``None``) through the observe page helper, matching
+    the ``candidate_ids`` / ``whispered_ids`` precedent.
+    """
+
+    id: int
+    session_id: str | None = None
+    cwd_project: str | None = None
+    source_kb: str
+    decided_ts: str
+    retrieval_path: str
+    text_source: str | None = None
+    vote_model: str | None = None
+    vote_prompt: str | None = None
+    vote_raw: list[str | None]
+    vote_truncated: int
+    candidates_considered: int
+    decision: str
+    reason: str
+    vote_shape: str
+    candidate_signal: str
+    candidate_ids: list[Any]
+    whispered_ids: list[Any]
+    n_retrieved: int
+    n_after_a: int
+    n_after_b: int
+
+
 class ObserveTurnEventsResponse(BaseModel):
     """A keyset page of turn events."""
 
@@ -2152,6 +2185,13 @@ class ObserveLlmCallsResponse(BaseModel):
     """A keyset page of recorded LLM calls."""
 
     rows: list[ObserveLlmCallRow]
+    next_after_id: int | None = None
+
+
+class ObserveListenerDecisionsResponse(BaseModel):
+    """A keyset page of listener decisions."""
+
+    rows: list[ObserveListenerDecisionRow]
     next_after_id: int | None = None
 
 

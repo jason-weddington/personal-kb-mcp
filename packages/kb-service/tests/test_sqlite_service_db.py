@@ -145,7 +145,18 @@ async def test_init_db_is_idempotent_across_restarts(local_env: Path) -> None:
         cols = {
             r["name"] for r in await db.fetch("PRAGMA table_info(listener_decisions)")
         }
-        assert {
+        # EXACT set (owner decision 2026-10-13): the 17 pre-vote-log columns
+        # plus vote_model / vote_prompt / vote_raw / vote_truncated — no
+        # more, no fewer, so a fresh install matches the deployed migration.
+        assert cols == {
+            "id",
+            "session_id",
+            "cwd_project",
+            "source_kb",
+            "decided_ts",
+            "candidates_considered",
+            "decision",
+            "reason",
             "vote_shape",
             "candidate_signal",
             "candidate_ids",
@@ -154,11 +165,25 @@ async def test_init_db_is_idempotent_across_restarts(local_env: Path) -> None:
             "n_after_a",
             "n_after_b",
             "retrieval_path",
-        } <= cols
+            "text_source",
+            "vote_model",
+            "vote_prompt",
+            "vote_raw",
+            "vote_truncated",
+        }
         wt_cols = {
             r["name"] for r in await db.fetch("PRAGMA table_info(whisper_telemetry)")
         }
         assert {"emit_count", "last_emitted_ts"} <= wt_cols
+        # A second init_db() over the same file is a no-op: the vote-log ADD
+        # COLUMN IF NOT EXISTS statements must not raise on re-run and must
+        # not duplicate or rename anything.
+        await database.init_db()
+        db = await database.get_db()
+        again = {
+            r["name"] for r in await db.fetch("PRAGMA table_info(listener_decisions)")
+        }
+        assert again == cols
     finally:
         await database.close_db()
 
