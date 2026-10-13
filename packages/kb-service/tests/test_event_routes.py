@@ -359,3 +359,63 @@ def test_talos_edit_file_argument_names_mapped(local_client: TestClient) -> None
         "ext:py",
     )
     assert body["tool_input"] == {"path": "src/a.py"}
+
+
+# ─── subagent agent fields (agent_id / agent_type / tool_use_id persistence) ──
+
+
+def test_legacy_body_without_agent_fields_accepted(
+    local_client: TestClient,
+) -> None:
+    """An old hook that omits agent_id/agent_type is accepted unchanged."""
+    body = _event()
+    assert "agent_id" not in body and "agent_type" not in body
+    expected = build_cue(
+        body["tool_name"],
+        body["tool_input"],
+        body["error"],
+        body["project"],
+        body["cwd"],
+    )
+    resp = local_client.post("/api/kb/event", json=body)
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "recorded": True,
+        "cue_key": expected.cue_key,
+        "normalizer_version": expected.normalizer_version,
+        "reason": "recorded",
+    }
+
+
+def test_subagent_failure_persists_agent_fields(local_client: TestClient) -> None:
+    resp = local_client.post(
+        "/api/kb/event",
+        json=_event(
+            event_id="cc:sess-1:toolu_sub",
+            session_id="sess-1",
+            agent_id="a36e469ce78621eb7",
+            agent_type="general-purpose",
+        ),
+    )
+    assert resp.json()["reason"] == "recorded"
+    [row] = _rows()
+    assert row["session_id"] == "sess-1"
+    assert row["tool_use_id"] == "toolu_1"
+    assert row["agent_id"] == "a36e469ce78621eb7"
+    assert row["agent_type"] == "general-purpose"
+
+
+def test_legacy_failure_stores_null_agent_columns(local_client: TestClient) -> None:
+    resp = local_client.post(
+        "/api/kb/event",
+        json=_event(
+            event_id="cc:sess-1:toolu_legacy",
+            agent_id=None,
+            agent_type=None,
+        ),
+    )
+    assert resp.json()["reason"] == "recorded"
+    [row] = _rows()
+    assert row["tool_use_id"] == "toolu_1"
+    assert row["agent_id"] is None
+    assert row["agent_type"] is None

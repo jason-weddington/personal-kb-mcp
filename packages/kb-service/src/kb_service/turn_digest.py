@@ -42,16 +42,18 @@ TURN_EVENTS_RETENTION_DAYS = 90
 _INSERT_SQL = (
     "INSERT INTO turn_events (event_id, session_id, harness, mode, engine, host,"
     " hook_version, project, turn_index, ts, user_prompt, items, final_message,"
-    " truncated, redactions, anomaly, capture_mode, received_ts)"
+    " truncated, redactions, anomaly, capture_mode, agent_id, agent_type,"
+    " received_ts)"
     " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,"
-    " $16, $17, $18)"
+    " $16, $17, $18, $19, $20)"
     " ON CONFLICT (event_id) DO NOTHING"
 )
 
 _SELECT_SQL = (
     "SELECT event_id, session_id, harness, mode, engine, host, hook_version, project,"
     " turn_index, ts, user_prompt, items, final_message, truncated, redactions,"
-    " anomaly, capture_mode, processed_at, received_ts FROM turn_events"
+    " anomaly, capture_mode, agent_id, agent_type, processed_at, received_ts"
+    " FROM turn_events"
 )
 
 
@@ -202,6 +204,8 @@ async def insert_turn_digest(
         json.dumps(redactions),
         ",".join(turn_digest_anomalies(body)) or None,
         capture_mode,
+        body.agent_id,
+        body.agent_type,
         received_ts,
     )
     if status == "INSERT 0 1":
@@ -251,6 +255,8 @@ def _to_stored(row: Any) -> StoredTurnDigest | None:
             items=json.loads(row["items"]),
             final_message=row["final_message"],
             truncated=bool(row["truncated"]),
+            agent_id=row["agent_id"],
+            agent_type=row["agent_type"],
             redactions=json.loads(row["redactions"]),
             anomaly=row["anomaly"],
             capture_mode=row["capture_mode"],

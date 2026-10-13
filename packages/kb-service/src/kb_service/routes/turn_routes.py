@@ -77,7 +77,7 @@ _PENDING_SQL = (
 
 _GAPS_SQL = (
     "SELECT COUNT(*) AS n FROM (SELECT session_id FROM turn_events"
-    " WHERE received_ts >= $1 GROUP BY session_id"
+    " WHERE received_ts >= $1 AND agent_id IS NULL GROUP BY session_id"
     " HAVING MAX(turn_index) - MIN(turn_index) + 1"
     " > COUNT(DISTINCT turn_index)) AS gaps"
 )

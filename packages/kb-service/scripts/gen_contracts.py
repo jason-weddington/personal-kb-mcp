@@ -333,6 +333,29 @@ def build_turn() -> dict[str, Any]:
             },
         ),
         (
+            # One SubagentStop digest: the parent session's read-only turn
+            # index, the agent event_id form, and the agent fields set.
+            "claude_code_turn_subagent",
+            {
+                "event_id": "contract-session-1:agent:agent-contract-1",
+                "session_id": "contract-session-1",
+                "harness": "claude-code",
+                "mode": "interactive",
+                "engine": None,
+                "host": "contract-host",
+                "hook_version": "0.0.0-contract",
+                "project": "personal-kb",
+                "turn_index": 3,
+                "ts": "2026-10-10T12:10:00+00:00",
+                "user_prompt": "Find the failing test in the hook suite.",
+                "items": _CLAUDE_CODE_ITEMS,
+                "final_message": "The failure was the missing drop line.",
+                "truncated": False,
+                "agent_id": "agent-contract-1",
+                "agent_type": "general-purpose",
+            },
+        ),
+        (
             "minimal",
             {
                 "event_id": "contract-session-1:0",
@@ -409,6 +432,33 @@ _EVENT_RAWS: list[tuple[str, dict[str, Any]]] = [
             "tool_name": "Bash",
             "tool_input": {"command": "git push mirror feat/x"},
             "tool_use_id": "toolu_contract_1",
+            "error": "Exit code 1\nremote: Permission to mirror denied",
+            "is_error": True,
+            "is_interrupt": False,
+            "duration_ms": 120,
+        },
+    ),
+    (
+        # One subagent failure: the parent session_id, the subagent's own
+        # agent fields, and a tool_use_id that only its transcript holds.
+        "claude_code_subagent_failure",
+        {
+            "type": "post_tool",
+            "event_id": "contract-session-3:toolu_contract_1",
+            "session_id": "contract-session-3",
+            "harness": "claude-code",
+            "mode": "interactive",
+            "engine": None,
+            "host": "contract-host",
+            "hook_version": "0.0.0-contract",
+            "cwd": "/home/dev/git/personal_kb",
+            "project": "personal-kb",
+            "ts": "2026-10-10T12:15:00+00:00",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push mirror feat/x"},
+            "tool_use_id": "toolu_contract_1",
+            "agent_id": "agent-contract-1",
+            "agent_type": "general-purpose",
             "error": "Exit code 1\nremote: Permission to mirror denied",
             "is_error": True,
             "is_interrupt": False,

@@ -284,6 +284,9 @@ _SCHEMA_STATEMENTS: list[str] = [
     "anomaly TEXT, "
     "raw_error_excerpt TEXT NOT NULL, "
     "is_interrupt INTEGER NOT NULL DEFAULT 0, "
+    "tool_use_id TEXT, "
+    "agent_id TEXT, "
+    "agent_type TEXT, "
     "ts TEXT NOT NULL, "
     "received_ts TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_failure_events_cue_ts"
@@ -378,6 +381,8 @@ _SCHEMA_STATEMENTS: list[str] = [
     "anomaly TEXT, "
     "capture_mode TEXT NOT NULL CHECK (capture_mode IN ('shadow', 'on')), "
     "processed_at TEXT, "
+    "agent_id TEXT, "
+    "agent_type TEXT, "
     "received_ts TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_turn_events_session_turn"
     " ON turn_events(session_id, turn_index)",
@@ -539,6 +544,16 @@ _SCHEMA_STATEMENTS: list[str] = [
     "latency_ms INTEGER NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(ts)",
     "CREATE INDEX IF NOT EXISTS idx_llm_calls_purpose_ts ON llm_calls(purpose, ts)",
+    # Subagent provenance (2026-10): failure_events gains the tool_use_id the
+    # hook has always posted (previously dropped by the insert) plus the
+    # subagent's agent_id/agent_type; turn_events gains agent_id/agent_type for
+    # SubagentStop digests. Plain nullable TEXT, so no _SQLITE_CHECK_REBUILDS
+    # entry: the SQLite bridge adds these via PRAGMA table_info.
+    "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS tool_use_id TEXT",
+    "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS agent_id TEXT",
+    "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS agent_type TEXT",
+    "ALTER TABLE turn_events ADD COLUMN IF NOT EXISTS agent_id TEXT",
+    "ALTER TABLE turn_events ADD COLUMN IF NOT EXISTS agent_type TEXT",
 ]
 
 

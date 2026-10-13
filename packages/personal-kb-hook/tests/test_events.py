@@ -138,12 +138,49 @@ def test_post_failure_end_to_end(env: Path, monkeypatch: pytest.MonkeyPatch) -> 
         "tool_name": "Bash",
         "tool_input": {"command": "git push", "timeout": 5},
         "tool_use_id": "toolu_abc",
+        "agent_id": None,
+        "agent_type": None,
         "error": "Exit code 1\nerror: failed to push",
         "is_error": True,
         "is_interrupt": False,
         "duration_ms": 42,
     }
     assert _drops(env) == []
+
+
+def test_post_failure_subagent_fields_verbatim(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+    _run_cli(
+        monkeypatch,
+        _payload(agent_id="a36e469ce78621eb7", agent_type="general-purpose"),
+    )
+    body = recorder.calls[0]["body"]
+    assert body["agent_id"] == "a36e469ce78621eb7"
+    assert body["agent_type"] == "general-purpose"
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "agent_type"),
+    [
+        ({}, {}),
+        ({"agent_id": ""}, {"agent_type": ""}),
+        ({"agent_id": 5}, {"agent_type": ["g"]}),
+    ],
+)
+def test_post_failure_agent_fields_null(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent_id: Any,
+    agent_type: Any,
+) -> None:
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+    overrides = {**agent_id, **agent_type}
+    _run_cli(monkeypatch, _payload(**overrides))
+    body = recorder.calls[0]["body"]
+    assert body["agent_id"] is None
+    assert body["agent_type"] is None
 
 
 def test_project_resolved_from_kb_project(

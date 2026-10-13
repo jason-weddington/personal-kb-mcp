@@ -236,3 +236,61 @@ def test_row_model_matches_table_columns(local_client: TestClient, path: str) ->
     finally:
         conn.close()
     assert set(model.model_fields) == cols
+
+
+def test_observe_rows_expose_agent_columns(local_client: TestClient) -> None:
+    """Turn and failure rows expose the subagent columns, null or not."""
+    resp = local_client.post(
+        "/api/kb/turn",
+        json={
+            "event_id": "s:agent:a1",
+            "session_id": "s",
+            "harness": "claude-code",
+            "mode": "interactive",
+            "turn_index": 1,
+            "agent_id": "a1",
+            "agent_type": "general-purpose",
+            "ts": "2026-10-09T12:00:00+00:00",
+            "items": _ITEMS,
+        },
+    )
+    assert resp.status_code == 200 and resp.json()["recorded"], resp.text
+    _post_failure(local_client, 0)
+    failure = local_client.post(
+        "/api/kb/event",
+        json={
+            "type": "post_tool",
+            "event_id": "cc:s:agentfail",
+            "session_id": "s",
+            "harness": "claude-code",
+            "mode": "interactive",
+            "cwd": "/home/j/x",
+            "ts": "2026-10-09T12:00:00+00:00",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_use_id": "t-agent",
+            "agent_id": "a1",
+            "agent_type": "general-purpose",
+            "error": "Exit code 1\nboom",
+            "is_error": True,
+            "is_interrupt": False,
+        },
+    )
+    assert failure.status_code == 200 and failure.json()["recorded"], failure.text
+    _post_turn(local_client, 2)  # legacy row: no agent keys
+    turns = local_client.get("/api/kb/observe/turn-events", params={"limit": 10}).json()
+    by_event = {r["event_id"]: r for r in turns["rows"]}
+    assert by_event["s:agent:a1"]["agent_id"] == "a1"
+    assert by_event["s:agent:a1"]["agent_type"] == "general-purpose"
+    assert by_event["s:2"]["agent_id"] is None
+    assert by_event["s:2"]["agent_type"] is None
+    fails = local_client.get(
+        "/api/kb/observe/failure-events", params={"limit": 10}
+    ).json()
+    by_event = {r["event_id"]: r for r in fails["rows"]}
+    assert by_event["cc:s:0"]["tool_use_id"] == "t0"
+    assert by_event["cc:s:0"]["agent_id"] is None
+    assert by_event["cc:s:0"]["agent_type"] is None
+    assert by_event["cc:s:agentfail"]["tool_use_id"] == "t-agent"
+    assert by_event["cc:s:agentfail"]["agent_id"] == "a1"
+    assert by_event["cc:s:agentfail"]["agent_type"] == "general-purpose"

@@ -18,7 +18,9 @@ The schemas are pydantic `model_json_schema()` output (JSON Schema draft 2020-12
 
 POST /api/kb/turn checks in this order: 422 (schema-invalid body), then 413 (raw request bytes above `max_body_bytes`, whitespace included, in any capture mode), then 200 with a `reason`; a DB failure is reason `write-failed` at 200.
 
-`event_id` must equal `<session_id>:<turn_index>`, otherwise the answer is 422.
+`event_id` must equal `<session_id>:<turn_index>` when `agent_id` is absent, and `<session_id>:agent:<agent_id>` when it is present (the SubagentStop digest form); anything else is answered 422.
+
+The `<session_id>:agent:<agent_id>` event_id form and the SubagentStop digest REQUIRE the kb-service release that knows them to be deployed before any sender uses them: against a pre-release service a SubagentStop digest fails the `event_id` check and is answered 422, landing in the hook's drop log as `http_422`, whereas a new hook's null `agent_id`/`agent_type` on a normal Stop digest are silently dropped by an older server (unknown body keys are dropped). Same for the optional `agent_id`/`agent_type` on `/api/kb/event`.
 
 Unknown body keys are dropped silently, so a consumer must assert exact key sets per `$defs`, as `test_contracts_hook.py` does, and may omit an optional field only by listing it explicitly (`HOOK_OMITTED_REQUEST_FIELDS`).
 

@@ -1381,3 +1381,100 @@ async def test_detect_digest_shape4_last() -> None:
     cur = surprise_worker.digest_from_row(_row(items=_S4_ITEMS[2:4]))
     records = await surprise_worker.detect_digest(None, cur, [cur])
     assert [r.shape for r in records] == [1, 2, 3]
+
+
+# --- subagent digests are never distilled (capture for observation only) ------
+
+
+def _seed_agent(
+    client: TestClient,
+    session: str,
+    turn: int,
+    agent: str = "a1",
+    **kw: Any,
+) -> None:
+    body: dict[str, Any] = {
+        "event_id": f"{session}:agent:{agent}",
+        "session_id": session,
+        "harness": "claude-code",
+        "mode": "interactive",
+        "engine": None,
+        "host": "h",
+        "hook_version": "1.3.0",
+        "project": "p",
+        "turn_index": turn,
+        "agent_id": agent,
+        "agent_type": "general-purpose",
+        "ts": "2026-10-09T00:00:00+00:00",
+        "user_prompt": "subagent prompt",
+        "items": [],
+        "final_message": "subagent done",
+        "truncated": False,
+    }
+    body.update(kw)
+    resp = client.post("/api/kb/turn", json=body)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["reason"] == "recorded"
+
+
+def test_drain_agent_rows_claimed_and_skipped(
+    local_client: TestClient,
+    ctx: _Ctx,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A pending agent digest leaves the queue without any detector work."""
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "on")
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    _seed_f(local_client)  # s1:0 and s1:1 pending
+    _seed_agent(local_client, "s1", 1, agent="a1")  # parent session, turn 1
+    _seed_agent(local_client, "s2", 0, agent="a2")
+    _enqueue(ctx.llm, SCRIPT_B)
+    body = _drain(local_client)
+    assert body["digests_processed"] == 2  # only the non-agent rows
+    assert "agent_skipped=2" in _info_line(caplog)
+    rows = _query("SELECT processed_at FROM turn_events WHERE agent_id IS NOT NULL")
+    assert [r["processed_at"] is not None for r in rows] == [True, True]
+    # Zero detector or LLM work is attributable to either agent row: the two
+    # parent digests account for every call and every candidate.
+    assert len(ctx.llm.generate_calls) == 2
+    assert _detections("s1:agent:a1") == []
+    assert _detections("s2:agent:a2") == []
+    for event_id in ("s1:agent:a1", "s2:agent:a2"):
+        assert (
+            _query(
+                "SELECT 1 FROM surprise_candidates"
+                " WHERE turn_event_ids LIKE '%' || ? || '%'",
+                event_id,
+            )
+            == []
+        )
+    cands = body["candidates"]
+    assert "s1:agent:a1" not in {i for c in cands for i in c["turn_event_ids"]}
+    prompts = " ".join(str(p) for p, _ in ctx.llm.generate_calls)
+    assert "subagent prompt" not in prompts
+    assert "subagent done" not in prompts
+
+
+def test_drain_agent_row_never_in_session_context(
+    local_client: TestClient, ctx: _Ctx, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An agent digest sharing the parent's session never feeds the detectors."""
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    _seed(local_client, "s6", 2, user_prompt="a", final_message="b")
+    _seed_agent(local_client, "s6", 1, agent="a1")
+    _enqueue(ctx.llm, SCRIPT_B)
+    body = _drain(local_client)
+    assert body["digests_processed"] == 1
+    # The shape-2 prev pick for s6:2 must not land on the agent digest at
+    # turn_index 1: with no parent digest at turn 1 the shape is not
+    # applicable, and the agent's prompt never reaches any LLM call.
+    shape2 = [r for r in _detections("s6:2") if r["shape"] == 2]
+    assert [r["outcome"] for r in shape2] == ["not_applicable"]
+    prompts = " ".join(str(p) for p, _ in ctx.llm.generate_calls)
+    assert "subagent prompt" not in prompts
+    assert "subagent done" not in prompts
+    # The turn_gap flag is computed over the agent-free list too.
+    assert all(
+        json.loads(r["details"])["turn_gap"] is True for r in _detections("s6:2")
+    )

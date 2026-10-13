@@ -400,6 +400,14 @@ Add the hook to `~/.claude/settings.json` (or your project-level `.claude/settin
           { "type": "command", "command": "personal-kb-hook --format=claude-json" }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "personal-kb-hook --format=claude-json" }
+        ]
+      }
     ]
   }
 }
@@ -410,6 +418,8 @@ The `PreToolUse` entry is the prevention soft gate. It runs synchronously so it 
 The `PostToolUseFailure` entry records every failed tool call to the failure-cue index and, with `KB_FAILURE_CONTEXT=1`, hands the agent the matching corrected fact once per resolution per `rearm_hours` window (re-armed by compact, resume or clear); it must be synchronous (no `async: true`) so the context lands next to the failure instead of on a later turn.
 
 Stop flushes the gate log, refreshes the prevention settings and, when the service enables KB_SURPRISE_CAPTURE, ships the turn digest, and it prints nothing.
+
+SubagentStop posts one turn digest per subagent run (gated by the same KB_SURPRISE_CAPTURE switches), under the parent session's id but never touching the parent's turn counter.
 
 If you'd rather inject the bare directory string into the model context yourself, use `--format=text`:
 

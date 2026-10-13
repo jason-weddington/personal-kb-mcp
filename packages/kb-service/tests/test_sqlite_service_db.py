@@ -833,3 +833,55 @@ async def test_api_keys_surface_migration(local_env: Path) -> None:
         assert len(await db.fetch("PRAGMA table_info(api_keys)")) == len(cols)
     finally:
         await database.close_db()
+
+
+async def test_agent_columns_migrated_and_fresh(local_env: Path) -> None:
+    """Fresh and pre-existing DBs both end with the five subagent columns."""
+    want = {"tool_use_id", "agent_id", "agent_type"}
+    # Pre-existing DB without the new failure_events columns.
+    raw = await SqlitePool.open(local_env)
+    await raw.execute(
+        "CREATE TABLE failure_events (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " event_id TEXT NOT NULL UNIQUE, cue_key TEXT NOT NULL,"
+        " normalizer_version INTEGER NOT NULL, session_id TEXT NOT NULL,"
+        " harness TEXT NOT NULL, mode TEXT NOT NULL, engine TEXT, host TEXT,"
+        " hook_version TEXT, host_class TEXT NOT NULL, project TEXT NOT NULL"
+        " DEFAULT '', project_source TEXT NOT NULL, tool TEXT NOT NULL,"
+        " target TEXT NOT NULL DEFAULT '', target_class TEXT NOT NULL DEFAULT '',"
+        " normalized_error TEXT NOT NULL, error_rule TEXT NOT NULL, anomaly TEXT,"
+        " raw_error_excerpt TEXT NOT NULL, is_interrupt INTEGER NOT NULL DEFAULT 0,"
+        " ts TEXT NOT NULL, received_ts TEXT NOT NULL)"
+    )
+    await raw.execute(
+        "CREATE TABLE turn_events (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " event_id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL,"
+        " harness TEXT NOT NULL, mode TEXT NOT NULL, engine TEXT, host TEXT,"
+        " hook_version TEXT, project TEXT NOT NULL DEFAULT '',"
+        " turn_index INTEGER NOT NULL, ts TEXT NOT NULL, user_prompt TEXT,"
+        " items TEXT NOT NULL DEFAULT '[]', final_message TEXT,"
+        " truncated INTEGER NOT NULL DEFAULT 0, redactions TEXT NOT NULL"
+        " DEFAULT '[]', anomaly TEXT, capture_mode TEXT NOT NULL, processed_at TEXT,"
+        " received_ts TEXT NOT NULL)"
+    )
+    await raw.close()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        fe = {r["name"] for r in await db.fetch("PRAGMA table_info(failure_events)")}
+        te = {r["name"] for r in await db.fetch("PRAGMA table_info(turn_events)")}
+        assert want <= fe
+        assert {"agent_id", "agent_type"} <= te
+    finally:
+        await database.close_db()
+
+    # A fresh DB carries them from the CREATE TABLE itself.
+    local_env.unlink()
+    await database.init_db()
+    try:
+        db = await database.get_db()
+        fe = {r["name"] for r in await db.fetch("PRAGMA table_info(failure_events)")}
+        te = {r["name"] for r in await db.fetch("PRAGMA table_info(turn_events)")}
+        assert want <= fe
+        assert {"agent_id", "agent_type"} <= te
+    finally:
+        await database.close_db()

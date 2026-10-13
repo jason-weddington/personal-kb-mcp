@@ -27,6 +27,10 @@ Reads a JSON payload from stdin, branches on ``hook_event_name``:
   ``--format``), at most once per resolution per session.
 * **PostToolUse** — whisper-telemetry consume on ``kb_get``. Never produces
   stdout.
+* **SubagentStop** — posts one turn digest of the subagent's own transcript
+  under the parent's session id (``turn_digest.subagent_stop``), gated by the
+  same ``surprise_capture`` switches as the Stop digest and reading the
+  parent's turn counter without ever advancing it. Never produces stdout.
 * **Stop** — records/flushes the soft-gate decision log and refreshes the
   prevention cache (unconditionally); ships a turn digest when the cached
   ``surprise_capture`` is shadow or on (independent of the listener gate); then,
@@ -94,6 +98,7 @@ _SUPPORTED_EVENTS = frozenset(
         "SessionStart",
         "UserPromptSubmit",
         "Stop",
+        "SubagentStop",
         "PostToolUse",
         "PostToolUseFailure",
     }
@@ -245,6 +250,16 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 return
             telemetry.mark_consumed(session_id_pt, consume_ids, telemetry.now_ts())
+            return
+
+        # ------------------------------------------------------------------ #
+        # SubagentStop event: one turn digest of the subagent's own run;     #
+        # the parent's turn counter is read-only. None of the other Stop     #
+        # work runs: no telemetry flush, no prevention stop/refresh/gate-log, #
+        # no listener, no maps.                                               #
+        # ------------------------------------------------------------------ #
+        if event_name == "SubagentStop":
+            turn_digest.subagent_stop(payload)
             return
 
         # ------------------------------------------------------------------ #

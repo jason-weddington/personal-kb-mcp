@@ -716,3 +716,80 @@ def test_too_large_harness_correction(
     assert _rows("SELECT COUNT(*) FROM turn_events")[0][0] == 0
     assert "reason=too-large" in caplog.text
     assert "corrections=45" in caplog.text
+
+
+# ─── subagent digests (SubagentStop) ─────────────────────────────────────────
+
+
+def _agent_digest(
+    session: str = "sess-1", turn: int = 1, agent: str = "a36e469"
+) -> dict[str, Any]:
+    return _digest(
+        session,
+        turn,
+        event_id=f"{session}:agent:{agent}",
+        agent_id=agent,
+        agent_type="general-purpose",
+    )
+
+
+def test_subagent_digest_round_trip(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    resp = _post(local_client, _agent_digest())
+    assert resp.json()["reason"] == "recorded"
+    (row,) = _rows()
+    assert row["event_id"] == "sess-1:agent:a36e469"
+    assert row["agent_id"] == "a36e469"
+    assert row["agent_type"] == "general-purpose"
+    assert row["turn_index"] == 1
+
+
+def test_legacy_digest_stores_null_agent_columns(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    body = _digest()
+    assert "agent_id" not in body and "agent_type" not in body
+    assert _post(local_client, body).json()["reason"] == "recorded"
+    # A duplicate round trip is still accepted unchanged.
+    assert _post(local_client, body).json()["reason"] == "duplicate"
+    (row,) = _rows()
+    assert row["agent_id"] is None
+    assert row["agent_type"] is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Old-form event_id on a body WITH agent_id -> 422.
+        _digest(event_id="sess-1:1", turn_index=1, agent_id="a1"),
+        # Agent-form event_id on a body WITHOUT agent_id -> 422.
+        _digest(event_id="sess-1:agent:a1", turn_index=1),
+    ],
+    ids=["old-form-with-agent", "agent-form-without-agent"],
+)
+def test_event_id_two_form_422(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    assert _post(local_client, body).status_code == 422
+    assert _rows("SELECT COUNT(*) FROM turn_events")[0][0] == 0
+
+
+def test_subagent_digest_does_not_fill_turn_gaps(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subagent digest shares the parent's turn_index and must not fill gaps."""
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "shadow")
+    for session, turn in (("g", 0), ("g", 2)):
+        assert (
+            _post(local_client, _digest(session, turn)).json()["reason"] == "recorded"
+        )
+    assert (
+        _post(local_client, _agent_digest(session="g", turn=1)).json()["reason"]
+        == "recorded"
+    )
+    hb = local_client.get("/api/kb/turn/heartbeat").json()
+    assert hb["sessions_with_gaps"] == 1

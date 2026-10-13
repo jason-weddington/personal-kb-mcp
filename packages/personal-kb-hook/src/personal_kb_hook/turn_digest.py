@@ -3,6 +3,9 @@
 At every ``Stop`` the hook builds a TURN DIGEST from the transcript window and
 ``last_assistant_message`` and hands it to a detached
 ``python -m personal_kb_hook.turn_sender``, which POSTs it to ``/api/kb/turn``.
+At every ``SubagentStop`` it posts one digest of the subagent's own transcript
+(:func:`subagent_stop`) under the parent's session id, read-only on the
+parent's turn counter.
 
 * ``event_id`` is exactly ``<session_id>:<turn_index>`` with NO ``cc:`` prefix,
   unlike the hook's other ids. ``turn_index`` counts every Stop in the session,
@@ -149,10 +152,12 @@ def _count_unknown(records: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _build_items(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_items(
+    records: list[dict[str, Any]], keep_sidechain: bool = False
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for rec in records:
-        if rec.get("isSidechain") is True:
+        if rec.get("isSidechain") is True and not keep_sidechain:
             continue
         message = rec.get("message")
         if not isinstance(message, dict):
@@ -254,14 +259,100 @@ def read_turn(transcript_path: str, last_uuid: str | None) -> TurnWindow | None:
     )
 
 
+def agent_user_prompt(records: list[dict[str, Any]]) -> str | None:
+    """First ``user`` record of a subagent transcript yielding non-empty text.
+
+    Unlike :func:`human_prompt_text` the sidechain/meta/origin filters do NOT
+    apply: every record of a subagent transcript is ``isSidechain`` true, and
+    the prompt it was given is the first user record with extractable text.
+    A record whose content list carries any ``tool_result`` block is skipped
+    and the scan continues, as is one whose text strips to empty.
+    """
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "user":
+            continue
+        message = rec.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+                continue
+            text = "\n".join(
+                b["text"]
+                for b in content
+                if isinstance(b, dict)
+                and b.get("type") == "text"
+                and isinstance(b.get("text"), str)
+            )
+        else:
+            continue
+        if text.strip() != "":
+            return text
+    return None
+
+
+def read_agent_transcript(transcript_path: str) -> TurnWindow | None:
+    """Read a subagent transcript tail, keeping every record; ``None`` on OSError.
+
+    Tail-bounded exactly like :func:`read_turn` (``TURN_TAIL_BYTES``, first
+    partial line dropped when the tail offset is > 0, same per-line JSON
+    tolerance) but with NO boundary: a subagent run is one window, so every
+    record is kept — the ``isSidechain`` skip does not apply on this path
+    because all of a subagent transcript's records are sidechain.
+    """
+    try:
+        with open(transcript_path, "rb") as fh:
+            size = fh.seek(0, 2)
+            offset = max(0, size - TURN_TAIL_BYTES)
+            fh.seek(offset)
+            raw = fh.read()
+    except OSError:
+        return None
+    tail_text = raw.decode("utf-8", errors="replace")
+    lines = tail_text.split("\n")
+    if offset > 0:
+        lines = lines[1:]
+    records: list[dict[str, Any]] = []
+    parsed = 0
+    for line in lines:
+        if line.strip() == "":
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        parsed += 1
+        records.append(rec)
+    return TurnWindow(
+        user_prompt=agent_user_prompt(records),
+        items=_build_items(records, keep_sidechain=True),
+        newest_uuid=None,
+        cut=offset > 0,
+        boundary="none",
+        last_uuid_missing=False,
+        records_parsed=parsed,
+        unknown_block_types={},
+    )
+
+
 def build_digest(
     payload: dict[str, Any],
     *,
     turn_index: int,
     project: str | None,
     window: TurnWindow | None,
+    agent_id: str | None = None,
+    agent_type: str | None = None,
 ) -> bytes | None:
-    """Return the UTF-8 digest body (<= TURN_DIGEST_MAX_BYTES) or ``None``."""
+    """Return the UTF-8 digest body (<= TURN_DIGEST_MAX_BYTES) or ``None``.
+
+    ``agent_id``/``agent_type`` are null on the normal Stop path. When
+    ``agent_id`` is set (a SubagentStop digest) the ``event_id`` is
+    ``<session_id>:agent:<agent_id>`` instead of ``<session_id>:<turn_index>``.
+    """
     sid = payload["session_id"]
     engine = telemetry.build_engine()
     lam = payload.get("last_assistant_message")
@@ -270,7 +361,7 @@ def build_digest(
     all_items = window.items[-TURN_ITEMS_MAX:] if window is not None else []
     truncated = window is not None and (window.cut or len(window.items) > TURN_ITEMS_MAX)
     body: dict[str, Any] = {
-        "event_id": f"{sid}:{turn_index}",
+        "event_id": f"{sid}:agent:{agent_id}" if agent_id else f"{sid}:{turn_index}",
         "session_id": sid,
         "harness": "claude-code",
         "mode": "headless" if engine else "interactive",
@@ -284,6 +375,8 @@ def build_digest(
         "items": all_items,
         "final_message": final,
         "truncated": truncated,
+        "agent_id": agent_id,
+        "agent_type": agent_type,
     }
 
     def encode(items: list[dict[str, Any]], trunc: bool) -> bytes:
@@ -446,3 +539,63 @@ def stop(payload: dict[str, Any]) -> None:
                 )
         except Exception:
             return
+
+
+def subagent_stop(payload: dict[str, Any]) -> None:
+    """SubagentStop entry: post one digest of the subagent's run.
+
+    Gated by exactly the same switches as the Stop digest (the cached
+    ``surprise_capture`` in :data:`SEND_MODES`, then ``resolve_url_key``).
+    It reads the parent's ``next_turn_index`` once via :func:`_load_state`
+    READ ONLY and NEVER writes turn-state, so the parent's counter and
+    last-uuid boundary are untouched. No telemetry, no prevention
+    stop/refresh/gate-log, no listener, no maps: the drop line is the one
+    side effect on a failure path. Never raises.
+    """
+    sid = payload.get("session_id")
+    if not isinstance(sid, str) or not sid:
+        return
+    try:
+        cache = prevention._load_cache(sid)
+        cap = cache.get("surprise_capture") if cache else None
+        if (cap if isinstance(cap, str) else None) not in SEND_MODES:
+            return
+        if resolve_url_key() is None:
+            prevention._record_drop(sid, DROP_OP, "subagent_no_url_key", 0)
+            return
+        agent_id = payload.get("agent_id")
+        tp = payload.get("agent_transcript_path")
+        if not isinstance(agent_id, str) or not agent_id or not isinstance(tp, str) or not tp:
+            prevention._record_drop(sid, DROP_OP, "subagent_missing_fields", 0)
+            return
+        turn_index, _, _ = _load_state(sid)
+        window = read_agent_transcript(tp)
+        if window is None:
+            prevention._record_drop(sid, DROP_OP, "subagent_transcript_unreadable", 0)
+            return
+        proj = cache.get("project") if cache else None
+        agent_type = payload.get("agent_type")
+        raw = build_digest(
+            payload,
+            turn_index=turn_index,
+            project=proj if isinstance(proj, str) and proj else None,
+            window=window,
+            agent_id=agent_id,
+            agent_type=agent_type if isinstance(agent_type, str) and agent_type else None,
+        )
+        if raw is None:
+            prevention._record_drop(sid, DROP_OP, "subagent_too_large", 0)
+            return
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix="kb-turn-", suffix=".json", delete=False
+        ) as fh:
+            fh.write(raw)
+            body_path = fh.name
+        try:
+            spawn_sender(body_path, sid)
+        except OSError:
+            prevention._record_drop(sid, DROP_OP, "subagent_spawn_failed", 0)
+            with contextlib.suppress(OSError):
+                Path(body_path).unlink(missing_ok=True)
+    except Exception:
+        prevention._record_drop(sid, DROP_OP, "subagent_error", 0)

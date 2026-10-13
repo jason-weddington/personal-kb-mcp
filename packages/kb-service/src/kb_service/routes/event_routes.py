@@ -50,9 +50,10 @@ _INSERT_SQL = (
     "INSERT INTO failure_events (event_id, cue_key, normalizer_version,"
     " session_id, harness, mode, engine, host, hook_version, host_class,"
     " project, project_source, tool, target, target_class, normalized_error,"
-    " error_rule, anomaly, raw_error_excerpt, is_interrupt, ts, received_ts)"
+    " error_rule, anomaly, raw_error_excerpt, is_interrupt, tool_use_id,"
+    " agent_id, agent_type, ts, received_ts)"
     " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,"
-    " $15, $16, $17, $18, $19, $20, $21, $22)"
+    " $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)"
     " ON CONFLICT (event_id) DO NOTHING"
 )
 
@@ -125,6 +126,9 @@ async def _record(
             anomaly,
             error[:2000],
             1 if body.is_interrupt else 0,
+            body.tool_use_id,
+            body.agent_id,
+            body.agent_type,
             ts,
             received_ts,
         )

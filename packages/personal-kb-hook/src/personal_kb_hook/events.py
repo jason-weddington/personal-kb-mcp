@@ -84,6 +84,8 @@ def _build_body(payload: dict[str, Any]) -> dict[str, Any]:
     engine = telemetry.build_engine()
     is_interrupt = payload.get("is_interrupt")
     duration_ms = payload.get("duration_ms")
+    agent_id = payload.get("agent_id")
+    agent_type = payload.get("agent_type")
     return {
         "type": "post_tool",
         "event_id": f"cc:{session_id}:{tool_use_id}",
@@ -99,6 +101,10 @@ def _build_body(payload: dict[str, Any]) -> dict[str, Any]:
         "tool_name": payload["tool_name"],
         "tool_input": _scalar_input(payload.get("tool_input")),
         "tool_use_id": tool_use_id,
+        # Subagent failures carry the agent Claude Code names in the payload;
+        # a main-session payload has neither key, so both stay null.
+        "agent_id": agent_id if isinstance(agent_id, str) and agent_id else None,
+        "agent_type": agent_type if isinstance(agent_type, str) and agent_type else None,
         "error": error[:_MAX_ERROR],
         "is_error": True,
         "is_interrupt": is_interrupt if isinstance(is_interrupt, bool) else False,

@@ -1745,9 +1745,32 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
     inserted_ids: list[int] = []
     sessions: dict[str, list[Any]] = {}
 
+    def _agent_free(rows: list[Any]) -> list[Any]:
+        """Context rows only: a SubagentStop digest never feeds a detector.
+
+        An agent row shares the parent's session_id and turn_index, so leaving
+        it in would hijack the shape-2 prev pick, the shape-1 recurrence
+        counts and the turn_gap flag. Dropping it is routine, not an anomaly.
+        """
+        return [s for s in rows if getattr(s, "agent_id", None) is None]
+
     for p in pending:
+        if p.agent_id is not None:
+            # Subagent digests are capture for observation only: claim the
+            # row so it leaves the pending queue with NO detector, candidate
+            # or LLM work (distilling subagent runs is a later experiment).
+            if await mark_turn_digests_processed(pool, [p.event_id], _now()) != 1:
+                logger.warning(
+                    "surprise_drain tripwire=double_detect event_id=%s", p.event_id
+                )
+                c["double_detect"] += 1
+            else:
+                c["agent_skipped"] += 1
+            continue
         if p.session_id not in sessions:
-            sessions[p.session_id] = await get_session_turn_digests(pool, p.session_id)
+            sessions[p.session_id] = _agent_free(
+                await get_session_turn_digests(pool, p.session_id)
+            )
         stored = sessions[p.session_id]
         cur = digest_from_row(p.model_dump())
         session_digests = [
@@ -1872,7 +1895,8 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
     logger.info(
         "surprise_drain mode=%s detector_version=%d min_confidence_s2=%.2f"
         " min_confidence_s3=%.2f pruned=%d"
-        " pending=%d digests=%d double_detect=%d new_candidates=%d shape1=%d"
+        " pending=%d digests=%d double_detect=%d agent_skipped=%d"
+        " new_candidates=%d shape1=%d"
         " shape2=%d shape3=%d llm_calls=%d llm_errors=%d unparseable=%d"
         " invalid=%d no_surprise=%d low_confidence=%d ungrounded=%d no_llm=%d"
         " truncated=%d out_of_order=%d turn_gaps=%d llm_ms=%d prompt_chars=%d"
@@ -1887,6 +1911,7 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         len(pending),
         c["digests"],
         c["double_detect"],
+        c["agent_skipped"],
         c["new_candidates"],
         c["shape1"],
         c["shape2"],

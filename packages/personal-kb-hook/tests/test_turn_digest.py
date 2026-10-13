@@ -31,7 +31,8 @@ _CN = "<" + "command-name>"
 _CNE = "<" + "/command-name>"
 _KEYS14 = {
     "event_id", "session_id", "harness", "mode", "engine", "host", "hook_version",
-    "project", "turn_index", "ts", "user_prompt", "items", "final_message", "truncated",
+    "project", "turn_index", "ts", "user_prompt", "items", "final_message",
+    "truncated", "agent_id", "agent_type",
 }  # fmt: skip
 _ROW_KEYS = {
     "ts", "op", "session_id", "turn_index", "event_id", "capture", "action", "error",
@@ -769,3 +770,388 @@ def test_cli_headless(
 
 def test_unused_url_error() -> None:
     assert urllib.error.URLError("x")
+
+
+# ─── SubagentStop ────────────────────────────────────────────────────────────
+
+AGENT = "a36e469ce78621eb7"
+
+
+def a_prompt(uuid: str, text: Any, **kw: Any) -> dict[str, Any]:
+    rec = {
+        "type": "user", "uuid": uuid, "isSidechain": True,
+        "message": {"role": "user", "content": text},
+    }  # fmt: skip
+    rec.update(kw)
+    return rec
+
+
+def a_text(uuid: str, text: str) -> dict[str, Any]:
+    return {
+        "type": "assistant", "uuid": uuid, "isSidechain": True,
+        "message": {"content": [{"type": "text", "text": text}]},
+    }  # fmt: skip
+
+
+def a_use(uuid: str, tid: str, cmd: str) -> dict[str, Any]:
+    block = {"type": "tool_use", "id": tid, "name": "Bash", "input": {"command": cmd}}
+    return {
+        "type": "assistant", "uuid": uuid, "isSidechain": True,
+        "message": {"content": [block]},
+    }  # fmt: skip
+
+
+def a_res(uuid: str, tid: str, content: Any, err: bool = False) -> dict[str, Any]:
+    block = {"type": "tool_result", "tool_use_id": tid, "content": content, "is_error": err}
+    return {
+        "type": "user", "uuid": uuid, "isSidechain": True,
+        "message": {"content": [block]},
+    }  # fmt: skip
+
+
+def agent_fixture() -> list[dict[str, Any]]:
+    return [
+        a_prompt("au1", "find the failing test"),
+        a_text("au2", "looking"),
+        a_use("au3", "tfail", "pytest -q"),
+        a_res("au4", "tfail", "boom", True),
+    ]  # fmt: skip
+
+
+def agent_payload(tp: str | None, **kw: Any) -> dict[str, Any]:
+    p: dict[str, Any] = {
+        "hook_event_name": "SubagentStop",
+        "session_id": SID,
+        "agent_id": AGENT,
+        "agent_type": "general-purpose",
+        "agent_transcript_path": tp,
+        "last_assistant_message": "the test failed",
+        "cwd": "/repo",
+        "transcript_path": "/parent/session.jsonl",
+        "stop_hook_active": False,
+    }
+    if tp is not None:
+        p["agent_transcript_path"] = tp
+    p.update(kw)
+    return p
+
+
+def write_agent(tmp_path: Path, records: list[Any], name: str = "agent.jsonl") -> str:
+    return write(tmp_path / name, records)
+
+
+def state_bytes() -> bytes | None:
+    p = get_turn_state_path(SID)
+    return p.read_bytes() if p.exists() else None
+
+
+def test_subagent_digest_posts(tmp_path: Path, turn_spawns: list[tuple[str, str]]) -> None:
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    before = state_bytes()
+    assert before is None  # no Stop ran: the parent has no state yet
+    turn_digest.subagent_stop(agent_payload(tp))
+    assert len(turn_spawns) == 1
+    body = body_of(turn_spawns[0])
+    assert set(body) == _KEYS14
+    assert body["event_id"] == f"{SID}:agent:{AGENT}"
+    assert (body["session_id"], body["agent_id"], body["agent_type"]) == (
+        SID,
+        AGENT,
+        "general-purpose",
+    )
+    assert body["turn_index"] == 0  # missing state reads 0; the parent is untouched
+    assert body["user_prompt"] == "find the failing test"
+    assert body["final_message"] == "the test failed"
+    assert "tfail" in {i["tool_use_id"] for i in body["items"] if "tool_use_id" in i}
+    assert body["truncated"] is False
+    assert drops() == []
+    assert rows() == []  # no stop row; the detached sender writes the send row
+    assert state_bytes() is None
+
+
+def test_subagent_digest_reads_parent_state_read_only(
+    tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    seed("shadow")
+    sp = get_turn_state_path(SID)
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text('{"next_turn_index": 5, "last_uuid": "u9"}')
+    before = state_bytes()
+    tp = write_agent(tmp_path, agent_fixture())
+    turn_digest.subagent_stop(agent_payload(tp))
+    body = body_of(turn_spawns[0])
+    assert body["turn_index"] == 5
+    assert state_bytes() == before
+
+
+@pytest.mark.parametrize("mode", ["off", None, "weird"])
+def test_subagent_capture_off(
+    mode: Any, tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    seed(mode)
+    tp = write_agent(tmp_path, agent_fixture())
+    turn_digest.subagent_stop(agent_payload(tp))
+    assert turn_spawns == []
+    assert drops() == []
+    assert state_bytes() is None
+
+
+def test_subagent_no_cache(tmp_path: Path, turn_spawns: list[tuple[str, str]]) -> None:
+    tp = write_agent(tmp_path, agent_fixture())
+    turn_digest.subagent_stop(agent_payload(tp))
+    assert turn_spawns == []
+    assert drops() == []
+    assert state_bytes() is None
+
+
+def test_subagent_capture_off_leaves_state_bytes(
+    tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    seed("off")
+    sp = get_turn_state_path(SID)
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text('{"next_turn_index": 3, "last_uuid": "u2"}')
+    before = state_bytes()
+    tp = write_agent(tmp_path, agent_fixture())
+    turn_digest.subagent_stop(agent_payload(tp))
+    assert turn_spawns == []
+    assert drops() == []
+    assert state_bytes() == before
+
+
+def test_subagent_no_url_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, turn_spawns: list[tuple[str, str]]
+) -> None:
+    monkeypatch.delenv("PERSONAL_KB_API_KEY")
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    before = state_bytes()
+    turn_digest.subagent_stop(agent_payload(tp))
+    assert turn_spawns == []
+    assert [(d["op"], d["reason"]) for d in drops()] == [("turn_digest", "subagent_no_url_key")]
+    assert state_bytes() == before
+
+
+@pytest.mark.parametrize("sid", [None, "", 5])
+def test_subagent_bad_session_id_fully_silent(
+    sid: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    assert run(monkeypatch, agent_payload(tp, session_id=sid)) == ""
+    assert turn_spawns == []
+    assert drops() == []
+    assert state_bytes() is None
+
+
+@pytest.mark.parametrize("missing", ["agent_id", "agent_transcript_path"])
+@pytest.mark.parametrize("value", [None, "", 5])
+def test_subagent_missing_fields(
+    missing: str,
+    value: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    p = agent_payload(tp)
+    p[missing] = value
+    before = state_bytes()
+    assert run(monkeypatch, p) == ""
+    assert turn_spawns == []
+    assert [(d["op"], d["reason"]) for d in drops()] == [("turn_digest", "subagent_missing_fields")]
+    assert state_bytes() == before
+
+
+def test_subagent_transcript_unreadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    seed("shadow")
+    before = state_bytes()
+    assert run(monkeypatch, agent_payload(str(tmp_path / "nope.jsonl"))) == ""
+    assert turn_spawns == []
+    assert [(d["op"], d["reason"]) for d in drops()] == [
+        ("turn_digest", "subagent_transcript_unreadable")
+    ]
+    assert state_bytes() == before
+
+
+def test_subagent_spawn_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    def boom(*a: Any) -> None:
+        raise OSError("no")
+
+    monkeypatch.setattr(turn_digest, "spawn_sender", boom)
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    before = state_bytes()
+    assert run(monkeypatch, agent_payload(tp)) == ""
+    assert [d["reason"] for d in drops()] == ["subagent_spawn_failed"]
+    assert tmp_files() == []
+    assert state_bytes() == before
+
+
+def test_subagent_too_large(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(turn_digest, "TURN_DIGEST_MAX_BYTES", 100)
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    before = state_bytes()
+    assert run(monkeypatch, agent_payload(tp)) == ""
+    assert [d["reason"] for d in drops()] == ["subagent_too_large"]
+    assert turn_spawns == []
+    assert tmp_files() == []
+    assert state_bytes() == before
+
+
+def test_subagent_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    def boom(*a: Any) -> None:
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(turn_digest, "read_agent_transcript", boom)
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    before = state_bytes()
+    assert run(monkeypatch, agent_payload(tp)) == ""
+    assert [d["reason"] for d in drops()] == ["subagent_error"]
+    assert turn_spawns == []
+    assert state_bytes() == before
+
+
+def test_subagent_agent_type_absent_still_posts(
+    tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    p = agent_payload(tp)
+    del p["agent_type"]
+    turn_digest.subagent_stop(p)
+    body = body_of(turn_spawns[0])
+    assert body["agent_id"] == AGENT
+    assert body["agent_type"] is None
+
+
+def test_subagent_prompt_extractor_skips_tool_result_record(
+    tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    """The first user record (tool_result-only) is skipped; the str one wins."""
+    seed("shadow")
+    records = [
+        a_prompt("au1", [{"type": "tool_result", "tool_use_id": "tx", "content": "x"}]),
+        a_prompt("au2", "run the suite"),
+        a_use("au3", "tfail", "pytest -q"),
+    ]  # fmt: skip
+    tp = write_agent(tmp_path, records)
+    turn_digest.subagent_stop(agent_payload(tp))
+    body = body_of(turn_spawns[0])
+    assert body["user_prompt"] == "run the suite"
+
+
+def test_subagent_prompt_extractor_list_text(
+    tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    seed("shadow")
+    records = [
+        a_prompt(
+            "au1",
+            [{"type": "text", "text": "part one"}, {"type": "text", "text": "part two"}],
+        ),
+        a_use("au2", "tfail", "pytest -q"),
+    ]
+    tp = write_agent(tmp_path, records)
+    turn_digest.subagent_stop(agent_payload(tp))
+    assert body_of(turn_spawns[0])["user_prompt"] == "part one\npart two"
+
+
+def test_subagent_prompt_extractor_no_user_text(
+    tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    seed("shadow")
+    records = [a_use("au1", "tfail", "pytest -q"), a_res("au2", "tfail", "boom", True)]
+    tp = write_agent(tmp_path, records)
+    turn_digest.subagent_stop(agent_payload(tp, last_assistant_message=None))
+    body = body_of(turn_spawns[0])
+    assert body["user_prompt"] is None
+    assert body["final_message"] is None
+
+
+def test_subagent_tail_cut_marks_truncated(
+    tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    """A transcript larger than TURN_TAIL_BYTES yields truncated true."""
+    seed("shadow")
+    records = [a_text("filler", "x" * (turn_digest.TURN_TAIL_BYTES + 1024))]
+    records += agent_fixture()
+    tp = write_agent(tmp_path, records)
+    turn_digest.subagent_stop(agent_payload(tp))
+    body = body_of(turn_spawns[0])
+    assert body["truncated"] is True
+
+
+def test_subagent_items_cap_keeps_newest(
+    tmp_path: Path, turn_spawns: list[tuple[str, str]]
+) -> None:
+    seed("shadow")
+    records = [a_prompt("au0", "go")]
+    records += [a_text(f"a{i}", f"t{i}") for i in range(250)]
+    tp = write_agent(tmp_path, records)
+    turn_digest.subagent_stop(agent_payload(tp))
+    body = body_of(turn_spawns[0])
+    assert len(body["items"]) == turn_digest.TURN_ITEMS_MAX
+    assert body["truncated"] is True
+    texts = [i["text"] for i in body["items"]]
+    assert texts[0] == "t50"
+    assert set(texts).isdisjoint({f"t{i}" for i in range(50)})
+
+
+def test_subagent_stop_is_supported_event() -> None:
+    assert "SubagentStop" in cli._SUPPORTED_EVENTS
+
+
+def test_cli_subagent_stop_no_other_stop_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    """The CLI branch posts the digest and runs no listener/telemetry work."""
+    monkeypatch.setenv("PERSONAL_KB_LISTENER", "1")
+    popens: list[Any] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popens.append(a))
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    assert run(monkeypatch, agent_payload(tp)) == ""
+    assert len(turn_spawns) == 1
+    assert popens == []  # no listener worker, no prevention refresh
+    assert drops() == []
+
+
+def test_subagent_absent_session_id_key_fully_silent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_spawns: list[tuple[str, str]],
+) -> None:
+    seed("shadow")
+    tp = write_agent(tmp_path, agent_fixture())
+    p = agent_payload(tp)
+    del p["session_id"]
+    assert run(monkeypatch, p) == ""
+    assert turn_spawns == []
+    assert drops() == []
+    assert state_bytes() is None

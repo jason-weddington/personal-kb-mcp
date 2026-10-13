@@ -300,6 +300,9 @@ def test_str_field_partition_drift_guard() -> None:
         "ts",
         "user_prompt",
         "final_message",
+        # Identifiers, never free text: not redacted by redact_turn_digest.
+        "agent_id",
+        "agent_type",
     }
     assert str_fields(TurnAssistantTextItem) == {"text"}
     assert str_fields(TurnToolCallItem) == {
@@ -488,3 +491,35 @@ def test_empty_tool_target_anomaly() -> None:
     assert turn_digest_anomalies(
         _body(harness="talos", items=[_call(cls=""), read, _res("zz")])
     ) == ["empty_bash_target_class", "orphan_tool_result", "empty_tool_target"]
+
+
+async def test_agent_digest_round_trip(pool: SqlitePool) -> None:
+    body = _body(
+        "s1",
+        2,
+        event_id="s1:agent:a1",
+        agent_id="a1",
+        agent_type="general-purpose",
+    )
+    assert await _insert(pool, body) == "recorded"
+    assert await _insert(pool, body) == "duplicate"
+    (row,) = await get_session_turn_digests(pool, "s1")
+    assert row.agent_id == "a1"
+    assert row.agent_type == "general-purpose"
+
+
+async def test_agent_digest_empty_turn_anomaly(pool: SqlitePool) -> None:
+    """An agent digest with no items and no text is flagged empty_turn as-is."""
+    body = _body(
+        "s1",
+        0,
+        event_id="s1:agent:a1",
+        agent_id="a1",
+        user_prompt=None,
+        final_message=None,
+        items=[],
+    )
+    assert turn_digest_anomalies(body) == ["empty_turn"]
+    assert await _insert(pool, body) == "recorded"
+    (row,) = await get_session_turn_digests(pool, "s1")
+    assert row.anomaly == "empty_turn"

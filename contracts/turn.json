@@ -329,6 +329,30 @@
           "default": false,
           "title": "Truncated",
           "type": "boolean"
+        },
+        "agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Id"
+        },
+        "agent_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Type"
         }
       },
       "required": [
@@ -374,7 +398,9 @@
             }
           ],
           "final_message": "The mirror rejected the push; pushed to origin instead.",
-          "truncated": false
+          "truncated": false,
+          "agent_id": null,
+          "agent_type": null
         }
       },
       {
@@ -434,7 +460,48 @@
             }
           ],
           "final_message": "Done; the gate is green.",
-          "truncated": true
+          "truncated": true,
+          "agent_id": null,
+          "agent_type": null
+        }
+      },
+      {
+        "name": "claude_code_turn_subagent",
+        "body": {
+          "event_id": "contract-session-1:agent:agent-contract-1",
+          "session_id": "contract-session-1",
+          "harness": "claude-code",
+          "mode": "interactive",
+          "engine": null,
+          "host": "contract-host",
+          "hook_version": "0.0.0-contract",
+          "project": "personal-kb",
+          "turn_index": 3,
+          "ts": "2026-10-10T12:10:00+00:00",
+          "user_prompt": "Find the failing test in the hook suite.",
+          "items": [
+            {
+              "kind": "assistant_text",
+              "text": "Pushing the branch now."
+            },
+            {
+              "kind": "tool_call",
+              "tool_use_id": "toolu_contract_1",
+              "tool": "Bash",
+              "target": "git push mirror feat/x",
+              "target_class": "git push"
+            },
+            {
+              "kind": "tool_result",
+              "tool_use_id": "toolu_contract_1",
+              "is_error": true,
+              "excerpt": "remote: Permission to mirror denied"
+            }
+          ],
+          "final_message": "The failure was the missing drop line.",
+          "truncated": false,
+          "agent_id": "agent-contract-1",
+          "agent_type": "general-purpose"
         }
       },
       {
@@ -453,7 +520,9 @@
           "user_prompt": null,
           "items": [],
           "final_message": null,
-          "truncated": false
+          "truncated": false,
+          "agent_id": null,
+          "agent_type": null
         }
       }
     ]

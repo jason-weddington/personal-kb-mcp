@@ -20,6 +20,8 @@
       "tool_name",
       "tool_input",
       "tool_use_id",
+      "agent_id",
+      "agent_type",
       "error",
       "is_error",
       "is_interrupt",
@@ -178,6 +180,30 @@
           "default": null,
           "title": "Tool Use Id"
         },
+        "agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Id"
+        },
+        "agent_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Type"
+        },
         "error": {
           "anyOf": [
             {
@@ -241,6 +267,35 @@
             "command": "git push mirror feat/x"
           },
           "tool_use_id": "toolu_contract_1",
+          "agent_id": null,
+          "agent_type": null,
+          "error": "Exit code 1\nremote: Permission to mirror denied",
+          "is_error": true,
+          "is_interrupt": false,
+          "duration_ms": 120
+        }
+      },
+      {
+        "name": "claude_code_subagent_failure",
+        "body": {
+          "type": "post_tool",
+          "event_id": "contract-session-3:toolu_contract_1",
+          "session_id": "contract-session-3",
+          "harness": "claude-code",
+          "mode": "interactive",
+          "engine": null,
+          "host": "contract-host",
+          "hook_version": "0.0.0-contract",
+          "cwd": "/home/dev/git/personal_kb",
+          "project": "personal-kb",
+          "ts": "2026-10-10T12:15:00+00:00",
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "git push mirror feat/x"
+          },
+          "tool_use_id": "toolu_contract_1",
+          "agent_id": "agent-contract-1",
+          "agent_type": "general-purpose",
           "error": "Exit code 1\nremote: Permission to mirror denied",
           "is_error": true,
           "is_interrupt": false,
@@ -266,6 +321,8 @@
             "command": "git push mirror feat/x"
           },
           "tool_use_id": "toolu_contract_t1",
+          "agent_id": null,
+          "agent_type": null,
           "error": "exit 1 (0.01s)\n--- stdout ---\n\n--- stderr ---\nremote: Permission to mirror denied\n",
           "is_error": true,
           "is_interrupt": false,
@@ -291,6 +348,8 @@
             "path": "src/a.py"
           },
           "tool_use_id": "toolu_contract_t2",
+          "agent_id": null,
+          "agent_type": null,
           "error": "old_string not found in src/a.py",
           "is_error": true,
           "is_interrupt": false,
@@ -301,6 +360,19 @@
   },
   "stored": {
     "claude_code_bash_failure": {
+      "cue_key": "aa55d24cbfcccf89",
+      "normalizer_version": 2,
+      "host_class": "linux",
+      "project_source": "kb_project",
+      "tool": "Bash",
+      "target": "git push mirror feat/x",
+      "target_class": "git push",
+      "normalized_error": "exit 1 | remote: permission to mirror denied",
+      "error_rule": "keyword",
+      "anomaly": null,
+      "raw_error_excerpt": "Exit code 1\nremote: Permission to mirror denied"
+    },
+    "claude_code_subagent_failure": {
       "cue_key": "aa55d24cbfcccf89",
       "normalizer_version": 2,
       "host_class": "linux",
@@ -395,6 +467,15 @@
     "examples": [
       {
         "name": "claude_code_bash_failure",
+        "body": {
+          "recorded": true,
+          "cue_key": "aa55d24cbfcccf89",
+          "normalizer_version": 2,
+          "reason": "recorded"
+        }
+      },
+      {
+        "name": "claude_code_subagent_failure",
         "body": {
           "recorded": true,
           "cue_key": "aa55d24cbfcccf89",

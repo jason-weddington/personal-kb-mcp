@@ -728,6 +728,11 @@ class EventRequest(BaseModel):
     tool_name: str | None = None
     tool_input: dict[str, Any] = Field(default_factory=dict)
     tool_use_id: str | None = None
+    # Subagent provenance (Claude Code 2.1.296+): set only when the failing
+    # tool call ran inside a subagent or Workflow-tool agent; a main-session
+    # failure or an old hook omits both.
+    agent_id: str | None = None
+    agent_type: str | None = None
     error: str | None = None
     is_error: bool = True
     is_interrupt: bool = False
@@ -891,10 +896,21 @@ class TurnDigestRequest(BaseModel):
     items: list[TurnItem] = Field(default_factory=list, max_length=TURN_ITEMS_MAX)
     final_message: str | None = Field(default=None, max_length=TURN_FINAL_MESSAGE_MAX)
     truncated: bool = False
+    # Subagent digests (the hook's SubagentStop): agent_id/agent_type name the
+    # subagent whose run the digest summarises; null on every normal Stop
+    # digest, and null on every row from a pre-SubagentStop hook.
+    agent_id: str | None = None
+    agent_type: str | None = None
 
     @model_validator(mode="after")
     def _event_id_matches(self) -> "TurnDigestRequest":
-        if self.event_id != f"{self.session_id}:{self.turn_index}":
+        if self.agent_id is not None:
+            if self.event_id != f"{self.session_id}:agent:{self.agent_id}":
+                raise ValueError(
+                    "event_id must equal '<session_id>:agent:<agent_id>'"
+                    " when agent_id is set"
+                )
+        elif self.event_id != f"{self.session_id}:{self.turn_index}":
             raise ValueError("event_id must equal '<session_id>:<turn_index>'")
         return self
 
@@ -915,7 +931,11 @@ class TurnDigestResponse(BaseModel):
 
 
 class StoredTurnDigest(BaseModel):
-    """A ``turn_events`` row as read back by consumers."""
+    """A ``turn_events`` row as read back by consumers.
+
+    ``agent_id``/``agent_type`` are set only on SubagentStop digests; rows
+    from old hooks carry both null.
+    """
 
     event_id: str
     session_id: str
@@ -931,6 +951,8 @@ class StoredTurnDigest(BaseModel):
     items: list[TurnItem]
     final_message: str | None
     truncated: bool
+    agent_id: str | None
+    agent_type: str | None
     redactions: list[str]
     anomaly: str | None
     capture_mode: Literal["shadow", "on"]
@@ -2017,6 +2039,8 @@ class ObserveTurnEventRow(BaseModel):
     items: list[dict[str, Any]]
     final_message: str | None = None
     truncated: int
+    agent_id: str | None = None
+    agent_type: str | None = None
     redactions: list[Any]
     anomaly: str | None = None
     capture_mode: str
@@ -2048,6 +2072,9 @@ class ObserveFailureEventRow(BaseModel):
     anomaly: str | None = None
     raw_error_excerpt: str
     is_interrupt: int
+    tool_use_id: str | None = None
+    agent_id: str | None = None
+    agent_type: str | None = None
     ts: str
     received_ts: str
 
