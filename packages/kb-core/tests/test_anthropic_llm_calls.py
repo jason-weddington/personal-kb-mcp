@@ -628,7 +628,7 @@ def test_anthropic_default_model() -> None:
 
 def test_sonnet_model_constant() -> None:
     """The synthesis model literal stays pinned; consumers import the constant."""
-    assert _SONNET_MODEL == "claude-sonnet-4-6"
+    assert _SONNET_MODEL == "claude-sonnet-5-5"
 
 
 def test_provider_role_thinking_defaults() -> None:
@@ -639,6 +639,14 @@ def test_provider_role_thinking_defaults() -> None:
     assert providers.synthesis.anthropic.thinking is None
     # The shared ProviderRoleConfig factory stays thinking-free.
     assert ProviderRoleConfig().anthropic.thinking is None
+
+
+def test_provider_config_synthesis_default_model_and_effort() -> None:
+    """Bare ProviderConfig: synthesis runs Sonnet 5.5 at effort low, no thinking."""
+    synthesis = ProviderConfig().synthesis.anthropic
+    assert synthesis.model == "claude-sonnet-5-5"
+    assert synthesis.effort == "low"
+    assert synthesis.thinking is None
 
 
 async def test_record_carries_thinking_and_effort() -> None:
@@ -698,3 +706,11 @@ async def test_create_kwargs_exact_effort_and_thinking(
         assert kwargs["thinking"] == {"type": thinking}
     else:
         assert "thinking" not in kwargs
+
+
+def test_synthesis_default_mirrors_sonnet_constant() -> None:
+    """kb_core.config keeps its own copy of the synthesis model; it must never drift."""
+    from kb_core.config import _DEFAULT_SYNTHESIS_MODEL
+    from kb_core.llm.anthropic import _SONNET_MODEL
+
+    assert _DEFAULT_SYNTHESIS_MODEL == _SONNET_MODEL

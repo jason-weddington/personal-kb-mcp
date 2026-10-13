@@ -148,6 +148,50 @@ def get_anthropic_timeout() -> float:
     return _parse_float("KB_ANTHROPIC_TIMEOUT", "30.0")
 
 
+def get_synthesis_model() -> str:
+    """Return the synthesis-role Anthropic model from KB_SYNTHESIS_MODEL.
+
+    Unset or empty means the kb-core ``_SONNET_MODEL`` default
+    (``claude-sonnet-5-5``); any other non-empty value is used verbatim
+    (whitespace stripped, no validation). Applies only to the synthesis role.
+    """
+    raw = os.environ.get("KB_SYNTHESIS_MODEL", "").strip()
+    if raw:
+        return raw
+    from kb_core.llm.anthropic import _SONNET_MODEL
+
+    return _SONNET_MODEL
+
+
+_SYNTHESIS_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
+def get_synthesis_effort() -> str | None:
+    """Return the synthesis-role reasoning effort from KB_SYNTHESIS_EFFORT.
+
+    Case-insensitive, whitespace stripped. Unset or empty means ``low`` (the
+    measured default for ``claude-sonnet-5-5``); one of ``low``, ``medium``,
+    ``high``, ``xhigh`` or ``max`` means that effort; ``default`` maps to
+    ``None`` so no effort field is sent at all (the model's own default).
+    Any other value warns once per call and falls back to ``low``. Applies
+    only to the synthesis role.
+    """
+    raw = os.environ.get("KB_SYNTHESIS_EFFORT", "").strip()
+    value = raw.lower()
+    if value in ("", "low"):
+        return "low"
+    if value == "default":
+        return None
+    if value in _SYNTHESIS_EFFORTS:
+        return value
+    logging.getLogger(__name__).warning(
+        "KB_SYNTHESIS_EFFORT=%r is not one of low/medium/high/xhigh/max/default;"
+        " falling back to low",
+        raw,
+    )
+    return "low"
+
+
 def get_extraction_provider() -> str:
     """Return the LLM provider for graph extraction from KB_EXTRACTION_PROVIDER."""
     return _parse_provider("KB_EXTRACTION_PROVIDER", "anthropic")
@@ -424,9 +468,10 @@ def build_anthropic_config(
 
     ``effort`` and ``thinking`` are passed through to
     ``AnthropicProviderConfig`` unchanged (``None`` sends neither field to the
-    API). This function deliberately does NOT read ``KB_ANTHROPIC_THINKING``
-    itself; the role builder (:func:`build_provider_config`) passes the
-    env-resolved value in explicitly.
+    API). This function deliberately does NOT read ``KB_ANTHROPIC_THINKING``,
+    ``KB_SYNTHESIS_MODEL`` or ``KB_SYNTHESIS_EFFORT`` itself; the role builder
+    (:func:`build_provider_config`) passes the env-resolved values in
+    explicitly.
     """
     from kb_core.config import AnthropicProviderConfig
 
@@ -476,14 +521,14 @@ def build_provider_config() -> "ProviderConfig":
     Each role (extraction / query / synthesis) is a :class:`ProviderRoleConfig`
     that bundles which provider is active + credentials for all three providers
     (so switching providers requires no extra plumbing). The synthesis role
-    points at the Sonnet model for Anthropic/Bedrock (mirroring the legacy
-    ``_create_synthesis_llm`` behavior). For Ollama, the synthesis role keeps
+    points at the Sonnet model (``KB_SYNTHESIS_MODEL``, default
+    ``claude-sonnet-5-5``) at effort ``KB_SYNTHESIS_EFFORT`` (default ``low``)
+    and never sends a thinking field. For Ollama, the synthesis role keeps
     the default Ollama config; the channel passes ``synthesis_llm=None`` to
     ``KnowledgeBase.create`` so the engine doesn't build a separate synthesis
     client (matching today's "no Sonnet equivalent" fallback).
     """
     from kb_core.config import ProviderConfig, ProviderRoleConfig
-    from kb_core.llm.anthropic import _SONNET_MODEL as _ANTHROPIC_SONNET
     from kb_core.llm.bedrock import _SONNET_MODEL as _BEDROCK_SONNET
 
     extraction_provider = get_extraction_provider()
@@ -494,10 +539,13 @@ def build_provider_config() -> "ProviderConfig":
     ollama = build_ollama_provider_config()
 
     # Synthesis role uses the same provider as query (today's behavior), but
-    # with the Sonnet model for Anthropic/Bedrock. For Ollama the role config
-    # stays as the default Ollama; the channel overrides ``synthesis_llm=None``
-    # at create() time to preserve the "no Sonnet equivalent" behavior.
-    synthesis_anthropic = build_anthropic_config(model=_ANTHROPIC_SONNET)
+    # with the Sonnet model for Anthropic/Bedrock and the synthesis effort.
+    # For Ollama the role config stays as the default Ollama; the channel
+    # overrides ``synthesis_llm=None`` at create() time to preserve the
+    # "no Sonnet equivalent" behavior.
+    synthesis_anthropic = build_anthropic_config(
+        model=get_synthesis_model(), effort=get_synthesis_effort()
+    )
     synthesis_bedrock = build_bedrock_config(model=_BEDROCK_SONNET)
 
     extraction_role = ProviderRoleConfig(
@@ -521,13 +569,15 @@ def build_provider_config() -> "ProviderConfig":
 
     logging.getLogger(__name__).info(
         "llm roles extraction_model=%s extraction_thinking=%s query_model=%s"
-        " query_thinking=%s synthesis_model=%s synthesis_thinking=%s",
+        " query_thinking=%s synthesis_model=%s synthesis_thinking=%s"
+        " synthesis_effort=%s",
         anthropic.model,
         anthropic.thinking,
         anthropic.model,
         anthropic.thinking,
         synthesis_anthropic.model,
         synthesis_anthropic.thinking,
+        synthesis_anthropic.effort,
     )
 
     return ProviderConfig(

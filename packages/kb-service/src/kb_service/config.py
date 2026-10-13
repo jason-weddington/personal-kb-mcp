@@ -153,6 +153,50 @@ def get_anthropic_timeout() -> float:
     return _parse_float("KB_ANTHROPIC_TIMEOUT", "30.0")
 
 
+def get_synthesis_model() -> str:
+    """Return the synthesis-role Anthropic model from KB_SYNTHESIS_MODEL.
+
+    Unset or empty means the kb-core ``_SONNET_MODEL`` default
+    (``claude-sonnet-5-5``); any other non-empty value is used verbatim
+    (whitespace stripped, no validation). Applies only to the synthesis role.
+    """
+    raw = os.environ.get("KB_SYNTHESIS_MODEL", "").strip()
+    if raw:
+        return raw
+    from kb_core.llm.anthropic import _SONNET_MODEL
+
+    return _SONNET_MODEL
+
+
+_SYNTHESIS_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
+def get_synthesis_effort() -> str | None:
+    """Return the synthesis-role reasoning effort from KB_SYNTHESIS_EFFORT.
+
+    Case-insensitive, whitespace stripped. Unset or empty means ``low`` (the
+    measured default for ``claude-sonnet-5-5``); one of ``low``, ``medium``,
+    ``high``, ``xhigh`` or ``max`` means that effort; ``default`` maps to
+    ``None`` so no effort field is sent at all (the model's own default).
+    Any other value warns once per call and falls back to ``low``. Applies
+    only to the synthesis role.
+    """
+    raw = os.environ.get("KB_SYNTHESIS_EFFORT", "").strip()
+    value = raw.lower()
+    if value in ("", "low"):
+        return "low"
+    if value == "default":
+        return None
+    if value in _SYNTHESIS_EFFORTS:
+        return value
+    logger.warning(
+        "KB_SYNTHESIS_EFFORT=%r is not one of low/medium/high/xhigh/max/default;"
+        " falling back to low",
+        raw,
+    )
+    return "low"
+
+
 def get_extraction_provider() -> str:
     """Return the LLM provider for graph extraction from KB_EXTRACTION_PROVIDER."""
     return _parse_provider("KB_EXTRACTION_PROVIDER", "anthropic")
@@ -381,8 +425,10 @@ def build_anthropic_config(
     itself: the surprise detector, distiller and critic clients are built
     through it with only ``model=``, so they must stay thinking-free; the role
     builder (:func:`build_provider_config`) passes the env-resolved value in
-    explicitly. ``effort`` has no env variable at all — only eval callers set
-    it.
+    explicitly. It also never reads ``KB_SYNTHESIS_MODEL`` or
+    ``KB_SYNTHESIS_EFFORT``: the synthesis role is the only caller that passes
+    ``effort``, so the capture clients stay effort-free; other ``effort``
+    callers are eval scripts.
     """
     from kb_core.config import AnthropicProviderConfig
 
@@ -426,13 +472,12 @@ def build_provider_config() -> "ProviderConfig":
 
     Each role (extraction / query / synthesis) is a ``ProviderRoleConfig`` that
     bundles which provider is active + credentials for all three providers. The
-    synthesis role points at the Sonnet model for Anthropic/Bedrock. The
-    extraction and query roles get their thinking mode from
-    ``KB_ANTHROPIC_THINKING`` (disabled by default); the synthesis role never
-    sends a thinking field.
+    synthesis role points at the Sonnet model (``KB_SYNTHESIS_MODEL``, default
+    ``claude-sonnet-5-5``) at effort ``KB_SYNTHESIS_EFFORT`` (default ``low``),
+    and never sends a thinking field. The extraction and query roles get their
+    thinking mode from ``KB_ANTHROPIC_THINKING`` (disabled by default).
     """
     from kb_core.config import ProviderConfig, ProviderRoleConfig
-    from kb_core.llm.anthropic import _SONNET_MODEL as _ANTHROPIC_SONNET
     from kb_core.llm.bedrock import _SONNET_MODEL as _BEDROCK_SONNET
 
     extraction_provider = get_extraction_provider()
@@ -442,7 +487,9 @@ def build_provider_config() -> "ProviderConfig":
     bedrock = build_bedrock_config()
     ollama = build_ollama_provider_config()
 
-    synthesis_anthropic = build_anthropic_config(model=_ANTHROPIC_SONNET)
+    synthesis_anthropic = build_anthropic_config(
+        model=get_synthesis_model(), effort=get_synthesis_effort()
+    )
     synthesis_bedrock = build_bedrock_config(model=_BEDROCK_SONNET)
 
     extraction_role = ProviderRoleConfig(
@@ -466,13 +513,15 @@ def build_provider_config() -> "ProviderConfig":
 
     logger.info(
         "llm roles extraction_model=%s extraction_thinking=%s query_model=%s"
-        " query_thinking=%s synthesis_model=%s synthesis_thinking=%s",
+        " query_thinking=%s synthesis_model=%s synthesis_thinking=%s"
+        " synthesis_effort=%s",
         anthropic.model,
         anthropic.thinking,
         anthropic.model,
         anthropic.thinking,
         synthesis_anthropic.model,
         synthesis_anthropic.thinking,
+        synthesis_anthropic.effort,
     )
     return ProviderConfig(
         extraction=extraction_role,

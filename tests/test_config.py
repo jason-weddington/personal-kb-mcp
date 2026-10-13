@@ -17,6 +17,8 @@ from personal_kb.config import (
     get_pg_pool_min,
     get_pg_region,
     get_query_provider,
+    get_synthesis_effort,
+    get_synthesis_model,
     get_team,
     is_pg_iam_auth,
     is_safety_skip,
@@ -223,3 +225,67 @@ def test_build_anthropic_config_ignores_thinking_env(monkeypatch):
     monkeypatch.setenv("KB_ANTHROPIC_THINKING", "adaptive")
     monkeypatch.delenv("KB_ANTHROPIC_MODEL", raising=False)
     assert build_anthropic_config().thinking is None
+
+
+def test_build_anthropic_config_ignores_synthesis_env(monkeypatch):
+    """Called with no arguments the builder reads neither synthesis variable."""
+    monkeypatch.setenv("KB_SYNTHESIS_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("KB_SYNTHESIS_EFFORT", "medium")
+    monkeypatch.delenv("KB_ANTHROPIC_MODEL", raising=False)
+    config = build_anthropic_config()
+    assert config.model == "claude-haiku-5-5"
+    assert config.effort is None
+    assert config.thinking is None
+
+
+# -- Synthesis model and effort getters --
+
+
+def test_get_synthesis_model_unset(monkeypatch):
+    monkeypatch.delenv("KB_SYNTHESIS_MODEL", raising=False)
+    assert get_synthesis_model() == "claude-sonnet-5-5"
+
+
+def test_get_synthesis_model_empty(monkeypatch):
+    monkeypatch.setenv("KB_SYNTHESIS_MODEL", "")
+    assert get_synthesis_model() == "claude-sonnet-5-5"
+
+
+def test_get_synthesis_model_verbatim(monkeypatch):
+    monkeypatch.setenv("KB_SYNTHESIS_MODEL", " claude-sonnet-4-6 ")
+    assert get_synthesis_model() == "claude-sonnet-4-6"
+
+
+def test_get_synthesis_effort_unset(monkeypatch):
+    monkeypatch.delenv("KB_SYNTHESIS_EFFORT", raising=False)
+    assert get_synthesis_effort() == "low"
+
+
+def test_get_synthesis_effort_empty(monkeypatch):
+    monkeypatch.setenv("KB_SYNTHESIS_EFFORT", "")
+    assert get_synthesis_effort() == "low"
+
+
+def test_get_synthesis_effort_valid_values(monkeypatch):
+    for value in ("low", "medium", "high", "xhigh", "max"):
+        monkeypatch.setenv("KB_SYNTHESIS_EFFORT", value)
+        assert get_synthesis_effort() == value
+
+
+def test_get_synthesis_effort_normalizes(monkeypatch):
+    monkeypatch.setenv("KB_SYNTHESIS_EFFORT", " MEDIUM ")
+    assert get_synthesis_effort() == "medium"
+
+
+def test_get_synthesis_effort_default_sends_none(monkeypatch):
+    """The `default` sentinel maps to None, so no effort field is sent."""
+    monkeypatch.setenv("KB_SYNTHESIS_EFFORT", "default")
+    assert get_synthesis_effort() is None
+
+
+def test_get_synthesis_effort_invalid_warns_and_falls_back(monkeypatch, caplog):
+    monkeypatch.setenv("KB_SYNTHESIS_EFFORT", "bogus")
+    with caplog.at_level(logging.WARNING, logger="personal_kb.config"):
+        assert get_synthesis_effort() == "low"
+    hits = [r for r in caplog.records if r.levelno == logging.WARNING and "bogus" in r.getMessage()]
+    assert len(hits) == 1

@@ -126,6 +126,8 @@ export them in your shell. No config files required.
 | `ANTHROPIC_API_KEY` | (unset) | Anthropic API key. Required for Anthropic-powered features. |
 | `KB_ANTHROPIC_MODEL` | `claude-haiku-5-5` | Anthropic model for extraction and query planning |
 | `KB_ANTHROPIC_THINKING` | `disabled` | Thinking mode for the extraction and query roles: `disabled`, `adaptive`, or `default` (sends no thinking field, the model's own default); anything else warns and falls back to `disabled`; never applied to synthesis |
+| `KB_SYNTHESIS_MODEL` | `claude-sonnet-5-5` | Anthropic model for the synthesis role (cited answers, web chat and the listener vote) |
+| `KB_SYNTHESIS_EFFORT` | `low` | Reasoning effort for the synthesis role: `low`, `medium`, `high`, `xhigh`, `max`, or `default` (sends no effort field, the model's own default); anything else warns and falls back to `low` |
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Anthropic API timeout in seconds |
 | `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock cross-region inference profile |
 | `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock requests |

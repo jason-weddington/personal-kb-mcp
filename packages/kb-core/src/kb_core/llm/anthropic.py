@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_SONNET_MODEL = "claude-sonnet-4-6"
+_SONNET_MODEL = "claude-sonnet-5-5"
 """Default model identifier for the human-facing synthesis role."""
 
 _PREVIOUS_IDS: dict[tuple[str, str], str] = {}

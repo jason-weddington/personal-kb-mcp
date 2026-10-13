@@ -475,7 +475,9 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | `KB_PG_POOL_MAX` | `5` | Postgres connection pool maximum size |
 | **Anthropic (cloud LLM)** | | |
 | `ANTHROPIC_API_KEY` | _(unset)_ | API key — required for Anthropic provider |
-| `KB_ANTHROPIC_MODEL` | `claude-haiku-5-5` | Model for graph enrichment and query planning; synthesis uses `claude-sonnet-4-6` regardless |
+| `KB_ANTHROPIC_MODEL` | `claude-haiku-5-5` | Model for graph enrichment and query planning; synthesis uses `KB_SYNTHESIS_MODEL` (default `claude-sonnet-5-5`) |
+| `KB_SYNTHESIS_MODEL` | `claude-sonnet-5-5` | Anthropic model for cited answers, web chat and the listener vote (the synthesis role) |
+| `KB_SYNTHESIS_EFFORT` | `low` | Reasoning effort for the synthesis role: `low`, `medium`, `high`, `xhigh`, `max`, or `default` (sends no effort field); anything else warns and falls back to `low` |
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Request timeout in seconds |
 | `KB_LLM_DIAGNOSTICS` | `1` | kb-service: set `0` (or `false`, `off`, `no`) to stop sending the Claude API cache-diagnostics object; kb-service still records every Anthropic call in `llm_calls` |
 | **Ollama (local LLM)** | | |

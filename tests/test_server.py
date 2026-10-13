@@ -28,14 +28,38 @@ def test_build_provider_config_default_anthropic():
 
 
 def test_build_provider_config_synthesis_uses_sonnet_for_anthropic():
-    """Synthesis role overrides the Anthropic model to Sonnet."""
+    """Synthesis role overrides the Anthropic model to Sonnet at effort low."""
     from kb_core.llm.anthropic import _SONNET_MODEL as ANTHROPIC_SONNET
 
     from personal_kb.config import build_provider_config
 
-    with patch.dict("os.environ", {"KB_QUERY_PROVIDER": "anthropic"}):
+    with patch.dict(
+        "os.environ",
+        {"KB_QUERY_PROVIDER": "anthropic", "KB_SYNTHESIS_MODEL": "", "KB_SYNTHESIS_EFFORT": ""},
+    ):
         cfg = build_provider_config()
         assert cfg.synthesis.anthropic.model == ANTHROPIC_SONNET
+        assert cfg.synthesis.anthropic.effort == "low"
+        assert cfg.synthesis.anthropic.thinking is None
+
+
+def test_build_provider_config_synthesis_env_override():
+    """KB_SYNTHESIS_MODEL/KB_SYNTHESIS_EFFORT reach only the synthesis role."""
+    from personal_kb.config import build_provider_config
+
+    with patch.dict(
+        "os.environ",
+        {"KB_SYNTHESIS_MODEL": "claude-sonnet-4-6", "KB_SYNTHESIS_EFFORT": "medium"},
+    ):
+        cfg = build_provider_config()
+        assert cfg.synthesis.anthropic.model == "claude-sonnet-4-6"
+        assert cfg.synthesis.anthropic.effort == "medium"
+        assert cfg.extraction.anthropic.model == "claude-haiku-5-5"
+        assert cfg.query.anthropic.model == "claude-haiku-5-5"
+        assert cfg.extraction.anthropic.thinking == "disabled"
+        assert cfg.query.anthropic.thinking == "disabled"
+        assert cfg.extraction.anthropic.effort is None
+        assert cfg.query.anthropic.effort is None
 
 
 def test_build_provider_config_synthesis_uses_sonnet_for_bedrock():
@@ -76,7 +100,7 @@ def test_build_provider_config_thinking_default(monkeypatch, caplog):
     shape = (
         "llm roles extraction_model=claude-haiku-5-5 extraction_thinking=disabled "
         "query_model=claude-haiku-5-5 query_thinking=disabled "
-        "synthesis_model=claude-sonnet-4-6 synthesis_thinking=None"
+        "synthesis_model=claude-sonnet-5-5 synthesis_thinking=None synthesis_effort=low"
     )
     assert shape in caplog.text
 
@@ -90,7 +114,8 @@ def test_build_provider_config_thinking_adaptive(monkeypatch):
     assert cfg.extraction.anthropic.thinking == "adaptive"
     assert cfg.query.anthropic.thinking == "adaptive"
     assert cfg.synthesis.anthropic.thinking is None
-    assert cfg.synthesis.anthropic.model == "claude-sonnet-4-6"
+    assert cfg.synthesis.anthropic.model == "claude-sonnet-5-5"
+    assert cfg.synthesis.anthropic.effort == "low"
 
 
 def test_build_provider_config_thinking_default_sentinel(monkeypatch):

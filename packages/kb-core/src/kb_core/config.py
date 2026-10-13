@@ -64,6 +64,10 @@ _DEFAULT_EMBEDDING_TIMEOUT = 10.0
 _DEFAULT_EMBEDDING_KEEP_ALIVE = "30m"
 _DEFAULT_ANTHROPIC_MODEL = "claude-haiku-5-5"
 _DEFAULT_ANTHROPIC_TIMEOUT = 30.0
+_DEFAULT_SYNTHESIS_MODEL = "claude-sonnet-5-5"
+"""Mirrors ``_SONNET_MODEL`` in ``kb_core.llm.anthropic`` (imported there to avoid a
+module-level dependency on the provider package)."""
+_DEFAULT_SYNTHESIS_EFFORT = "low"
 _ANTHROPIC_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 _ANTHROPIC_THINKING_MODES = frozenset({"disabled", "adaptive"})
 _DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -322,8 +326,21 @@ class ProviderConfig:
     )
     """Provider used for query planning and the agentic ReAct loop (thinking disabled)."""
 
-    synthesis: ProviderRoleConfig = field(default_factory=ProviderRoleConfig)
-    """Provider used for final-answer synthesis."""
+    synthesis: ProviderRoleConfig = field(
+        default_factory=lambda: ProviderRoleConfig(
+            anthropic=AnthropicProviderConfig(
+                model=_DEFAULT_SYNTHESIS_MODEL, effort=_DEFAULT_SYNTHESIS_EFFORT
+            )
+        )
+    )
+    """Provider used for final-answer synthesis.
+
+    The Anthropic config defaults to ``claude-sonnet-5-5`` at effort ``low``:
+    measured over 28 kb_ask eval queries it won 23 / tied 4 / lost 1 against
+    ``claude-sonnet-4-6`` with 96% grounded answers (vs 43-57%) at roughly half
+    the latency. The env-driven channel offers the same knobs through
+    ``KB_SYNTHESIS_MODEL`` / ``KB_SYNTHESIS_EFFORT``.
+    """
 
 
 # --- Ingest -------------------------------------------------------------------
