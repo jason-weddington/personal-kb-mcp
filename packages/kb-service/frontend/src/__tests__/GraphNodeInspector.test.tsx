@@ -664,6 +664,64 @@ describe('InspectorViewState', () => {
     expect(el).toBeInTheDocument()
     expect(el.scrollTop).toBe(0)
   })
+
+  it('scrolling writes the ref and never calls onViewChange', () => {
+    const node = tagNode('tag:hub-a')
+    const others = manyEntriesOf(13)
+    const onViewChange = vi.fn()
+    const scrollTopRef = { current: 0 }
+    renderInspector({
+      node,
+      groups: groupNeighbors(others.map((m) => conn(m.id, 'related_to', 'out'))),
+      nodeById: nodeMap([node, ...others]),
+      view: { ...DEFAULT_INSPECTOR_VIEW },
+      onViewChange,
+      scrollTopRef,
+    })
+    const el = screen.getByTestId('inspector-scroll')
+    act(() => {
+      el.scrollTop = 150
+    })
+    for (let i = 0; i < 3; i++) {
+      fireEvent.scroll(el)
+    }
+    expect(onViewChange).not.toHaveBeenCalled()
+    expect(scrollTopRef.current).toBe(150)
+  })
+
+  it('an unrelated re-render does not move the scroll position', () => {
+    const node = tagNode('tag:hub-a')
+    const others = manyEntriesOf(13)
+    const groups = groupNeighbors(others.map((m) => conn(m.id, 'related_to', 'out')))
+    const nodeById = nodeMap([node, ...others])
+    const scrollTopRef = { current: 0 }
+    const base: GraphNodeInspectorProps = {
+      node,
+      groups,
+      nodeById,
+      view: { ...DEFAULT_INSPECTOR_VIEW },
+      onViewChange: () => {},
+      onOpenNode: () => {},
+      onHover: () => {},
+      onClose: () => {},
+      scrollTopRef,
+    }
+    const { rerender } = render(<GraphNodeInspector {...base} />)
+    const el = screen.getByTestId('inspector-scroll') as HTMLDivElement
+    act(() => {
+      el.scrollTop = 150
+    })
+    fireEvent.scroll(el)
+    // expanded changed, scrollTop unchanged: the restore effect (deps
+    // [node.id, view.scrollTop]) must not fire, so the live position survives
+    rerender(
+      <GraphNodeInspector
+        {...base}
+        view={{ ...DEFAULT_INSPECTOR_VIEW, expanded: { 'related_to:out': true } }}
+      />,
+    )
+    expect(el.scrollTop).toBe(150)
+  })
 })
 
 function manyEntriesOf(n: number): ExplorerNode[] {

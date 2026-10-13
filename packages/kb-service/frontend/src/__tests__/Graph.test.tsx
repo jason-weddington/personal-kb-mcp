@@ -1396,6 +1396,7 @@ describe('GraphExplorer — history view-state round trip', () => {
   }
 
   it('Back restores the camera, the expanded group, the filter and the scroll', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     renderNarrowExplorer()
     act(() => h.lastProps.onNodeClick(nodeOf('tag:mass')))
     advance(850)
@@ -1404,11 +1405,20 @@ describe('GraphExplorer — history view-state round trip', () => {
     fireEvent.click(within(region).getByRole('button', { name: 'p1 6' }))
     expect(within(region).getByText('has tag ← 9 of 15')).toBeInTheDocument()
     // the same scroll container item A's scrollTop round-trip test uses
+    // the same scroll container item A's scrollTop round-trip test uses
     const scroll = within(region).getByTestId('inspector-scroll')
+    const filterCallsBeforeScroll = info.mock.calls.filter(
+      (c: unknown[]) => c[0] === '[graph-inspector] filter',
+    ).length
     act(() => {
       scroll.scrollTop = 120
     })
     fireEvent.scroll(scroll)
+    // the live scroll position no longer flows through onInspectorViewChange:
+    // scrolling emits no filter telemetry line
+    expect(
+      info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] filter'),
+    ).toHaveLength(filterCallsBeforeScroll)
     // walk to kb-00109 (a still-visible p2 member) through the shared select
     // path a row click takes
     fireEvent.click(within(region).getByRole('button', { name: /Mass entry 9/ }))

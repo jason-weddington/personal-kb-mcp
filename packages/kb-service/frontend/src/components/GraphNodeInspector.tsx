@@ -622,6 +622,14 @@ export type GraphNodeInspectorProps = {
   /** Node ids focused earlier this page session (visited check marks). */
   visited?: ReadonlySet<string>
   onViewChange: (view: InspectorViewState) => void
+  /**
+   * Live scroll position sink: when present, scrolling writes it and fires
+   * no view-state update (the scrollTop feedback loop — a lagging
+   * view.scrollTop written back through the restore effect — is why). The
+   * history snapshot reads the ref at press time instead. Absent in the
+   * drawer-less standalone renderers that never scroll from outside.
+   */
+  scrollTopRef?: { current: number }
   /** The select path a canvas click on that node takes. */
   onOpenNode: (id: string) => void
   /** The shared hover setter (writes the canvas hover render state). */
@@ -637,6 +645,7 @@ export function GraphNodeInspector({
   view,
   visited,
   onViewChange,
+  scrollTopRef,
   onOpenNode,
   onHover,
   onClose,
@@ -712,7 +721,9 @@ export function GraphNodeInspector({
   }, [node.id, loadDetails])
 
   // Restore a scrollTop that changed from outside (a history snapshot or the
-  // reset on re-target); reporting it back through onScroll is idempotent.
+  // reset on re-target). Deps keep [node.id, view.scrollTop]: live scrolling
+  // no longer touches view state, so this fires only on re-target or when a
+  // restored view carries a different scrollTop, and never mid-scroll.
   useEffect(() => {
     const el = scrollRef.current
     if (el !== null) el.scrollTop = view.scrollTop
@@ -856,9 +867,14 @@ export function GraphNodeInspector({
       <Box
         data-testid="inspector-scroll"
         ref={scrollRef}
-        onScroll={(e) =>
-          onViewChange({ ...view, scrollTop: (e.currentTarget as HTMLDivElement).scrollTop })
-        }
+        onScroll={(e) => {
+          if (scrollTopRef === undefined) return
+          // The live position is a ref, not React state: writing it into the
+          // view state re-rendered the whole explorer mid-scroll and the
+          // restore effect wrote a stale position back — a scroll bounce
+          // feedback loop. History snapshots read the ref at press time.
+          scrollTopRef.current = (e.currentTarget as HTMLDivElement).scrollTop
+        }}
         sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
       >
         {connGroups.length > 0 && (

@@ -191,8 +191,11 @@ export function GraphExplorer({
 
   // Refs mirroring the lifted view state, so the walk handlers read the live
   // values without re-subscribing the document keydown listener on every
-  // inspector scroll.
+  // inspector filter/expand update.
   const inspectorViewRef = useRef(inspectorView)
+  // The live inspector scroll position — a ref, not state, so scrolling it
+  // never re-renders (the controlled scrollTop round-trip bounced).
+  const inspectorScrollTopRef = useRef(0)
   const visitedRef = useRef(visited)
   useLayoutEffect(() => {
     inspectorViewRef.current = inspectorView
@@ -417,6 +420,7 @@ export function GraphExplorer({
     // restore passes its saved snapshot here and nothing overwrites it.
     setPanelNode(node)
     setInspectorView(view)
+    inspectorScrollTopRef.current = view.scrollTop
     const { nodeById, adjacency } = latestRef.current
     const conns: ConnInput[] = (adjacency.get(node.id) ?? []).map((n) => ({
       nodeId: n.node,
@@ -477,7 +481,14 @@ export function GraphExplorer({
     const fg = fgRef.current
     if (!fg) return null
     const c = fg.centerAt()
-    return { zoom: fg.zoom(), cx: c.x, cy: c.y, view: inspectorViewRef.current }
+    // scrollTop comes from the scroll container's ref: view state stopped
+    // tracking the live position when scrolling stopped updating state.
+    return {
+      zoom: fg.zoom(),
+      cx: c.x,
+      cy: c.y,
+      view: { ...inspectorViewRef.current, scrollTop: inspectorScrollTopRef.current },
+    }
   }, [])
 
   /**
@@ -995,6 +1006,7 @@ export function GraphExplorer({
           view={inspectorView}
           visited={visited}
           onViewChange={onInspectorViewChange}
+          scrollTopRef={inspectorScrollTopRef}
           onOpenNode={selectById}
           onHover={onInspectorHover}
           onClose={() => setPanelNode(null)}
