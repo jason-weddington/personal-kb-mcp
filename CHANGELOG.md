@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.15.0 (2026-10-13)
+
+### Features
+
+- **cad614fd**: Failure events and turn digests carry the subagent that made them, and SubagentStop
+  posts a digest of each subagent's run
+  ([`555646f`](https://github.com/jason-weddington/personal-kb-mcp/commit/555646f83afdb31759c518248e55e2ff6376dadf))
+
+
 ## v1.14.0 (2026-10-13)
 
 ### Bug Fixes
