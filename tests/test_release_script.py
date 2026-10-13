@@ -79,7 +79,9 @@ def sandbox(tmp_path: Path) -> dict[str, Path]:
     )
     for cmd in ("init -q -b main", "add -A", "-c user.name=t -c user.email=t@t commit -qm init"):
         subprocess.run([REAL_GIT, *cmd.split()], cwd=repo, check=True)
-    (repo / ".gitignore").write_text("dist/\nrelease.local.sh\nrelease.post.local.sh\n")
+    (repo / ".gitignore").write_text(
+        "dist/\nrelease.local.sh\nrelease.post.local.sh\nrelease.guard.local.sh\n"
+    )
     subprocess.run([REAL_GIT, "add", "-A"], cwd=repo, check=True)
     subprocess.run(
         [REAL_GIT, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "ignore"],
@@ -90,7 +92,10 @@ def sandbox(tmp_path: Path) -> dict[str, Path]:
         subprocess.run(
             [REAL_GIT, "remote", "add", name, f"/nonexistent/{name}.git"], cwd=repo, check=True
         )
-    return {"repo": repo, "shims": shims, "log": log}
+    sb = {"repo": repo, "shims": shims, "log": log}
+    # Every sandbox has a github remote, so it needs a passing leak guard by default.
+    _guard(sb, 0)
+    return sb
 
 
 def _run(sb: dict[str, Path], *args: str, extra_env: dict[str, str] | None = None):
@@ -132,6 +137,17 @@ def _hook(sb: dict[str, Path], exit_code: int) -> None:
         #!/usr/bin/env bash
         echo "hook $1 $2 pwd=$PWD" >> "{sb["log"]}"
         ls "$2" | wc -l >> "{sb["log"]}"
+        exit {exit_code}
+        """,
+    )
+
+
+def _guard(sb: dict[str, Path], exit_code: int) -> None:
+    _write(
+        sb["repo"] / "release.guard.local.sh",
+        f"""\
+        #!/usr/bin/env bash
+        echo "guard argc=$# pwd=$PWD" >> "{sb["log"]}"
         exit {exit_code}
         """,
     )
@@ -352,3 +368,68 @@ def test_no_docs_check_overrides_loudly(sandbox):
     assert r.returncode == 0, r.stderr
     assert "--no-docs-check given" in r.stderr
     assert ABORT_MSG not in r.stderr
+
+
+def test_guard_runs_before_publish_hook_and_pushes(sandbox):
+    _hook(sandbox, 0)
+    r = _run(sandbox)
+    assert r.returncode == 0, r.stderr
+    calls = _calls(sandbox)
+    guard_i = next(i for i, c in enumerate(calls) if c.startswith("guard "))
+    hook_i = next(i for i, c in enumerate(calls) if c.startswith("hook "))
+    push_is = [i for i, c in enumerate(calls) if c.startswith("git push")]
+    assert calls[guard_i] == f"guard argc=0 pwd={sandbox['repo']}"
+    assert guard_i < hook_i and all(i > guard_i for i in push_is)
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [(1, "found private data"), (2, "could not run (exit 2)"), (7, "could not run (exit 7)")],
+)
+def test_guard_nonzero_aborts_before_publishing(sandbox, code, message):
+    _hook(sandbox, 0)
+    _guard(sandbox, code)
+    r = _run(sandbox)
+    assert r.returncode != 0
+    assert message in r.stderr
+    calls = _calls(sandbox)
+    assert not any(c.startswith(("hook ", "git push")) for c in calls)
+    assert _tags(sandbox) == ""
+
+
+def test_missing_guard_aborts_unless_no_guard(sandbox):
+    _hook(sandbox, 0)
+    (sandbox["repo"] / "release.guard.local.sh").unlink()
+    r = _run(sandbox)
+    assert r.returncode != 0
+    assert "release.guard.local.sh" in r.stderr and "--no-guard" in r.stderr
+    assert not any(c.startswith(("hook ", "git push")) for c in _calls(sandbox))
+    assert _tags(sandbox) == ""
+
+
+def test_non_executable_guard_aborts(sandbox):
+    _hook(sandbox, 0)
+    (sandbox["repo"] / "release.guard.local.sh").chmod(0o644)
+    r = _run(sandbox)
+    assert r.returncode != 0
+    assert "--no-guard" in r.stderr
+    assert not any(c.startswith("git push") for c in _calls(sandbox))
+
+
+def test_no_guard_flag_skips_loudly(sandbox):
+    _hook(sandbox, 0)
+    (sandbox["repo"] / "release.guard.local.sh").unlink()
+    r = _run(sandbox, "--no-guard")
+    assert r.returncode == 0, r.stderr
+    assert "LEAK GUARD SKIPPED" in r.stderr
+    assert len([c for c in _calls(sandbox) if c.startswith("git push")]) == 2
+
+
+def test_no_github_remote_needs_no_guard(sandbox):
+    subprocess.run([REAL_GIT, "remote", "remove", "github"], cwd=sandbox["repo"], check=True)
+    (sandbox["repo"] / "release.guard.local.sh").unlink()
+    _hook(sandbox, 0)
+    r = _run(sandbox)
+    assert r.returncode == 0, r.stderr
+    assert not any(c.startswith("guard ") for c in _calls(sandbox))
+    assert "LEAK GUARD SKIPPED" not in r.stderr

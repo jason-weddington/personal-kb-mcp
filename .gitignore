@@ -20,3 +20,4 @@ htmlcov/
 .kiro/
 release.local.sh
 release.post.local.sh
+release.guard.local.sh

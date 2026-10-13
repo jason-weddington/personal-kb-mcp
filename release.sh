@@ -9,7 +9,7 @@
 # (the home-lab VM) freely for testing. This script is the separate
 # promote-to-github step — run it only when local `main` is verified good.
 #
-# Usage: ./release.sh [--no-publish] [--no-docs-check]
+# Usage: ./release.sh [--no-publish] [--no-docs-check] [--no-guard]
 #
 # Docs backstop: the release aborts, before any version bump, when a `feat`
 # commit since the last tag touches src/ or packages/*/src but neither
@@ -35,6 +35,20 @@
 # With no hook present the release aborts too, unless --no-publish is given,
 # which skips publishing (loudly) and pushes anyway.
 #
+# Maintainer-local leak guard
+# ---------------------------
+# When a `github` remote exists, release.sh runs ./release.guard.local.sh
+# (gitignored; the maintainer points it at a scanner kept outside this repo)
+# after the release commit, tag and wheels exist and BEFORE the publish hook
+# or any push, so a hit stops the release while nothing has left the machine.
+# The guard scans what the github push would publish for private
+# infrastructure names and personal data. Exit 0 = clean; 1 = hits (printed
+# by the guard); any other exit = the scan could not run, which is never
+# treated as clean. Every non-zero exit aborts the release. A missing or
+# non-executable guard aborts too, unless --no-guard is given, which skips
+# the scan (loudly). With no `github` remote nothing is published publicly
+# and the guard does not run.
+#
 # Optional maintainer-local post-push hook: if an executable
 # ./release.post.local.sh exists (gitignored), it runs after the pushes as
 # `./release.post.local.sh <version>`. A failure is reported and exits 4; nothing is rolled back.
@@ -42,12 +56,14 @@ set -euo pipefail
 
 publish=1
 docs_check=1
+guard=1
 for arg in "$@"; do
   case "$arg" in
     --no-publish) publish=0 ;;
     --no-docs-check) docs_check=0 ;;
+    --no-guard) guard=0 ;;
     *)
-      echo "Unknown argument: $arg (usage: ./release.sh [--no-publish] [--no-docs-check])" >&2
+      echo "Unknown argument: $arg (usage: ./release.sh [--no-publish] [--no-docs-check] [--no-guard])" >&2
       exit 2
       ;;
   esac
@@ -182,6 +198,25 @@ for name in $expected_wheels; do
   [ -f "dist/${name}-${new_version}-py3-none-any.whl" ] ||
     abort_release "Missing wheel dist/${name}-${new_version}-py3-none-any.whl."
 done
+
+# 2b2. Leak guard (see header). Runs before the publish hook and every push.
+if git remote get-url github >/dev/null 2>&1; then
+  if [ -x ./release.guard.local.sh ]; then
+    set +e
+    ./release.guard.local.sh
+    guard_rc=$?
+    set -e
+    case "$guard_rc" in
+      0) ;;
+      1) abort_release "release.guard.local.sh found private data in what the github push would publish (hits above); aborting release." ;;
+      *) abort_release "release.guard.local.sh could not run (exit $guard_rc); aborting release. A scan that did not run is never treated as clean." ;;
+    esac
+  elif [ "$guard" = "1" ]; then
+    abort_release "No executable ./release.guard.local.sh leak guard found. It is a maintainer-local script that scans what the github push would publish; create it, or re-run with --no-guard to release without the scan."
+  else
+    echo "!!! LEAK GUARD SKIPPED: --no-guard given and no ./release.guard.local.sh; nothing was scanned before publishing to github. !!!" >&2
+  fi
+fi
 
 # 2c. Publish hook (see header). Runs before any push.
 #     Exit codes: 0 = published (and deployed, if the hook deploys);
