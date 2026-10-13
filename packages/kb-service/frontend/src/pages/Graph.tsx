@@ -23,6 +23,7 @@ import { GraphAskBar } from '../components/GraphAskBar'
 import { GraphQueryPanel } from '../components/GraphQueryPanel'
 import { GraphChatPanel } from '../components/GraphChatPanel'
 import { GraphSearch } from '../components/GraphSearch'
+import { toggleChipSx } from '../components/chipState'
 import { useAuth } from '../contexts/AuthContext'
 import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import { BACKGROUND, NODE_COLORS, NODE_TYPES, filterGraph } from '../graph/explorerModel'
@@ -362,9 +363,12 @@ export function Graph() {
                     variant={on ? 'filled' : 'outlined'}
                     size="small"
                     sx={{
-                      bgcolor: on ? NODE_COLORS[type] : undefined,
-                      color: on ? '#000' : undefined,
-                      borderColor: on ? undefined : NODE_COLORS[type],
+                      // ON keeps the filled legend colour; OFF reads as grey
+                      // (outlined, text.disabled) through the shared helper —
+                      // never a coloured outline.
+                      ...(on
+                        ? { bgcolor: NODE_COLORS[type], color: '#000' }
+                        : toggleChipSx(false)),
                       '&:hover, &.Mui-focusVisible': {
                         bgcolor: on
                           ? darken(NODE_COLORS[type], 0.15)

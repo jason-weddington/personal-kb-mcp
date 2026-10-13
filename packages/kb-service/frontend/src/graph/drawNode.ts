@@ -24,7 +24,6 @@ export type NodeRenderState = {
   hoveredId: string | null
   highlightedId: string | null
   focusSet: Set<string> | null
-  soloType: string | null
   traversal: TraversalState
   activeNeighbors: Set<string>
   /** performance.now() of the current frame, written in onRenderFramePre. */
@@ -77,7 +76,6 @@ export function drawNode(
     nodeState: nState,
     queryMode: traversal.queryMode,
     inFocus: rs.focusSet?.has(id) ?? false,
-    solo: rs.soloType !== null,
     globalScale,
   })
   if (opacity < LABEL_MIN_OPACITY) return

@@ -31,7 +31,6 @@ function rs(traversal: TraversalState = EMPTY_TRAVERSAL): NodeRenderState {
     hoveredId: null,
     highlightedId: null,
     focusSet: null,
-    soloType: null,
     traversal,
     activeNeighbors: new Set(),
     now: 0,

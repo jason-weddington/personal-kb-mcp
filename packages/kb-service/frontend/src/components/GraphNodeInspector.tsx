@@ -4,7 +4,6 @@
 // feeds the loaded graph payload, the drawer variant the neighbors API — so
 // the connections section itself never fetches.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
 import Accordion from '@mui/material/Accordion'
 import AccordionDetails from '@mui/material/AccordionDetails'
 import AccordionSummary from '@mui/material/AccordionSummary'
@@ -16,7 +15,6 @@ import CircularProgress from '@mui/material/CircularProgress'
 import IconButton from '@mui/material/IconButton'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
-import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CheckIcon from '@mui/icons-material/Check'
 import CloseIcon from '@mui/icons-material/Close'
@@ -24,15 +22,17 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { getEntries } from '../api'
 import { useEntryDrawer } from '../contexts/EntryDrawerContext'
 import { MarkdownBody } from './ResponseCard'
+import { toggleChipSx } from './chipState'
 import { ENTRY_TYPE_COLORS, entryTypeLabel } from '../entryTypes'
 import type { ChipColor } from '../entryTypes'
-import { BACKGROUND, INSPECTOR_W, nodeColor } from '../graph/explorerModel'
+import { BACKGROUND, INSPECTOR_W, NODE_TYPES, nodeColor } from '../graph/explorerModel'
 import type { ExplorerNode } from '../graph/explorerModel'
 import {
-  FACET_TOP_N,
-  INSPECTOR_PILL_MAX,
+  FACET_ROW_TOP_N,
+  INSPECTOR_GROUP_OPEN_MAX,
   computeFacets,
   entrySummary,
+  facetRows,
   memberMatches,
 } from '../graph/inspectorModel'
 import type { ConnectionGroup, ConnInput, Facet, GroupFilter } from '../graph/inspectorModel'
@@ -44,7 +44,7 @@ export type InspectorViewState = {
   /** Group expand state by group key; overrides the size-based default. */
   expanded: Record<string, boolean>
   /** Per-group filters (item C populates these; this item renders none). */
-  filters: Record<string, { text: string; facets: string[] }>
+  filters: Record<string, { text: string; hidden: string[] }>
   /** The connections scroll container's scrollTop. */
   scrollTop: number
 }
@@ -107,23 +107,12 @@ function hoverable(onHover: ((id: string | null) => void) | undefined, nodeId: s
 }
 
 /**
- * Wrap a member in an MUI Tooltip only when its tooltip is a non-empty
- * string. The Tooltip's child is a span so the member keeps its own
- * accessible name (Tooltip would otherwise stamp its title as aria-label
- * onto the member itself).
+ * One summary row: entry members render the bold one-line short title, the
+ * long title clamped to two lines, the entry-type dot and the project ref;
+ * non-entry members their label plus a node-type chip. Hovering keeps
+ * highlighting the node on the canvas; no Tooltip — the hover tooltip left
+ * the panel and drifted while scrolling.
  */
-function maybeTooltip(member: InspectorMember, element: ReactNode) {
-  return member.tooltip !== undefined && member.tooltip.length > 0 ? (
-    <Tooltip title={member.tooltip}>
-      <Box component="span" sx={{ display: 'block', maxWidth: '100%' }}>
-        {element}
-      </Box>
-    </Tooltip>
-  ) : (
-    element
-  )
-}
-
 function MemberRow({
   member,
   group,
@@ -225,35 +214,36 @@ function MemberRow({
       ) : null}
     </Box>
   )
-  return maybeTooltip(m, row)
+  return row
 }
 
+/**
+ * The entry-header tag and project chips (the only remaining pill variant):
+ * small, pinned to one height, never a check and never a Tooltip, still
+ * walking to the member node on click.
+ */
 function MemberPill({
   member,
   group,
   onOpenNode,
   onHover,
-  visited,
 }: {
   member: InspectorMember
   group: ConnectionGroup
   onOpenNode: (id: string) => void
   onHover: ((id: string | null) => void) | undefined
-  /** The member's node was focused earlier this page session. */
-  visited?: boolean
 }) {
   const m: InspectorMember = { ...member, edgeType: group.edgeType, dir: group.dir }
-  const chip = (
+  return (
     <Chip
       label={m.label}
       size="small"
       clickable
       onClick={() => onOpenNode(m.nodeId)}
-      icon={visited ? <CheckIcon data-testid="visited-check" /> : undefined}
+      sx={{ height: 24 }}
       {...hoverable(onHover, m.nodeId)}
     />
   )
-  return maybeTooltip(m, chip)
 }
 
 /** ── Facet chips (item C: narrowing large connection groups) ─────────────── */
@@ -261,16 +251,18 @@ function MemberPill({
 /**
  * One facet chip: exactly `${label} ${count}` text, the legend colour of its
  * node type (the entry-type palette colour for entry types), and an
- * aria-pressed selected state. Clicking toggles the facet; it never walks to
- * the facet's node.
+ * aria-pressed state that means the facet is OFF/hidden. All facets start
+ * ON (filled, legend colour); clicking one switches it OFF — grey and
+ * outlined through the shared toggleChipSx — which hides every member it
+ * matches. It never walks to the facet's node.
  */
 function FacetChip({
   facet,
-  selected,
+  hidden,
   onToggle,
 }: {
   facet: Facet
-  selected: boolean
+  hidden: boolean
   onToggle: () => void
 }) {
   const label = `${facet.label} ${facet.count}`
@@ -280,12 +272,16 @@ function FacetChip({
         size="small"
         clickable
         label={label}
-        aria-pressed={selected}
+        aria-pressed={hidden}
+        variant={hidden ? 'outlined' : 'filled'}
         // ENTRY_TYPE_COLORS is total over EntryType; Facet.value is string, so
         // the cast (and the 'info' fallback) are the same shape Search.tsx
         // uses for a bad value that must not crash.
-        color={(ENTRY_TYPE_COLORS as Record<string, ChipColor>)[facet.value] ?? 'info'}
+        color={
+          hidden ? undefined : ((ENTRY_TYPE_COLORS as Record<string, ChipColor>)[facet.value] ?? 'info')
+        }
         onClick={onToggle}
+        sx={hidden ? toggleChipSx(false) : undefined}
       />
     )
   }
@@ -295,14 +291,15 @@ function FacetChip({
       size="small"
       clickable
       label={label}
-      aria-pressed={selected}
+      aria-pressed={hidden}
+      variant={hidden ? 'outlined' : 'filled'}
       onClick={onToggle}
-      sx={{ bgcolor: bg, color: BACKGROUND }}
+      sx={hidden ? toggleChipSx(false) : { bgcolor: bg, color: BACKGROUND }}
     />
   )
 }
 
-const EMPTY_GROUP_FILTER: GroupFilter = { text: '', facets: [] }
+const EMPTY_GROUP_FILTER: GroupFilter = { text: '', hidden: [] }
 
 /**
  * The filter wiring the Graph page passes in: the lifted view state, the
@@ -350,9 +347,12 @@ export function InspectorConnections({
   onViewChange?: (view: InspectorViewState) => void
   /** Present only on the Graph page: per-group filter wiring (item C). */
   filtering?: InspectorFiltering
-  /** Group keys whose '+N' facet reveal is open (local to GraphNodeInspector). */
+  /**
+   * `${groupKey}:${rowLabel}` keys whose per-row '+N more' facet reveal is
+   * open (local to GraphNodeInspector; nothing persisted).
+   */
   revealedFacetGroups?: ReadonlySet<string>
-  onRevealFacetGroup?: (groupKey: string) => void
+  onRevealFacetGroup?: (rowKey: string) => void
 }) {
   const [localExpanded, setLocalExpanded] = useState<Record<string, boolean>>({})
   const warnedRef = useRef(new Set<string>())
@@ -404,7 +404,7 @@ export function InspectorConnections({
   const expandedFor = (g: ConnectionGroup): boolean => {
     const override = view !== undefined ? view.expanded[g.key] : localExpanded[g.key]
     if (override !== undefined) return override
-    return g.members.length <= INSPECTOR_PILL_MAX
+    return g.members.length <= INSPECTOR_GROUP_OPEN_MAX
   }
   const toggleGroup = (g: ConnectionGroup, expanded: boolean) => {
     if (view !== undefined && onViewChange !== undefined) {
@@ -430,39 +430,25 @@ export function InspectorConnections({
   }
 
   const arrow = (dir: 'in' | 'out') => (dir === 'out' ? '→' : '←')
+  const headerText = (g: ConnectionGroup, shownCount: number, active: boolean) =>
+    `${g.edgeType.replace(/_/g, ' ')} ${arrow(g.dir)} ${
+      active ? `${shownCount} of ${g.members.length}` : g.members.length
+    }`
 
   return (
     <Box>
       {groups.map((g) => {
         const count = g.members.length
-        if (count <= INSPECTOR_PILL_MAX) {
-          return (
-            <Box key={g.key} sx={{ mb: 1 }}>
-              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                {`${g.edgeType} ${arrow(g.dir)} ${count}`}
-              </Typography>
-              <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                {g.members.map((m) => (
-                  <MemberPill
-                    key={m.nodeId}
-                    member={resolve(g, m.nodeId)}
-                    group={g}
-                    onOpenNode={onOpenNode}
-                    onHover={onHover}
-                    visited={visited?.has(m.nodeId)}
-                  />
-                ))}
-              </Stack>
-            </Box>
-          )
-        }
-        // Large group with the filter wiring: a title filter box and a facet
-        // chip row above the rows (item C). Without `filtering` (the drawer
-        // variant) this branch renders exactly the item A output.
+        // Every group is one accordion of summary rows with the same header
+        // style; groups over the open threshold (with the filter wiring)
+        // gain the filter area. Without `filtering` (the drawer variant)
+        // this renders rows only, no filter UI.
         const resolved = g.members.map((m) => resolve(g, m.nodeId))
         const filter =
-          filtering !== undefined ? (filtering.viewState.filters[g.key] ?? EMPTY_GROUP_FILTER) : EMPTY_GROUP_FILTER
-        const active = filter.text.trim().length > 0 || filter.facets.length > 0
+          filtering !== undefined
+            ? (filtering.viewState.filters[g.key] ?? EMPTY_GROUP_FILTER)
+            : EMPTY_GROUP_FILTER
+        const active = filter.text.trim().length > 0 || filter.hidden.length > 0
         const facets =
           filtering !== undefined && facetInputs !== null
             ? computeFacets({
@@ -476,8 +462,6 @@ export function InspectorConnections({
         const shown = active
           ? resolved.filter((m) => memberMatches(m, filter, neighborIdsOf(m.nodeId)))
           : resolved
-        const revealed = revealedFacetGroups?.has(g.key) ?? false
-        const visibleFacets = revealed ? facets : facets.slice(0, FACET_TOP_N)
         return (
           <Accordion
             key={g.key}
@@ -486,13 +470,10 @@ export function InspectorConnections({
           >
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Typography variant="subtitle2" component="span">
-                {`${g.key} ${arrow(g.dir)} ${count}`}
+                {headerText(g, shown.length, active)}
               </Typography>
               {filtering !== undefined && active && (
                 <>
-                  <Typography variant="subtitle2" component="span" sx={{ ml: 1 }}>
-                    {`${shown.length} of ${count}`}
-                  </Typography>
                   {/* A Chip, not a Button: AccordionSummary renders a native
                       <button> in MUI v7, and a nested native button is invalid
                       DOM (a hydration error). The clickable Chip is a div
@@ -505,15 +486,16 @@ export function InspectorConnections({
                     data-testid={`group-clear-${g.key}`}
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (filtering !== undefined) writeGroupFilter(filtering, g.key, { text: '', facets: [] })
+                      if (filtering !== undefined)
+                        writeGroupFilter(filtering, g.key, { text: '', hidden: [] })
                     }}
                     sx={{ ml: 'auto', flexShrink: 0 }}
                   />
                 </>
               )}
             </AccordionSummary>
-            <AccordionDetails sx={{ py: 0, maxHeight: 320, overflowY: 'auto' }}>
-              {filtering !== undefined && (
+            <AccordionDetails sx={{ py: 0 }}>
+              {filtering !== undefined && count > INSPECTOR_GROUP_OPEN_MAX && (
                 <Box sx={{ mb: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
                   <input
                     data-testid={`group-filter-${g.key}`}
@@ -522,7 +504,7 @@ export function InspectorConnections({
                     aria-label={`Filter ${g.edgeType} by title`}
                     placeholder="Filter by title"
                     onChange={(e) =>
-                      writeGroupFilter(filtering, g.key, { text: e.target.value, facets: filter.facets })
+                      writeGroupFilter(filtering, g.key, { text: e.target.value, hidden: filter.hidden })
                     }
                     style={{
                       width: '100%',
@@ -534,31 +516,53 @@ export function InspectorConnections({
                       font: 'inherit',
                     }}
                   />
-                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                    {visibleFacets.map((facet) => (
-                      <FacetChip
-                        key={facet.key}
-                        facet={facet}
-                        selected={filter.facets.includes(facet.key)}
-                        onToggle={() =>
-                          writeGroupFilter(filtering, g.key, {
-                            text: filter.text,
-                            facets: filter.facets.includes(facet.key)
-                              ? filter.facets.filter((k) => k !== facet.key)
-                              : [...filter.facets, facet.key],
-                          })
-                        }
-                      />
-                    ))}
-                    {!revealed && facets.length > FACET_TOP_N && (
-                      <Chip
-                        size="small"
-                        clickable
-                        label={`+${facets.length - FACET_TOP_N}`}
-                        onClick={() => onRevealFacetGroup?.(g.key)}
-                      />
-                    )}
-                  </Stack>
+                  {facetRows(facets, NODE_TYPES).map((row) => {
+                    const rowKey = `${g.key}:${row.label}`
+                    const revealed = revealedFacetGroups?.has(rowKey) ?? false
+                    const visibleRowFacets = revealed ? row.facets : row.facets.slice(0, FACET_ROW_TOP_N)
+                    return (
+                      <Box key={row.label}>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                          {row.label}
+                        </Typography>
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                          {visibleRowFacets.map((facet) => (
+                            <FacetChip
+                              key={facet.key}
+                              facet={facet}
+                              hidden={filter.hidden.includes(facet.key)}
+                              onToggle={() =>
+                                writeGroupFilter(filtering, g.key, {
+                                  text: filter.text,
+                                  hidden: filter.hidden.includes(facet.key)
+                                    ? filter.hidden.filter((k) => k !== facet.key)
+                                    : [...filter.hidden, facet.key],
+                                })
+                              }
+                            />
+                          ))}
+                          {!revealed && row.facets.length > FACET_ROW_TOP_N && (
+                            <Button
+                              size="small"
+                              data-testid={`facets-more-${rowKey}`}
+                              onClick={() => onRevealFacetGroup?.(rowKey)}
+                              sx={{
+                                minWidth: 0,
+                                minHeight: 24,
+                                px: 1,
+                                py: 0,
+                                fontSize: '0.75rem',
+                                textTransform: 'none',
+                                color: 'text.secondary',
+                              }}
+                            >
+                              {`+${row.facets.length - FACET_ROW_TOP_N} more`}
+                            </Button>
+                          )}
+                        </Stack>
+                      </Box>
+                    )
+                  })}
                 </Box>
               )}
               {shown.map((m) => (
@@ -648,16 +652,17 @@ export function GraphNodeInspector({
   // parent resets the lifted view alongside setting the new target), never
   // in an effect, so a restored snapshot survives.
   const [targetId, setTargetId] = useState(node.id)
-  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(true)
   const [details, setDetails] = useState<DetailsState | null>(null)
-  // The '+N' facet reveal is deliberately NOT in InspectorViewState (nothing
-  // persisted): local state that resets with the target like the rest.
+  // The per-row '+N more' facet reveal is deliberately NOT in
+  // InspectorViewState (nothing persisted): local state that resets with
+  // the target like the rest.
   const [revealedFacetGroups, setRevealedFacetGroups] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   )
   if (targetId !== node.id) {
     setTargetId(node.id)
-    setDetailsOpen(false)
+    setDetailsOpen(true)
     setDetails(null)
     setRevealedFacetGroups(new Set())
   }
@@ -689,6 +694,22 @@ export function GraphNodeInspector({
         setDetails({ id, status: 'failed', entry: null, pointerRot: [], error })
       })
   }
+
+  // Details starts expanded and fetches the entry when the inspector opens:
+  // once per shown id (the ref guard plus the details.id guard make
+  // collapse/re-expand and repeat renders refetch nothing) and only for
+  // entry targets — a non-entry inspector fetches nothing.
+  const detailsFetchedForRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (node.type !== 'entry') return
+    if (detailsFetchedForRef.current === node.id) return
+    detailsFetchedForRef.current = node.id
+    console.info('[graph-inspector] details fetch', { node_id: node.id })
+    loadDetails(node.id)
+    // loadDetails re-creates each render; the ref guard keeps this once
+    // per shown id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id, loadDetails])
 
   // Restore a scrollTop that changed from outside (a history snapshot or the
   // reset on re-target); reporting it back through onScroll is idempotent.
@@ -743,19 +764,17 @@ export function GraphNodeInspector({
 
   return (
     <Paper
-      ref={scrollRef}
       role="region"
       aria-label="Node inspector"
       elevation={8}
-      onScroll={(e) =>
-        onViewChange({ ...view, scrollTop: (e.currentTarget as HTMLDivElement).scrollTop })
-      }
       sx={{
         width: { xs: '100%', sm: INSPECTOR_W },
         maxWidth: '100%',
         flexShrink: 1,
+        flexGrow: 1,
         minHeight: 0,
-        overflowY: 'auto',
+        display: 'flex',
+        flexDirection: 'column',
         p: 2,
       }}
     >
@@ -833,9 +852,16 @@ export function GraphNodeInspector({
         </>
       )}
 
-      {connGroups.length > 0 && (
-        <>
-          <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 1 }} />
+      {connGroups.length > 0 && <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 1 }} />}
+      <Box
+        data-testid="inspector-scroll"
+        ref={scrollRef}
+        onScroll={(e) =>
+          onViewChange({ ...view, scrollTop: (e.currentTarget as HTMLDivElement).scrollTop })
+        }
+        sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
+      >
+        {connGroups.length > 0 && (
           <InspectorConnections
             key={node.id}
             groups={connGroups}
@@ -857,52 +883,54 @@ export function GraphNodeInspector({
                   }
             }
             revealedFacetGroups={revealedFacetGroups}
-            onRevealFacetGroup={(groupKey) =>
-              setRevealedFacetGroups(new Set([...revealedFacetGroups, groupKey]))
+            onRevealFacetGroup={(rowKey) =>
+              setRevealedFacetGroups(new Set([...revealedFacetGroups, rowKey]))
             }
           />
-        </>
-      )}
-
-      {isEntry && (
-        <Accordion expanded={detailsOpen} onChange={(_, open) => {
-          setDetailsOpen(open)
-          if (open) loadDetails(node.id)
-        }}>
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Typography variant="subtitle2" component="span">
-              Details
-            </Typography>
-          </AccordionSummary>
-          <AccordionDetails>
-            {shown === null || shown.status === 'loading' ? (
-              <CircularProgress size={20} />
-            ) : shown.status === 'failed' ? (
-              <Alert severity="warning">Details unavailable ({shown.error})</Alert>
-            ) : shown.entry !== null ? (
-              <>
-                <MarkdownBody>{shown.entry.knowledge_details}</MarkdownBody>
-                {shown.entry.superseded_by !== null && (
-                  <Button
-                    size="small"
-                    onClick={() => openNode(shown.entry?.superseded_by ?? '')}
-                    sx={{ mt: 1 }}
-                  >
-                    {`Superseded by ${shown.entry.superseded_by}`}
-                  </Button>
-                )}
-                {shown.pointerRot.map((pr) => (
-                  <Alert key={pr.target_id} severity="warning" sx={{ mt: 1 }}>
-                    {pr.superseded_by !== null
-                      ? `${pr.target_id} superseded by ${pr.superseded_by}`
-                      : `${pr.target_id} deactivated`}
-                  </Alert>
-                ))}
-              </>
-            ) : null}
-          </AccordionDetails>
-        </Accordion>
-      )}
+        )}
+        {isEntry && (
+          <Accordion
+            expanded={detailsOpen}
+            onChange={(_, open) => {
+              setDetailsOpen(open)
+              if (open) loadDetails(node.id)
+            }}
+          >
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography variant="subtitle2" component="span">
+                Details
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              {shown === null || shown.status === 'loading' ? (
+                <CircularProgress size={20} />
+              ) : shown.status === 'failed' ? (
+                <Alert severity="warning">Details unavailable ({shown.error})</Alert>
+              ) : shown.entry !== null ? (
+                <>
+                  <MarkdownBody>{shown.entry.knowledge_details}</MarkdownBody>
+                  {shown.entry.superseded_by !== null && (
+                    <Button
+                      size="small"
+                      onClick={() => openNode(shown.entry?.superseded_by ?? '')}
+                      sx={{ mt: 1 }}
+                    >
+                      {`Superseded by ${shown.entry.superseded_by}`}
+                    </Button>
+                  )}
+                  {shown.pointerRot.map((pr) => (
+                    <Alert key={pr.target_id} severity="warning" sx={{ mt: 1 }}>
+                      {pr.superseded_by !== null
+                        ? `${pr.target_id} superseded by ${pr.superseded_by}`
+                        : `${pr.target_id} deactivated`}
+                    </Alert>
+                  ))}
+                </>
+              ) : null}
+            </AccordionDetails>
+          </Accordion>
+        )}
+      </Box>
     </Paper>
   )
 }

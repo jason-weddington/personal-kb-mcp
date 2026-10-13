@@ -47,7 +47,6 @@ const base = {
   nodeState: undefined,
   queryMode: null,
   inFocus: false,
-  solo: false,
   globalScale: 1,
 } as const
 
@@ -56,17 +55,12 @@ function node(id: string, type: string, extra: Partial<ExplorerNode> = {}): Expl
 }
 
 describe('labelOpacity', () => {
-  it('ramps 3.0 to 5.0 outside solo', () => {
+  it('ramps 3.0 to 5.0', () => {
     expect(labelOpacity({ ...base, globalScale: 2.0 })).toBe(0)
     expect(labelOpacity({ ...base, globalScale: 3.0 })).toBe(0)
     expect(labelOpacity({ ...base, globalScale: 4.0 })).toBe(0.5)
     expect(labelOpacity({ ...base, globalScale: 5.0 })).toBe(1)
     expect(labelOpacity({ ...base, globalScale: 8.0 })).toBe(1)
-  })
-  it('ramps 1.5 to 3.0 in solo', () => {
-    expect(labelOpacity({ ...base, solo: true, globalScale: 1.5 })).toBe(0)
-    expect(labelOpacity({ ...base, solo: true, globalScale: 2.25 })).toBe(0.5)
-    expect(labelOpacity({ ...base, solo: true, globalScale: 3.0 })).toBe(1)
   })
   it('applies overrides in order', () => {
     expect(labelOpacity({ ...base, hovered: true, globalScale: 0.5 })).toBe(1)
@@ -132,20 +126,17 @@ describe('endpoints and adjacency', () => {
     expect(computeFocusSet('a', adj)).toEqual(new Set(['a', 'b', 'c']))
     expect(computeFocusSet('z', adj)).toEqual(new Set(['z']))
   })
-  it('isNodeVisible: focus beats solo', () => {
+  it('isNodeVisible: the focus set decides', () => {
     const n = { id: 'a', type: 'entry' }
-    expect(isNodeVisible(n, null, null)).toBe(true)
-    expect(isNodeVisible(n, null, 'tag')).toBe(false)
-    expect(isNodeVisible(n, null, 'entry')).toBe(true)
-    expect(isNodeVisible(n, new Set(['a']), 'tag')).toBe(true)
-    expect(isNodeVisible(n, new Set(['b']), null)).toBe(false)
+    expect(isNodeVisible(n, null)).toBe(true)
+    expect(isNodeVisible(n, new Set(['a']))).toBe(true)
+    expect(isNodeVisible(n, new Set(['b']))).toBe(false)
   })
   it('isLinkVisible', () => {
-    expect(isLinkVisible('a', 'b', null, null)).toBe(true)
-    expect(isLinkVisible('a', 'b', null, 'tag')).toBe(false)
-    expect(isLinkVisible('a', 'b', 'a', 'tag')).toBe(true)
-    expect(isLinkVisible('a', 'b', 'b', null)).toBe(true)
-    expect(isLinkVisible('a', 'b', 'c', null)).toBe(false)
+    expect(isLinkVisible('a', 'b', null)).toBe(true)
+    expect(isLinkVisible('a', 'b', 'a')).toBe(true)
+    expect(isLinkVisible('a', 'b', 'b')).toBe(true)
+    expect(isLinkVisible('a', 'b', 'c')).toBe(false)
   })
   it('activeNeighborSet', () => {
     const adj = buildAdjacency([
@@ -349,7 +340,7 @@ describe('filterGraph', () => {
 describe('explorerReducer', () => {
   const view = (i: number): InspectorViewState => ({
     expanded: { [`g${i}`]: true },
-    filters: { [`g${i}`]: { text: `t${i}`, facets: [`f${i}`] } },
+    filters: { [`g${i}`]: { text: `t${i}`, hidden: [`f${i}`] } },
     scrollTop: i * 10,
   })
   const v0 = view(0)
@@ -375,7 +366,6 @@ describe('explorerReducer', () => {
   const walked = (): ExplorerState => ({
     focusedId: 'c',
     highlightedId: 'c',
-    soloType: null,
     history: [
       rec('a', 4, 10, 20, v1),
       rec('b', 4, 30, 40, v2),
@@ -465,34 +455,15 @@ describe('explorerReducer', () => {
     expect(withSnap.cursor).toBe(2)
   })
 
-  it('toggleSolo and clearSolo keep history and cursor', () => {
-    const s: ExplorerState = { ...walked(), soloType: 'tag' }
-    expect(explorerReducer(s, { type: 'toggleSolo', nodeType: 'tag' })).toEqual({
-      focusedId: null,
-      highlightedId: null,
-      soloType: null,
-      history: s.history,
-      cursor: 2,
-    })
-    expect(explorerReducer(s, { type: 'toggleSolo', nodeType: 'entry' }).soloType).toBe('entry')
-    const solo = explorerReducer(s, { type: 'toggleSolo', nodeType: 'entry' })
-    const cleared = explorerReducer(solo, { type: 'clearSolo' })
-    expect(cleared.soloType).toBeNull()
-    expect(cleared.history).toEqual(s.history)
-    expect(cleared.cursor).toBe(2)
-  })
-
-  it('clearAll clears focus, highlight and solo but keeps history and cursor', () => {
-    const s: ExplorerState = { ...walked(), soloType: 'tag' }
+  it('clearAll clears focus and highlight but keeps history and cursor', () => {
+    const s = walked()
     const out = explorerReducer(s, { type: 'clearAll' })
     expect(out.focusedId).toBeNull()
     expect(out.highlightedId).toBeNull()
-    expect(out.soloType).toBeNull()
     expect(out.history).toEqual(s.history)
     expect(out.cursor).toBe(2)
     const withSnap = explorerReducer(s, { type: 'clearAll', snapshot: snap(7, 1, 2, v2) })
     expect(withSnap.focusedId).toBeNull()
-    expect(withSnap.soloType).toBeNull()
     expect(withSnap.history[2]).toEqual(rec('c', 7, 1, 2, v2))
     expect(withSnap.cursor).toBe(2)
   })
@@ -501,7 +472,6 @@ describe('explorerReducer', () => {
     const s: ExplorerState = {
       focusedId: null,
       highlightedId: null,
-      soloType: null,
       history: [rec('a', 1, 0, 0, D), rec('b', 2, 1, 3, D)],
       cursor: 1,
     }
@@ -522,7 +492,6 @@ describe('explorerReducer', () => {
     const s: ExplorerState = {
       focusedId: null,
       highlightedId: null,
-      soloType: null,
       history: [rec('a', 1, 0, 0, D), rec('b', 2, 1, 3, D)],
       cursor: 0,
     }
@@ -537,7 +506,6 @@ describe('explorerReducer', () => {
     const one: ExplorerState = {
       focusedId: 'a',
       highlightedId: 'a',
-      soloType: null,
       history: [rec('a', 1, 0, 0, D)],
       cursor: 0,
     }
@@ -545,7 +513,6 @@ describe('explorerReducer', () => {
     const two: ExplorerState = {
       focusedId: 'b',
       highlightedId: 'b',
-      soloType: null,
       history: [rec('a', 1, 0, 0, D), rec('b', 2, 1, 3, D)],
       cursor: 1,
     }
@@ -567,7 +534,6 @@ describe('explorerReducer', () => {
     const focused: ExplorerState = {
       focusedId: 'b',
       highlightedId: 'b',
-      soloType: 'tag',
       history: [rec('a', 1, 0, 0, D), rec('b', 1, 0, 0, D)],
       cursor: 1,
     }
@@ -576,7 +542,6 @@ describe('explorerReducer', () => {
     ).toEqual({
       focusedId: null,
       highlightedId: null,
-      soloType: 'tag',
       history: [],
       cursor: 0,
     })
@@ -584,7 +549,6 @@ describe('explorerReducer', () => {
     const s: ExplorerState = {
       focusedId: 'b',
       highlightedId: 'b',
-      soloType: null,
       history: [rec('a', 1, 0, 0, D), rec('b', 1, 0, 0, D), rec('c', 1, 0, 0, D)],
       cursor: 1,
     }
@@ -601,7 +565,6 @@ describe('explorerReducer', () => {
     const u: ExplorerState = {
       focusedId: null,
       highlightedId: null,
-      soloType: null,
       history: [rec('a', 1, 0, 0, D), rec('b', 1, 0, 0, D)],
       cursor: 1,
     }
@@ -614,14 +577,6 @@ describe('explorerReducer', () => {
     expect(clamped.cursor).toBe(0)
     expect(clamped.focusedId).toBeNull()
     expect(historyInvariantError(clamped)).toBeNull()
-    // solo type removed
-    expect(
-      explorerReducer(focused, {
-        type: 'prune',
-        renderedIds: new Set(['a', 'b']),
-        renderedTypes: new Set(['entry']),
-      }).soloType,
-    ).toBeNull()
     // highlighted but unfocused node removed
     const hl: ExplorerState = { ...initialExplorerState, highlightedId: 'z' }
     expect(
@@ -643,7 +598,6 @@ describe('explorerReducer', () => {
     const ok: ExplorerState = {
       focusedId: 'b',
       highlightedId: 'b',
-      soloType: null,
       history: [rec('a', 1, 0, 0, D), rec('b', 2, 1, 3, D)],
       cursor: 1,
     }

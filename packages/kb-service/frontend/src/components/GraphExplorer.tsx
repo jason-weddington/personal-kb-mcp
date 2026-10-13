@@ -1,5 +1,5 @@
 // The tuned graph explorer (ported from personal_kb 47afec7 explorer.js):
-// labels by zoom, click-to-focus, solo legend, a browser-style Back/Forward
+// labels by zoom, click-to-focus, a browser-style Back/Forward
 // history walked with ArrowLeft/ArrowRight, Escape unfocus (the inspector
 // closes first), the non-modal node inspector. Query-mode traversal is
 // rendered from the `traversal` prop; it is populated elsewhere.
@@ -16,7 +16,6 @@ import {
 import type { Ref, RefObject } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
-import { alpha } from '@mui/material/styles'
 import ForceGraph2D from 'react-force-graph-2d'
 import type { ForceGraphMethods, LinkObject, NodeObject } from 'react-force-graph-2d'
 import { RESULTS_FIT_MS, RESULTS_FIT_PADDING } from '../graph/queryModel'
@@ -24,7 +23,15 @@ import { drawNode } from '../graph/drawNode'
 import type { NodeRenderState } from '../graph/drawNode'
 import { GraphNodeInspector, DEFAULT_INSPECTOR_VIEW, memberFromNode } from './GraphNodeInspector'
 import type { InspectorMember, InspectorViewState } from './GraphNodeInspector'
-import { excludedMemberIds, groupNeighbors, memberMatches } from '../graph/inspectorModel'
+import {
+  excludedMemberIds,
+  groupNeighbors,
+  memberMatches,
+  computeFacets,
+  facetRows,
+  INSPECTOR_GROUP_OPEN_MAX,
+  FACET_ROW_TOP_N,
+} from '../graph/inspectorModel'
 import type { ConnInput, GroupFilter } from '../graph/inspectorModel'
 import {
   BACKGROUND,
@@ -43,7 +50,6 @@ import {
   MAX_AUTO_ZOOM,
   MAX_ZOOM,
   NODE_COLORS,
-  NODE_TYPES,
   PERF_TICK_MS,
   PERF_WINDOW_MS,
   RESET_FIT_DELAY_MS,
@@ -123,7 +129,7 @@ const RESIZE_FIT_DELAY_MS = 200
 /** Shared empty set: with no inspector target there is no narrowing. */
 const EMPTY_EXCLUDED: ReadonlySet<string> = new Set()
 
-function sameFacets(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
+function sameHidden(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
   return a.length === b.length && a.every((k, i) => k === b[i])
 }
 
@@ -175,7 +181,7 @@ export function GraphExplorer({
   // cleared except by unmount. Distinct from the query-mode traversal
   // 'visited' NodeState, which drawNode paints on the canvas.
   const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set())
-  const { focusedId, highlightedId, soloType, history, cursor } = state
+  const { focusedId, highlightedId, history, cursor } = state
   const canBack = focusedId !== null ? cursor > 0 : history.length > 0
   const canForward = cursor < history.length - 1
 
@@ -247,7 +253,7 @@ export function GraphExplorer({
 
   const memberPasses = useCallback(
     (nodeId: string, groupKey: string, filters: Record<string, GroupFilter>): boolean => {
-      const filter = filters[groupKey] ?? { text: '', facets: [] }
+      const filter = filters[groupKey] ?? { text: '', hidden: [] }
       const member = panelMembersById.get(nodeId)
       const m: InspectorMember =
         member !== undefined
@@ -282,7 +288,6 @@ export function GraphExplorer({
     hoveredId: null,
     highlightedId: null,
     focusSet: null,
-    soloType: null,
     traversal: EMPTY_TRAVERSAL,
     activeNeighbors: new Set(),
     now: 0,
@@ -303,7 +308,6 @@ export function GraphExplorer({
     const rs = renderRef.current
     rs.highlightedId = highlightedId
     rs.focusSet = focusSet
-    rs.soloType = soloType
     rs.traversal = traversal
     rs.activeNeighbors = activeNeighbors
     latestRef.current = {
@@ -413,17 +417,56 @@ export function GraphExplorer({
     // restore passes its saved snapshot here and nothing overwrites it.
     setPanelNode(node)
     setInspectorView(view)
-    const conns: ConnInput[] = (latestRef.current.adjacency.get(node.id) ?? []).map((n) => ({
+    const { nodeById, adjacency } = latestRef.current
+    const conns: ConnInput[] = (adjacency.get(node.id) ?? []).map((n) => ({
       nodeId: n.node,
       edgeType: n.type,
       dir: n.dir,
     }))
     const groups = groupNeighbors(conns)
+    // Facet rows for the telemetry: computed per large group over its FULL
+    // static facet set (the same counts the chips show), total before the
+    // top-N cut, shown after it. Groups at or under the open threshold
+    // contribute nothing.
+    const facetRowsForGroup = (g: (typeof groups)[number]) => {
+      const members = g.members.flatMap((m) => {
+        const n = nodeById.get(m.nodeId)
+        return n !== undefined
+          ? [memberFromNode(n, { nodeId: m.nodeId, edgeType: g.edgeType, dir: g.dir })]
+          : []
+      })
+      const neighborByMember = new Map(
+        members.map((m) => [
+          m.nodeId,
+          (adjacency.get(m.nodeId) ?? []).map(({ node: id, type }) => ({ id, type })),
+        ]),
+      )
+      const nodeTypeById = new Map([...nodeById.values()].map((n) => [n.id, n.type]))
+      const nodeLabelById = new Map([...nodeById.values()].map((n) => [n.id, n.label || n.id]))
+      const facets = computeFacets({
+        inspectedNodeId: node.id,
+        members,
+        neighborByMember,
+        nodeTypeById,
+        nodeLabelById,
+      })
+      return facetRows(facets, Object.keys(NODE_COLORS)).map((row) => ({
+        label: row.label,
+        total: row.facets.length,
+        shown: Math.min(row.facets.length, FACET_ROW_TOP_N),
+        facets: row.facets
+          .slice(0, FACET_ROW_TOP_N)
+          .map((f) => ({ key: f.key, count: f.count })),
+      }))
+    }
     console.info('[graph-inspector] open', {
       node_id: node.id,
       node_type: node.type,
       member_total: groups.reduce((sum, g) => sum + g.members.length, 0),
       groups: groups.map((g) => ({ key: g.key, count: g.members.length })),
+      facet_rows: groups
+        .filter((g) => g.members.length > INSPECTOR_GROUP_OPEN_MAX)
+        .flatMap((g) => facetRowsForGroup(g)),
     })
   }, [])
 
@@ -578,14 +621,6 @@ export function GraphExplorer({
     schedule(() => fit(FIT_MS, FIT_PADDING), RESET_FIT_DELAY_MS)
   }, [clearDrawerTimer, stopFollow, fit, schedule, liveSnapshot, dispatchNav])
 
-  const toggleSolo = useCallback(
-    (nodeType: string) => {
-      dispatch({ type: 'toggleSolo', nodeType })
-      schedule(() => fit(FIT_MS, FIT_PADDING), RESET_FIT_DELAY_MS)
-    },
-    [fit, schedule],
-  )
-
   const selectById = useCallback(
     (nodeId: string) => {
       const node = latestRef.current.nodeById.get(nodeId)
@@ -706,7 +741,6 @@ export function GraphExplorer({
           })
           return false
         }
-        dispatch({ type: 'clearSolo' })
         select(node)
         return true
       },
@@ -727,7 +761,6 @@ export function GraphExplorer({
       clearSelection() {
         stopFollow()
         dispatch({ type: 'unfocus' })
-        dispatch({ type: 'clearSolo' })
         clearDrawerTimer()
         setPanelNode(null)
       },
@@ -758,8 +791,8 @@ export function GraphExplorer({
   // endpoint is an excluded member (isLinkVisible alone only compares the
   // endpoints against focusedId).
   const nodeVisibility = useCallback(
-    (n: FgNode) => isNodeVisible(n, focusSet, soloType) && !excludedIds.has(n.id),
-    [focusSet, soloType, excludedIds],
+    (n: FgNode) => isNodeVisible(n, focusSet) && !excludedIds.has(n.id),
+    [focusSet, excludedIds],
   )
   const linkVisibility = useCallback(
     (l: FgLink) => {
@@ -769,9 +802,9 @@ export function GraphExplorer({
         if (s !== focusedId && excludedIds.has(s)) return false
         if (t !== focusedId && excludedIds.has(t)) return false
       }
-      return isLinkVisible(s, t, focusedId, soloType)
+      return isLinkVisible(s, t, focusedId)
     },
-    [focusedId, soloType, excludedIds],
+    [focusedId, excludedIds],
   )
   const linkColor = useCallback((l: FgLink) => linkStyle(l, traversal).color, [traversal])
   const linkWidth = useCallback((l: FgLink) => linkStyle(l, traversal).width, [traversal])
@@ -850,7 +883,7 @@ export function GraphExplorer({
       const f = next.filters[g.key]
       if (f === undefined) return false
       const p = prevFilters[g.key]
-      return p === undefined || p.text !== f.text || !sameFacets(p.facets, f.facets)
+      return p === undefined || p.text !== f.text || !sameHidden(p.hidden, f.hidden)
     })
     if (changed.length === 0) return
     const excluded = excludedMemberIds(
@@ -870,7 +903,7 @@ export function GraphExplorer({
         node_id: panelNode.id,
         group_key: g.key,
         text: filter.text,
-        facets: filter.facets,
+        hidden: filter.hidden,
         matching,
         total: g.members.length,
         canvas_excluded: excluded.size,
@@ -942,7 +975,7 @@ export function GraphExplorer({
           position: 'absolute',
           top: '12px',
           right: '12px',
-          bottom: '56px',
+          bottom: '12px',
           zIndex: 2,
           maxWidth: 'calc(100% - 24px)',
           display: 'flex',
@@ -967,63 +1000,6 @@ export function GraphExplorer({
           onClose={() => setPanelNode(null)}
         />
       )}
-
-      <Box
-        role="group"
-        aria-label="Solo node type"
-        sx={{
-          marginTop: 'auto',
-          flexShrink: 0,
-          maxWidth: '100%',
-          boxSizing: 'border-box',
-          fontSize: { xs: '13px', sm: '16px' },
-          color: 'text.primary',
-          display: 'flex',
-          gap: { xs: '8px 12px', sm: '16px' },
-          flexWrap: 'wrap',
-          bgcolor: (t) => alpha(t.palette.background.paper, 0.85),
-          padding: '8px 12px',
-          borderRadius: '6px',
-        }}
-      >
-        {NODE_TYPES.map((type) => (
-          <Box
-            key={type}
-            component="button"
-            type="button"
-            aria-label={`Solo ${type}`}
-            aria-pressed={soloType === type}
-            onClick={() => toggleSolo(type)}
-            sx={{
-              background: 'none',
-              border: 0,
-              padding: 0,
-              color: 'inherit',
-              font: 'inherit',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              cursor: 'pointer',
-              transition: 'opacity 0.2s',
-              opacity: soloType !== null && soloType !== type ? 0.3 : 1,
-            }}
-          >
-            <Box
-              component="span"
-              sx={{
-                width: 12,
-                height: 12,
-                borderRadius: '50%',
-                bgcolor: NODE_COLORS[type],
-                border: 1,
-                borderColor: 'divider',
-                boxSizing: 'border-box',
-              }}
-            />
-            {type}
-          </Box>
-        ))}
-      </Box>
       </Box>
 
       {perf && <PerfReadout read={readPerf} />}

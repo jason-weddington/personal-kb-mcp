@@ -29,8 +29,6 @@ export const DIMMED_FILL = '#555'
 export const DIM_ALPHA = 0.15
 export const LABEL_ZOOM_MIN = 3.0
 export const LABEL_ZOOM_MAX = 5.0
-export const LABEL_ZOOM_SOLO_MIN = 1.5
-export const LABEL_ZOOM_SOLO_MAX = 3.0
 export const LABEL_TRUNCATE_SCALE = 2.0
 export const LABEL_TRUNCATE_LEN = 20
 export const LABEL_MIN_OPACITY = 0.01
@@ -154,13 +152,8 @@ export function computeFocusSet(
   return set
 }
 
-export function isNodeVisible(
-  node: { id: string; type: string },
-  focusSet: Set<string> | null,
-  soloType: string | null,
-): boolean {
+export function isNodeVisible(node: { id: string; type: string }, focusSet: Set<string> | null): boolean {
   if (focusSet !== null) return focusSet.has(node.id)
-  if (soloType !== null) return node.type === soloType
   return true
 }
 
@@ -168,10 +161,8 @@ export function isLinkVisible(
   sourceId: string,
   targetId: string,
   focusedId: string | null,
-  soloType: string | null,
 ): boolean {
   if (focusedId !== null) return sourceId === focusedId || targetId === focusedId
-  if (soloType !== null) return false
   return true
 }
 
@@ -181,7 +172,6 @@ export function labelOpacity(a: {
   nodeState: NodeState | undefined
   queryMode: QueryMode
   inFocus: boolean
-  solo: boolean
   globalScale: number
 }): number {
   if (a.hovered) return 1
@@ -189,9 +179,7 @@ export function labelOpacity(a: {
   if (a.nodeState !== undefined) return 1
   if (a.queryMode !== null) return 0
   if (a.inFocus) return 1
-  const zMin = a.solo ? LABEL_ZOOM_SOLO_MIN : LABEL_ZOOM_MIN
-  const zMax = a.solo ? LABEL_ZOOM_SOLO_MAX : LABEL_ZOOM_MAX
-  return Math.min(Math.max((a.globalScale - zMin) / (zMax - zMin), 0), 1)
+  return Math.min(Math.max((a.globalScale - LABEL_ZOOM_MIN) / (LABEL_ZOOM_MAX - LABEL_ZOOM_MIN), 0), 1)
 }
 
 export function truncateLabel(text: string, globalScale: number): string {
@@ -377,7 +365,6 @@ export const HISTORY_MAX = 500
 export type ExplorerState = {
   focusedId: string | null
   highlightedId: string | null
-  soloType: string | null
   history: HistoryRecord[]
   /** 0-based index into history of the record the walk is at. */
   cursor: number
@@ -386,7 +373,6 @@ export type ExplorerState = {
 export const initialExplorerState: ExplorerState = {
   focusedId: null,
   highlightedId: null,
-  soloType: null,
   history: [],
   cursor: 0,
 }
@@ -396,8 +382,6 @@ export type ExplorerAction =
   | { type: 'back'; snapshot: NavSnapshot }
   | { type: 'forward'; snapshot: NavSnapshot }
   | { type: 'unfocus'; snapshot?: NavSnapshot }
-  | { type: 'toggleSolo'; nodeType: string }
-  | { type: 'clearSolo' }
   | { type: 'clearAll'; snapshot?: NavSnapshot }
   | { type: 'prune'; renderedIds: ReadonlySet<string>; renderedTypes: ReadonlySet<string> }
 
@@ -481,25 +465,16 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
         action.snapshot !== undefined ? rewriteAtCursor(state, action.snapshot) : state.history
       return { ...state, focusedId: null, highlightedId: null, history }
     }
-    case 'toggleSolo':
-      return {
-        ...state,
-        soloType: state.soloType === action.nodeType ? null : action.nodeType,
-        focusedId: null,
-        highlightedId: null,
-      }
-    case 'clearSolo':
-      return state.soloType === null ? state : { ...state, soloType: null }
     case 'clearAll': {
       // Only a page reload clears history (the prune branch is the one
-      // in-page exception): focus, highlight and solo clear, the walk stays.
+      // in-page exception): focus and highlight clear, the walk stays.
       const history =
         action.snapshot !== undefined ? rewriteAtCursor(state, action.snapshot) : state.history
-      return { focusedId: null, highlightedId: null, soloType: null, history, cursor: state.cursor }
+      return { focusedId: null, highlightedId: null, history, cursor: state.cursor }
     }
     case 'prune': {
-      const { renderedIds, renderedTypes } = action
-      let { focusedId, highlightedId, history, soloType, cursor } = state
+      const { renderedIds } = action
+      let { focusedId, highlightedId, history, cursor } = state
       if (focusedId !== null && !renderedIds.has(focusedId)) {
         focusedId = null
         highlightedId = null
@@ -524,17 +499,15 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
         }
         if (highlightedId !== null && !renderedIds.has(highlightedId)) highlightedId = null
       }
-      if (soloType !== null && !renderedTypes.has(soloType)) soloType = null
       if (
         focusedId === state.focusedId &&
         highlightedId === state.highlightedId &&
         history === state.history &&
-        soloType === state.soloType &&
         cursor === state.cursor
       ) {
         return state
       }
-      return { focusedId, highlightedId, soloType, history, cursor }
+      return { focusedId, highlightedId, history, cursor }
     }
   }
 }

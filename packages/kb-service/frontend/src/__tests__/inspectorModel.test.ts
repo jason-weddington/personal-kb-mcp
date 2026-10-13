@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
-  FACET_TOP_N,
-  INSPECTOR_PILL_MAX,
+  FACET_ROW_TOP_N,
+  INSPECTOR_GROUP_OPEN_MAX,
   computeFacets,
   entrySummary,
   excludedMemberIds,
+  facetRows,
   groupNeighbors,
   memberMatches,
   normalizeDirection,
@@ -70,9 +71,9 @@ describe('groupNeighbors', () => {
   })
 })
 
-describe('INSPECTOR_PILL_MAX', () => {
+describe('INSPECTOR_GROUP_OPEN_MAX', () => {
   it('is 12 members', () => {
-    expect(INSPECTOR_PILL_MAX).toBe(12)
+    expect(INSPECTOR_GROUP_OPEN_MAX).toBe(12)
   })
 })
 
@@ -123,13 +124,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('FACET_TOP_N', () => {
-  it('is 8 facets', () => {
-    expect(FACET_TOP_N).toBe(8)
-  })
-})
-
-describe('memberMatches', () => {
+describe('memberMatches (hide semantics)', () => {
   const member = (over: Partial<FilterMember> = {}): FilterMember => ({
     nodeId: 'kb-00001',
     label: 'Decision doc',
@@ -142,58 +137,70 @@ describe('memberMatches', () => {
   const noNeighbors: ReadonlySet<string> = new Set()
 
   it('matches text case-insensitively over the label', () => {
-    expect(memberMatches(member(), { text: 'DECI', facets: [] }, noNeighbors)).toBe(true)
-    expect(memberMatches(member(), { text: 'deci', facets: [] }, noNeighbors)).toBe(true)
-    expect(memberMatches(member(), { text: 'zzz', facets: [] }, noNeighbors)).toBe(false)
+    expect(memberMatches(member(), { text: 'DECI', hidden: [] }, noNeighbors)).toBe(true)
+    expect(memberMatches(member(), { text: 'deci', hidden: [] }, noNeighbors)).toBe(true)
+    expect(memberMatches(member(), { text: 'zzz', hidden: [] }, noNeighbors)).toBe(false)
   })
 
   it("matches text over the member's longTitle", () => {
     const m = member({ label: 'x', longTitle: 'long thing' })
-    expect(memberMatches(m, { text: 'long thi', facets: [] }, noNeighbors)).toBe(true)
+    expect(memberMatches(m, { text: 'long thi', hidden: [] }, noNeighbors)).toBe(true)
   })
 
   it('empty and whitespace-only text matches everything', () => {
-    expect(memberMatches(member(), { text: '', facets: [] }, noNeighbors)).toBe(true)
-    expect(memberMatches(member(), { text: '   ', facets: [] }, noNeighbors)).toBe(true)
+    expect(memberMatches(member(), { text: '', hidden: [] }, noNeighbors)).toBe(true)
+    expect(memberMatches(member(), { text: '   ', hidden: [] }, noNeighbors)).toBe(true)
   })
 
-  it('an entry_type facet matches only entry members of that type', () => {
+  it('an empty hidden list matches everything (all facets on)', () => {
+    expect(memberMatches(member(), { text: '', hidden: [] }, noNeighbors)).toBe(true)
+  })
+
+  it('a hidden entry_type facet excludes only entry members of that type', () => {
     const other = member({ entryType: 'factual_reference' })
     const tag = member({ nodeType: 'tag', entryType: null })
-    const f = { text: '', facets: ['entry_type:decision'] }
-    expect(memberMatches(member(), f, noNeighbors)).toBe(true)
-    expect(memberMatches(other, f, noNeighbors)).toBe(false)
-    expect(memberMatches(tag, f, noNeighbors)).toBe(false)
+    const f = { text: '', hidden: ['entry_type:decision'] }
+    expect(memberMatches(member(), f, noNeighbors)).toBe(false)
+    expect(memberMatches(other, f, noNeighbors)).toBe(true)
+    expect(memberMatches(tag, f, noNeighbors)).toBe(true)
   })
 
-  it('a project facet matches only members of that project ref', () => {
+  it('a hidden project facet excludes only members of that project ref', () => {
     const other = member({ projectRef: 'p2', nodeId: 'kb-00002' })
-    const f = { text: '', facets: ['project:p1'] }
-    expect(memberMatches(member(), f, noNeighbors)).toBe(true)
-    expect(memberMatches(other, f, noNeighbors)).toBe(false)
+    const f = { text: '', hidden: ['project:p1'] }
+    expect(memberMatches(member(), f, noNeighbors)).toBe(false)
+    expect(memberMatches(other, f, noNeighbors)).toBe(true)
   })
 
-  it('a node facet matches via the member neighbor ids and via the member own nodeId', () => {
+  it('a hidden node facet excludes via the member neighbor ids and via the member own nodeId', () => {
     const viaNeighbor = member({ nodeId: 'kb-00001' })
-    const f = { text: '', facets: ['node:tag:rust'] }
-    expect(memberMatches(viaNeighbor, f, new Set(['tag:rust', 'tag:uv']))).toBe(true)
-    expect(memberMatches(viaNeighbor, f, new Set(['tag:uv']))).toBe(false)
+    const f = { text: '', hidden: ['node:tag:rust'] }
+    expect(memberMatches(viaNeighbor, f, new Set(['tag:rust', 'tag:uv']))).toBe(false)
+    expect(memberMatches(viaNeighbor, f, new Set(['tag:uv']))).toBe(true)
     const selfIsTag = member({ nodeId: 'tag:rust', nodeType: 'tag', entryType: null, projectRef: null })
-    expect(memberMatches(selfIsTag, f, noNeighbors)).toBe(true)
+    expect(memberMatches(selfIsTag, f, noNeighbors)).toBe(false)
   })
 
-  it('two selected facets AND with each other', () => {
+  it('a member matching ANY hidden facet is excluded (hidden facets OR)', () => {
     const both = member()
     const onlyDecision = member({ projectRef: 'p2', nodeId: 'kb-00002' })
-    const f = { text: '', facets: ['entry_type:decision', 'project:p1'] }
-    expect(memberMatches(both, f, noNeighbors)).toBe(true)
+    const neither = member({ entryType: 'lesson_learned', projectRef: 'p2', nodeId: 'kb-00003' })
+    const f = { text: '', hidden: ['entry_type:decision', 'project:p1'] }
+    expect(memberMatches(both, f, noNeighbors)).toBe(false)
     expect(memberMatches(onlyDecision, f, noNeighbors)).toBe(false)
+    expect(memberMatches(neither, f, noNeighbors)).toBe(true)
   })
 
-  it('the text filter ANDs with the facets', () => {
-    const f = { text: 'DECI', facets: ['project:p1'] }
+  it('the text filter ANDs with the hidden facets', () => {
+    const f = { text: 'DECI', hidden: ['project:p2'] }
     expect(memberMatches(member(), f, noNeighbors)).toBe(true)
     expect(memberMatches(member({ label: 'other' }), f, noNeighbors)).toBe(false)
+    expect(memberMatches(member({ label: 'other' }), { text: '', hidden: ['project:p1'] }, noNeighbors)).toBe(false)
+  })
+
+  it('a malformed facet key hides nothing', () => {
+    expect(memberMatches(member(), { text: '', hidden: ['nonsense'] }, noNeighbors)).toBe(true)
+    expect(memberMatches(member(), { text: '', hidden: [''] }, noNeighbors)).toBe(true)
   })
 })
 
@@ -301,13 +308,17 @@ describe('computeFacets', () => {
   })
 
   it('excludes the inspected node and entry-typed neighbours; a missing graph node falls back to the raw id', () => {
-    const members = [member('kb-00001', { entryType: 'decision', projectRef: 'p1' })]
+    const members = [
+      member('kb-00001', { entryType: 'decision', projectRef: 'p1' }),
+      member('kb-00002', { entryType: 'lesson_learned', projectRef: 'p2' }),
+    ]
     const neighborByMember = new Map([
       ['kb-00001', [
         { id: 'tag:mass', type: 'tag' },
         { id: 'kb-00002', type: 'entry' },
         { id: 'tag:ghost', type: 'tag' },
       ]],
+      ['kb-00002', []],
     ])
     const facets = computeFacets({
       inspectedNodeId: 'tag:mass',
@@ -317,23 +328,86 @@ describe('computeFacets', () => {
         ['kb-00001', 'entry'],
         ['kb-00002', 'entry'],
         ['tag:mass', 'tag'],
-        ['tag:ghost', 'tag'],
       ]),
       nodeLabelById: new Map(),
     })
-    expect(facets.map((f) => f.key)).toEqual(['entry_type:decision', 'project:p1', 'node:tag:ghost'])
-    expect(facets[2].label).toBe('tag:ghost')
-    expect(facets[2].nodeType).toBe('tag')
+    expect(facets.map((f) => [f.key, f.count])).toEqual([
+      ['entry_type:decision', 1],
+      ['entry_type:lesson_learned', 1],
+      ['project:p1', 1],
+      ['project:p2', 1],
+      ['node:tag:ghost', 1],
+    ])
+    const ghost = facets.find((f) => f.key === 'node:tag:ghost') as Facet
+    // missing from the graph node map: the raw id is the label, the node type
+    // is null (facetRows lands it in the trailing Other row)
+    expect(ghost.label).toBe('tag:ghost')
+    expect(ghost.nodeType).toBeNull()
     expect(facets[0].nodeType).toBeNull()
     for (const f of facets as Facet[]) {
       expect(f.label).not.toMatch(/^\[kb-/)
     }
   })
 
+  it('project-typed neighbour nodes yield no node facet (the project chips cover them)', () => {
+    const members = [
+      member('kb-00001', { entryType: 'decision', projectRef: 'dispatch-performance-log' }),
+      member('kb-00002', { entryType: 'decision', projectRef: 'other' }),
+    ]
+    const neighborByMember = new Map([
+      ['kb-00001', [{ id: 'project:dispatch-performance-log', type: 'project' }]],
+      ['kb-00002', []],
+    ])
+    const facets = computeFacets({
+      inspectedNodeId: 'tag:mass',
+      members,
+      neighborByMember,
+      nodeTypeById: new Map([
+        ['kb-00001', 'entry'],
+        ['kb-00002', 'entry'],
+        ['project:dispatch-performance-log', 'project'],
+      ]),
+      nodeLabelById: new Map([['project:dispatch-performance-log', 'dispatch-performance-log']]),
+    })
+    expect(facets.map((f) => f.key)).toEqual([
+      'project:dispatch-performance-log',
+      'project:other',
+    ])
+    // exactly ONE chip per project: no duplicate node: facet
+    expect(facets.filter((f) => f.kind === 'node')).toEqual([])
+  })
+
+  it('a facet matching every member is omitted (switching it off would empty the list)', () => {
+    const members = Array.from({ length: 3 }, (_, i) =>
+      member(`kb-0000${i}`, { entryType: 'decision', projectRef: `p${i}` }),
+    )
+    const facets = computeFacets({
+      inspectedNodeId: 'tag:mass',
+      members,
+      neighborByMember: new Map(),
+      nodeTypeById: new Map(members.map((m) => [m.nodeId, 'entry'] as [string, string])),
+      nodeLabelById: new Map(),
+    })
+    // entry_type:decision matches all 3 members, so it is gone
+    expect(facets.map((f) => f.key)).toEqual(['project:p0', 'project:p1', 'project:p2'])
+    expect(facets.every((f) => f.count === 1)).toBe(true)
+  })
+
   it('is scoped to the members it is given, never pooled across groups', () => {
-    const groupA = [member('kb-a0', { entryType: 'decision', projectRef: 'pa' })]
-    const groupB = [member('kb-b0', { entryType: 'lesson_learned', projectRef: 'pb' })]
-    const nodeTypeById = new Map([['kb-a0', 'entry'], ['kb-b0', 'entry']])
+    const groupA = [
+      member('kb-a0', { entryType: 'decision', projectRef: 'pa' }),
+      member('kb-a1', { entryType: 'lesson_learned', projectRef: 'pb' }),
+    ]
+    const groupB = [
+      member('kb-b0', { entryType: 'factual_reference', projectRef: 'px' }),
+      member('kb-b1', { entryType: 'mental_map', projectRef: 'py' }),
+    ]
+    const nodeTypeById = new Map([
+      ['kb-a0', 'entry'],
+      ['kb-a1', 'entry'],
+      ['kb-b0', 'entry'],
+      ['kb-b1', 'entry'],
+    ])
     const neighborByMember = new Map<string, Array<{ id: string; type: string }>>()
     const input = {
       inspectedNodeId: 'tag:x',
@@ -343,9 +417,19 @@ describe('computeFacets', () => {
     }
     // each invocation sees only ITS group's members
     const facetsA = computeFacets({ ...input, members: groupA })
-    expect(facetsA.map((f) => f.key)).toEqual(['entry_type:decision', 'project:pa'])
+    expect(facetsA.map((f) => f.key)).toEqual([
+      'entry_type:decision',
+      'entry_type:lesson_learned',
+      'project:pa',
+      'project:pb',
+    ])
     const facetsB = computeFacets({ ...input, members: groupB })
-    expect(facetsB.map((f) => f.key)).toEqual(['entry_type:lesson_learned', 'project:pb'])
+    expect(facetsB.map((f) => f.key)).toEqual([
+      'entry_type:factual_reference',
+      'entry_type:mental_map',
+      'project:px',
+      'project:py',
+    ])
   })
 })
 
@@ -355,21 +439,22 @@ describe('excludedMemberIds', () => {
     const g = groupNeighbors(nodeIds.map((id) => conn(id, edgeType, dir as 'in' | 'out')))
     return g[0]
   }
-  const byProject = (projectOf: Map<string, string>) => (nodeId: string) =>
-    projectOf.get(nodeId) === 'p1'
 
-  it('subtracts the failing members of an actively filtered has_tag:in group', () => {
+  it('subtracts the members matching a hidden facet of an actively filtered has_tag:in group', () => {
     const nodeIds = Array.from({ length: 15 }, (_, i) => `kb-001${String(i).padStart(2, '0')}`)
     const projectOf = new Map<string, string>()
     nodeIds.forEach((id, i) => projectOf.set(id, i < 6 ? 'p1' : 'p2'))
     const groups = [group('has_tag:in', nodeIds)]
+    // matchMember holds the hide semantics: a member passes unless it
+    // matches the hidden facet
+    const passes = (nodeId: string) => projectOf.get(nodeId) !== 'p1'
     const excluded = excludedMemberIds(
       'tag:mass',
       groups,
-      { 'has_tag:in': { text: '', facets: ['project:p1'] } },
-      byProject(projectOf),
+      { 'has_tag:in': { text: '', hidden: ['project:p1'] } },
+      passes,
     )
-    expect([...excluded].sort()).toEqual(nodeIds.filter((id) => projectOf.get(id) !== 'p1').sort())
+    expect([...excluded].sort()).toEqual(nodeIds.filter((id) => projectOf.get(id) === 'p1').sort())
   })
 
   it('a group with an empty filter contributes nothing', () => {
@@ -378,7 +463,7 @@ describe('excludedMemberIds', () => {
     const excluded = excludedMemberIds(
       'tag:mass',
       groups,
-      { 'has_tag:in': { text: '', facets: [] } },
+      { 'has_tag:in': { text: '', hidden: [] } },
       () => false,
     )
     expect(excluded.size).toBe(0)
@@ -397,7 +482,7 @@ describe('excludedMemberIds', () => {
     const excluded = excludedMemberIds(
       'tag:mass',
       groups,
-      { 'has_tag:in': { text: '', facets: ['project:p1'] } },
+      { 'has_tag:in': { text: '', hidden: ['project:p1'] } },
       () => false,
     )
     expect(excluded.has('tag:mass')).toBe(false)
@@ -408,16 +493,98 @@ describe('excludedMemberIds', () => {
     })
   })
 
-  it('does not warn when the focused member matches the filter', () => {
+  it('does not warn when the focused member passes the filter', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const groups = [group('has_tag:in', ['kb-00001', 'tag:mass'])]
     const excluded = excludedMemberIds(
       'tag:mass',
       groups,
-      { 'has_tag:in': { text: '', facets: ['project:p1'] } },
+      { 'has_tag:in': { text: '', hidden: ['project:p1'] } },
       () => true,
     )
     expect(excluded.size).toBe(0)
     expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+// ── Facet rows: labelled groups so colour carries no meaning on its own ──────
+
+describe('facetRows', () => {
+  const order = ['entry', 'tag', 'project', 'person', 'tool', 'concept', 'technology', 'note']
+  const facet = (
+    key: string,
+    kind: 'entry_type' | 'project' | 'node',
+    label: string,
+    count: number,
+    nodeType: string | null = null,
+  ): Facet => ({
+    key,
+    kind,
+    value: key.slice(key.indexOf(':') + 1),
+    label,
+    count,
+    nodeType,
+  })
+
+  it('builds Type, Project, capitalised node-type and Other rows in the caller-supplied order', () => {
+    const facets = [
+      facet('project:p2', 'project', 'p2', 9),
+      facet('entry_type:factual_reference', 'entry_type', 'factual reference', 7),
+      facet('node:tag:rust', 'node', 'rust', 7, 'tag'),
+      facet('node:concept:rag', 'node', 'rag', 2, 'concept'),
+      facet('node:person:jane', 'node', 'jane', 1, 'person'),
+      facet('node:tool:uv', 'node', 'uv', 1, 'tool'),
+      facet('node:ghost', 'node', 'ghost', 1, null),
+    ]
+    const rows = facetRows(facets, order)
+    expect(rows.map((r) => r.label)).toEqual(['Type', 'Project', 'Tag', 'Person', 'Tool', 'Concept', 'Other'])
+    expect(rows[0].facets.map((f) => f.key)).toEqual(['entry_type:factual_reference'])
+    expect(rows[1].facets.map((f) => f.key)).toEqual(['project:p2'])
+    expect(rows[2].facets.map((f) => f.key)).toEqual(['node:tag:rust'])
+    expect(rows[6].facets.map((f) => f.key)).toEqual(['node:ghost'])
+  })
+
+  it('keeps each row in the input order (count desc, ties by label asc) and never re-sorts across rows', () => {
+    const facets = [
+      facet('project:p2', 'project', 'p2', 9),
+      facet('project:p1', 'project', 'p1', 6),
+      facet('entry_type:decision', 'entry_type', 'decision', 6),
+      facet('entry_type:lesson_learned', 'entry_type', 'lesson learned', 2),
+    ]
+    const rows = facetRows(facets, order)
+    expect(rows.map((r) => r.label)).toEqual(['Type', 'Project'])
+    expect(rows[0].facets.map((f) => f.key)).toEqual([
+      'entry_type:decision',
+      'entry_type:lesson_learned',
+    ])
+    expect(rows[1].facets.map((f) => f.key)).toEqual(['project:p2', 'project:p1'])
+  })
+
+  it('a row with zero surviving facets is omitted', () => {
+    const rows = facetRows(
+      [facet('entry_type:decision', 'entry_type', 'decision', 3), facet('node:tag:x', 'node', 'x', 1, 'tag')],
+      order,
+    )
+    expect(rows.map((r) => r.label)).toEqual(['Type', 'Tag'])
+  })
+
+  it('carries the FULL row list: the top-N cut is the render side\'s job', () => {
+    const projects = Array.from({ length: 15 }, (_, i) =>
+      facet(`project:p${String(i + 1).padStart(2, '0')}`, 'project', `p${String(i + 1).padStart(2, '0')}`, 1),
+    )
+    const rows = facetRows(projects, order)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].label).toBe('Project')
+    expect(rows[0].facets).toHaveLength(15)
+    expect(FACET_ROW_TOP_N).toBe(6)
+  })
+
+  it('node facets whose type is not in the passed order land in Other', () => {
+    const rows = facetRows(
+      [facet('node:mystery:x', 'node', 'x', 2, 'mystery'), facet('node:ghost', 'node', 'ghost', 1, null)],
+      order,
+    )
+    expect(rows.map((r) => r.label)).toEqual(['Other'])
+    expect(rows[0].facets.map((f) => f.key)).toEqual(['node:mystery:x', 'node:ghost'])
   })
 })

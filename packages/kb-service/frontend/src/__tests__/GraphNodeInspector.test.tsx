@@ -12,7 +12,7 @@ import { drawNode } from '../graph/drawNode'
 import type { NodeRenderState } from '../graph/drawNode'
 import { EMPTY_TRAVERSAL, labelOpacity } from '../graph/explorerModel'
 import type { ExplorerNode } from '../graph/explorerModel'
-import { INSPECTOR_PILL_MAX, FACET_TOP_N, groupNeighbors } from '../graph/inspectorModel'
+import { INSPECTOR_GROUP_OPEN_MAX, groupNeighbors } from '../graph/inspectorModel'
 import type { ConnInput } from '../graph/inspectorModel'
 import type { GetResponse, KnowledgeEntry } from '../kbTypes'
 
@@ -143,6 +143,13 @@ const region = () => screen.getByRole('region', { name: 'Node inspector' })
 
 beforeEach(() => {
   vi.mocked(getEntries).mockReset()
+  // Details opens expanded and fetches on open: a found default entry keeps
+  // every render-mounted entry inspector quiet.
+  vi.mocked(getEntries).mockImplementation((ids: string[]) =>
+    Promise.resolve({
+      results: ids.map((id) => ({ id, found: true, entry: makeEntry(id), pointer_rot: [] })),
+    }),
+  )
   openNodeDrawerMock.mockClear()
 })
 
@@ -196,13 +203,15 @@ describe('GraphNodeInspector headers', () => {
     // ... and those two groups are NOT repeated in the connections section
     expect(screen.queryByText(/has_tag:out/)).toBeNull()
     expect(screen.queryByText(/in_project:out/)).toBeNull()
-    expect(screen.getByText('related_to → 1')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Title kb-00002' })).toBeInTheDocument()
+    expect(screen.getByText('related to → 1')).toBeInTheDocument()
+    // the related_to:out row's accessible name is composite (short title +
+    // clamped long title + project), so member rows are queried by regex
+    expect(screen.getByRole('button', { name: /Title kb-00002/ })).toBeInTheDocument()
     // graph-variant labels carry no '[kb-...]' prefix
     expect(/\[kb-/.test(region().textContent ?? '')).toBe(false)
   })
 
-  it('header tag pills and the project pill call onOpenNode with that node id', () => {
+  it('header tag and project chips call onOpenNode with that node id', () => {
     const node = entryNode('kb-00001')
     const tag = tagNode('tag:alpha')
     const proj = projectNode('p1')
@@ -225,7 +234,7 @@ describe('GraphNodeInspector headers', () => {
 describe('InspectorConnections rendering', () => {
   const manyEntries = (n: number) => Array.from({ length: n }, (_, i) => entryNode(`kb-9${String(i).padStart(4, '0')}`))
 
-  it(`a group with <= ${INSPECTOR_PILL_MAX} members renders always-visible pills`, () => {
+  it(`a group with <= ${INSPECTOR_GROUP_OPEN_MAX} members renders a default-expanded accordion of summary rows`, () => {
     const members = manyEntries(3)
     const groups = groupNeighbors(members.map((m) => conn(m.id, 'related_to', 'out')))
     render(
@@ -235,18 +244,22 @@ describe('InspectorConnections rendering', () => {
         onOpenNode={() => {}}
       />,
     )
-    expect(screen.getByText('related_to → 3')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Title kb-90000' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Title kb-90002' })).toBeInTheDocument()
+    expect(screen.getByText('related to → 3')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'related to → 3' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: /Title kb-90000/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Title kb-90002/ })).toBeInTheDocument()
   })
 
   it('an in-direction header renders the ← arrow and the count', () => {
     const groups = groupNeighbors([conn('kb-00001', 'has_tag', 'in'), conn('kb-00002', 'has_tag', 'in')])
     render(<InspectorConnections groups={groups} membersById={new Map()} onOpenNode={() => {}} />)
-    expect(screen.getByText('has_tag ← 2')).toBeInTheDocument()
+    expect(screen.getByText('has tag ← 2')).toBeInTheDocument()
   })
 
-  it('a 31-member group renders a collapsed accordion whose key, arrow and count are in the control text and expands to all 31 rows', () => {
+  it('a 31-member group renders a collapsed accordion whose spaced type, arrow and count are in the control text and expands to all 31 rows', () => {
     const members = manyEntries(31)
     const groups = groupNeighbors(members.map((m) => conn(m.id, 'related_to', 'out')))
     render(
@@ -256,10 +269,10 @@ describe('InspectorConnections rendering', () => {
         onOpenNode={() => {}}
       />,
     )
-    const control = screen.getByRole('button', { name: 'related_to:out → 31' })
+    const control = screen.getByRole('button', { name: 'related to → 31' })
     expect(control).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(control)
-    expect(screen.getByRole('button', { name: 'related_to:out → 31' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'related to → 31' })).toHaveAttribute(
       'aria-expanded',
       'true',
     )
@@ -278,7 +291,7 @@ describe('InspectorConnections rendering', () => {
         onOpenNode={onOpenNode}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'related_to:out → 13' }))
+    fireEvent.click(screen.getByRole('button', { name: 'related to → 13' }))
     fireEvent.click(screen.getByRole('button', { name: /Title kb-90005/ }))
     expect(onOpenNode).toHaveBeenCalledWith('kb-90005')
   })
@@ -291,10 +304,12 @@ describe('InspectorConnections rendering', () => {
       group_key: 'related_to:out',
       node_id: 'kb-90001',
     })
-    expect(screen.getByRole('button', { name: 'kb-90001' })).toBeInTheDocument()
+    // a non-entry fallback row: composite name (label + node-type chip)
+    expect(screen.getByRole('button', { name: /kb-90001/ })).toBeInTheDocument()
+    expect(screen.getByText('unknown')).toBeInTheDocument()
   })
 
-  it('Tooltip wraps a member only when its tooltip is a non-empty string', async () => {
+  it('a long title renders as clamped row text, never a Tooltip', async () => {
     const e1 = entryNode('kb-90001')
     const e2 = entryNode('kb-90002')
     const groups = groupNeighbors([conn(e1.id, 'related_to', 'out'), conn(e2.id, 'related_to', 'out')])
@@ -308,20 +323,23 @@ describe('InspectorConnections rendering', () => {
         onOpenNode={() => {}}
       />,
     )
-    const pill1 = screen.getByRole('button', { name: 'Title kb-90001' })
-    fireEvent.mouseOver(pill1)
-    await waitFor(() => expect(screen.getByText('Long kb-90001')).toBeInTheDocument())
-    fireEvent.mouseOut(pill1)
-    const pill2 = screen.getByRole('button', { name: 'Title kb-90002' })
-    fireEvent.mouseOver(pill2)
+    const row1 = screen.getByRole('button', { name: /Title kb-90001/ })
+    fireEvent.mouseOver(row1)
     await new Promise((r) => setTimeout(r, 150))
-    expect(screen.queryByText('Long kb-90002')).toBeNull()
+    // the long title is clamped row text inside the row, not a tooltip
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(within(row1).getByText('Long kb-90001')).toBeInTheDocument()
+    const row2 = screen.getByRole('button', { name: /Title kb-90002/ })
+    fireEvent.mouseOver(row2)
+    await new Promise((r) => setTimeout(r, 150))
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(within(row2).queryByText('Long kb-90002')).toBeNull()
   })
 
   it('an entry row shows the bold one-line title, clamped long title, type dot and project; a non-entry row its label and type chip', () => {
     const e = entryNode('kb-90001')
     const t = tagNode('tag:x')
-    const padding = Array.from({ length: INSPECTOR_PILL_MAX }, (_, i) => `pad:${i}`)
+    const padding = Array.from({ length: INSPECTOR_GROUP_OPEN_MAX }, (_, i) => `pad:${i}`)
     const groups = groupNeighbors([
       conn(e.id, 'related_to', 'out'),
       conn(t.id, 'related_to', 'out'),
@@ -360,19 +378,23 @@ describe('InspectorConnections rendering', () => {
     render(
       <InspectorConnections groups={groups} membersById={membersById} onOpenNode={() => {}} />,
     )
-    fireEvent.click(screen.getByRole('button', { name: /related_to:out/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'related to → 14' }))
     expect(screen.getByText('Title kb-90001')).toBeInTheDocument()
     expect(screen.getByText('Long kb-90001')).toBeInTheDocument()
     expect(screen.getByText('p1')).toBeInTheDocument()
     expect(screen.getByText('tag:x')).toBeInTheDocument()
     expect(screen.getAllByText('tag').length).toBeGreaterThan(0)
+    // rows hover with no Tooltip anywhere in the body
+    const row = screen.getByRole('button', { name: /Title kb-90001/ })
+    fireEvent.mouseOver(row)
+    expect(screen.queryByRole('tooltip')).toBeNull()
   })
 })
 
 // ── Hover wiring ─────────────────────────────────────────────────────────────
 
 describe('inspector hover', () => {
-  it('pills drive onHover with the member id and null on mouse out', () => {
+  it('rows drive onHover with the member id and null on mouse out', () => {
     const onHover = vi.fn()
     const e = entryNode('kb-90001')
     const groups = groupNeighbors([conn(e.id, 'related_to', 'out')])
@@ -384,10 +406,10 @@ describe('inspector hover', () => {
         onHover={onHover}
       />,
     )
-    const pill = screen.getByRole('button', { name: 'Title kb-90001' })
-    fireEvent.mouseOver(pill)
+    const row = screen.getByRole('button', { name: /Title kb-90001/ })
+    fireEvent.mouseOver(row)
     expect(onHover).toHaveBeenCalledWith('kb-90001')
-    fireEvent.mouseOut(pill)
+    fireEvent.mouseOut(row)
     expect(onHover).toHaveBeenCalledWith(null)
   })
 
@@ -398,7 +420,6 @@ describe('inspector hover', () => {
       hoveredId: null,
       highlightedId: null,
       focusSet: null,
-      soloType: null,
       traversal: EMPTY_TRAVERSAL,
       activeNeighbors: new Set(),
       now: 0,
@@ -413,7 +434,7 @@ describe('inspector hover', () => {
         }}
       />,
     )
-    fireEvent.mouseOver(screen.getByRole('button', { name: 'Title kb-90001' }))
+    fireEvent.mouseOver(screen.getByRole('button', { name: /Title kb-90001/ }))
     expect(rs.hoveredId).toBe('kb-90001')
     expect(
       labelOpacity({
@@ -422,7 +443,6 @@ describe('inspector hover', () => {
         nodeState: undefined,
         queryMode: null,
         inFocus: false,
-        solo: false,
         globalScale: 0.5,
       }),
     ).toBe(1)
@@ -446,7 +466,7 @@ describe('inspector hover', () => {
     ) as unknown as CanvasRenderingContext2D
     drawNode(e, ctx, 0.5, rs)
     expect(log).toContainEqual(['fillText', 'Title kb-90001', expect.any(Number), expect.any(Number)])
-    fireEvent.mouseOut(screen.getByRole('button', { name: 'Title kb-90001' }))
+    fireEvent.mouseOut(screen.getByRole('button', { name: /Title kb-90001/ }))
     expect(rs.hoveredId).toBe(null)
   })
 })
@@ -454,16 +474,19 @@ describe('inspector hover', () => {
 // ── Details section ──────────────────────────────────────────────────────────
 
 describe('entry inspector Details', () => {
-  it('is collapsed by default and fetches the entry exactly once on expand', async () => {
+  it('is expanded by default, fetches the entry exactly once on open, and toggling collapsed/expanded does not refetch', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     vi.mocked(getEntries).mockResolvedValue(
       getResponse(makeEntry('kb-00001', { updated_at: '2026-03-03T12:00:00Z' })),
     )
     const node = entryNode('kb-00001')
     const view = renderInspector({ node })
-    expect(vi.mocked(getEntries)).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByText('Details'))
+    // Details is already expanded: the on-open effect has already fetched
     expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(getEntries)).toHaveBeenCalledWith(['kb-00001'], { touch: false })
+    expect(
+      info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] details fetch'),
+    ).toHaveLength(1)
     await act(async () => {})
     await waitFor(() => expect(screen.getByText('Body for kb-00001')).toBeInTheDocument())
     const date = new Date('2026-03-03T12:00:00Z').toLocaleDateString('en-US', {
@@ -472,6 +495,14 @@ describe('entry inspector Details', () => {
       day: 'numeric',
     })
     expect(screen.getByText(`p1 · 0.90 · updated ${date}`)).toBeInTheDocument()
+    // collapsing and re-expanding does not refetch and emits no new info line
+    fireEvent.click(screen.getByText('Details'))
+    fireEvent.click(screen.getByText('Details'))
+    await act(async () => {})
+    expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(1)
+    expect(
+      info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] details fetch'),
+    ).toHaveLength(1)
     // a re-render does not refetch
     view.rerender(
       <GraphNodeInspector
@@ -486,6 +517,9 @@ describe('entry inspector Details', () => {
       />,
     )
     expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(1)
+    expect(
+      info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] details fetch'),
+    ).toHaveLength(1)
   })
 
   it('renders the superseded button and pointer-rot alerts after the fetch', async () => {
@@ -501,7 +535,6 @@ describe('entry inspector Details', () => {
     })
     const node = entryNode('kb-00001')
     renderInspector({ node })
-    fireEvent.click(screen.getByText('Details'))
     await act(async () => {})
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Superseded by kb-00002' })).toBeInTheDocument(),
@@ -516,7 +549,6 @@ describe('entry inspector Details', () => {
     vi.mocked(getEntries).mockRejectedValue(new Error('boom'))
     const node = entryNode('kb-00001')
     renderInspector({ node })
-    fireEvent.click(screen.getByText('Details'))
     await act(async () => {})
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     expect(warn).toHaveBeenCalledWith('[graph-inspector] details fetch failed', {
@@ -534,7 +566,6 @@ describe('entry inspector Details', () => {
     })
     const node = entryNode('kb-00001')
     renderInspector({ node })
-    fireEvent.click(screen.getByText('Details'))
     await act(async () => {})
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     expect(warn).toHaveBeenCalledWith('[graph-inspector] details fetch failed', {
@@ -542,6 +573,12 @@ describe('entry inspector Details', () => {
       error: 'not found',
     })
     expect(region()).toBeInTheDocument()
+  })
+
+  it('a non-entry target issues no details fetch at all', () => {
+    const tag = tagNode('tag:alpha')
+    renderInspector({ node: tag })
+    expect(vi.mocked(getEntries)).not.toHaveBeenCalled()
   })
 })
 
@@ -562,7 +599,7 @@ describe('InspectorViewState', () => {
     })
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.queryByRole('combobox')).toBeNull()
-    fireEvent.click(screen.getByText(/related_to:out/))
+    fireEvent.click(screen.getByText(/related to → 13/))
     expect(onViewChange).toHaveBeenCalled()
     for (const v of onViewChange.mock.calls.map((c) => c[0] as InspectorViewState)) {
       expect(v.filters).toEqual({})
@@ -607,9 +644,9 @@ describe('InspectorViewState', () => {
     }
 
     render(<Harness />)
-    const el = region()
-    fireEvent.click(screen.getByRole('button', { name: /related_to:in/ }))
-    expect(screen.getByRole('button', { name: /related_to:in/ })).toHaveAttribute(
+    const el = screen.getByTestId('inspector-scroll')
+    fireEvent.click(screen.getByRole('button', { name: /related to ← 13/ }))
+    expect(screen.getByRole('button', { name: /related to ← 13/ })).toHaveAttribute(
       'aria-expanded',
       'true',
     )
@@ -619,8 +656,8 @@ describe('InspectorViewState', () => {
     fireEvent.scroll(el)
     expect(el.scrollTop).toBe(150)
     // walk to node B through the same select path a member click uses
-    fireEvent.click(screen.getByRole('button', { name: 'hub-b' }))
-    expect(screen.getByRole('button', { name: /related_to:in/ })).toHaveAttribute(
+    fireEvent.click(screen.getByRole('button', { name: /hub-b/ }))
+    expect(screen.getByRole('button', { name: /related to ← 13/ })).toHaveAttribute(
       'aria-expanded',
       'false',
     )
@@ -695,7 +732,7 @@ const massSpecs = (): MemberSpec[] => {
 }
 
 const KEY = 'has_tag:in'
-const SUMMARY = `${KEY} ← 15`
+const SUMMARY = 'has tag ← 15'
 const rowButtons = (pattern: RegExp = /Mass entry \d+/) =>
   screen.queryAllByRole('button', { name: pattern })
 const chipButtons = () =>
@@ -760,29 +797,34 @@ describe('InspectorConnections group filters', () => {
     expect(screen.queryByText(/^\d+ of \d+$/)).toBeNull()
   })
 
-  it('a group with <= INSPECTOR_PILL_MAX members renders no filter UI even with filtering present', () => {
+  it(`a group with <= ${INSPECTOR_GROUP_OPEN_MAX} members renders no filter UI even with filtering present`, () => {
     const { container } = renderFiltered(massSpecs().slice(0, 5))
     expect(container.querySelectorAll('[role="textbox"], input[type="text"]')).toHaveLength(0)
     expect(container.querySelectorAll('[aria-pressed]')).toHaveLength(0)
   })
 
-  it('a 15-member group with filtering renders the filter input and the pinned facet order', () => {
+  it('a 15-member group with filtering renders the filter input and the pinned labelled facet rows', () => {
     renderFiltered(massSpecs(), { initialView: expandedView() })
     const input = screen.getByTestId(`group-filter-${KEY}`)
     expect(input).toBeInTheDocument()
     expect(screen.queryAllByRole('textbox')).toHaveLength(1)
+    // Type row first, then Project — each chip is `${label} ${count}` over
+    // the whole group
     expect(chipButtons().map((c) => c.textContent)).toEqual([
-      'p2 9',
       'factual reference 7',
       'decision 6',
-      'p1 6',
       'lesson learned 2',
+      'p2 9',
+      'p1 6',
     ])
+    expect(screen.getByText('Type')).toBeInTheDocument()
+    expect(screen.getByText('Project')).toBeInTheDocument()
+    expect(screen.queryByTestId(`facets-more-${KEY}:Project`)).toBeNull()
     expect(screen.queryByText(/^\+?\d+$/)).toBeNull()
     expect(screen.queryByText(/^\d+ of \d+$/)).toBeNull()
   })
 
-  it('shows the top FACET_TOP_N facets plus a +N chip that reveals the rest', () => {
+  it('a row shows its top 6 plus a plain +N more button that expands that row only', () => {
     const specs = Array.from({ length: 15 }, (_, i) => ({
       id: `kb-002${String(i).padStart(2, '0')}`,
       label: `Deep ${i}`,
@@ -790,16 +832,21 @@ describe('InspectorConnections group filters', () => {
       projectRef: `p${String(i + 1).padStart(2, '0')}`,
     }))
     renderFiltered(specs, { initialView: expandedView() })
+    // every member is a decision: the count-15 Type facet is omitted, so
+    // exactly ONE Project row renders
+    expect(screen.queryByText('Type')).toBeNull()
+    expect(screen.getByText('Project')).toBeInTheDocument()
     const chip = (name: string) => screen.getByRole('button', { name })
-    expect(chip('decision 15')).toBeInTheDocument()
     expect(chip('p01 1')).toBeInTheDocument()
-    expect(chip('p07 1')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'p08 1' })).toBeNull()
-    expect(chip(`+${16 - FACET_TOP_N}`)).toBeInTheDocument()
-    fireEvent.click(chip(`+${16 - FACET_TOP_N}`))
+    expect(chip('p06 1')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'p07 1' })).toBeNull()
+    const more = screen.getByRole('button', { name: '+9 more' })
+    expect(more).toBeInTheDocument()
+    expect(screen.getByTestId(`facets-more-${KEY}:Project`)).toBe(more)
+    fireEvent.click(more)
     expect(chip('p08 1')).toBeInTheDocument()
     expect(chip('p15 1')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: `+${16 - FACET_TOP_N}` })).toBeNull()
+    expect(screen.queryByRole('button', { name: '+9 more' })).toBeNull()
   })
 
   it('facet chips carry the legend colour of their node type and the exact label-count text', () => {
@@ -815,19 +862,20 @@ describe('InspectorConnections group filters', () => {
     expect(entryType).toHaveTextContent('factual reference 7')
   })
 
-  it('clicking a facet chip toggles aria-pressed and writes the facet key through onViewChange', () => {
+  it('clicking a facet chip switches it OFF: aria-pressed means hidden and the key lands in hidden', () => {
     const { views } = renderFiltered(massSpecs(), { initialView: expandedView() })
     const chip = screen.getByRole('button', { name: 'decision 6' })
     expect(chip).toHaveAttribute('aria-pressed', 'false')
     fireEvent.click(chip)
-    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', facets: ['entry_type:decision'] } })
+    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', hidden: ['entry_type:decision'] } })
     expect(chip).toHaveAttribute('aria-pressed', 'true')
+    expect(chip).toHaveClass('MuiChip-outlined')
     fireEvent.click(chip)
-    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', facets: [] } })
+    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', hidden: [] } })
     expect(chip).toHaveAttribute('aria-pressed', 'false')
   })
 
-  it('selected facets AND with each other and with the text filter over the rendered rows', () => {
+  it('a member matching ANY hidden facet is hidden, and the text filter still applies', () => {
     const specs: MemberSpec[] = [
       { id: 'kb-01000', label: 'ollama alpha', entryType: 'decision', projectRef: 'p1' },
       { id: 'kb-01001', label: 'beta', entryType: 'decision', projectRef: 'p1' },
@@ -842,7 +890,7 @@ describe('InspectorConnections group filters', () => {
     ]
     renderFiltered(specs, {
       initialView: expandedView({
-        [KEY]: { text: 'ollama', facets: ['entry_type:decision', 'project:p1'] },
+        [KEY]: { text: 'ollama', hidden: ['entry_type:factual_reference', 'project:p2'] },
       }),
     })
     expect(rowButtons(/ollama alpha|beta|ollama gamma|ollama delta|padding \d+/)).toHaveLength(1)
@@ -850,27 +898,38 @@ describe('InspectorConnections group filters', () => {
     expect(screen.queryByTestId(`inspector-empty-${KEY}`)).toBeNull()
   })
 
-  it('after selecting a facet chip, the rendered row count equals the chip count', () => {
+  it('after switching a facet chip OFF, the rendered row count drops by the chip count', () => {
     renderFiltered(massSpecs(), { initialView: expandedView() })
-    fireEvent.click(screen.getByRole('button', { name: 'decision 6' }))
-    expect(rowButtons()).toHaveLength(6)
+    fireEvent.click(screen.getByRole('button', { name: 'p1 6' }))
+    expect(rowButtons()).toHaveLength(9)
+  })
+
+  it('switching one facet OFF leaves every other chip count unchanged', () => {
+    renderFiltered(massSpecs(), { initialView: expandedView() })
+    const before = chipButtons().map((c) => c.textContent)
+    fireEvent.click(screen.getByRole('button', { name: 'p1 6' }))
+    expect(chipButtons().map((c) => c.textContent)).toEqual(before)
+    expect(screen.getByRole('button', { name: 'p2 9' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'factual reference 7' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'decision 6' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'lesson learned 2' })).toBeInTheDocument()
   })
 
   it('zero matches renders No matching members. and zero rows', () => {
-    renderFiltered(massSpecs(), { initialView: expandedView({ [KEY]: { text: 'zzz', facets: [] } }) })
+    renderFiltered(massSpecs(), { initialView: expandedView({ [KEY]: { text: 'zzz', hidden: [] } }) })
     const empty = screen.getByTestId(`inspector-empty-${KEY}`)
     expect(empty).toHaveTextContent('No matching members.')
     expect(rowButtons()).toHaveLength(0)
   })
 
-  it('the header shows <matching> of <total> while a filter is active and Clear resets it', () => {
+  it('the header reads <spaced type> <arrow> <matching> of <total> while a filter is active and Clear resets it', () => {
     const { views } = renderFiltered(massSpecs(), { initialView: expandedView() })
     fireEvent.click(screen.getByRole('button', { name: 'decision 6' }))
-    expect(screen.getByText('6 of 15')).toBeInTheDocument()
+    expect(screen.getByText('has tag ← 9 of 15')).toBeInTheDocument()
     const clear = screen.getByTestId(`group-clear-${KEY}`)
     expect(clear).toHaveAccessibleName('Clear')
     fireEvent.click(clear)
-    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', facets: [] } })
+    expect(views.at(-1)!.filters).toEqual({ [KEY]: { text: '', hidden: [] } })
     expect(screen.queryByText(/^\d+ of \d+$/)).toBeNull()
     expect(screen.queryByTestId(`group-clear-${KEY}`)).toBeNull()
     expect(rowButtons()).toHaveLength(15)
@@ -1011,9 +1070,10 @@ describe('GraphNodeInspector group filters', () => {
     expect(screen.getByRole('button', { name: /Mass entry 0/ })).toBeInTheDocument()
   })
 
-  it('re-targeting clears the filter text, the facet selection and the +N reveal', () => {
-    // 15 members with 15 distinct project refs: 16 facets, so the +8 reveal
-    // chip exists and carries over only if the reset is broken.
+  it('re-targeting clears the filter text, the hidden facets and the per-row +N more reveal', () => {
+    // 15 members all of one entry type with 15 distinct project refs: the
+    // Type facet matches all 15 (omitted), so ONE Project row with a +9 more
+    // reveal exists and carries over only if the reset is broken.
     const members = Array.from({ length: 15 }, (_, i) => {
       const id = `kb-003${String(i).padStart(2, '0')}`
       return {
@@ -1040,8 +1100,8 @@ describe('GraphNodeInspector group filters', () => {
       'tag:hub-b': memberConns,
     }
     renderMassHarness(conns, nodeById, new Map(), hubA)
-    fireEvent.click(screen.getByRole('button', { name: 'has_tag:in ← 15' }))
-    fireEvent.click(screen.getByRole('button', { name: `+${16 - FACET_TOP_N}` }))
+    fireEvent.click(screen.getByRole('button', { name: 'has tag ← 15' }))
+    fireEvent.click(screen.getByRole('button', { name: '+9 more' }))
     expect(screen.getByRole('button', { name: 'p15 1' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'p01 1' }))
     const input = screen.getByTestId(`group-filter-${KEY}`) as HTMLInputElement
@@ -1049,18 +1109,19 @@ describe('GraphNodeInspector group filters', () => {
     expect(input.value).toBe('member')
     expect(screen.getByRole('button', { name: 'p01 1' })).toHaveAttribute('aria-pressed', 'true')
     // walk to hub-b through the same select path a member click uses
-    fireEvent.click(screen.getByRole('button', { name: 'hub-b' }))
+    fireEvent.click(screen.getByRole('button', { name: /hub-b/ }))
     // hub-b's group renders collapsed again after the reset: expand it
-    fireEvent.click(screen.getByRole('button', { name: 'has_tag:in ← 15' }))
+    fireEvent.click(screen.getByRole('button', { name: 'has tag ← 15' }))
     const inputB = screen.getByTestId(`group-filter-${KEY}`) as HTMLInputElement
     expect(inputB.value).toBe('')
     expect(screen.queryByText(/^\d+ of \d+$/)).toBeNull()
     for (const c of chipButtons()) expect(c).toHaveAttribute('aria-pressed', 'false')
-    // the reveal reset: the +8 chip is back and only the top 8 facets show
-    expect(screen.getByRole('button', { name: `+${16 - FACET_TOP_N}` })).toBeInTheDocument()
+    // the reveal reset: the +9 more button is back and only the top 6 show
+    expect(screen.getByRole('button', { name: '+9 more' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'p15 1' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'p08 1' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'p07 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'p06 1' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'p07 1' })).toBeNull()
   })
 })
 
@@ -1093,23 +1154,21 @@ describe('visited check marks', () => {
         visited={visited}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'has_tag:in ← 13' }))
+    fireEvent.click(screen.getByRole('button', { name: 'has tag ← 13' }))
   }
 
-  it('marks only the visited member: a leading check on the pill, a trailing one on the row', () => {
+  it('marks only the visited member: a trailing check on every row', () => {
     renderVisited()
     const checks = screen.getAllByTestId('visited-check')
     expect(checks).toHaveLength(2)
     for (const check of checks) {
-      // keyed on the member's node id, never on a row position or count
+      // keyed on the member's node id, never on a row position or count;
+      // the row's accessible name is composite (short title + long title +
+      // project caption)
       expect(check.closest('button, [role="button"]')?.textContent).toContain('Title kb-00001')
     }
-    for (const btn of screen.getAllByRole('button', { name: /Title kb-/ })) {
-      if ((btn.textContent ?? '').includes('Title kb-00001')) {
-        expect(within(btn).getByTestId('visited-check')).toBeInTheDocument()
-      } else {
-        expect(within(btn).queryByTestId('visited-check')).toBeNull()
-      }
+    for (const btn of screen.getAllByRole('button', { name: /Title kb-00001/ })) {
+      expect(within(btn).getByTestId('visited-check')).toBeInTheDocument()
     }
   })
 
@@ -1128,7 +1187,7 @@ describe('visited check marks', () => {
     expect(screen.queryByTestId('visited-check')).toBeNull()
   })
 
-  it('excludes the entry-header tag pills and the project pill from visited marks', () => {
+  it('excludes the entry-header tag and project chips from visited marks', () => {
     const node = entryNode('kb-00001')
     const tag = tagNode('tag:alpha')
     const project = projectNode('p1')
@@ -1142,15 +1201,15 @@ describe('visited check marks', () => {
       node,
       groups: groupNeighbors(conns),
       nodeById: nodeMap([node, tag, project, other]),
-      // every member was visited: the header pills must still show no check
+      // every member was visited: the header chips must still show no check
       visited: new Set([tag.id, project.id, other.id]),
     })
     const regionEl = region()
-    const alphaPill = within(regionEl).getByRole('button', { name: 'alpha' })
-    expect(within(alphaPill).queryByTestId('visited-check')).toBeNull()
-    const projectPill = within(regionEl).getByRole('button', { name: 'p1' })
-    expect(within(projectPill).queryByTestId('visited-check')).toBeNull()
-    const relatedPill = within(regionEl).getByRole('button', { name: 'Title kb-00002' })
-    expect(within(relatedPill).getByTestId('visited-check')).toBeInTheDocument()
+    const alphaChip = within(regionEl).getByRole('button', { name: 'alpha' })
+    expect(within(alphaChip).queryByTestId('visited-check')).toBeNull()
+    const projectChip = within(regionEl).getByRole('button', { name: 'p1' })
+    expect(within(projectChip).queryByTestId('visited-check')).toBeNull()
+    const relatedRow = within(regionEl).getByRole('button', { name: /Title kb-00002/ })
+    expect(within(relatedRow).getByTestId('visited-check')).toBeInTheDocument()
   })
 })

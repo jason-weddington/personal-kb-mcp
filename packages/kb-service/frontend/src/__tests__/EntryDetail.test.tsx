@@ -128,7 +128,7 @@ describe('EntryDetail superseded_by → openEntry', () => {
         </Routes>
       </MemoryRouter>,
     )
-    await user.click(await screen.findByRole('button', { name: 'tag:flux' }))
+    await user.click(await screen.findByRole('button', { name: /tag:flux/ }))
     expect(openNodeMock).toHaveBeenCalledWith('tag:flux')
   })
 })

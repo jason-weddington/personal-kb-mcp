@@ -255,9 +255,11 @@ describe('EntryDrawer — Connections section', () => {
       expect(screen.getByText('Connections')).toBeInTheDocument(),
     )
 
-    // Neighbor pill shows the resolved short_title, no [kb-id] prefix
+    // Neighbor row shows the resolved short_title, no [kb-id] prefix; the
+    // row's accessible name is composite (short title + long title), so
+    // member rows are queried by regex
     const neighborChip = await screen.findByRole('button', {
-      name: 'Neighbor Entry',
+      name: /Neighbor Entry/,
     })
     expect(neighborChip).toBeInTheDocument()
 
@@ -289,7 +291,7 @@ describe('EntryDrawer — Connections section', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
 
-    const chip = await screen.findByRole('button', { name: 'tag:flux' })
+    const chip = await screen.findByRole('button', { name: /tag:flux/ })
     await user.click(chip)
     expect(screen.getByTestId('loc').textContent).toBe('/graph?focus=tag%3Aflux')
   })
@@ -323,9 +325,9 @@ describe('EntryDrawer — Connections section', () => {
     )
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
-    await user.click(await screen.findByRole('button', { name: 'tag:flux' }))
+    await user.click(await screen.findByRole('button', { name: /tag:flux/ }))
     expect(handler).toHaveBeenCalledWith('tag:flux')
-    await user.click(await screen.findByRole('button', { name: 'T kb-00002' }))
+    await user.click(await screen.findByRole('button', { name: /T kb-00002/ }))
     expect(handler).toHaveBeenCalledWith('kb-00002')
   })
 
@@ -408,7 +410,7 @@ describe('EntryDrawer — Connections section', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Open kb-00001' }))
 
-    await screen.findByRole('button', { name: 'Neighbor Entry' })
+    await screen.findByRole('button', { name: /Neighbor Entry/ })
     expect(vi.mocked(getEntries).mock.calls[0]).toEqual([['kb-00001']])
     expect(vi.mocked(getEntries)).toHaveBeenCalledWith(['kb-00002'], { touch: false })
   })

@@ -15,11 +15,14 @@ export type ConnectionGroup = {
   members: Array<{ nodeId: string }>
 }
 
-/** A group with at most this many members renders as pills; more, as rows. */
-export const INSPECTOR_PILL_MAX = 12
+/**
+ * A group with at most this many members defaults expanded; bigger groups
+ * default collapsed and gain the filter area.
+ */
+export const INSPECTOR_GROUP_OPEN_MAX = 12
 
-/** How many facet chips render before the `+N` reveal chip. */
-export const FACET_TOP_N = 8
+/** How many facet chips render per labelled row before its `+N more` button. */
+export const FACET_ROW_TOP_N = 6
 
 /**
  * The member shape the group filter model consumes. `InspectorMember`
@@ -35,8 +38,8 @@ export type FilterMember = {
   projectRef: string | null
 }
 
-/** A per-group filter: a title substring plus selected facet keys (ANDed). */
-export type GroupFilter = { text: string; facets: string[] }
+/** A per-group filter: a title substring plus the facet keys switched OFF (hidden). */
+export type GroupFilter = { text: string; hidden: string[] }
 
 /** One facet chip of a large connection group. */
 export type Facet = {
@@ -49,12 +52,40 @@ export type Facet = {
   nodeType: string | null
 }
 
+/** One labelled row of facet chips: the row label plus its full facet list. */
+export type FacetRow = { label: string; facets: Facet[] }
+
 /**
- * Does `member` pass the group's filter? The text query (trimmed, lowercased)
- * must be a substring of the label plus long title; every facet key must hold.
- * Facet keys: `entry_type:<t>` (member is an entry of type <t>),
- * `project:<ref>` (member's project ref), `node:<id>` (the member's own id or
- * one of its neighbour ids).
+ * Does `member` match the single facet `key`? Facet keys: `entry_type:<t>`
+ * (member is an entry of type <t>), `project:<ref>` (member's project ref),
+ * `node:<id>` (the member's own id or one of its neighbour ids); any other
+ * key shape matches nothing.
+ */
+function matchesFacet(
+  member: FilterMember,
+  key: string,
+  memberNeighborIds: ReadonlySet<string>,
+): boolean {
+  const sep = key.indexOf(':')
+  const kind = sep === -1 ? '' : key.slice(0, sep)
+  const value = sep === -1 ? '' : key.slice(sep + 1)
+  if (kind === 'entry_type') {
+    return member.nodeType === 'entry' && member.entryType === value
+  }
+  if (kind === 'project') {
+    return member.projectRef === value
+  }
+  if (kind === 'node') {
+    return member.nodeId === value || memberNeighborIds.has(value)
+  }
+  return false
+}
+
+/**
+ * Does `member` pass the group's filter? The text query (trimmed,
+ * lowercased) must be a substring of the label plus long title, and the
+ * member must match NO key in `filter.hidden` — a member matching any hidden
+ * facet is excluded.
  */
 export function memberMatches(
   member: FilterMember,
@@ -66,19 +97,8 @@ export function memberMatches(
     const haystack = [member.label, member.longTitle ?? ''].join(' ').toLowerCase()
     if (!haystack.includes(text)) return false
   }
-  for (const facet of filter.facets) {
-    const sep = facet.indexOf(':')
-    const kind = sep === -1 ? '' : facet.slice(0, sep)
-    const value = sep === -1 ? '' : facet.slice(sep + 1)
-    if (kind === 'entry_type') {
-      if (!(member.nodeType === 'entry' && member.entryType === value)) return false
-    } else if (kind === 'project') {
-      if (member.projectRef !== value) return false
-    } else if (kind === 'node') {
-      if (!(member.nodeId === value || memberNeighborIds.has(value))) return false
-    } else {
-      return false
-    }
+  for (const key of filter.hidden) {
+    if (matchesFacet(member, key, memberNeighborIds)) return false
   }
   return true
 }
@@ -128,6 +148,9 @@ export function computeFacets(input: {
     for (const n of neighborByMember.get(m.nodeId) ?? []) {
       if (n.id === inspectedNodeId) continue
       if (nodeTypeById.get(n.id) === 'entry') continue
+      // A project-typed neighbour is covered by the member's own project
+      // facet; offering both made two chips for the same project.
+      if (nodeTypeById.get(n.id) === 'project') continue
       push({
         key: `node:${n.id}`,
         kind: 'node',
@@ -141,20 +164,57 @@ export function computeFacets(input: {
   for (const facet of facets) {
     facet.count = members.reduce((sum, m) => {
       const neighborIds = new Set((neighborByMember.get(m.nodeId) ?? []).map((n) => n.id))
-      return memberMatches(m, { text: '', facets: [facet.key] }, neighborIds) ? sum + 1 : sum
+      return matchesFacet(m, facet.key, neighborIds) ? sum + 1 : sum
     }, 0)
   }
-  facets.sort((a, b) => b.count - a.count || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
-  return facets
+  // A facet matching every member would empty the list when switched off.
+  const surviving = facets.filter((f) => f.count !== members.length)
+  surviving.sort((a, b) => b.count - a.count || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
+  return surviving
+}
+
+/**
+ * Group a group's facet chips into labelled rows so colour never carries
+ * meaning on its own: a 'Type' row (entry types), a 'Project' row
+ * (project_ref values), then one row per other neighbour node type present,
+ * labelled with that type (first letter capitalised), in the caller-supplied
+ * `nodeTypeOrder` (the Graph page passes the NODE_COLORS key order); a node
+ * facet whose nodeType is null or not in the order lands in a trailing
+ * 'Other' row. Each row carries its FULL facet list (already sorted count
+ * descending, ties by label ascending by computeFacets) — the render side
+ * cuts to FACET_ROW_TOP_N with a `+N more` reveal. A row with no facets is
+ * omitted.
+ */
+export function facetRows(
+  facets: ReadonlyArray<Facet>,
+  nodeTypeOrder: ReadonlyArray<string>,
+): FacetRow[] {
+  const rows: FacetRow[] = []
+  const push = (label: string, rowFacets: ReadonlyArray<Facet>) => {
+    if (rowFacets.length === 0) return
+    rows.push({ label, facets: [...rowFacets] })
+  }
+  push('Type', facets.filter((f) => f.kind === 'entry_type'))
+  push('Project', facets.filter((f) => f.kind === 'project'))
+  const nodeFacets = facets.filter((f) => f.kind === 'node')
+  for (const t of nodeTypeOrder) {
+    if (t === 'entry' || t === 'project') continue
+    push(t.charAt(0).toUpperCase() + t.slice(1), nodeFacets.filter((f) => f.nodeType === t))
+  }
+  push(
+    'Other',
+    nodeFacets.filter((f) => f.nodeType === null || !nodeTypeOrder.includes(f.nodeType ?? '')),
+  )
+  return rows
 }
 
 /**
  * The nodeIds that are members of a group with an active filter (a non-empty
- * trimmed text or a non-empty facet list) and that fail `matchMember` for that
- * group — the set the canvas subtracts from the visible focus neighbourhood.
- * The focused node itself is NEVER excluded (guarded with a runtime warn, so a
- * filter bug can never hide the inspected node), and unfiltered groups
- * contribute nothing.
+ * trimmed text or a non-empty hidden facet list) and that fail `matchMember`
+ * for that group — the set the canvas subtracts from the visible focus
+ * neighbourhood. The focused node itself is NEVER excluded (guarded with a
+ * runtime warn, so a filter bug can never hide the inspected node), and
+ * unfiltered groups contribute nothing.
  */
 export function excludedMemberIds(
   focusedId: string,
@@ -166,7 +226,7 @@ export function excludedMemberIds(
   for (const g of groups) {
     const filter = filters[g.key]
     if (filter === undefined) continue
-    if (filter.text.trim().length === 0 && filter.facets.length === 0) continue
+    if (filter.text.trim().length === 0 && filter.hidden.length === 0) continue
     for (const m of g.members) {
       if (m.nodeId === focusedId) {
         if (!matchMember(m.nodeId, g.key)) {

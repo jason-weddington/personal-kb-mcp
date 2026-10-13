@@ -133,9 +133,11 @@ function useEntryConnections(entryId: string): { state: ConnectionsState | null;
 
 /**
  * Renders the Connections section for an entry: one-hop graph neighbours
- * grouped by edge type and direction through the shared inspector body
- * (pills for small groups, a scrolling list of summary rows for big ones).
- * Every pill and row calls onOpenNode with the member node id.
+ * grouped by edge type and direction through the shared inspector body —
+ * every group an accordion with the same human-readable header (the edge
+ * type with underscores as spaces, the direction arrow and the count),
+ * defaulting expanded for up to 12 members, opening into one summary row
+ * per member. Every row calls onOpenNode with the member node id.
  */
 function EntryConnections({
   entryId,

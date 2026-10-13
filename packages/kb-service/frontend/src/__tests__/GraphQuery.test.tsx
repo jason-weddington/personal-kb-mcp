@@ -41,6 +41,11 @@ const h = vi.hoisted(() => {
     mockOpenEntry: vi.fn(),
     getGraphFull: vi.fn(),
     getToken: vi.fn((): string | null => 'tok'),
+    getEntries: vi.fn((ids: string[]) =>
+      Promise.resolve({
+        results: ids.map((id) => ({ id, found: false, entry: null, pointer_rot: [] })),
+      }),
+    ),
     mockStreamSSE: vi.fn<(...a: any[]) => Promise<void>>(() => new Promise<void>(() => {})),
   }
 })
@@ -56,7 +61,12 @@ vi.mock('react-force-graph-2d', () => ({
   },
 }))
 
-vi.mock('../api', () => ({ getGraphFull: h.getGraphFull, getToken: h.getToken }))
+vi.mock('../api', () => ({
+  getGraphFull: h.getGraphFull,
+  getToken: h.getToken,
+  // the entry inspector's Details section opens expanded and fetches on open
+  getEntries: h.getEntries ?? vi.fn(),
+}))
 vi.mock('../streaming', () => ({ streamSSE: h.mockStreamSSE }))
 
 const authState = vi.hoisted(() => ({ authMode: 'none' as 'jwt' | 'none' }))
@@ -404,18 +414,10 @@ describe('Graph query mode', { timeout: 15000 }, () => {
     )
   })
 
-  it('(j) asking clears solo without moving the camera', async () => {
+  it('(j) asking does not move the camera', async () => {
     await setup()
-    const btn = screen.getByRole('button', { name: 'Solo tag' })
-    fireEvent.click(btn)
-    expect(btn).toHaveAttribute('aria-pressed', 'true')
-    advance(600)
     clearFg()
     await ask('q')
-    expect(screen.getByRole('button', { name: 'Solo tag' })).toHaveAttribute(
-      'aria-pressed',
-      'false',
-    )
     expect(cameraMoves()).toBe(0)
   })
 
@@ -594,7 +596,7 @@ describe('Graph chat panel', { timeout: 15000 }, () => {
     expect(region()).toBeNull()
     const canvas = screen.getByTestId('graph-canvas-area')
     expect(canvas.contains(panel())).toBe(false)
-    expect(within(canvas).getByRole('group', { name: 'Solo node type' })).toBeInTheDocument()
+    expect(within(canvas).queryByRole('group', { name: 'Solo node type' })).toBeNull()
     const seedCalls = infoSpy.mock.calls.filter((c: any[]) => c[0] === '[graph-chat] seed')
     expect(seedCalls).toHaveLength(1)
     expect(seedCalls[0][1]).toEqual(

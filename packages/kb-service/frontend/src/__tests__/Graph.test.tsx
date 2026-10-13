@@ -208,6 +208,18 @@ beforeEach(() => {
   h.nodeHandler = null
   h.mockStreamSSE.mockClear()
   vi.mocked(getEntries).mockReset()
+  // The entry inspector's Details opens expanded and fetches on open: a
+  // found default entry keeps every focused entry inspector quiet.
+  vi.mocked(getEntries).mockImplementation((ids: string[]) =>
+    Promise.resolve({
+      results: ids.map((id) => ({
+        id,
+        found: true,
+        entry: inspectorEntry(id),
+        pointer_rot: [],
+      })),
+    }),
+  )
   vi.mocked(getGraphNeighbors).mockReset()
   clearFg()
   h.getGraphFull.mockImplementation(() => Promise.resolve(fixture()))
@@ -322,14 +334,33 @@ describe('Graph page', () => {
     ).toBeGreaterThan(0)
   })
 
-  it('(g) the solo legend shows one type and hides links', async () => {
+  it('(g) no solo legend exists; the type-chip row drives filterGraph', async () => {
     await renderPage()
-    const btn = screen.getByRole('button', { name: 'Solo tag' })
-    fireEvent.click(btn)
-    expect(btn).toHaveAttribute('aria-pressed', 'true')
+    // the solo legend and its per-type buttons are gone for good
+    expect(screen.queryByRole('group', { name: 'Solo node type' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Solo / })).toBeNull()
+    const group = screen.getByRole('group', { name: 'Node type filters' })
+    // clicking tag off drops that type's nodes and their links
+    fireEvent.click(within(group).getByRole('button', { name: 'tag' }))
+    const tagChip = within(group).getByRole('button', { name: 'tag' })
+    // an OFF chip reads as grey: outlined, never a coloured border or fill
+    expect(tagChip).toHaveClass('MuiChip-outlined')
+    expect(tagChip).not.toHaveStyle({ backgroundColor: NODE_COLORS.tag })
+    expect((h.lastProps.graphData.nodes as ExplorerNode[]).map((n) => n.id)).toEqual([
+      'kb-00001',
+      'kb-00002',
+    ])
+    expect(h.lastProps.graphData.links).toEqual([
+      { source: 'kb-00001', target: 'kb-00002', type: 'related_to' },
+    ])
+    expect(screen.getByText('2 of 4 nodes · 1 of 3 edges')).toBeInTheDocument()
+    // clicking it back on returns them
+    fireEvent.click(within(group).getByRole('button', { name: 'tag' }))
     expect(visible('tag:alpha')).toBe(true)
-    expect(visible('kb-00001')).toBe(false)
-    expect(h.lastProps.linkVisibility(h.lastProps.graphData.links[0])).toBe(false)
+    expect(visible('tag:beta')).toBe(true)
+    expect(visible('kb-00001')).toBe(true)
+    expect(h.lastProps.graphData.links).toHaveLength(3)
+    expect(screen.getByText('4 of 4 nodes · 3 of 3 edges')).toBeInTheDocument()
   })
 
   it('(h) search ranks the exact label first; Enter asks, ArrowDown+Enter flies', async () => {
@@ -667,7 +698,8 @@ describe('Graph page — node inspector', () => {
     })
   })
 
-  it('(n2) connections come from the payload; Details fetches the entry exactly once', async () => {
+  it('(n2) connections come from the payload; Details is expanded by default and fetches the entry exactly once', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     vi.mocked(getEntries).mockResolvedValue({
       results: [{ id: 'kb-00001', found: true, entry: inspectorEntry('kb-00001'), pointer_rot: [] }],
     })
@@ -675,17 +707,18 @@ describe('Graph page — node inspector', () => {
     click('kb-00001')
     advance(850)
     expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
-    expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(0)
-    const region = screen.getByRole('region', { name: 'Node inspector' })
-    expect(within(region).getByText('p1 · 0.90')).toBeInTheDocument()
-    // the header tag pill and project pill ARE the has_tag:out/in_project:out groups
-    expect(within(region).getByRole('button', { name: 'alpha' })).toBeInTheDocument()
-    expect(within(region).queryByText(/has_tag:out/)).toBeNull()
-    fireEvent.click(within(region).getByText('Details'))
-    await act(async () => {})
     expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(getEntries)).toHaveBeenCalledWith(['kb-00001'], { touch: false })
-    expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
+    // exactly one details-fetch info line for the shown id
+    expect(
+      info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] details fetch'),
+    ).toHaveLength(1)
+    const region = screen.getByRole('region', { name: 'Node inspector' })
+    expect(within(region).getByText('p1 · 0.90')).toBeInTheDocument()
+    // the header tag chip and project chip ARE the has_tag:out/in_project:out groups
+    expect(within(region).getByRole('button', { name: 'alpha' })).toBeInTheDocument()
+    expect(within(region).queryByText(/has_tag:out/)).toBeNull()
+    await act(async () => {})
     const date = new Date('2026-03-03T12:00:00Z').toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
@@ -697,6 +730,9 @@ describe('Graph page — node inspector', () => {
     fireEvent.click(within(region).getByText('Details'))
     await act(async () => {})
     expect(vi.mocked(getEntries)).toHaveBeenCalledTimes(1)
+    expect(
+      info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] details fetch'),
+    ).toHaveLength(1)
     expect(vi.mocked(getGraphNeighbors)).toHaveBeenCalledTimes(0)
   })
 
@@ -746,7 +782,7 @@ describe('Graph page — node inspector', () => {
     expect(within(region).getAllByText('Beta lesson').length).toBeGreaterThan(0)
   })
 
-  it('(n6) a header tag pill click walks to the tag like a canvas click', async () => {
+  it('(n6) a header tag chip click walks to the tag like a canvas click', async () => {
     await renderPage()
     click('kb-00001')
     advance(850)
@@ -791,7 +827,7 @@ describe('Graph page — node inspector', () => {
     act(() => h.lastProps.onNodeClick(nodes[0]))
     advance(850)
     const region = screen.getByRole('region', { name: 'Node inspector' })
-    fireEvent.click(within(region).getByRole('button', { name: 'related_to:out → 13' }))
+    fireEvent.click(within(region).getByRole('button', { name: 'related to → 13' }))
     expect(within(region).getAllByText(/Row \d+/).length).toBe(13)
     clearFg()
     fireEvent.click(within(region).getByRole('button', { name: /Row 5/ }))
@@ -802,25 +838,26 @@ describe('Graph page — node inspector', () => {
     expect(fg.centerAt).toHaveBeenLastCalledWith(65, 20, 600)
   })
 
-  it('(n8) the inspector reports scrollTop and the reset restores it', async () => {
+  it('(n8) the inspector scroll container reports scrollTop and the reset restores it', async () => {
     await renderPage()
     click('tag:alpha')
     advance(850)
     const region = screen.getByRole('region', { name: 'Node inspector' })
+    const scroll = within(region).getByTestId('inspector-scroll')
     act(() => {
-      region.scrollTop = 120
+      scroll.scrollTop = 120
     })
-    fireEvent.scroll(region)
-    expect(region.scrollTop).toBe(120)
+    fireEvent.scroll(scroll)
+    expect(scroll.scrollTop).toBe(120)
     // re-targeting resets the lifted view state, so the scroll container
     // snaps back to the top
     click('kb-00002')
     advance(850)
     expect(region).toBeInTheDocument()
-    expect(region.scrollTop).toBe(0)
+    expect(within(region).getByTestId('inspector-scroll').scrollTop).toBe(0)
   })
 
-  it('(v1) visited members carry a check that survives an unfocus', async () => {
+  it('(v1) visited members carry a trailing row check that survives an unfocus', async () => {
     await renderPage()
     click('kb-00001')
     advance(850)
@@ -829,14 +866,14 @@ describe('Graph page — node inspector', () => {
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
     advance(650)
     const region = screen.getByRole('region', { name: 'Node inspector' })
-    // kb-00002 was focused this session: its related_to:out member pill shows
-    // the leading check
-    const betaPill = within(region).getByRole('button', { name: 'Beta lesson' })
-    expect(within(betaPill).getByTestId('visited-check')).toBeInTheDocument()
-    // the entry-header tag pill is excluded from visited marks (and tag:alpha
+    // kb-00002 was focused this session: its related_to:out member row shows
+    // the trailing check (the row's accessible name is composite)
+    const betaRow = within(region).getByRole('button', { name: /Beta lesson/ })
+    expect(within(betaRow).getByTestId('visited-check')).toBeInTheDocument()
+    // the entry-header tag chip is excluded from visited marks (and tag:alpha
     // was never walked)
-    const alphaPill = within(region).getByRole('button', { name: 'alpha' })
-    expect(within(alphaPill).queryByTestId('visited-check')).toBeNull()
+    const alphaChip = within(region).getByRole('button', { name: 'alpha' })
+    expect(within(alphaChip).queryByTestId('visited-check')).toBeNull()
     // Escape-unfocus (inspector close, then reset) keeps the session set
     fireEvent.keyDown(document, { key: 'Escape' })
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -844,8 +881,8 @@ describe('Graph page — node inspector', () => {
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
     advance(650)
     const reopened = screen.getByRole('region', { name: 'Node inspector' })
-    const betaPillAgain = within(reopened).getByRole('button', { name: 'Beta lesson' })
-    expect(within(betaPillAgain).getByTestId('visited-check')).toBeInTheDocument()
+    const betaRowAgain = within(reopened).getByRole('button', { name: /Beta lesson/ })
+    expect(within(betaRowAgain).getByTestId('visited-check')).toBeInTheDocument()
   })
 })
 
@@ -943,9 +980,8 @@ describe('GraphExplorer handle', () => {
     expect(debug).toHaveBeenCalledTimes(1)
   })
 
-  it('(j2) flyToNode clears solo and focuses', () => {
+  it('(j2) flyToNode focuses the node and its neighbourhood', () => {
     const { ref } = renderExplorer()
-    fireEvent.click(screen.getByRole('button', { name: 'Solo tag' }))
     let ok: boolean | undefined
     act(() => {
       ok = ref.current!.flyToNode('kb-00001')
@@ -977,9 +1013,9 @@ describe('GraphExplorer handle', () => {
     expect(fg.emitParticle.mock.calls[0][0]).toBe(graph.links[0])
   })
 
-  it('(j5) clearSelection drops solo without moving the camera', () => {
+  it('(j5) clearSelection drops focus without moving the camera', () => {
     const { ref } = renderExplorer()
-    fireEvent.click(screen.getByRole('button', { name: 'Solo tag' }))
+    click('kb-00001')
     clearFg()
     act(() => ref.current!.clearSelection())
     for (const id of ['kb-00001', 'kb-00002', 'tag:alpha', 'tag:beta']) {
@@ -987,16 +1023,16 @@ describe('GraphExplorer handle', () => {
     }
     expect(fg.centerAt).not.toHaveBeenCalled()
     expect(fg.zoom).not.toHaveBeenCalled()
-    expect(fg.zoom).not.toHaveBeenCalled()
   })
 
-  it('(j6) resetAll fits and clears solo', () => {
+  it('(j6) resetAll fits and clears focus', () => {
     const { ref } = renderExplorer()
-    const btn = screen.getByRole('button', { name: 'Solo tag' })
-    fireEvent.click(btn)
+    click('kb-00001')
     act(() => ref.current!.resetAll())
     expect(fg.zoom).toHaveBeenCalledWith(expect.any(Number), 400)
-    expect(btn).toHaveAttribute('aria-pressed', 'false')
+    for (const id of ['kb-00001', 'kb-00002', 'tag:alpha', 'tag:beta']) {
+      expect(visible(id)).toBe(true)
+    }
   })
 
   it('(j7) onEscape returning true consumes Escape', () => {
@@ -1190,11 +1226,42 @@ describe('GraphExplorer — group filters', () => {
     act(() => h.lastProps.onNodeClick(nodeOf('tag:mass')))
     advance(850)
     const region = screen.getByRole('region', { name: 'Node inspector' })
-    fireEvent.click(within(region).getByRole('button', { name: 'has_tag:in ← 15' }))
+    fireEvent.click(within(region).getByRole('button', { name: 'has tag ← 15' }))
     return region
   }
 
-  it('(c1) expanding the has_tag:in group shows the filter input and the pinned facets', () => {
+  it('(n1b) the open event carries facet_rows for groups over the open threshold', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    renderNarrow()
+    act(() => h.lastProps.onNodeClick(nodeOf('tag:mass')))
+    advance(850)
+    const calls = info.mock.calls.filter((c: unknown[]) => c[0] === '[graph-inspector] open')
+    expect(calls).toHaveLength(1)
+    // the static whole-group counts, cut to FACET_ROW_TOP_N per labelled row
+    expect(calls[0][1].facet_rows).toEqual([
+      {
+        label: 'Type',
+        total: 3,
+        shown: 3,
+        facets: [
+          { key: 'entry_type:factual_reference', count: 7 },
+          { key: 'entry_type:decision', count: 6 },
+          { key: 'entry_type:lesson_learned', count: 2 },
+        ],
+      },
+      {
+        label: 'Project',
+        total: 2,
+        shown: 2,
+        facets: [
+          { key: 'project:p2', count: 9 },
+          { key: 'project:p1', count: 6 },
+        ],
+      },
+    ])
+  })
+
+  it('(c1) expanding the has_tag:in group shows the filter input and the pinned labelled facet rows', () => {
     renderNarrow()
     const region = openNarrowInspector()
     const input = within(region).getByTestId('group-filter-has_tag:in')
@@ -1207,27 +1274,28 @@ describe('GraphExplorer — group filters', () => {
         .queryAllByRole('button', { name: /\S.* \d+$/ })
         .filter((c) => c.getAttribute('aria-pressed') !== null)
         .map((c) => c.textContent),
-    ).toEqual(['p2 9', 'factual reference 7', 'decision 6', 'p1 6', 'lesson learned 2'])
+    ).toEqual(['factual reference 7', 'decision 6', 'lesson learned 2', 'p2 9', 'p1 6'])
     // every member's only non-entry neighbour is tag:mass itself, excluded as
-    // the inspected node — so there are no node facets and no +N chip
-    expect(within(region).queryByRole('button', { name: /^\+\d+$/ })).toBeNull()
+    // the inspected node — so there are no node-facet rows and no +N more
+    expect(within(region).queryByRole('button', { name: /\+.* more$/ })).toBeNull()
   })
 
-  it('(c2) the p1 facet narrows the canvas, the rows and the header; Clear restores', () => {
+  it('(c2) hiding the p1 facet narrows the canvas, the rows and the header; Clear restores', () => {
     const graph = renderNarrow()
     const region = openNarrowInspector()
     for (const id of allNarrowIds) expect(visible(id)).toBe(true)
+    // clicking 'p1 6' switches that facet OFF: the 6 p1 members hide
     fireEvent.click(within(region).getByRole('button', { name: 'p1 6' }))
-    for (const id of p1Ids) expect(visible(id)).toBe(true)
-    for (const id of nonP1Ids) expect(visible(id)).toBe(false)
+    for (const id of nonP1Ids) expect(visible(id)).toBe(true)
+    for (const id of p1Ids) expect(visible(id)).toBe(false)
     expect(visible('tag:mass')).toBe(true)
     for (const l of graph.links) {
       const linkVisible = h.lastProps.linkVisibility(l)
-      if (p1Ids.includes(l.source)) expect(linkVisible).toBe(true)
-      else expect(linkVisible).toBe(false)
+      if (p1Ids.includes(l.source)) expect(linkVisible).toBe(false)
+      else expect(linkVisible).toBe(true)
     }
-    expect(within(region).getByText('6 of 15')).toBeInTheDocument()
-    expect(within(region).getAllByRole('button', { name: /Mass entry \d+/ })).toHaveLength(6)
+    expect(within(region).getByText('has tag ← 9 of 15')).toBeInTheDocument()
+    expect(within(region).getAllByRole('button', { name: /Mass entry \d+/ })).toHaveLength(9)
     // Clear restores every member and its links
     fireEvent.click(within(region).getByTestId('group-clear-has_tag:in'))
     for (const id of allNarrowIds) expect(visible(id)).toBe(true)
@@ -1289,16 +1357,22 @@ describe('GraphExplorer — group filters', () => {
       node_id: 'tag:mass',
       group_key: 'has_tag:in',
       text: '',
-      facets: ['project:p1'],
-      matching: 6,
+      hidden: ['project:p1'],
+      matching: 9,
       total: 15,
-      canvas_excluded: 9,
+      canvas_excluded: 6,
     })
-    expect(filterCalls[1][1]).toMatchObject({ text: 'mass', canvas_excluded: 9 })
+    expect(filterCalls[1][1]).toMatchObject({
+      text: 'mass',
+      hidden: ['project:p1'],
+      matching: 9,
+      canvas_excluded: 6,
+    })
     expect(filterCalls[2][1]).toMatchObject({
       text: '',
-      facets: [],
+      hidden: [],
       matching: 15,
+      total: 15,
       canvas_excluded: 0,
     })
     expect(
@@ -1326,16 +1400,18 @@ describe('GraphExplorer — history view-state round trip', () => {
     act(() => h.lastProps.onNodeClick(nodeOf('tag:mass')))
     advance(850)
     const region = screen.getByRole('region', { name: 'Node inspector' })
-    fireEvent.click(within(region).getByRole('button', { name: 'has_tag:in ← 15' }))
+    fireEvent.click(within(region).getByRole('button', { name: 'has tag ← 15' }))
     fireEvent.click(within(region).getByRole('button', { name: 'p1 6' }))
-    expect(within(region).getByText('6 of 15')).toBeInTheDocument()
+    expect(within(region).getByText('has tag ← 9 of 15')).toBeInTheDocument()
     // the same scroll container item A's scrollTop round-trip test uses
+    const scroll = within(region).getByTestId('inspector-scroll')
     act(() => {
-      region.scrollTop = 120
+      scroll.scrollTop = 120
     })
-    fireEvent.scroll(region)
-    // walk to kb-00100 through the shared select path a row click takes
-    fireEvent.click(within(region).getByRole('button', { name: /Mass entry 0/ }))
+    fireEvent.scroll(scroll)
+    // walk to kb-00109 (a still-visible p2 member) through the shared select
+    // path a row click takes
+    fireEvent.click(within(region).getByRole('button', { name: /Mass entry 9/ }))
     clearFg()
     fireEvent.keyDown(document, { key: 'ArrowLeft' })
     // tag:mass's record kept the pre-move camera: a non-entry focus has no
@@ -1344,15 +1420,16 @@ describe('GraphExplorer — history view-state round trip', () => {
     expect(fg.zoom).toHaveBeenLastCalledWith(4, 600)
     advance(650)
     const reopened = screen.getByRole('region', { name: 'Node inspector' })
-    // the restored filter keeps the '<matching> of <total>' in the summary
+    // the restored filter keeps the '<matching> of <total>' in the header
     expect(
-      within(reopened).getByRole('button', { name: /has_tag:in ← 15/ }),
+      within(reopened).getByRole('button', { name: /has tag ← 9 of 15/ }),
     ).toHaveAttribute('aria-expanded', 'true')
+    // aria-pressed means the facet is OFF/hidden
     expect(within(reopened).getByRole('button', { name: 'p1 6' })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
-    expect(within(reopened).getByText('6 of 15')).toBeInTheDocument()
-    expect(reopened.scrollTop).toBe(120)
+    expect(within(reopened).getByText('has tag ← 9 of 15')).toBeInTheDocument()
+    expect(within(reopened).getByTestId('inspector-scroll').scrollTop).toBe(120)
   })
 })
