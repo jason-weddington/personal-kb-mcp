@@ -90,6 +90,25 @@ export interface KbListResponse {
   items: KbProject[]
 }
 
+// ── Ingestion (/api/kb/ingest/*) ────────────────────────────────────────────
+
+/**
+ * Lossless mirror of kb-service's IngestFileResult (models.py) which itself
+ * mirrors kb-core's FileResult dataclass.  Snake_case: KB routes are read raw
+ * (kbRequest skips the camelCase conversion).
+ */
+export interface IngestFileResult {
+  path: string
+  action: 'ingested' | 'skipped' | 'flagged' | 'error' | 'unchanged' | 'dry_run'
+  reason: string | null
+  entry_count: number
+  entry_ids: string[]
+  summary: string | null
+  chunks_processed: number
+  chunks_skipped: number
+  chunks_flagged: number
+}
+
 // ── Maps ─────────────────────────────────────────────────────────────────────
 
 export interface MapRef {

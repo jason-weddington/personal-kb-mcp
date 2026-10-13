@@ -25,7 +25,10 @@ import type {
   EntryType,
   BrowseEntriesResponse,
   BrowseProjectsResponse,
+  IngestFileResult,
 } from './kbTypes'
+
+export type { IngestFileResult } from './kbTypes'
 
 export class ApiError extends Error {
   status: number
@@ -259,6 +262,84 @@ export function getGraphNeighbors(
     limit: String(limit),
   })
   return kbRequest<GraphNeighborsResponse>('GET', `/kb/graph/neighbors?${params}`)
+}
+
+/**
+ * POST a multipart FormData upload under /api/kb, mirroring kbRequest's auth
+ * and error handling (401 guard, ApiError detail mapping) but never setting a
+ * Content-Type header by hand — the browser must add the multipart boundary —
+ * and never JSON.stringify-ing the body.
+ */
+async function kbFormRequest<T>(path: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
+  const res = await fetch(`/api${path}`, {
+    method: 'POST',
+    headers,
+    body: form,
+  })
+
+  if (res.status === 401) {
+    localStorage.removeItem('kb-token')
+    localStorage.removeItem('kb-user')
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
+    throw new ApiError(401, 'Unauthorized')
+  }
+
+  if (res.status === 204) {
+    return undefined as T
+  }
+
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      const data = (await res.json()) as { detail?: string }
+      if (data.detail) detail = data.detail
+    } catch {
+      // use statusText fallback
+    }
+    throw new ApiError(res.status, detail)
+  }
+
+  return (await res.json()) as T
+}
+
+/**
+ * Ingest an uploaded file through POST /api/kb/ingest/file (multipart).
+ * The file is appended under the form field 'file'; project_ref is appended
+ * only for a non-empty string. dry_run is never sent.
+ */
+export function ingestFile(
+  file: File,
+  projectRef?: string,
+): Promise<IngestFileResult> {
+  const form = new FormData()
+  form.append('file', file)
+  if (projectRef !== undefined && projectRef !== null && projectRef !== '') {
+    form.append('project_ref', projectRef)
+  }
+  return kbFormRequest<IngestFileResult>('/kb/ingest/file', form)
+}
+
+/**
+ * Ingest a URL through POST /api/kb/ingest/url (JSON {url}).
+ * project_ref joins the body only for a non-empty string; dry_run is never sent.
+ */
+export function ingestUrl(
+  url: string,
+  projectRef?: string,
+): Promise<IngestFileResult> {
+  const body: { url: string; project_ref?: string } = { url }
+  if (projectRef !== undefined && projectRef !== null && projectRef !== '') {
+    body.project_ref = projectRef
+  }
+  return kbRequest<IngestFileResult>('POST', '/kb/ingest/url', body)
 }
 
 export function listChats(): Promise<ChatListItem[]> {

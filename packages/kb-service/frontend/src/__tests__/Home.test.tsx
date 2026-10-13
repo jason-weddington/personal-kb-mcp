@@ -7,9 +7,10 @@
  *   nothing on Home fetches the full graph
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { Home } from '../pages/Home'
+import type { IngestFileResult } from '../kbTypes'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,8 @@ vi.mock('../api', () => ({
   browseProjects: vi.fn(() => Promise.resolve(EMPTY_PAGE)),
   browseProject: vi.fn(() => Promise.resolve(EMPTY_PAGE)),
   getGraphFull: vi.fn(),
+  ingestFile: vi.fn(),
+  ingestUrl: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
     detail: string
@@ -69,9 +72,18 @@ import {
   getGraphFull,
   browseRecent,
   browseProjects,
+  ingestFile,
 } from '../api'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
 
 function renderHome() {
   return render(
@@ -181,7 +193,8 @@ describe('Home page', () => {
 
     renderHome()
 
-    expect(vi.mocked(listKbProjects)).toHaveBeenCalledTimes(1)
+    // Two listKbProjects calls: StatsCard + the Add to KB panel's suggestions.
+    expect(vi.mocked(listKbProjects)).toHaveBeenCalledTimes(2)
     expect(vi.mocked(listKbContributors)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(getMapsIndex)).toHaveBeenCalledTimes(1)
     // Flush pending stat fetches to avoid act() warnings
@@ -197,5 +210,106 @@ describe('Home page', () => {
     expect(screen.getByText('KB Stats')).toBeInTheDocument()
     // Flush pending stat fetches to avoid act() warnings
     await waitFor(() => expect(screen.getByTestId('stat-value-entries')).toBeInTheDocument())
+  })
+
+  it('shows the Add to KB panel under the stats card', async () => {
+    vi.mocked(listKbProjects).mockResolvedValue({ items: [] })
+    vi.mocked(listKbContributors).mockResolvedValue({ items: [] })
+    vi.mocked(getMapsIndex).mockResolvedValue({ projects: [] })
+
+    renderHome()
+    expect(screen.getByText('Add to KB')).toBeInTheDocument()
+    expect(screen.getByText('Drop files or URLs here')).toBeInTheDocument()
+    // Flush pending stat fetches to avoid act() warnings
+    await waitFor(() => expect(screen.getByTestId('stat-value-entries')).toBeInTheDocument())
+  })
+
+  it('refreshes the stats and the browse list after an ingested job', async () => {
+    vi.mocked(listKbProjects).mockResolvedValue({ items: [] })
+    vi.mocked(listKbContributors).mockResolvedValue({ items: [] })
+    vi.mocked(getMapsIndex).mockResolvedValue({ projects: [] })
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+
+    const ingested: IngestFileResult = {
+      path: 'p',
+      action: 'ingested',
+      reason: null,
+      entry_count: 2,
+      entry_ids: ['kb-1', 'kb-2'],
+      summary: 's',
+      chunks_processed: 3,
+      chunks_skipped: 0,
+      chunks_flagged: 0,
+    }
+    vi.mocked(browseRecent).mockResolvedValue(EMPTY_PAGE)
+    const fileDefer = deferred<IngestFileResult>()
+    vi.mocked(ingestFile).mockImplementation(() => fileDefer.promise)
+
+    renderHome()
+    await waitFor(() => expect(screen.getByTestId('stat-value-entries')).toBeInTheDocument())
+    await screen.findByText('No entries yet.')
+
+    fireEvent.drop(screen.getByTestId('add-to-kb-drop'), {
+      dataTransfer: { files: [new File(['x'], 'a.md')], getData: () => '' },
+    })
+    await waitFor(() => expect(vi.mocked(ingestFile)).toHaveBeenCalledTimes(1))
+
+    const before = vi.mocked(browseRecent).mock.calls.length
+    await act(async () => {
+      fileDefer.resolve(ingested)
+    })
+    expect(info).toHaveBeenCalledWith('[add-to-kb] refresh', {
+      action: 'ingested',
+      entry_count: 2,
+      entry_ids_count: 2,
+    })
+    await screen.findByText('Ingested · 2 entries · 3 chunks')
+    // StatsCard's countEntries re-runs and the 'new' EntryList refetches: +2.
+    await waitFor(() => expect(vi.mocked(browseRecent).mock.calls.length).toBe(before + 2))
+    vi.restoreAllMocks()
+  })
+
+  it('a skipped job does not refresh and does not log the refresh', async () => {
+    vi.mocked(listKbProjects).mockResolvedValue({ items: [] })
+    vi.mocked(listKbContributors).mockResolvedValue({ items: [] })
+    vi.mocked(getMapsIndex).mockResolvedValue({ projects: [] })
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+
+    const skipped: IngestFileResult = {
+      path: 'p',
+      action: 'skipped',
+      reason: 'duplicate',
+      entry_count: 0,
+      entry_ids: [],
+      summary: null,
+      chunks_processed: 0,
+      chunks_skipped: 0,
+      chunks_flagged: 0,
+    }
+    vi.mocked(browseRecent).mockResolvedValue(EMPTY_PAGE)
+    const fileDefer = deferred<IngestFileResult>()
+    vi.mocked(ingestFile).mockImplementation(() => fileDefer.promise)
+
+    renderHome()
+    await waitFor(() => expect(screen.getByTestId('stat-value-entries')).toBeInTheDocument())
+    await screen.findByText('No entries yet.')
+
+    fireEvent.drop(screen.getByTestId('add-to-kb-drop'), {
+      dataTransfer: { files: [new File(['x'], 'a.md')], getData: () => '' },
+    })
+    await waitFor(() => expect(vi.mocked(ingestFile)).toHaveBeenCalledTimes(1))
+
+    const before = vi.mocked(browseRecent).mock.calls.length
+    await act(async () => {
+      fileDefer.resolve(skipped)
+    })
+    await screen.findByText('Skipped · duplicate')
+    // Give any spurious refetch a chance to fire, then assert none did.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20))
+    })
+    expect(vi.mocked(browseRecent).mock.calls.length).toBe(before)
+    expect(info).not.toHaveBeenCalledWith('[add-to-kb] refresh', expect.anything())
+    vi.restoreAllMocks()
   })
 })

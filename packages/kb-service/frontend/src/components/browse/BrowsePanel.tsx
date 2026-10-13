@@ -42,7 +42,7 @@ const updatedAge = (r: BrowseEntry, now: number) =>
   `updated ${formatRelative(r.updated_at, now)}`
 
 /** Home's Browse panel: New / Top / Stale / Projects tabs with URL state. */
-export function BrowsePanel() {
+export function BrowsePanel({ refreshKey = 0 }: { refreshKey?: number }) {
   const [params, setSearchParams] = useSearchParams()
   const view = parseView(params.get('view'))
   const entryType = parseEntryType(params.get('type'))
@@ -96,7 +96,7 @@ export function BrowsePanel() {
     )
     list = (
       <EntryList
-        listKey={`new:${recentSort}:${typeKey}`}
+        listKey={`new:${recentSort}:${typeKey}:${refreshKey}`}
         fetchPage={(cursor) =>
           browseRecent({ sort: recentSort, entryType, limit: PAGE_SIZE, cursor })
         }
@@ -129,7 +129,7 @@ export function BrowsePanel() {
         : 'Ranked by last_accessed: the last kb_get by an agent, or an entry opened here.'
     list = (
       <EntryList
-        listKey={`top:${topSignal}:${typeKey}`}
+        listKey={`top:${topSignal}:${typeKey}:${refreshKey}`}
         fetchPage={(cursor) =>
           browseTop({ signal: topSignal, entryType, limit: PAGE_SIZE, cursor })
         }
@@ -169,7 +169,7 @@ export function BrowsePanel() {
         : 'TTL has passed: hidden from kb_search unless include_expired is set.'
     list = (
       <EntryList
-        listKey={`stale:${staleKind}:${typeKey}`}
+        listKey={`stale:${staleKind}:${typeKey}:${refreshKey}`}
         fetchPage={(cursor) =>
           browseStale({ kind: staleKind, entryType, limit: PAGE_SIZE, cursor })
         }
@@ -193,7 +193,7 @@ export function BrowsePanel() {
   } else if (project) {
     list = (
       <ProjectView
-        key={project}
+        key={`${project}:${refreshKey}`}
         project={project}
         entryType={entryType}
         onTypeChange={changeType}
@@ -201,7 +201,7 @@ export function BrowsePanel() {
       />
     )
   } else {
-    list = <ProjectGrid onOpen={openProject} />
+    list = <ProjectGrid key={`projects:${refreshKey}`} onOpen={openProject} />
   }
 
   return (

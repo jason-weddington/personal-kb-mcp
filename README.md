@@ -8,7 +8,7 @@ No installation needed — just add the MCP config below and your client handles
 
 - **Hybrid search** — BM25 full-text search + vector similarity (via Ollama embeddings), fused with Reciprocal Rank Fusion
 - **Knowledge graph** — Automatically built from entries (deterministic edges for tags/projects + LLM-extracted entities like tools, concepts, people)
-- **Browse in the web UI** — the Home page of the hosted web UI lists new, most-connected, recently read, stale and expired entries and browses by project; every row opens the entry drawer
+- **Browse in the web UI** — the Home page of the hosted web UI lists new, most-connected, recently read, stale and expired entries and browses by project; every row opens the entry drawer The Home page's Add to KB panel adds entries too: drop or pick files, drop or type URLs, and the queue ingests them one at a time.
 - **Agentic queries** — ReAct agent loop that plans, executes, evaluates, and retries — resolves the right entries even when single-shot search ranks them poorly
 - **Graph-aware queries** — 5 traversal strategies (auto, decision_trace, timeline, related, connection) with LLM query planning
 - **Synthesized answers** — `kb_summarize` retrieves relevant entries and uses Claude Haiku to produce cited prose answers
@@ -453,7 +453,7 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | `KB_DB_PATH` | `~/.local/share/personal_kb/knowledge.db` | SQLite database file path (ignored when `KB_DATABASE_URL` is set) |
 | `KB_LOG_LEVEL` | `WARNING` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `KB_MANAGER` | _(unset)_ | Set to `TRUE` to enable `kb_maintain` and `kb_ingest` tools |
-| `KB_INGEST_MAX_FILE_SIZE` | `512000` | Max file size in bytes for ingestion |
+| `KB_INGEST_MAX_FILE_SIZE` | `10485760` | Max file size in bytes for ingestion |
 | `KB_AGENTIC_QUERY` | `TRUE` | Enable ReAct agent loop for `kb_ask` auto strategy |
 | `KB_AGENTIC_MAX_CALLS` | `4` | Max tool calls in the agentic query loop |
 | **Multi-user** | | |

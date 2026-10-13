@@ -5,6 +5,7 @@ import Skeleton from '@mui/material/Skeleton'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import { ResponseCard } from '../components/ResponseCard'
+import { AddToKbPanel } from '../components/AddToKbPanel'
 import { BrowsePanel } from '../components/browse/BrowsePanel'
 import {
   listKbProjects,
@@ -41,7 +42,7 @@ function StatRow({
   )
 }
 
-function StatsCard() {
+function StatsCard({ refreshKey = 0 }: { refreshKey?: number }) {
   const [entries, setEntries] = useState<StatValue>(undefined)
   const [noProject, setNoProject] = useState<number>(0)
   const [projects, setProjects] = useState<StatValue>(undefined)
@@ -97,7 +98,7 @@ function StatsCard() {
       .catch(() => {
         setMaps(null)
       })
-  }, [])
+  }, [refreshKey])
 
   return (
     <ResponseCard>
@@ -114,6 +115,10 @@ function StatsCard() {
 }
 
 export function Home() {
+  // Bumped by the Add to KB panel after an ingested job, so the stats card
+  // and the browse list refetch and new entries show up without a reload.
+  const [refreshKey, setRefreshKey] = useState(0)
+
   return (
     <Box>
       <Grid container spacing={3}>
@@ -122,12 +127,15 @@ export function Home() {
           <Typography variant="h5" gutterBottom>
             Browse the KB
           </Typography>
-          <BrowsePanel />
+          <BrowsePanel refreshKey={refreshKey} />
         </Grid>
 
-        {/* Right column: KB Stats (~1/3) */}
+        {/* Right column: KB Stats + Add to KB (~1/3) */}
         <Grid size={{ xs: 12, md: 4 }} sx={{ order: { xs: 1, md: 2 } }}>
-          <StatsCard />
+          <Stack spacing={3}>
+            <StatsCard refreshKey={refreshKey} />
+            <AddToKbPanel onIngested={() => setRefreshKey((k) => k + 1)} />
+          </Stack>
         </Grid>
       </Grid>
     </Box>
