@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 from kb_core.llm import anthropic as anthropic_llm
 from kb_service import config as service_config
-from kb_service import surprise, surprise_worker, turn_digest
+from kb_service import surprise, surprise_distill, surprise_worker, turn_digest
 from kb_service.models import TurnItem
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -80,19 +80,23 @@ NO_SURPRISE = '{"surprise": false}'
 
 
 class StubLLM:
-    calls: typing.ClassVar[list[tuple[str, str, str | None]]] = []
+    # (model, prompt, system, purpose)
+    calls: typing.ClassVar[list[tuple[str, str, str | None, str]]] = []
     mapping: typing.ClassVar[dict[str, str]] = {}
     default: typing.ClassVar[str | None] = NO_SURPRISE
     delay: typing.ClassVar[float] = 0.0
+    raise_purposes: typing.ClassVar[set[str]] = set()
 
     def __init__(self, model: str) -> None:
         self._config = types.SimpleNamespace(model=model)
         self.closed = False
 
     async def generate(self, prompt: str, *, purpose: str, system: str | None = None) -> str | None:
-        StubLLM.calls.append((self._config.model, prompt, system))
+        StubLLM.calls.append((self._config.model, prompt, system, purpose))
         if StubLLM.delay:
             await asyncio.sleep(StubLLM.delay)
+        if purpose in StubLLM.raise_purposes:
+            raise RuntimeError("stub down")
         for key, value in StubLLM.mapping.items():
             if key in prompt:
                 return value
@@ -118,6 +122,7 @@ def _env(monkeypatch):
     StubLLM.mapping = dict(PERFECT)
     StubLLM.default = NO_SURPRISE
     StubLLM.delay = 0.0
+    StubLLM.raise_purposes = set()
 
 
 @pytest.fixture
@@ -1463,3 +1468,419 @@ def test_turns_form_validation_errors(tmp_path, capsys):
     one_turn = _turns_case("syn-t6", True)
     one_turn["turns"] = one_turn["turns"][:1]
     assert "syn-t6: turns must be a list of at least 2 turns" in _validate(one_turn)
+
+
+# --- H-024 stage 2: --distil (offline distiller + critic, no writes) ----------
+
+DISTILL_OK = json.dumps(
+    {
+        "durable": True,
+        "short_title": "Use the mapped port",
+        "long_title": "caddy owns 8080",
+        "corrected_fact": "8081 is the dashboard port",
+        "lesson": "Check the port map before listening",
+        "lesson_class": "project_tooling",
+    }
+)
+CRITIC_OK = json.dumps(
+    {"supported": True, "scope_ok": True, "durable": True, "misleading": False, "reason": "ok"}
+)
+DISTIL_OUTCOME_NAMES = (
+    "llm_error",
+    "parse_error",
+    "not_durable",
+    "critic_rejected",
+    "written_equivalent",
+)
+
+
+def _distil_mapping(distill: str = DISTILL_OK, critic: str = CRITIC_OK) -> dict[str, str]:
+    """Detector answers stay PERFECT; distiller/critic anchors come first.
+
+    Distiller prompts carry a ``Wrong belief:`` line, critic prompts a
+    ``Drafted lesson:`` line; both are looked up before the PERFECT keys, so
+    one stub serves detector, distiller and critic.
+    """
+    return {"Drafted lesson:": critic, "Wrong belief:": distill, **PERFECT}
+
+
+def _calls_for(calls: list[tuple[str, str, str | None, str]], purpose: str) -> list[str]:
+    return [c[1] for c in calls if c[3] == purpose]
+
+
+def test_dv_off_reproduces_today(tmp_path, capsys, made):
+    res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "off")
+    plain = _run(capsys, tmp_path / "o2", DIGESTS_FIXTURE, "--model", "stub-model")
+    assert res["code"] == plain["code"] == 0
+    assert res["rows"] == plain["rows"]
+    for r in res["rows"]:
+        assert set(r) == set(se.RESULT_KEYS)
+    assert res["report"]["cells"] == plain["report"]["cells"]
+    assert res["md"] == plain["md"]
+    report = res["report"]
+    assert report["schema"] == 1
+    assert report["args"] == {
+        "concurrency": 4,
+        "force": False,
+        "limit": None,
+        "peer_messages": "off",
+        "shape2_context": "previous_turn",
+        "shape2_prompt": "default",
+        "shapes": [1, 2, 3],
+        "timeout": None,
+    }
+    assert report.get("distil_skipped") is None
+    assert report.get("distiller_version") is None
+    for cell in report["cells"]:
+        assert set(cell) == set(se.CELL_KEYS)
+    # One client per run (the detector arm); no distiller or critic client was
+    # built, and only detector calls were made.
+    assert len(made) == 2
+    assert all(m.closed for m in made)
+    assert all(c[3].startswith("surprise_detector_") for c in StubLLM.calls)
+
+
+def test_dv_on_written_equivalent(tmp_path, capsys, made):
+    StubLLM.mapping = _distil_mapping()
+    before = len(made)
+    res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    assert res["code"] == 0
+    r2 = _row(res, "syn-s2-pos")
+    assert r2["distil_outcome"] == "written_equivalent"
+    assert r2["distil_capped"] is False
+    assert r2["distil_corrected_fact"] == "8081 is the dashboard port"
+    assert r2["distil_lesson_class"] == "project_tooling"
+    assert r2["critic_verdict"] == {
+        "supported": True,
+        "scope_ok": True,
+        "durable": True,
+        "misleading": False,
+        "reason": "ok",
+    }
+    assert r2["critic_reason"] == "ok"
+    assert r2["resolution_corrected_fact"] == "8081 is the dashboard port"
+    assert r2["resolution_wrong_belief"] == "Port 8080 is free"
+    assert r2["resolution_cue"] is None  # shape 2 never carries a cue
+    assert HEX64.match(r2["distil_prompt_sha256"])
+    assert HEX64.match(r2["critic_prompt_sha256"])
+    assert r2["distil_raw_excerpt"] == DISTILL_OK
+    assert r2["critic_raw_excerpt"] == CRITIC_OK
+    assert r2["distil_model"] == surprise_worker.SURPRISE_DISTILLER_DEFAULT_MODEL
+    assert r2["critic_model"] == surprise_worker.SURPRISE_CRITIC_DEFAULT_MODEL
+    # The critic prompt carried the target turn's user prompt (shape 2).
+    critic_prompts = _calls_for(StubLLM.calls, "surprise_critic")
+    assert any(
+        "The human's correction: no, 8080 is taken by caddy, use 8081" in p for p in critic_prompts
+    )
+    # A no-candidate row carries null distil columns but the model arms.
+    r2n = _row(res, "syn-s2-neg")
+    assert r2n["outcome"] == "no_surprise"
+    assert r2n["distil_outcome"] is None
+    assert r2n["distil_capped"] is None
+    assert r2n["distil_model"] == "claude-sonnet-5-5"
+    assert r2n["critic_model"] == "claude-sonnet-5-5"
+    assert r2n["distil_prompt_sha256"] is None
+    # Shape 1: build_resolution's cue survives the chain.
+    r1 = _row(res, "syn-s1-pos")
+    assert r1["distil_outcome"] == "written_equivalent"
+    assert r1["resolution_cue"] == {
+        "tool": "Bash",
+        "target_class": "git push",
+        "args_prefix": "origin main",
+    }
+    report = res["report"]
+    assert report["schema"] == 1
+    assert report["distil_skipped"] == 0
+    assert report["distil_llm_calls"] == 6  # 3 candidates x (distiller + critic)
+    assert report["distiller_version"] == surprise_distill.SURPRISE_DISTILLER_VERSION == 9
+    assert report["critic_version"] == surprise_distill.SURPRISE_CRITIC_VERSION == 2
+    assert HEX64.match(report["distil_prompt_set_sha256"])
+    assert len(made) - before == 3  # detector + distiller + critic
+    assert all(m.closed for m in made)
+    assert (
+        report["prompt_set_sha256"]
+        == _run(capsys, tmp_path / "o3", DIGESTS_FIXTURE, "--model", "stub-model")["report"][
+            "prompt_set_sha256"
+        ]
+    )
+    assert report["args"]["distil"] == "on"
+    assert report["args"]["distil_model"] == "claude-sonnet-5-5"
+    assert report["args"]["critic_model"] == "claude-sonnet-5-5"
+    assert report["args"]["distil_max"] == 500
+    for cell in report["cells"]:
+        assert set(cell) == set(se.CELL_KEYS) | {"distil_outcomes", "distil_skipped_in_cell"}
+        assert cell["distil_skipped_in_cell"] == 0
+        assert set(cell["distil_outcomes"]) == set(DISTIL_OUTCOME_NAMES)
+    for shape in (1, 2, 3):
+        assert _cell(res, shape)["distil_outcomes"]["written_equivalent"] == 1
+        assert sum(_cell(res, shape)["distil_outcomes"].values()) == 1
+    md = res["md"]
+    assert "## Distil outcomes" in md
+    zero = "llm_error=0 parse_error=0 not_durable=0 critic_rejected=0"
+    for shape, model in ((1, "rule:shape1"), (2, "stub-model"), (3, "stub-model")):
+        assert f"{shape}/{model}: {zero} written_equivalent=1 skipped=0" in md
+
+
+def test_dv_on_critic_rejected(tmp_path, capsys, made):
+    critic = json.dumps(
+        {
+            "supported": False,
+            "scope_ok": True,
+            "durable": True,
+            "misleading": False,
+            "reason": "evidence thin",
+        }
+    )
+    StubLLM.mapping = _distil_mapping(critic=critic)
+    res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    assert res["code"] == 0
+    r2 = _row(res, "syn-s2-pos")
+    assert r2["distil_outcome"] == "critic_rejected"
+    assert r2["distil_capped"] is False
+    assert r2["distil_corrected_fact"] == "8081 is the dashboard port"
+    assert r2["distil_lesson_class"] == "project_tooling"
+    assert r2["critic_verdict"]["supported"] is False
+    assert r2["critic_reason"] == "evidence thin"
+    assert r2["resolution_corrected_fact"] is None
+    assert r2["resolution_wrong_belief"] is None
+    assert r2["resolution_cue"] is None
+
+
+def test_dv_on_not_durable(tmp_path, capsys, made):
+    distill = json.dumps({"durable": False, "why": "one-off"})
+    StubLLM.mapping = _distil_mapping(distill=distill)
+    res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    assert res["code"] == 0
+    r2 = _row(res, "syn-s2-pos")
+    assert r2["distil_outcome"] == "not_durable"
+    assert r2["distil_reason"] == "one-off"
+    assert r2["distil_corrected_fact"] is None
+    assert r2["distil_lesson_class"] is None
+    assert r2["critic_verdict"] is None
+    assert r2["critic_reason"] is None
+    assert r2["critic_prompt_sha256"] is None
+    assert r2["critic_raw_excerpt"] is None
+    assert r2["distil_raw_excerpt"] == distill
+    assert not _calls_for(StubLLM.calls, "surprise_critic")
+
+
+def test_dv_on_cap(tmp_path, capsys, made):
+    StubLLM.mapping = _distil_mapping()
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        DIGESTS_FIXTURE,
+        "--model",
+        "stub-model",
+        "--distil",
+        "on",
+        "--distil-max",
+        "1",
+    )
+    assert res["code"] == 0
+    assert res["err"].count("run: distil cap reached, skipped 2 candidates") == 1
+    # Enumeration order: shape-1 cases first, then shape-2/3 cases in file order.
+    assert _row(res, "syn-s1-pos")["distil_outcome"] == "written_equivalent"
+    for cid in ("syn-s2-pos", "syn-s3-pos"):
+        row = _row(res, cid)
+        assert row["distil_capped"] is True
+        assert row["distil_outcome"] is None
+        assert row["distil_model"] == "claude-sonnet-5-5"
+    assert res["report"]["distil_skipped"] == 2
+    assert res["report"]["distil_llm_calls"] == 2
+    assert _cell(res, 1)["distil_outcomes"]["written_equivalent"] == 1
+    for shape in (2, 3):
+        assert _cell(res, shape)["distil_skipped_in_cell"] == 1
+        assert sum(_cell(res, shape)["distil_outcomes"].values()) == 0
+    md = res["md"]
+    zero = "llm_error=0 parse_error=0 not_durable=0 critic_rejected=0"
+    assert f"1/rule:shape1: {zero} written_equivalent=1 skipped=0" in md
+    assert f"2/stub-model: {zero} written_equivalent=0 skipped=1" in md
+
+
+def test_dv_on_critic_evidence_shape3_and_shape1(tmp_path, capsys, made):
+    StubLLM.mapping = _distil_mapping()
+    res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    assert res["code"] == 0
+    critic_prompts = _calls_for(StubLLM.calls, "surprise_critic")
+    assert len(critic_prompts) == 3
+    # Shape 3: the target turn's tool_result excerpts reach the critic prompt.
+    s3 = next(p for p in critic_prompts if "Tool results from the turn:" in p)
+    assert "[tool_result] No such file: /etc/foo.conf; config is at /etc/foo/main.conf" in s3
+    # Shape 1: neither evidence section is rendered.
+    s1 = next(p for p in critic_prompts if "git push origin main" in p)
+    assert "The human's correction:" not in s1
+    assert "Tool results from the turn:" not in s1
+
+
+def test_dv_distil_flag_validation(tmp_path, capsys, made):
+    out = tmp_path / "o"
+    code = se.main(
+        [
+            "run",
+            "--cases",
+            str(DIGESTS_FIXTURE),
+            "--out",
+            str(out),
+            "--model",
+            "m",
+            "--distil",
+            "bogus",
+        ]
+    )
+    assert code == 2
+    assert "run: --distil must be one of off,on" in capsys.readouterr().err
+    assert not out.exists()
+    assert StubLLM.calls == []
+
+    code = se.main(
+        [
+            "run",
+            "--cases",
+            str(DIGESTS_FIXTURE),
+            "--out",
+            str(out),
+            "--model",
+            "m",
+            "--distil",
+            "on",
+            "--distil-max",
+            "0",
+        ]
+    )
+    assert code == 2
+    assert "run: --distil-max must be >= 1" in capsys.readouterr().err
+    assert not out.exists()
+
+    code = se.main(
+        [
+            "run",
+            "--cases",
+            str(DIGESTS_FIXTURE),
+            "--out",
+            str(out),
+            "--model",
+            "m",
+            "--distil",
+            "on",
+            "--distil-model",
+            "bogus@x",
+        ]
+    )
+    assert code == 2
+    assert "invalid model arm 'bogus@x'" in capsys.readouterr().err
+    assert not out.exists()
+    assert StubLLM.calls == []
+
+
+def test_dv_on_llm_error(tmp_path, capsys, made):
+    StubLLM.raise_purposes = {"surprise_distiller"}
+    StubLLM.mapping = _distil_mapping()
+    res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    assert res["code"] == 0  # distil outcomes never change the exit code
+    for cid in ("syn-s1-pos", "syn-s2-pos", "syn-s3-pos"):
+        row = _row(res, cid)
+        assert row["distil_outcome"] == "llm_error"
+        assert row["distil_capped"] is False
+        assert row["distil_prompt_sha256"] is not None
+        assert row["critic_prompt_sha256"] is None
+        assert row["distil_raw_excerpt"] is None
+    assert not _calls_for(StubLLM.calls, "surprise_critic")
+    for shape, model in ((1, "rule:shape1"), (2, "stub-model"), (3, "stub-model")):
+        assert (
+            f"{model} shape {shape}: distiller unavailable (every distil call errored)"
+            in res["report"]["warnings"]
+        )
+    assert any("distiller unavailable" in line for line in res["md"].splitlines())
+
+
+def test_dv_on_parse_error_fail_closed(tmp_path, capsys, made):
+    # The distiller reply that is not a JSON object is parse_error.
+    StubLLM.mapping = _distil_mapping(distill="not a json object")
+    res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    assert res["code"] == 0
+    assert _row(res, "syn-s2-pos")["distil_outcome"] == "parse_error"
+    assert _row(res, "syn-s2-pos")["distil_raw_excerpt"] == "not a json object"
+    # A durable distiller verdict followed by an unparseable critic reply is
+    # also parse_error (fail closed).
+    StubLLM.mapping = _distil_mapping(critic="not a json object either")
+    res2 = _run(capsys, tmp_path / "o2", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    assert res2["code"] == 0
+    r2 = _row(res2, "syn-s2-pos")
+    assert r2["distil_outcome"] == "parse_error"
+    assert r2["distil_corrected_fact"] is None
+    assert r2["critic_raw_excerpt"] == "not a json object either"
+    # {"surprise": false} is a valid JSON object without durable: true, so the
+    # pinned production parser reads it as not_durable with an empty why.
+    StubLLM.mapping = _distil_mapping(distill=json.dumps({"surprise": False}))
+    res3 = _run(capsys, tmp_path / "o3", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    assert res3["code"] == 0
+    r3 = _row(res3, "syn-s2-pos")
+    assert r3["distil_outcome"] == "not_durable"
+    assert r3["distil_reason"] == ""
+
+
+def test_dv_on_cross_shape_candidate(tmp_path, capsys, made):
+    case = _shape3_case(
+        "cross-1",
+        False,
+        [
+            _text("Pushing now."),
+            _call("t1", "git push origin main", "git push"),
+            _res("t1", True, "rejected"),
+            _call("t2", "git push origin HEAD:main", "git push"),
+            _res("t2", False, "ok"),
+            _text("Pushed with HEAD:main."),
+        ],
+    )
+    path = _write_cases(tmp_path / "cases.jsonl", [case])
+    StubLLM.mapping = _distil_mapping()
+    res = _run(capsys, tmp_path / "o", path, "--model", "stub-model", "--distil", "on")
+    assert res["code"] == 0
+    assert _row(res, "cross-1")["cross_shape_candidates"] == [1]
+    row = _row(res, "cross-1")
+    assert row["distil_outcome"] is None
+    assert row["distil_capped"] is None
+    assert row["distil_model"] == "claude-sonnet-5-5"
+    cell = _cell(res, 3)
+    assert cell["distil_outcomes"]["written_equivalent"] == 1
+    assert sum(cell["distil_outcomes"].values()) == 1
+    assert cell["distil_skipped_in_cell"] == 0
+    assert res["report"]["distil_llm_calls"] == 2
+
+
+def test_dv_on_detector_invariants_unchanged(tmp_path, capsys, made):
+    StubLLM.mapping = _distil_mapping()
+    on = _run(capsys, tmp_path / "o1", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "on")
+    off = _run(capsys, tmp_path / "o2", DIGESTS_FIXTURE, "--model", "stub-model", "--distil", "off")
+    assert on["code"] == off["code"] == 0
+    assert on["err"] == off["err"]
+    detector_keys = (
+        "llm_calls",
+        "latency_ms",
+        "prompt_chars",
+        "response_chars",
+        "raw_response_excerpt",
+        "prompt_sha256",
+        "detector_output",
+        "anomaly",
+        "harness_error",
+        "provider_warnings",
+        "outcome",
+        "reason",
+        "confidence",
+        "predicted",
+        "model_positive",
+        "expected_match",
+        "cross_shape_candidates",
+    )
+    for ron, roff in zip(on["rows"], off["rows"], strict=True):
+        assert ron["case_id"] == roff["case_id"]
+        for key in detector_keys:
+            assert ron[key] == roff[key], (ron["case_id"], key)
+    assert on["report"]["prompt_set_sha256"] == off["report"]["prompt_set_sha256"]
+    assert len(on["report"]["warnings"]) == len(off["report"]["warnings"])
+    for con, coff in zip(on["report"]["cells"], off["report"]["cells"], strict=True):
+        assert {
+            k: v for k, v in con.items() if k not in ("distil_outcomes", "distil_skipped_in_cell")
+        } == coff

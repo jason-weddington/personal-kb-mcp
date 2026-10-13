@@ -40,7 +40,7 @@ from kb_core.ingest.safety import redact_secrets
 from kb_core.llm import anthropic as anthropic_llm
 from kb_core.llm import json_parser
 from kb_service import config as service_config
-from kb_service import harness_tools, surprise, surprise_worker, turn_digest
+from kb_service import harness_tools, surprise, surprise_distill, surprise_worker, turn_digest
 from kb_service.models import TurnDigestRequest
 
 if TYPE_CHECKING:
@@ -71,6 +71,35 @@ OUTCOMES = (
 ERROR_OUTCOMES = ("llm_error", "unparseable", "invalid_fields")
 MODEL_POSITIVE_OUTCOMES = ("candidate", "low_confidence", "ungrounded")
 NO_CALL_OUTCOMES = ("not_applicable", "no_llm")
+
+# --distil on: outcomes of the offline distiller+critic pass, mirroring
+# production's distillation outcomes; rows and cells carry them only when
+# distilling, never with --distil off.
+DISTIL_OUTCOMES = (
+    "llm_error",
+    "parse_error",
+    "not_durable",
+    "critic_rejected",
+    "written_equivalent",
+)
+DISTIL_ROW_KEYS = (
+    "distil_outcome",
+    "distil_capped",
+    "distil_model",
+    "critic_model",
+    "distil_corrected_fact",
+    "distil_lesson_class",
+    "distil_reason",
+    "critic_verdict",
+    "critic_reason",
+    "resolution_corrected_fact",
+    "resolution_wrong_belief",
+    "resolution_cue",
+    "distil_prompt_sha256",
+    "critic_prompt_sha256",
+    "distil_raw_excerpt",
+    "critic_raw_excerpt",
+)
 
 COMMON_CASE_KEYS = frozenset(
     {
@@ -919,7 +948,13 @@ async def _score(
     shape2_context: str,
     shape2_prompt: str,
     peer_messages: bool,
-) -> None:
+) -> list[surprise.DetectionRecord]:
+    """Score one case; return the detector's records for the distil pass.
+
+    The records are eval-only state: the detector columns on ``row`` are
+    already final, and the raw records feed ``--distil on``'s candidate
+    enumeration without touching the results files.
+    """
     records = await surprise_worker.detect_digest(
         llm,
         case.digests[-1],
@@ -1011,6 +1046,7 @@ async def _score(
     if own:
         row["detector_model"] = own[0].detector_model
         row["reason"] = own[0].reason
+    return records
 
 
 async def _evaluate(
@@ -1023,13 +1059,14 @@ async def _evaluate(
     shape2_context: str,
     shape2_prompt: str,
     peer_messages: bool,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[surprise.DetectionRecord]]:
     async with sem:
         log: list[str] = []
         _EVAL_LOG.set(log)
         row = _base_row(case, model, shape2_context, shape2_prompt, peer_messages)
+        records: list[surprise.DetectionRecord] = []
         try:
-            await _score(
+            records = await _score(
                 case,
                 llm,
                 min_confidence_by_shape,
@@ -1052,7 +1089,278 @@ async def _evaluate(
         if row["harness_error"] is not None:
             exc_type = row["harness_error"].split(":", 1)[0]
             print(f"harness_error {model} {case.id} {exc_type}", file=sys.stderr)
-        return row
+        return row, records
+
+
+# --- --distil on: offline distiller + critic pass (eval only, no writes) ------
+
+
+def _distil_row_nulls(distil_model: str, critic_model: str) -> dict[str, Any]:
+    """The null distil columns every row carries under ``--distil on``."""
+    row: dict[str, Any] = dict.fromkeys(DISTIL_ROW_KEYS)
+    row["distil_model"] = distil_model
+    row["critic_model"] = critic_model
+    return row
+
+
+def _enumerate_distil_candidates(
+    jobs: list[tuple[Case, str, Any]],
+    gathered: list[tuple[dict[str, Any], list[surprise.DetectionRecord]]],
+) -> tuple[list[tuple[Case, surprise.NewCandidate, dict[str, Any]]], dict[int, int]]:
+    """Enumerate candidate records in a fixed ``--concurrency``-independent order.
+
+    Jobs order (shape-1 cases first, then each model arm's shape-2/3 cases in
+    file order), then the records of each job in detector order. Every record
+    with outcome ``candidate`` and a candidate payload mirrors production's
+    ``_insert_records`` rule, which inserts a ``surprise_candidates`` row for
+    exactly these records. A row's own-shape first candidate fills the row's
+    distil columns: for a shape-1 row that is the first own-shape candidate
+    record, and for a shape-2/3 row it is the row's own[0] record, which must
+    itself be a candidate. The row's other candidates are distilled and
+    counted per cell but fill no column.
+    """
+    candidates: list[tuple[Case, surprise.NewCandidate, dict[str, Any]]] = []
+    own: dict[int, int] = {}
+    for (case, _model, _llm), (row, records) in zip(jobs, gathered, strict=True):
+        seen_own_shape = False
+        for record in records:
+            first_own_shape = record.shape == case.shape and not seen_own_shape
+            if first_own_shape:
+                seen_own_shape = True
+            if record.outcome == "candidate" and record.candidate is not None:
+                position = len(candidates)
+                candidates.append((case, record.candidate, row))
+                if (
+                    record.shape == case.shape
+                    and (case.shape == 1 or first_own_shape)
+                    and id(row) not in own
+                ):
+                    own[id(row)] = position
+    return candidates, own
+
+
+def _critic_evidence_from_digest(
+    shape: int, digest: surprise.TurnDigest
+) -> tuple[str | None, list[str]]:
+    """The critic's evidence kwargs, read exactly as production does.
+
+    ``user_correction`` is the target turn's ``user_prompt`` for shape 2 and
+    ``tool_results`` its tool-result excerpts for shape 3; shapes 1 and 4
+    carry neither. The eval reads them from its in-memory digests where
+    production reads them from the stored digest of the candidate's last turn
+    event (``surprise_worker._critic_evidence``), which is the same content.
+    """
+    if shape == 2:
+        return digest.user_prompt, []
+    if shape == 3:
+        return None, [
+            str(item.get("excerpt") or "")
+            for item in digest.items
+            if item.get("kind") == "tool_result"
+        ]
+    return None, []
+
+
+async def _run_distil_pass(
+    args: argparse.Namespace,
+    started_at: str,
+    jobs: list[tuple[Case, str, Any]],
+    gathered: list[tuple[dict[str, Any], list[surprise.DetectionRecord]]],
+) -> dict[str, Any]:
+    """Distil every detected candidate through the pure production chain.
+
+    ``build_distill_prompt`` -> distiller -> ``parse_distill_response``, then
+    for a parsed verdict ``build_critic_prompt`` -> critic ->
+    ``parse_critic_response``, then ``build_resolution`` after critic
+    acceptance. Unlike ``surprise_worker._decide_one`` the eval runs none of
+    its DB-bound steps: no ``DbPool`` or kb object is built, and the pre-LLM
+    gates, the shape-1 cue exact-match pre-check, the exact match, reply
+    redaction, the verdict redaction-marker and secret scans, resolution
+    validation/stamping, the near-duplicate lookup, the write and the
+    ``surprise_distillations`` audit rows are all omitted, so its accept rate
+    is an upper bound on production's write rate. Rows are updated in place.
+    """
+    cap = args.distil_max
+    candidates, own = _enumerate_distil_candidates(jobs, gathered)
+    distiller: Any = None
+    critic: Any = None
+    calls = 0
+    pairs: set[str] = set()
+    columns: list[dict[str, Any] | None] = [None] * len(candidates)
+    if candidates:
+        d_model, d_effort, d_think = parse_model_arm(args.distil_model)
+        c_model, c_effort, c_think = parse_model_arm(args.critic_model)
+        distiller = make_llm(d_model, args.timeout, effort=d_effort, thinking=d_think)
+        critic = make_llm(c_model, args.timeout, effort=c_effort, thinking=c_think)
+        try:
+            for i, (case, new_candidate, _row) in enumerate(candidates):
+                if i >= cap:
+                    break
+                candidate = surprise.SurpriseCandidate(
+                    id=-(i + 1),
+                    shape=new_candidate.shape,
+                    session_id=case.digests[-1].session_id,
+                    project=case.digests[-1].project,
+                    turn_event_ids=new_candidate.turn_event_ids,
+                    detector_model=new_candidate.detector_model,
+                    detector_output=new_candidate.detector_output,
+                    status="pending",
+                    entry_id=None,
+                    created_at=started_at,
+                )
+                prompt = surprise_distill.build_distill_prompt(candidate)
+                distil_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+                pairs.add(f"{case.id}:{distil_sha}")
+                calls += 1
+                try:
+                    raw = await distiller.generate(
+                        prompt,
+                        purpose="surprise_distiller",
+                        system=surprise_distill.SURPRISE_DISTILLER_SYSTEM,
+                    )
+                except Exception:
+                    raw = None
+                verdict, reject = surprise_distill.parse_distill_response(raw)
+                raw_excerpt = raw[: surprise.RAW_RESPONSE_EXCERPT_MAX] if raw else None
+                if verdict is None:
+                    # parse_distill_response returns exactly one non-None element.
+                    if reject == "llm_error":
+                        outcome = "llm_error"
+                    elif reject == "not_durable":
+                        outcome = "not_durable"
+                    else:  # unparseable or invalid_fields: fail closed as parse_error
+                        outcome = "parse_error"
+                    columns[i] = {
+                        "distil_outcome": outcome,
+                        "distil_capped": False,
+                        "distil_corrected_fact": None,
+                        "distil_lesson_class": None,
+                        "distil_reason": (
+                            surprise_distill.not_durable_reason(raw)
+                            if reject == "not_durable"
+                            else None
+                        ),
+                        "critic_verdict": None,
+                        "critic_reason": None,
+                        "resolution_corrected_fact": None,
+                        "resolution_wrong_belief": None,
+                        "resolution_cue": None,
+                        "distil_prompt_sha256": distil_sha,
+                        "critic_prompt_sha256": None,
+                        "distil_raw_excerpt": raw_excerpt,
+                        "critic_raw_excerpt": None,
+                    }
+                    continue
+                user_correction, tool_results = _critic_evidence_from_digest(
+                    candidate.shape, case.digests[-1]
+                )
+                critic_prompt = surprise_distill.build_critic_prompt(
+                    candidate,
+                    verdict,
+                    user_correction=user_correction,
+                    tool_results=tool_results,
+                )
+                critic_sha = hashlib.sha256(critic_prompt.encode("utf-8")).hexdigest()
+                pairs.add(f"{case.id}:{critic_sha}")
+                calls += 1
+                try:
+                    critic_raw = await critic.generate(
+                        critic_prompt,
+                        purpose="surprise_critic",
+                        system=surprise_distill.SURPRISE_CRITIC_SYSTEM,
+                    )
+                except Exception:
+                    critic_raw = None
+                critic_verdict, critic_reject = surprise_distill.parse_critic_response(critic_raw)
+                critic_excerpt = (
+                    critic_raw[: surprise.RAW_RESPONSE_EXCERPT_MAX] if critic_raw else None
+                )
+                base = {
+                    "distil_corrected_fact": verdict.corrected_fact,
+                    "distil_lesson_class": verdict.lesson_class,
+                    "distil_reason": None,
+                    "resolution_corrected_fact": None,
+                    "resolution_wrong_belief": None,
+                    "resolution_cue": None,
+                    "distil_prompt_sha256": distil_sha,
+                    "critic_prompt_sha256": critic_sha,
+                    "distil_raw_excerpt": raw_excerpt,
+                    "critic_raw_excerpt": critic_excerpt,
+                }
+                if critic_verdict is None:
+                    # parse_critic_response returns exactly one non-None element.
+                    # Fail closed: no distiller lesson content leaves the pass
+                    # when the critic reply is missing or unparseable.
+                    base["distil_corrected_fact"] = None
+                    base["distil_lesson_class"] = None
+                    outcome = "llm_error" if critic_reject == "llm_error" else "parse_error"
+                    columns[i] = {
+                        "distil_outcome": outcome,
+                        "distil_capped": False,
+                        "critic_verdict": None,
+                        "critic_reason": None,
+                        **base,
+                    }
+                    continue
+                critic_dict = {
+                    "supported": critic_verdict.supported,
+                    "scope_ok": critic_verdict.scope_ok,
+                    "durable": critic_verdict.durable,
+                    "misleading": critic_verdict.misleading,
+                    "reason": critic_verdict.reason,
+                }
+                if not critic_verdict.accepted:
+                    columns[i] = {
+                        "distil_outcome": "critic_rejected",
+                        "distil_capped": False,
+                        "critic_verdict": critic_dict,
+                        "critic_reason": critic_verdict.reason,
+                        **base,
+                    }
+                    continue
+                resolution = surprise_distill.build_resolution(candidate, verdict)
+                columns[i] = {
+                    **base,
+                    "distil_outcome": "written_equivalent",
+                    "distil_capped": False,
+                    "critic_verdict": critic_dict,
+                    "critic_reason": critic_verdict.reason,
+                    "resolution_corrected_fact": resolution.get("corrected_fact"),
+                    "resolution_wrong_belief": resolution.get("wrong_belief"),
+                    "resolution_cue": resolution.get("cue"),
+                }
+        finally:
+            await distiller.close()
+            await critic.close()
+    for row, _records in gathered:
+        row.update(_distil_row_nulls(args.distil_model, args.critic_model))
+        position = own.get(id(row))
+        if position is None:
+            continue
+        if position >= cap:
+            row["distil_capped"] = True
+            continue
+        row.update(columns[position])
+    cell_counts: dict[tuple[int, str], dict[str, Any]] = {}
+    for i, (_case, _new_candidate, row) in enumerate(candidates):
+        counts = cell_counts.setdefault(
+            (int(row["shape"]), str(row["model"])),
+            {
+                "distil_outcomes": dict.fromkeys(DISTIL_OUTCOMES, 0),
+                "distil_skipped_in_cell": 0,
+            },
+        )
+        if i >= cap or columns[i] is None:
+            counts["distil_skipped_in_cell"] += 1
+        else:
+            outcome = columns[i]["distil_outcome"]
+            counts["distil_outcomes"][outcome] += 1
+    return {
+        "skipped": max(0, len(candidates) - cap),
+        "llm_calls": calls,
+        "pairs": sorted(pairs),
+        "cells": cell_counts,
+    }
 
 
 # --- cells and warnings ------------------------------------------------------
@@ -1170,6 +1478,13 @@ def _build_cell(
 def _cell_warnings(cell: dict[str, Any], production_timeout_s: float) -> list[str]:
     p = f"{cell['model']} shape {cell['shape']}: "
     out: list[str] = []
+    distil = cell.get("distil_outcomes")
+    if (
+        distil is not None
+        and sum(distil.values()) > 0
+        and (distil["llm_error"] + distil["parse_error"]) == sum(distil.values())
+    ):
+        out.append(f"{p}distiller unavailable (every distil call errored)")
     if cell["errors"] > 0:
         out.append(
             f"{p}{cell['errors']} detector errors (llm_error/unparseable/invalid_fields)"
@@ -1307,6 +1622,14 @@ def _render_md(report: dict[str, Any], rows_by_cell: list[list[dict[str, Any]]])
     for c in report["cells"]:
         values = [c["shape"], c["model"], *(c["outcomes"][o] for o in OUTCOMES)]
         lines.append("| " + " | ".join(_fmt(v) for v in values) + " |")
+    if report.get("distiller_version") is not None:
+        lines += ["", "## Distil outcomes", ""]
+        for c in report["cells"]:
+            counts = " ".join(f"{k}={v}" for k, v in c["distil_outcomes"].items())
+            lines.append(
+                f"{c['shape']}/{_md_cell(c['model'])}: {counts}"
+                f" skipped={c['distil_skipped_in_cell']}"
+            )
     lines += ["", "## Disagreements", ""]
     disagreements: list[str] = []
     for cell_rows in rows_by_cell:
@@ -1430,6 +1753,18 @@ def _arg_error(args: argparse.Namespace) -> tuple[str | None, list[int]]:
     peer_messages = getattr(args, "peer_messages", "off")
     if peer_messages not in ("off", "on"):
         return "--peer-messages must be one of off,on", shapes
+    distil = getattr(args, "distil", "off")
+    if distil not in ("off", "on"):
+        return "--distil must be one of off,on", shapes
+    distil_max = getattr(args, "distil_max", None)
+    if distil_max is not None and distil_max < 1:
+        return "--distil-max must be >= 1", shapes
+    for flag, attr in (("--distil-model", "distil_model"), ("--critic-model", "critic_model")):
+        arm = getattr(args, attr, "")
+        try:
+            parse_model_arm(arm)
+        except ArmError as exc:
+            return f"{flag} {exc}", shapes
     return None, shapes
 
 
@@ -1505,6 +1840,7 @@ async def _run(
 
     sem = asyncio.Semaphore(args.concurrency)
     progress = {"done": 0, "total": len(jobs)}
+    distil: dict[str, Any] | None = None
     provider_logger = logging.getLogger(PROVIDER_LOGGER)
     handler = _EvalLogHandler(level=logging.WARNING)
     old_level = provider_logger.level
@@ -1512,7 +1848,9 @@ async def _run(
     if provider_logger.getEffectiveLevel() > logging.WARNING:
         provider_logger.setLevel(logging.WARNING)
     try:
-        rows = await asyncio.gather(
+        gathered: list[
+            tuple[dict[str, Any], list[surprise.DetectionRecord]]
+        ] = await asyncio.gather(
             *(
                 _evaluate(
                     c,
@@ -1528,6 +1866,14 @@ async def _run(
                 for c, m, llm in jobs
             )
         )
+        rows = [row for row, _records in gathered]
+        if args.distil == "on":
+            distil = await _run_distil_pass(args, started_at, jobs, gathered)
+            if distil["skipped"]:
+                print(
+                    f"run: distil cap reached, skipped {distil['skipped']} candidates",
+                    file=sys.stderr,
+                )
     finally:
         provider_logger.removeHandler(handler)
         provider_logger.setLevel(old_level)
@@ -1548,6 +1894,16 @@ async def _run(
             continue
         cells.append(_build_cell(shape, model, cell_rows, production_timeout_s))
         rows_by_cell.append(cell_rows)
+    if distil is not None:
+        for cell in cells:
+            counts = distil["cells"].get((cell["shape"], cell["model"]))
+            if counts is None:
+                counts = {
+                    "distil_outcomes": dict.fromkeys(DISTIL_OUTCOMES, 0),
+                    "distil_skipped_in_cell": 0,
+                }
+            cell["distil_outcomes"] = counts["distil_outcomes"]
+            cell["distil_skipped_in_cell"] = counts["distil_skipped_in_cell"]
     warnings: list[str] = []
     for cell in cells:
         warnings += _cell_warnings(cell, production_timeout_s)
@@ -1582,10 +1938,10 @@ async def _run(
             "shapes": shapes,
             "timeout": args.timeout,
         },
-        "shape2_prompt_version": shape2_prompt_version,
         "versions": {
             name: _version(name) for name in ("anthropic", "kb-core", "personal-kb-web-service")
         },
+        "shape2_prompt_version": shape2_prompt_version,
         "timeout_s": timeout_s,
         "production_timeout_s": production_timeout_s,
         "production_default_model": default_model,
@@ -1599,6 +1955,22 @@ async def _run(
         "cells": cells,
         "warnings": warnings,
     }
+    if distil is not None:
+        report["args"].update(
+            distil="on",
+            distil_model=args.distil_model,
+            critic_model=args.critic_model,
+            distil_max=args.distil_max,
+        )
+        report["distil_skipped"] = distil["skipped"]
+        report["distil_llm_calls"] = distil["llm_calls"]
+        report["distiller_version"] = surprise_distill.SURPRISE_DISTILLER_VERSION
+        report["critic_version"] = surprise_distill.SURPRISE_CRITIC_VERSION
+        report["distil_prompt_set_sha256"] = (
+            hashlib.sha256("\n".join(distil["pairs"]).encode("utf-8")).hexdigest()
+            if distil["pairs"]
+            else None
+        )
     (out / "report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -1642,6 +2014,10 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--shape2-context", default="previous_turn")
     r.add_argument("--shape2-prompt", default="default")
     r.add_argument("--peer-messages", default="off")
+    r.add_argument("--distil", default="off")
+    r.add_argument("--distil-model", default=surprise_worker.SURPRISE_DISTILLER_DEFAULT_MODEL)
+    r.add_argument("--critic-model", default=surprise_worker.SURPRISE_CRITIC_DEFAULT_MODEL)
+    r.add_argument("--distil-max", type=int, default=500)
     r.add_argument("--force", action="store_true", default=False)
     return parser
 

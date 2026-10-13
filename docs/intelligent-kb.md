@@ -384,6 +384,8 @@ WHERE shape = 4 AND outcome = 'candidate'
 
 In mode `on`, `surprise_worker.distill_candidates` turns each pending shape 1-4 candidate into a lesson, a merge, or a recorded rejection. It runs sequentially in id order through these steps. The code calls the sequence S0-S13 but names only two steps individually: S0, the claim pre-check (`distill_candidates`), and S12, the match decision (`_decide_match`); the other rows below are unnumbered in the code.
 
+The eval harness `scripts/surprise_eval` (`run --distil on`) can also run the production distiller and critic offline, without writes: it chains the pure prompt-build, parse and resolution-build functions only and opens no database, so its accept rate is an upper bound on the drain's write rate; the surprise_eval README documents exactly which DB steps it omits.
+
 | Order | Check | Outcome when it fires |
 |---|---|---|
 | 1 (S0) | status is no longer `pending` | skipped, `tripwire=double_distill`, no row |
