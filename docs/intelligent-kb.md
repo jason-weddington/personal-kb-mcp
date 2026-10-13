@@ -724,7 +724,7 @@ Service switches are process environment, so flipping one means changing kb-serv
 | `KB_SURPRISE_CAPTURE` | service per request; worker at startup | `off` | `on` since 2026-10-10 13:58Z | after the restart; each live session starts or stops sending digests at its next Stop |
 | `KB_SURPRISE_DETECTOR_MODEL` | service per call | `claude-sonnet-5-5` | unset on all three KBs, so the default (verified 2026-10-13) | next call |
 | `KB_SURPRISE_DISTILL_MODEL` | service per call | `claude-sonnet-5-5` | unset on all three KBs, so the default (verified 2026-10-13) | next call |
-| `KB_SURPRISE_CRITIC_MODEL` | service per call | `claude-sonnet-5-5` | `claude-opus-5-5` on the personal KB; unset on the team KB and Tomoki's KB (verified 2026-10-13) | next call |
+| `KB_SURPRISE_CRITIC_MODEL` | service per call | `claude-sonnet-5-5` | `claude-opus-5-5` on the personal KB; unset on the other hosted KBs (verified 2026-10-13) | next call |
 | `KB_SURPRISE_MIN_CONFIDENCE` | service per drain pass | unset (both shapes use their defaults) | not recorded | next pass |
 | `KB_SURPRISE_MIN_CONFIDENCE_SHAPE2` | service per drain pass | 0.5 | not recorded | next pass |
 | `KB_SURPRISE_MIN_CONFIDENCE_SHAPE3` | service per drain pass | 0.7 | not recorded | next pass |

@@ -255,7 +255,7 @@ def test_resolve_cue_project() -> None:
         "personal-kb",
         "cwd_basename",
     )
-    assert resolve_cue_project(None, "/home/jason/git/personal_kb") == (
+    assert resolve_cue_project(None, "/home/user/git/personal_kb") == (
         "personal-kb",
         "cwd_basename",
     )

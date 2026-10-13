@@ -108,7 +108,7 @@ Proposal:
 
 - **Extract the current turn's `thinking` blocks** as a separate `reasoning` field, next to `text`, never concatenated. Take the tail of the turn's reasoning, not the head.
 - **Pair it with PreToolUse** (section 2): the reasoning that led to this tool call, plus the call itself, is the ideal input. Verify the thinking block is in the transcript by the time PreToolUse fires.
-- **Separate beliefs from hypotheses.** Reasoning is exploratory; "maybe the worker runs on pi-04, let me check" is fine and whispering on it is noise. Add one question: `noul` "Is the agent treating this as settled fact, not a hypothesis it is about to verify?"
+- **Separate beliefs from hypotheses.** Reasoning is exploratory; "maybe the worker runs on host-b, let me check" is fine and whispering on it is noise. Add one question: `noul` "Is the agent treating this as settled fact, not a hypothesis it is about to verify?"
 - **Handle volume by chunking.** Split long reasoning and run the cheap `external_claim` question per chunk; only chunks that pass go to retrieval. This is affordable at decision-model prices and not at three Sonnet calls per chunk.
 - **Record the trigger source** (`text` or `reasoning`) in `listener_decisions` and `whisper_telemetry`, so reasoning-triggered whispers can be compared with text-triggered ones.
 
