@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v1.17.0 (2026-10-13)
+
+### Bug Fixes
+
+- Scrub three lab-specific strings the release leak guard flagged
+  ([`2ebf41b`](https://github.com/jason-weddington/personal-kb-mcp/commit/2ebf41b36420fe49c4013897f33198e20b0817c8))
+
+### Chores
+
+- Release.sh runs a maintainer-local leak guard before publishing to github
+  ([`35b3e33`](https://github.com/jason-weddington/personal-kb-mcp/commit/35b3e3361f79afdabde5897e357cdcde642d15b9))
+
+### Features
+
+- **76257a8d**: Answers, chat and the listener vote run Claude Sonnet 5.5 at low effort, overridable
+  by KB_SYNTHESIS_MODEL and KB_SYNTHESIS_EFFORT
+  ([`f745487`](https://github.com/jason-weddington/personal-kb-mcp/commit/f745487ba8aa2320bde1892d040f61d53f49517b))
+
+
 ## v1.16.0 (2026-10-13)
 
 ### Documentation
