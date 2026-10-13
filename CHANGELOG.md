@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v1.14.0 (2026-10-13)
+
+### Bug Fixes
+
+- **ui**: The Graph inspector's last connection row in each group no longer draws a stray divider at
+  the card's bottom edge
+  ([`4133a1b`](https://github.com/jason-weddington/personal-kb-mcp/commit/4133a1b95a2f1a8647a42dc27ac0b0244da934ab))
+
+### Features
+
+- **ca46ca6c**: The Home page gets an Add to KB panel that ingests uploaded text and PDF files and
+  dropped or typed URLs
+  ([`03abb6b`](https://github.com/jason-weddington/personal-kb-mcp/commit/03abb6b497d8dd40af2035ea8eab1e8e69a36e20))
+
+
 ## v1.13.2 (2026-10-12)
 
 ### Bug Fixes
