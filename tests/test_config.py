@@ -1,8 +1,13 @@
 """Tests for config functions."""
 
+import logging
+
 import pytest
 
 from personal_kb.config import (
+    build_anthropic_config,
+    get_anthropic_model,
+    get_anthropic_thinking,
     get_contributor,
     get_embedding_dim,
     get_embedding_keep_alive,
@@ -163,3 +168,58 @@ def test_provider_accepts_valid(monkeypatch):
 def test_provider_case_insensitive(monkeypatch):
     monkeypatch.setenv("KB_EXTRACTION_PROVIDER", "Anthropic")
     assert get_extraction_provider() == "anthropic"
+
+
+# -- Anthropic model and thinking defaults --
+
+
+def test_get_anthropic_model_default(monkeypatch):
+    """Env unset → the new extraction/query model default."""
+    monkeypatch.delenv("KB_ANTHROPIC_MODEL", raising=False)
+    assert get_anthropic_model() == "claude-haiku-5-5"
+
+
+def test_get_anthropic_thinking_unset(monkeypatch):
+    monkeypatch.delenv("KB_ANTHROPIC_THINKING", raising=False)
+    assert get_anthropic_thinking() == "disabled"
+
+
+def test_get_anthropic_thinking_empty(monkeypatch):
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "")
+    assert get_anthropic_thinking() == "disabled"
+
+
+def test_get_anthropic_thinking_disabled(monkeypatch):
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "disabled")
+    assert get_anthropic_thinking() == "disabled"
+
+
+def test_get_anthropic_thinking_adaptive(monkeypatch):
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "adaptive")
+    assert get_anthropic_thinking() == "adaptive"
+
+
+def test_get_anthropic_thinking_default_sends_none(monkeypatch):
+    """The `default` sentinel maps to None, so no thinking field is sent."""
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "default")
+    assert get_anthropic_thinking() is None
+
+
+def test_get_anthropic_thinking_normalizes_case(monkeypatch):
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", " Adaptive ")
+    assert get_anthropic_thinking() == "adaptive"
+
+
+def test_get_anthropic_thinking_invalid_warns_and_falls_back(monkeypatch, caplog):
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "bogus")
+    with caplog.at_level(logging.WARNING, logger="personal_kb.config"):
+        assert get_anthropic_thinking() == "disabled"
+    hits = [r for r in caplog.records if r.levelno == logging.WARNING and "bogus" in r.getMessage()]
+    assert len(hits) == 1
+
+
+def test_build_anthropic_config_ignores_thinking_env(monkeypatch):
+    """The builder never reads KB_ANTHROPIC_THINKING itself."""
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "adaptive")
+    monkeypatch.delenv("KB_ANTHROPIC_MODEL", raising=False)
+    assert build_anthropic_config().thinking is None

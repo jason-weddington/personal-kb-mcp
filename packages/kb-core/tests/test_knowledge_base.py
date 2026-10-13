@@ -218,6 +218,21 @@ async def test_create_sqlite_with_embedding_config_builds_embedder(tmp_path: Any
         await kb.close()
 
 
+async def test_create_sqlite_default_providers_disable_thinking(tmp_path: Any) -> None:
+    """providers=None flows through to ProviderConfig's role thinking defaults.
+
+    Extraction and query get thinking disabled (the measured default for
+    claude-haiku-5-5); synthesis keeps thinking None, so no thinking field.
+    """
+    kb = await create_sqlite(tmp_path / "roles.db")
+    try:
+        assert kb.config.providers.extraction.anthropic.thinking == "disabled"
+        assert kb.config.providers.query.anthropic.thinking == "disabled"
+        assert kb.config.providers.synthesis.anthropic.thinking is None
+    finally:
+        await kb.close()
+
+
 async def test_start_embedding_worker_refuses_on_sqlite_backend(tmp_path: Any, caplog: Any) -> None:
     """``start_embedding_worker`` refuses on SQLite regardless of config.
 

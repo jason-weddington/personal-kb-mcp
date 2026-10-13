@@ -2125,6 +2125,8 @@ class ObserveLlmCallRow(BaseModel):
     diagnostics_raw: str | None = None
     system_sha256: str | None = None
     latency_ms: int
+    thinking: str | None = None
+    effort: str | None = None
 
 
 class ObserveListenerDecisionRow(BaseModel):

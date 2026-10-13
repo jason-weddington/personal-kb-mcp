@@ -583,6 +583,11 @@ _SCHEMA_STATEMENTS: list[str] = [
     "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS agent_type TEXT",
     "ALTER TABLE turn_events ADD COLUMN IF NOT EXISTS agent_id TEXT",
     "ALTER TABLE turn_events ADD COLUMN IF NOT EXISTS agent_type TEXT",
+    # LLM ledger: the request's thinking mode and effort level (2026-10),
+    # trailing LLMCallRecord fields; NULL when the client sent neither field.
+    # Plain nullable TEXT, so no _SQLITE_CHECK_REBUILDS entry.
+    "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS thinking TEXT",
+    "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS effort TEXT",
 ]
 
 

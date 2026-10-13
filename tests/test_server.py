@@ -59,6 +59,74 @@ def test_build_provider_config_ollama_provider():
         assert cfg.synthesis.provider == "ollama"
 
 
+def test_build_provider_config_thinking_default(monkeypatch, caplog):
+    """Env unset → extraction/query thinking disabled, synthesis untouched."""
+    import logging
+
+    from personal_kb.config import build_provider_config
+
+    monkeypatch.delenv("KB_ANTHROPIC_MODEL", raising=False)
+    monkeypatch.delenv("KB_ANTHROPIC_THINKING", raising=False)
+    with caplog.at_level(logging.INFO, logger="personal_kb.config"):
+        cfg = build_provider_config()
+    assert cfg.extraction.anthropic.thinking == "disabled"
+    assert cfg.query.anthropic.thinking == "disabled"
+    assert cfg.synthesis.anthropic.thinking is None
+    assert cfg.extraction.anthropic.model == "claude-haiku-5-5"
+    shape = (
+        "llm roles extraction_model=claude-haiku-5-5 extraction_thinking=disabled "
+        "query_model=claude-haiku-5-5 query_thinking=disabled "
+        "synthesis_model=claude-sonnet-4-6 synthesis_thinking=None"
+    )
+    assert shape in caplog.text
+
+
+def test_build_provider_config_thinking_adaptive(monkeypatch):
+    """KB_ANTHROPIC_THINKING=adaptive reaches only the extraction/query roles."""
+    from personal_kb.config import build_provider_config
+
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "adaptive")
+    cfg = build_provider_config()
+    assert cfg.extraction.anthropic.thinking == "adaptive"
+    assert cfg.query.anthropic.thinking == "adaptive"
+    assert cfg.synthesis.anthropic.thinking is None
+    assert cfg.synthesis.anthropic.model == "claude-sonnet-4-6"
+
+
+def test_build_provider_config_thinking_default_sentinel(monkeypatch):
+    """KB_ANTHROPIC_THINKING=default sends no thinking field on any role."""
+    from personal_kb.config import build_provider_config
+
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "default")
+    cfg = build_provider_config()
+    assert cfg.extraction.anthropic.thinking is None
+    assert cfg.query.anthropic.thinking is None
+    assert cfg.synthesis.anthropic.thinking is None
+
+
+def test_build_provider_config_invalid_thinking_warns_per_call(monkeypatch, caplog):
+    """An unknown value warns once per build and falls back to disabled."""
+    import logging
+
+    from personal_kb.config import build_provider_config
+
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "bogus")
+    with caplog.at_level(logging.WARNING, logger="personal_kb.config"):
+        cfg = build_provider_config()
+        assert cfg.extraction.anthropic.thinking == "disabled"
+        assert cfg.query.anthropic.thinking == "disabled"
+        assert cfg.synthesis.anthropic.thinking is None
+        first = [
+            r for r in caplog.records if r.levelno == logging.WARNING and "bogus" in r.getMessage()
+        ]
+        assert len(first) == 1
+        build_provider_config()
+        second = [
+            r for r in caplog.records if r.levelno == logging.WARNING and "bogus" in r.getMessage()
+        ]
+        assert len(second) == 2
+
+
 def test_provider_config_defaults():
     """Default providers should both be 'anthropic'."""
     from personal_kb.config import get_extraction_provider, get_query_provider

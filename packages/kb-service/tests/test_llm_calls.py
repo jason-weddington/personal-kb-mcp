@@ -75,6 +75,8 @@ def _record(**overrides: Any) -> LLMCallRecord:
         "diagnostics_raw": '{"cache_miss_reason":null}',
         "system_sha256": "abcdef0123456789",
         "latency_ms": 17,
+        "thinking": "disabled",
+        "effort": "low",
     }
     fields.update(overrides)
     return LLMCallRecord(**fields)
@@ -138,7 +140,7 @@ def test_insert_sql_columns_in_field_order() -> None:
     names = [f.name for f in dataclasses.fields(LLMCallRecord)]
     expected = (
         f"INSERT INTO llm_calls ({', '.join(names)}) "  # noqa: S608 - fixed columns
-        f"VALUES ({', '.join(f'${i}' for i in range(1, 20))})"
+        f"VALUES ({', '.join(f'${i}' for i in range(1, 22))})"
     )
     assert expected == llm_calls._INSERT_SQL
 

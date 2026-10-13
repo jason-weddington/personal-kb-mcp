@@ -1,8 +1,8 @@
 {
   "aggregate": {
-    "mean_mrr": 1.0,
-    "mean_recall_at_k": 1.0,
-    "mean_ndcg_at_k": 1.0
+    "mean_mrr": 0.9488,
+    "mean_recall_at_k": 0.9286,
+    "mean_ndcg_at_k": 0.9286
   },
   "per_query": {
     "q01-sqlite-async": {
@@ -37,9 +37,9 @@
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 3,
-      "turns_used": 1,
-      "reasoning": "Found 3+ clear matches. kb-00009 is the primary decision entry directly comparing FastAPI vs Flask. kb-00010 and kb-00011 provide relevant pattern context (REST conventions and FastAPI auth middleware) that support the framework decision. These entries together address the comparison question and practical implementation guidance."
+      "result_count": 4,
+      "turns_used": 3,
+      "reasoning": "kb-00009 is the direct decision entry (FastAPI chosen over Flask for the web service layer) and is the only decision chain member with no superseding entries. kb-00010 (REST API conventions), kb-00011 (JWT auth middleware for FastAPI), and kb-00012 (CORS config for FastAPI) are related pattern entries from the same web-service project that show how the FastAPI choice is applied in practice, which is useful context for the framework decision."
     },
     "q05-rest-auth": {
       "mrr": 1.0,
@@ -48,16 +48,16 @@
       "top_k": 5,
       "result_count": 3,
       "turns_used": 1,
-      "reasoning": "The question asks about REST API authentication with JWT tokens. Entry kb-00011 (jwt-auth-middleware) is a direct match covering JWT authentication middleware for FastAPI. Entry kb-00010 (rest-api-conventions) provides foundational REST API design context. Entry kb-00012 (cors-config-pattern) covers related security configuration. These three entries together address authentication, API design conventions, and security patterns needed for JWT token implementation in REST APIs."
+      "reasoning": "kb-00011 (jwt-auth-middleware) directly addresses JWT authentication for REST APIs. kb-00010 (rest-api-conventions) covers REST design conventions that likely frame authentication handling. kb-00012 (cors-config-pattern) is a related security/API configuration entry relevant to exposing authenticated endpoints. kb-00009 and kb-00013 are less directly relevant to authentication."
     },
     "q06-cors-setup": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 1,
+      "result_count": 3,
       "turns_used": 1,
-      "reasoning": "Entry kb-00012 is a direct match for 'CORS configuration allow origins middleware' \u2014 it is explicitly tagged with #cors and #security, titled 'cors-config-pattern', and documented as a CORS configuration pattern for FastAPI applications. This is the most relevant entry for the user's question about CORS allow origins middleware configuration."
+      "reasoning": "kb-00012 (cors-config-pattern) directly covers CORS configuration for FastAPI applications, which matches the query about CORS allow origins middleware. kb-00011 (jwt-auth-middleware) and kb-00010 (rest-api-conventions) are related web-service middleware and API conventions that may cover adjacent configuration in the same stack, though only kb-00012 is a direct match."
     },
     "q07-docker-setup": {
       "mrr": 1.0,
@@ -82,18 +82,18 @@
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 3,
-      "turns_used": 1,
-      "reasoning": "These three entries directly address the user's query about asyncio race conditions and database locking. kb-00026 specifically covers 'Debugging asyncio race conditions in aiosqlite' which is the exact intersection of asyncio, race conditions, and database (SQLite) locking. kb-00029 addresses 'Debugging database deadlocks in concurrent SQLite access' which covers database locking issues in concurrent scenarios. kb-00030 covers 'Investigating test flakes caused by event loop reuse' which relates to asyncio concurrency issues. Together these provide comprehensive coverage of the problem space."
+      "result_count": 6,
+      "turns_used": 4,
+      "reasoning": "kb-00026 directly covers asyncio race conditions in aiosqlite and kb-00029 covers database deadlocks under concurrent SQLite access. kb-00006 (cross-thread aiosqlite safety rules) and kb-00004 (connection pooling pitfalls) are closely related to locking and concurrency in the same stack. kb-00003 (WAL mode for concurrent read/write) and kb-00001 (aiosqlite async pattern) provide the underlying locking and access context. kb-00007 was excluded because it is marked stale and unrelated."
     },
     "q10-encoding-bug": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 1,
-      "turns_used": 1,
-      "reasoning": "The question asks about UTF-8 JSON encoding unicode errors. Entry kb-00027 is a direct match with title 'UTF-8 encoding gotcha with JSON serialization in Python' and tags #python #json #encoding #debugging. This entry explicitly addresses the exact problem space. While kb-00026, kb-00028, kb-00029, and kb-00030 are related to Python debugging, they focus on asyncio, memory leaks, deadlocks, and test flakes respectively, making them less relevant to the specific UTF-8 JSON encoding unicode error question."
+      "result_count": 2,
+      "turns_used": 4,
+      "reasoning": "kb-00027 is a direct match: it covers the UTF-8 encoding gotcha with JSON serialization in Python. kb-00022 (structured logging with JSON output) is a secondary match, since it is a JSON-output convention that may touch the same encoding concerns. kb-00007 was excluded because it is stale (13% confidence) and concerns SQLite json_extract rather than unicode errors. Only one strong match was found, so this is a partial result."
     },
     "q11-project-filter": {
       "mrr": 1.0,
@@ -119,6 +119,141 @@
       "ndcg_at_k": 1.0,
       "top_k": 5,
       "result_count": 4,
+      "turns_used": 0,
+      "reasoning": "Fast-path: strong hybrid search results"
+    },
+    "q3x-cache-architecture": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 3,
+      "turns_used": 0,
+      "reasoning": "Fast-path: strong hybrid search results"
+    },
+    "q3x-cache-evolution": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5,
+      "turns_used": 4,
+      "reasoning": "kb-00037 is the original generation (per-instance in-process LRU, superseded). kb-00036 is the second generation (memcached tier, superseded). kb-00033 is the current generation (Redis cluster). kb-00034 describes the read-through repository wrapper pattern and kb-00035 describes the event-driven Redis pub/sub invalidation, both part of the current design. The graph has no supersedes edges between these entries, so the explicit reasons for each replacement are not recorded in the retrieved entries. The summaries confirm the sequence in-process -> memcached -> Redis but do not state why each was replaced; that rationale would need to be found in the full entry bodies or a related decision record."
+    },
+    "q41-recent-build-engine": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 1,
+      "turns_used": 3,
+      "reasoning": "kb-00038 (tmp-build-engine-current) is the only dispatch build-engine entry. It states the current dispatch build engine is claude-code-sonnet and its decision chain has no superseding entries. The follow-up search surfaced no other dispatch build-engine entries; the remaining hits were unrelated (rate limiting, REST, sqlite, JWT)."
+    },
+    "q43-current-deploy-runbook": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 1,
+      "turns_used": 3,
+      "reasoning": "kb-00039 (tmp-deploy-runbook-now, 87% confidence, not marked stale) is the current deployment runbook procedure for agent-gtd. The superseded runbook kb-00041 is marked [STALE] and should not be used. kb-00038 covers the current build engine, which is related context but not the runbook itself. The keyword search surfaced only unrelated personal-kb and web-service entries, so the scope lookup was the productive route."
+    },
+    "q5x-python-runtime": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 1,
+      "turns_used": 0,
+      "reasoning": "Fast-path: strong hybrid search results"
+    },
+    "q5x-python-runtime-stale": {
+      "mrr": 0.5,
+      "recall_at_k": 0.5,
+      "ndcg_at_k": 0.3869,
+      "top_k": 5,
+      "result_count": 15,
+      "turns_used": 4,
+      "reasoning": "Exhausted tool call budget"
+    },
+    "q5x-embedding-model": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 5,
+      "turns_used": 0,
+      "reasoning": "Fast-path: strong hybrid search results"
+    },
+    "q5x-embedding-model-stale-still-absent": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 1,
+      "turns_used": 1,
+      "reasoning": "kb-00045 (ku-default-embedding-model, factual_reference) directly states the default embedding model is qwen3-embedding at 1024 dimensions. This is a clear, direct match for the question. The other initial results (kb-00058, kb-00022, kb-00019) are unrelated to embedding models."
+    },
+    "q5x-service-port-current": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 1,
+      "turns_used": 3,
+      "reasoning": "kb-00047 (ku-service-default-port-v3) is a factual_reference stating the current default service port is 8767, tagged #port and #configuration in the personal-kb project. It is the only direct match for the explorer service's default listen port. The other hits (deployment runbook, build engine, CORS, versioning, import cycles, deadlocks) are unrelated to the question. Note the entry says 'service port' generically rather than naming the explorer service specifically, so confidence is moderate."
+    },
+    "q5x-service-port-history": {
+      "mrr": 1.0,
+      "recall_at_k": 0.5,
+      "ndcg_at_k": 0.6131,
+      "top_k": 10,
+      "result_count": 2,
+      "turns_used": 0,
+      "reasoning": "Fast-path: strong hybrid search results"
+    },
+    "q5x-secrets-current": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 2,
+      "turns_used": 3,
+      "reasoning": "kb-00024 (secrets-management) is the only entry that directly addresses how application secrets are managed. Its graph neighbors only link to shared tags (devops, security), so no further secrets-related entries were found. kb-00020 (production deployment checklist) is included as the closest supporting entry, since secrets handling is typically part of production readiness. Coverage is weak: the knowledge base has a single direct entry on this topic, so the answer should be verified against kb-00024 itself."
+    },
+    "q6x-stale-flag-recovers": {
+      "mrr": 0.0667,
+      "recall_at_k": 0.0,
+      "ndcg_at_k": 0.0,
+      "top_k": 5,
+      "result_count": 17,
+      "turns_used": 4,
+      "reasoning": "Exhausted tool call budget"
+    },
+    "q7x-current-units": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 1,
+      "turns_used": 3,
+      "reasoning": "kb-00055 (pref-units-metric) directly states the user's current measurement units preference is metric. It is tagged preference/units/user-pref and linked to project:memory-layer. No other entries in the results address units, and the graph neighbors confirm no superseding entry for this preference. Only one entry is a direct match, so this is a partial-but-strong match; the other preference entries (kb-00057, kb-00058) concern workflow and tone, not units."
+    },
+    "q7x-dispatch-pref": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 2,
+      "turns_used": 0,
+      "reasoning": "Fast-path: strong hybrid search results"
+    },
+    "q7x-comm-style": {
+      "mrr": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "top_k": 5,
+      "result_count": 2,
       "turns_used": 0,
       "reasoning": "Fast-path: strong hybrid search results"
     }

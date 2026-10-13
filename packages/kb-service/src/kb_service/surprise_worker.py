@@ -184,6 +184,11 @@ def get_detector_llm() -> LLMProvider | None:
     client = AnthropicLLMClient(
         build_anthropic_config(model=model), recorder=record_llm_call
     )
+    if client._config.thinking is not None:
+        logger.warning(
+            "surprise capture client built with thinking=%s (expected None)",
+            client._config.thinking,
+        )
     _DETECTOR_LLM_CACHE[model] = client
     return client
 
@@ -216,6 +221,11 @@ def get_distiller_llm() -> LLMProvider | None:
         recorder=record_llm_call,
         system_cache_1h_purposes=_DISTILLER_SYSTEM_CACHE_1H,
     )
+    if client._config.thinking is not None:
+        logger.warning(
+            "surprise capture client built with thinking=%s (expected None)",
+            client._config.thinking,
+        )
     _DISTILLER_LLM_CACHE[model] = client
     return client
 
@@ -242,6 +252,11 @@ def get_critic_llm() -> LLMProvider | None:
     client = AnthropicLLMClient(
         build_anthropic_config(model=model), recorder=record_llm_call
     )
+    if client._config.thinking is not None:
+        logger.warning(
+            "surprise capture client built with thinking=%s (expected None)",
+            client._config.thinking,
+        )
     _CRITIC_LLM_CACHE[model] = client
     return client
 

@@ -90,6 +90,66 @@ def test_get_detector_llm_import_error(
     assert surprise_worker._DETECTOR_LLM_CACHE == {}
 
 
+def test_capture_clients_ignore_thinking_env(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """KB_ANTHROPIC_THINKING never reaches the detector/distiller/critic configs.
+
+    Unique model env values force real builds (the caches return the cached
+    client before any config build otherwise); all three caches are cleared
+    because the fresh_cache fixture only clears the detector's.
+    """
+    from kb_core.config import AnthropicProviderConfig
+
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "adaptive")
+    monkeypatch.setenv("KB_SURPRISE_DETECTOR_MODEL", "claude-sonnet-5-5-det-probe")
+    monkeypatch.setenv("KB_SURPRISE_DISTILL_MODEL", "claude-sonnet-5-5-dis-probe")
+    monkeypatch.setenv("KB_SURPRISE_CRITIC_MODEL", "claude-sonnet-5-5-cri-probe")
+    monkeypatch.setattr(surprise_worker, "_DETECTOR_LLM_CACHE", {})
+    monkeypatch.setattr(surprise_worker, "_DISTILLER_LLM_CACHE", {})
+    monkeypatch.setattr(surprise_worker, "_CRITIC_LLM_CACHE", {})
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        detector = surprise_worker.get_detector_llm()
+        distiller = surprise_worker.get_distiller_llm()
+        critic = surprise_worker.get_critic_llm()
+    for client, model in (
+        (detector, "claude-sonnet-5-5-det-probe"),
+        (distiller, "claude-sonnet-5-5-dis-probe"),
+        (critic, "claude-sonnet-5-5-cri-probe"),
+    ):
+        assert isinstance(client._config, AnthropicProviderConfig)
+        assert client._config.model == model
+        assert client._config.thinking is None
+    assert not any(
+        "surprise capture client built with thinking" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_capture_client_tripwire_warns_on_injected_thinking(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A capture client that somehow carries thinking trips the warning."""
+    from kb_core.config import AnthropicProviderConfig
+
+    def _injected(*, model: str | None = None, **_: object) -> AnthropicProviderConfig:
+        return AnthropicProviderConfig(model=model or "probe", thinking="adaptive")
+
+    monkeypatch.setattr(surprise_worker, "_DETECTOR_LLM_CACHE", {})
+    monkeypatch.setattr(surprise_worker, "build_anthropic_config", _injected)
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        llm = surprise_worker.get_detector_llm()
+    assert llm is not None
+    assert llm._config.thinking == "adaptive"
+    trips = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "thinking=adaptive" in r.getMessage()
+    ]
+    assert len(trips) == 1
+    assert "expected None" in trips[0].getMessage()
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [(None, 0.7), ("0.5", 0.5), (" 0.9 ", 0.9), ("0", 0.0), ("1", 1.0)],

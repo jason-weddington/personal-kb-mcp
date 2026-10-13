@@ -157,7 +157,7 @@ async def test_model_default(mock_anthropic_class):
     await llm.generate("test", purpose="planner")
     call_kwargs = mock_anthropic_class.messages.create.call_args
     # The dataclass default is the same as the env default.
-    assert call_kwargs.kwargs.get("model") == "claude-haiku-4-5"
+    assert call_kwargs.kwargs.get("model") == "claude-haiku-5-5"
 
 
 @pytest.mark.asyncio

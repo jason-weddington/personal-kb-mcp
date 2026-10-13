@@ -9,10 +9,13 @@ handled here — the lifespan passes the DSN directly to ``create_postgres`` and
 attribution defaults to ``Attribution()``.
 """
 
+import logging
 import os
 from typing import TYPE_CHECKING
 
 from starlette.requests import Request
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from kb_core.config import (
@@ -117,7 +120,32 @@ def get_llm_timeout() -> float:
 
 def get_anthropic_model() -> str:
     """Return the Anthropic model name from KB_ANTHROPIC_MODEL."""
-    return os.environ.get("KB_ANTHROPIC_MODEL", "claude-haiku-4-5")
+    return os.environ.get("KB_ANTHROPIC_MODEL", "claude-haiku-5-5")
+
+
+def get_anthropic_thinking() -> str | None:
+    """Return the thinking mode for the extraction and query roles.
+
+    ``KB_ANTHROPIC_THINKING`` (case-insensitive): ``disabled`` (the default,
+    also when unset or empty) sends ``thinking = {"type": "disabled"}``;
+    ``adaptive`` sends adaptive thinking; ``default`` maps to ``None`` so no
+    thinking field is sent at all (the model's own default). Any other value
+    warns once per call and falls back to ``disabled``. Never applied to the
+    synthesis role or the surprise capture clients.
+    """
+    raw = os.environ.get("KB_ANTHROPIC_THINKING", "").strip().lower()
+    if raw in ("", "disabled"):
+        return "disabled"
+    if raw == "adaptive":
+        return "adaptive"
+    if raw == "default":
+        return None
+    logger.warning(
+        "KB_ANTHROPIC_THINKING=%r is not one of disabled/adaptive/default;"
+        " falling back to disabled",
+        raw,
+    )
+    return "disabled"
 
 
 def get_anthropic_timeout() -> float:
@@ -349,8 +377,12 @@ def build_anthropic_config(
 
     ``effort`` and ``thinking`` are passed through to
     ``AnthropicProviderConfig`` unchanged (``None`` sends neither field to the
-    API); no environment variable sets or overrides them, only eval callers
-    pass them today.
+    API). This function deliberately does NOT read ``KB_ANTHROPIC_THINKING``
+    itself: the surprise detector, distiller and critic clients are built
+    through it with only ``model=``, so they must stay thinking-free; the role
+    builder (:func:`build_provider_config`) passes the env-resolved value in
+    explicitly. ``effort`` has no env variable at all — only eval callers set
+    it.
     """
     from kb_core.config import AnthropicProviderConfig
 
@@ -394,7 +426,10 @@ def build_provider_config() -> "ProviderConfig":
 
     Each role (extraction / query / synthesis) is a ``ProviderRoleConfig`` that
     bundles which provider is active + credentials for all three providers. The
-    synthesis role points at the Sonnet model for Anthropic/Bedrock.
+    synthesis role points at the Sonnet model for Anthropic/Bedrock. The
+    extraction and query roles get their thinking mode from
+    ``KB_ANTHROPIC_THINKING`` (disabled by default); the synthesis role never
+    sends a thinking field.
     """
     from kb_core.config import ProviderConfig, ProviderRoleConfig
     from kb_core.llm.anthropic import _SONNET_MODEL as _ANTHROPIC_SONNET
@@ -403,7 +438,7 @@ def build_provider_config() -> "ProviderConfig":
     extraction_provider = get_extraction_provider()
     query_provider = get_query_provider()
 
-    anthropic = build_anthropic_config()
+    anthropic = build_anthropic_config(thinking=get_anthropic_thinking())
     bedrock = build_bedrock_config()
     ollama = build_ollama_provider_config()
 
@@ -429,6 +464,16 @@ def build_provider_config() -> "ProviderConfig":
         ollama=ollama,
     )
 
+    logger.info(
+        "llm roles extraction_model=%s extraction_thinking=%s query_model=%s"
+        " query_thinking=%s synthesis_model=%s synthesis_thinking=%s",
+        anthropic.model,
+        anthropic.thinking,
+        anthropic.model,
+        anthropic.thinking,
+        synthesis_anthropic.model,
+        synthesis_anthropic.thinking,
+    )
     return ProviderConfig(
         extraction=extraction_role,
         query=query_role,

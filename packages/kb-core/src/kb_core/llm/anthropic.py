@@ -195,6 +195,8 @@ def _build_record(
         diagnostics_raw=raw,
         system_sha256=_system_sha256(kwargs),
         latency_ms=latency_ms,
+        thinking=kwargs.get("thinking", {}).get("type"),
+        effort=kwargs.get("output_config", {}).get("effort"),
     )
 
 

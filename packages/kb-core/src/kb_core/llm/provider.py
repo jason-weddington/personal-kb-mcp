@@ -61,6 +61,10 @@ class LLMCallRecord:
     diagnostics_raw: str | None
     system_sha256: str | None
     latency_ms: int
+    thinking: str | None = None
+    """Thinking mode the request carried (``disabled``/``adaptive``); None when none sent."""
+    effort: str | None = None
+    """Effort level the request carried (``output_config.effort``); None when none sent."""
 
 
 LLMCallRecorder = Callable[[LLMCallRecord], None]

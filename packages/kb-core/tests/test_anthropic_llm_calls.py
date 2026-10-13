@@ -17,9 +17,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kb_core.config import AnthropicProviderConfig, BedrockProviderConfig, OllamaProviderConfig
+from kb_core.config import (
+    AnthropicProviderConfig,
+    BedrockProviderConfig,
+    OllamaProviderConfig,
+    ProviderConfig,
+    ProviderRoleConfig,
+)
 from kb_core.llm import anthropic as anthropic_mod
-from kb_core.llm.anthropic import AnthropicLLMClient
+from kb_core.llm.anthropic import _SONNET_MODEL, AnthropicLLMClient
 from kb_core.llm.bedrock import BedrockLLMClient
 from kb_core.llm.ollama import OllamaLLMClient
 from kb_core.llm.provider import (
@@ -172,6 +178,8 @@ def test_record_field_order() -> None:
         "diagnostics_raw",
         "system_sha256",
         "latency_ms",
+        "thinking",
+        "effort",
     ]
 
 
@@ -611,6 +619,41 @@ def test_provider_config_rejects_bad_effort_and_thinking() -> None:
         AnthropicProviderConfig(thinking="bogus")
     assert AnthropicProviderConfig(effort="xhigh").effort == "xhigh"
     assert AnthropicProviderConfig(thinking="adaptive").thinking == "adaptive"
+
+
+def test_anthropic_default_model() -> None:
+    """The dataclass default is the new extraction/query model."""
+    assert AnthropicProviderConfig().model == "claude-haiku-5-5"
+
+
+def test_sonnet_model_constant() -> None:
+    """The synthesis model literal stays pinned; consumers import the constant."""
+    assert _SONNET_MODEL == "claude-sonnet-4-6"
+
+
+def test_provider_role_thinking_defaults() -> None:
+    """Bare ProviderConfig: extraction/query think disabled, synthesis does not."""
+    providers = ProviderConfig()
+    assert providers.extraction.anthropic.thinking == "disabled"
+    assert providers.query.anthropic.thinking == "disabled"
+    assert providers.synthesis.anthropic.thinking is None
+    # The shared ProviderRoleConfig factory stays thinking-free.
+    assert ProviderRoleConfig().anthropic.thinking is None
+
+
+async def test_record_carries_thinking_and_effort() -> None:
+    """The recorded row carries the thinking/effort the request actually sent."""
+    rec = _Records()
+    llm, _ = _client(_response(), recorder=rec)
+    llm._config = dataclasses.replace(llm._config, thinking="disabled")
+    await llm.generate("p", purpose="planner")
+    assert rec[-1].thinking == "disabled"
+    assert rec[-1].effort is None
+
+    llm._config = dataclasses.replace(llm._config, thinking=None, effort="low")
+    await llm.generate("p", purpose="planner")
+    assert rec[-1].thinking is None
+    assert rec[-1].effort == "low"
 
 
 @pytest.mark.parametrize("method", ["generate", "generate_chat"])

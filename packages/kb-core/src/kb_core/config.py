@@ -51,7 +51,10 @@ from typing import Literal
 # ``KbConfig()`` is byte-identical to today's defaults. If you change
 # either side, change both — there is no test enforcing this drift
 # today (the env-driven module reads its defaults from string literals
-# in argument positions, which is awkward to import).
+# in argument positions, which is awkward to import). The Anthropic
+# model default ``claude-haiku-5-5`` is likewise mirrored by
+# ``kb_service.config.get_anthropic_model`` and
+# ``personal_kb.config.get_anthropic_model``.
 
 _DEFAULT_DB_PATH = "~/.local/share/personal_kb/knowledge.db"
 _DEFAULT_EMBEDDING_DIM = 1024
@@ -59,7 +62,7 @@ _DEFAULT_OLLAMA_URL = "http://localhost:11434"
 _DEFAULT_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 _DEFAULT_EMBEDDING_TIMEOUT = 10.0
 _DEFAULT_EMBEDDING_KEEP_ALIVE = "30m"
-_DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
+_DEFAULT_ANTHROPIC_MODEL = "claude-haiku-5-5"
 _DEFAULT_ANTHROPIC_TIMEOUT = 30.0
 _ANTHROPIC_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 _ANTHROPIC_THINKING_MODES = frozenset({"disabled", "adaptive"})
@@ -173,7 +176,7 @@ class AnthropicProviderConfig:
     """Credentials and tuning for the Anthropic API provider (requires the ``anthropic`` extra)."""
 
     model: str = _DEFAULT_ANTHROPIC_MODEL
-    """Anthropic model identifier (e.g. ``claude-haiku-4-5``)."""
+    """Anthropic model identifier (e.g. ``claude-haiku-5-5``)."""
 
     timeout: float = _DEFAULT_ANTHROPIC_TIMEOUT
     """Per-request timeout in seconds."""
@@ -300,11 +303,24 @@ class ProviderConfig:
       callers can split them if desired (default matches today).
     """
 
-    extraction: ProviderRoleConfig = field(default_factory=ProviderRoleConfig)
-    """Provider used for graph extraction during enrichment."""
+    extraction: ProviderRoleConfig = field(
+        default_factory=lambda: ProviderRoleConfig(
+            anthropic=AnthropicProviderConfig(thinking="disabled")
+        )
+    )
+    """Provider used for graph extraction during enrichment.
 
-    query: ProviderRoleConfig = field(default_factory=ProviderRoleConfig)
-    """Provider used for query planning and the agentic ReAct loop."""
+    The Anthropic config defaults to thinking disabled: ``claude-haiku-5-5``
+    with thinking disabled measured better than both its own defaults and
+    ``claude-haiku-4-5`` on the kb_ask and enrichment evals.
+    """
+
+    query: ProviderRoleConfig = field(
+        default_factory=lambda: ProviderRoleConfig(
+            anthropic=AnthropicProviderConfig(thinking="disabled")
+        )
+    )
+    """Provider used for query planning and the agentic ReAct loop (thinking disabled)."""
 
     synthesis: ProviderRoleConfig = field(default_factory=ProviderRoleConfig)
     """Provider used for final-answer synthesis."""

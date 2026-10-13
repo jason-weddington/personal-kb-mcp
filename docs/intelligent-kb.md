@@ -653,16 +653,16 @@ Every LLM call carries a purpose (`LLMPurpose` in `kb_core/llm/provider.py`), an
 
 | Feature | Purposes | Client | Default model | Override |
 |---|---|---|---|---|
-| Graph enrichment of stored entries | `enricher`, `enricher_batch` | extraction role | `claude-haiku-4-5` | provider `KB_EXTRACTION_PROVIDER`; model `KB_ANTHROPIC_MODEL` (or `KB_BEDROCK_MODEL`, `KB_OLLAMA_MODEL`) |
-| Ingest of files and URLs (`kb_ingest`, the web Add to KB panel) | `ingest_extract`, `ingest_summarize`, `dedup_agent` (only with `KB_AGENTIC_INGEST`) | extraction role | `claude-haiku-4-5` | as enrichment |
-| `kb_ask` retrieval and the ask stream | `agent`, `planner`, `coverage`, `classifier` | query role | `claude-haiku-4-5` | provider `KB_QUERY_PROVIDER`; model `KB_ANTHROPIC_MODEL` (or `KB_BEDROCK_MODEL`, `KB_OLLAMA_MODEL`) |
+| Graph enrichment of stored entries | `enricher`, `enricher_batch` | extraction role | `claude-haiku-5-5` | provider `KB_EXTRACTION_PROVIDER`; model `KB_ANTHROPIC_MODEL` (or `KB_BEDROCK_MODEL`, `KB_OLLAMA_MODEL`); thinking `KB_ANTHROPIC_THINKING` (disabled by default) |
+| Ingest of files and URLs (`kb_ingest`, the web Add to KB panel) | `ingest_extract`, `ingest_summarize`, `dedup_agent` (only with `KB_AGENTIC_INGEST`) | extraction role | `claude-haiku-5-5` | as enrichment |
+| `kb_ask` retrieval and the ask stream | `agent`, `planner`, `coverage`, `classifier` | query role | `claude-haiku-5-5` | provider `KB_QUERY_PROVIDER`; model `KB_ANTHROPIC_MODEL` (or `KB_BEDROCK_MODEL`, `KB_OLLAMA_MODEL`); thinking `KB_ANTHROPIC_THINKING` (disabled by default) |
 | Cited answers and web chat | `query_synthesis`, `chat` | synthesis role (falls back to the query role when absent) | `claude-sonnet-4-6` | no model variable: `_SONNET_MODEL` in `kb_core/llm/anthropic.py` (Bedrock `us.anthropic.claude-sonnet-4-6`); the provider follows `KB_QUERY_PROVIDER`, and on Ollama synthesis runs on `KB_OLLAMA_MODEL` |
 | Listener three-vote gate (section 17) | `listener_vote` | synthesis role | `claude-sonnet-4-6` | as synthesis |
 | Surprise detection, shapes 2 and 3 (section 8) | `surprise_detector_shape2`, `surprise_detector_shape3` | `get_detector_llm` | `claude-sonnet-5-5` | `KB_SURPRISE_DETECTOR_MODEL`; shapes 1 and 4 are rules and make no model call |
 | Distiller for surprises and queued stores (sections 9 and 10) | `surprise_distiller`, `store_distiller` | `get_distiller_llm` | `claude-sonnet-5-5` | `KB_SURPRISE_DISTILL_MODEL` |
 | Critic for surprises and queued stores (sections 9 and 10) | `surprise_critic`, `store_critic` | `get_critic_llm` | `claude-sonnet-5-5` | `KB_SURPRISE_CRITIC_MODEL` |
-| Feedback theme summary (stdio `kb_maintain summarize_feedback` only) | `feedback_summary` | the stdio client's query role | `claude-haiku-4-5` | the stdio client's `KB_QUERY_PROVIDER` and `KB_ANTHROPIC_MODEL` |
-| Resolution backfill script | `seed_resolutions` | the script's own client | `claude-haiku-4-5` | the script's `--model` flag, else `KB_ANTHROPIC_MODEL` |
+| Feedback theme summary (stdio `kb_maintain summarize_feedback` only) | `feedback_summary` | the stdio client's query role | `claude-haiku-5-5` | the stdio client's `KB_QUERY_PROVIDER`, `KB_ANTHROPIC_MODEL` and `KB_ANTHROPIC_THINKING` |
+| Resolution backfill script | `seed_resolutions` | the script's own client | `claude-haiku-5-5` | the script's `--model` flag, else `KB_ANTHROPIC_MODEL` |
 
 The capture clients ignore `KB_QUERY_PROVIDER`, `KB_EXTRACTION_PROVIDER` and `KB_ANTHROPIC_MODEL`. They read their model variable on every call, and an empty value falls back to the default. Embeddings are not a Claude call: they run on Ollama with `KB_EMBEDDING_MODEL` (default `qwen3-embedding:0.6b`).
 
