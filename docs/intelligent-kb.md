@@ -645,6 +645,28 @@ The KB learns from and warns more than one harness with the same cue keys. Talos
 
 All capture model calls go to the Anthropic API (billed to `ANTHROPIC_API_KEY`), with `max_tokens` 4096 and timeout `KB_ANTHROPIC_TIMEOUT` (30 s), and each stage's model is chosen independently of `KB_QUERY_PROVIDER`.
 
+### Which model each feature uses
+
+Every LLM call carries a purpose (`LLMPurpose` in `kb_core/llm/provider.py`), and the `llm_calls` ledger records the purpose and the model of each call, so the ledger, not this table, is the ground truth for what production ran. Calls go through one of six clients. Three are the KB's provider roles: extraction, query and synthesis, built by `build_provider_config` in kb-service's `config.py`. Three are the Anthropic-only capture clients in `surprise_worker.py`: `get_detector_llm`, `get_distiller_llm` and `get_critic_llm`. The core features (enrichment, ingest, `kb_ask`, chat) are described in `how_it_works.md`; they are listed here so the whole model map lives in one place.
+
+| Feature | Purposes | Client | Default model | Override |
+|---|---|---|---|---|
+| Graph enrichment of stored entries | `enricher`, `enricher_batch` | extraction role | `claude-haiku-4-5` | provider `KB_EXTRACTION_PROVIDER`; model `KB_ANTHROPIC_MODEL` (or `KB_BEDROCK_MODEL`, `KB_OLLAMA_MODEL`) |
+| Ingest of files and URLs (`kb_ingest`, the web Add to KB panel) | `ingest_extract`, `ingest_summarize`, `dedup_agent` (only with `KB_AGENTIC_INGEST`) | extraction role | `claude-haiku-4-5` | as enrichment |
+| `kb_ask` retrieval and the ask stream | `agent`, `planner`, `coverage`, `classifier` | query role | `claude-haiku-4-5` | provider `KB_QUERY_PROVIDER`; model `KB_ANTHROPIC_MODEL` (or `KB_BEDROCK_MODEL`, `KB_OLLAMA_MODEL`) |
+| Cited answers and web chat | `query_synthesis`, `chat` | synthesis role (falls back to the query role when absent) | `claude-sonnet-4-6` | no model variable: `_SONNET_MODEL` in `kb_core/llm/anthropic.py` (Bedrock `us.anthropic.claude-sonnet-4-6`); the provider follows `KB_QUERY_PROVIDER`, and on Ollama synthesis runs on `KB_OLLAMA_MODEL` |
+| Listener three-vote gate (section 17) | `listener_vote` | synthesis role | `claude-sonnet-4-6` | as synthesis |
+| Surprise detection, shapes 2 and 3 (section 8) | `surprise_detector_shape2`, `surprise_detector_shape3` | `get_detector_llm` | `claude-sonnet-5-5` | `KB_SURPRISE_DETECTOR_MODEL`; shapes 1 and 4 are rules and make no model call |
+| Distiller for surprises and queued stores (sections 9 and 10) | `surprise_distiller`, `store_distiller` | `get_distiller_llm` | `claude-sonnet-5-5` | `KB_SURPRISE_DISTILL_MODEL` |
+| Critic for surprises and queued stores (sections 9 and 10) | `surprise_critic`, `store_critic` | `get_critic_llm` | `claude-sonnet-5-5` | `KB_SURPRISE_CRITIC_MODEL` |
+| Feedback theme summary (stdio `kb_maintain summarize_feedback` only) | `feedback_summary` | the stdio client's query role | `claude-haiku-4-5` | the stdio client's `KB_QUERY_PROVIDER` and `KB_ANTHROPIC_MODEL` |
+| Resolution backfill script | `seed_resolutions` | the script's own client | `claude-haiku-4-5` | the script's `--model` flag, else `KB_ANTHROPIC_MODEL` |
+
+The capture clients ignore `KB_QUERY_PROVIDER`, `KB_EXTRACTION_PROVIDER` and `KB_ANTHROPIC_MODEL`. They read their model variable on every call, and an empty value falls back to the default. Embeddings are not a Claude call: they run on Ollama with `KB_EMBEDDING_MODEL` (default `qwen3-embedding:0.6b`).
+
+Production on 2026-10-13: all three KBs run Anthropic for extraction and query and set no model variable except one. The personal KB sets `KB_SURPRISE_CRITIC_MODEL=claude-opus-5-5`, so its two critic purposes run on Opus 5.5 and every other purpose runs on the defaults above.
+
+
 | Unit | Calls |
 |---|---|
 | Claimed digest | up to two detector calls: shape 2 when a previous turn and a prompt exist, shape 3 when the turn has a tool result and text after it. No prefilter, sampling or batching, and headless dispatch sessions cost the same as interactive ones. Shapes 1 and 4 are free. |
@@ -698,9 +720,9 @@ Service switches are process environment, so flipping one means changing kb-serv
 | Switch | Read by | Code default | Recorded production state | Takes effect |
 |---|---|---|---|---|
 | `KB_SURPRISE_CAPTURE` | service per request; worker at startup | `off` | `on` since 2026-10-10 13:58Z | after the restart; each live session starts or stops sending digests at its next Stop |
-| `KB_SURPRISE_DETECTOR_MODEL` | service per call | `claude-sonnet-5-5` | Sonnet | next call |
-| `KB_SURPRISE_DISTILL_MODEL` | service per call | `claude-sonnet-5-5` | not recorded | next call |
-| `KB_SURPRISE_CRITIC_MODEL` | service per call | `claude-sonnet-5-5` | an Opus model (2026-10-10) | next call |
+| `KB_SURPRISE_DETECTOR_MODEL` | service per call | `claude-sonnet-5-5` | unset on all three KBs, so the default (verified 2026-10-13) | next call |
+| `KB_SURPRISE_DISTILL_MODEL` | service per call | `claude-sonnet-5-5` | unset on all three KBs, so the default (verified 2026-10-13) | next call |
+| `KB_SURPRISE_CRITIC_MODEL` | service per call | `claude-sonnet-5-5` | `claude-opus-5-5` on the personal KB; unset on the team KB and Tomoki's KB (verified 2026-10-13) | next call |
 | `KB_SURPRISE_MIN_CONFIDENCE` | service per drain pass | unset (both shapes use their defaults) | not recorded | next pass |
 | `KB_SURPRISE_MIN_CONFIDENCE_SHAPE2` | service per drain pass | 0.5 | not recorded | next pass |
 | `KB_SURPRISE_MIN_CONFIDENCE_SHAPE3` | service per drain pass | 0.7 | not recorded | next pass |
