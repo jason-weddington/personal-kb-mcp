@@ -198,6 +198,8 @@ function MemberRow({
         border: 0,
         borderBottom: 1,
         borderColor: 'divider',
+        // The divider separates rows; the group's card edge closes the last one.
+        '&:last-of-type': { borderBottom: 0 },
         px: 0,
         py: 0.75,
         color: 'inherit',
