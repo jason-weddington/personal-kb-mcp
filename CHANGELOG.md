@@ -2,6 +2,33 @@
 
 <!-- version list -->
 
+## v1.16.0 (2026-10-13)
+
+### Documentation
+
+- **how_it_works**: State the Haiku 5.5 kb_ask result over four runs, equal to Haiku 4.5 within
+  noise
+  ([`c45833b`](https://github.com/jason-weddington/personal-kb-mcp/commit/c45833b501aacbc561692ed1c33b00aa8f950085))
+
+- **intelligent-kb**: A model-by-feature table covering all 20 LLM purposes, and verified production
+  model settings
+  ([`e3e6668`](https://github.com/jason-weddington/personal-kb-mcp/commit/e3e6668ce4f3bfb4f8650b42d491dda622f5b936))
+
+### Features
+
+- **25ce0d38**: Every voted listener decision records its model, redacted prompt and raw answers,
+  exposed on a new observe endpoint
+  ([`230da42`](https://github.com/jason-weddington/personal-kb-mcp/commit/230da426ea6831f691471c473a1d6bc6c55143b4))
+
+- **7396e907**: The extraction and query roles run Claude Haiku 5.5 with thinking disabled, at least
+  as good as Haiku 4.5 on kb_ask and closer to Sonnet 5.5 on enrichment
+  ([`f5f698b`](https://github.com/jason-weddington/personal-kb-mcp/commit/f5f698bb2900bfacce324288153151c0bc232d3c))
+
+- **e7157c82**: The Anthropic client can send an effort level and a thinking mode, and the surprise
+  and kb_ask evals can run model arms at a chosen effort
+  ([`93457f5`](https://github.com/jason-weddington/personal-kb-mcp/commit/93457f5ecf07fc6c480e3a0e40d9319e75b8c21b))
+
+
 ## v1.15.0 (2026-10-13)
 
 ### Features
