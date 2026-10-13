@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.13.1 (2026-10-12)
+
+### Bug Fixes
+
+- **d989d407**: The Graph inspector reads cleanly: one legend, summary rows instead of pills,
+  details open, a full-height panel and facets that switch off and grey out
+  ([`5843bdf`](https://github.com/jason-weddington/personal-kb-mcp/commit/5843bdf8046f098548a05b0c690b4d981dc996ce))
+
+
 ## v1.13.0 (2026-10-12)
 
 ### Features
