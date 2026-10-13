@@ -70,14 +70,19 @@ from kb_service.surprise import (
     DetectionRecord,
     DistillResult,
     NewCandidate,
+    Shape2Context,
+    Shape2PromptVariant,
     SurpriseCandidate,
     TurnDigest,
+    build_shape2_context_prompt,
     build_shape2_prompt,
+    build_shape2_standing_rule_prompt,
     build_shape3_prompt,
     detect_shape1,
     detect_shape4,
     evidence_grounded,
     parse_detector_response,
+    shape2_context_digests,
     shape2_skip_reason,
     shape3_prompt_details,
     shape3_reasoning_details,
@@ -123,6 +128,14 @@ from kb_service.turn_digest import (
 )
 
 logger = logging.getLogger(__name__)
+
+# H-024 eval-only shape-2 arms: the production drain calls detect_digest
+# without these keyword overrides, so it always runs the previous_turn/default
+# arm with peers off. scripts/surprise_eval is the only caller that overrides;
+# no environment variable is read here.
+SHAPE2_CONTEXT_MODE: Shape2Context = "previous_turn"
+SHAPE2_PROMPT_VARIANT: Shape2PromptVariant = "default"
+SHAPE2_PEER_MESSAGES: bool = False
 
 SURPRISE_DETECTOR_DEFAULT_MODEL = "claude-sonnet-5-5"
 SURPRISE_WORKER_POLL_SECONDS = 60.0
@@ -445,6 +458,9 @@ async def detect_digest(
     *,
     min_confidence: float | None = None,
     min_confidence_by_shape: Mapping[int, float] | None = None,
+    shape2_context: Shape2Context = SHAPE2_CONTEXT_MODE,
+    shape2_prompt: Shape2PromptVariant = SHAPE2_PROMPT_VARIANT,
+    peer_messages: bool = SHAPE2_PEER_MESSAGES,
 ) -> list[DetectionRecord]:
     """Run shapes 1-4 on *cur*; return its detection records in order.
 
@@ -452,6 +468,11 @@ async def detect_digest(
     the current one. Model calls run sequentially (shape 2, then shape 3).
     Shape 4 adds zero or more records last (one per harness_correction item in
     *cur*) with no model call.
+
+    The three keyword-only arm selectors exist for scripts/surprise_eval; the
+    production ``drain_once`` call omits them, so it always runs the defaults.
+    The shape-2 skip rules always run on the turn_index-1 digest, in every
+    arm.
     """
 
     def floor(shape: int) -> float:
@@ -499,6 +520,36 @@ async def detect_digest(
         records.append(DetectionRecord(2, "not_applicable", reason2, model))
     elif llm is None:
         records.append(DetectionRecord(2, "no_llm", "", model))
+    elif shape2_context == "since_human_prompt":
+        window = shape2_context_digests(session_digests, cur)
+        records.append(
+            await _model_record(
+                llm,
+                2,
+                build_shape2_context_prompt(
+                    window,
+                    cur,
+                    variant=shape2_prompt,
+                    peer_messages=peer_messages,
+                ),
+                [cur.user_prompt or ""],
+                [d.event_id for d in window] + [cur.event_id],
+                floor(2),
+                purpose="surprise_detector_shape2",
+            )
+        )
+    elif shape2_prompt == "standing_rule":
+        records.append(
+            await _model_record(
+                llm,
+                2,
+                build_shape2_standing_rule_prompt(prev, cur),
+                [cur.user_prompt or ""],
+                [prev.event_id, cur.event_id],
+                floor(2),
+                purpose="surprise_detector_shape2",
+            )
+        )
     else:
         records.append(
             await _model_record(
@@ -539,7 +590,7 @@ async def detect_digest(
             await _model_record(
                 llm,
                 3,
-                build_shape3_prompt(cur),
+                build_shape3_prompt(cur, peer_messages=peer_messages),
                 sources,
                 [cur.event_id],
                 floor(3),

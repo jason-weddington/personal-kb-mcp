@@ -79,6 +79,24 @@ DETECTOR_SCHEMA_LINE = (
     ' "evidence_excerpt": str, "confidence": number between 0 and 1}'
 )
 
+# --- H-024 eval-only shape-2 arms: types, versions and instructions ------------
+# These arm selectors and builders exist for scripts/surprise_eval only. The
+# production drain always runs the previous_turn/default path, so
+# SURPRISE_DETECTOR_VERSION stays 4; the standing-rule prompt is versioned
+# separately below.
+Shape2Context = Literal["previous_turn", "since_human_prompt"]
+Shape2PromptVariant = Literal["default", "standing_rule"]
+SHAPE2_STANDING_RULE_VERSION: int = 1
+SHAPE2_STANDING_RULE_INSTRUCTIONS: str = (
+    "Set surprise to true only when the human's message states a durable"
+    " environment fact or a standing rule that replaces an assumption the"
+    " assistant, a peer agent session or the knowledge base previously made"
+    " or acted on. wrong_belief is the assumption being replaced;"
+    " corrected_fact is the rule the human stated. Set it to false for new"
+    " requests, one-off preferences, approvals and follow-up questions."
+)
+PEER_MESSAGE_TEXT_MAX = 2000
+
 
 @dataclass(frozen=True)
 class TurnDigest:
@@ -339,6 +357,104 @@ def build_shape2_prompt(prev: TurnDigest, cur: TurnDigest) -> str:
     return "\n".join(parts)
 
 
+def shape2_context_digests(
+    session_digests: list[TurnDigest], cur: TurnDigest
+) -> list[TurnDigest]:
+    """Return the ``since_human_prompt`` context window for *cur* (eval arm B).
+
+    The anchor is the most recent digest before *cur* whose ``user_prompt`` is
+    a non-blank string; the window holds every digest at or after the anchor
+    and strictly before *cur* (the anchor's own items and final message
+    included, its user_prompt text excluded from every prompt). With no
+    anchor the window is every digest before *cur*. Ascending ``turn_index``.
+    """
+    anchor: int | None = None
+    for digest in session_digests:
+        if digest.turn_index < cur.turn_index and (digest.user_prompt or "").strip():
+            anchor = digest.turn_index
+    window = [
+        digest
+        for digest in session_digests
+        if digest.turn_index < cur.turn_index
+        and (anchor is None or digest.turn_index >= anchor)
+    ]
+    return sorted(window, key=lambda digest: digest.turn_index)
+
+
+def build_shape2_context_prompt(
+    window: list[TurnDigest],
+    cur: TurnDigest,
+    *,
+    variant: Shape2PromptVariant = "default",
+    peer_messages: bool = False,
+) -> str:
+    """Prompt over a multi-turn context window (eval arms B, C and D).
+
+    The window's digests render flat, ascending ``turn_index``, no separator
+    lines; with one window digest the output differs from
+    ``build_shape2_prompt`` only in the header line. The anchor's user_prompt
+    text is never rendered: only ``cur.user_prompt`` is, exactly as today.
+    """
+    parts = ["The assistant's previous turns:"]
+    for digest in sorted(window, key=lambda digest: digest.turn_index):
+        parts.extend(_assistant_texts(digest))
+        if peer_messages:
+            for item in digest.items:
+                if item.get("kind") == "peer_message":
+                    parts.append(
+                        f"[peer {item.get('sender')}] {item.get('text') or ''}"
+                    )
+        if (digest.final_message or "").strip():
+            parts.append(f"Final message: {digest.final_message}")
+    parts.append("")
+    parts.append("The human's next message:")
+    parts.append(cur.user_prompt or "")
+    parts.append("")
+    if variant == "standing_rule":
+        parts.append(SHAPE2_STANDING_RULE_INSTRUCTIONS)
+        parts.append(
+            "evidence_excerpt must be copied verbatim from the human message,"
+            " with no ellipses."
+        )
+    else:
+        parts.append(
+            "Set surprise to true only when the human's message says a factual"
+            " claim or assumption from the assistant's previous turn was wrong."
+            " Set it to false for new requests, preference or style changes,"
+            " approvals and follow-up questions."
+        )
+        parts.append(
+            "wrong_belief is the assistant's claim; corrected_fact is what the"
+            " human says is true. evidence_excerpt must be copied verbatim from"
+            " the human message, with no ellipses."
+        )
+    parts.append(DETECTOR_SCHEMA_LINE)
+    return "\n".join(parts)
+
+
+def build_shape2_standing_rule_prompt(prev: TurnDigest, cur: TurnDigest) -> str:
+    """Prompt asking whether the human stated a standing rule (eval arm C).
+
+    Renders the same parts as ``build_shape2_prompt`` with the standing-rule
+    instruction block; results carry ``SHAPE2_STANDING_RULE_VERSION``.
+    """
+    parts = ["The assistant's previous turn:"]
+    parts.extend(_assistant_texts(prev))
+    if (prev.final_message or "").strip():
+        parts.append(f"Final message: {prev.final_message}")
+    parts.append("")
+    parts.append("The human's next message:")
+    parts.append(cur.user_prompt or "")
+    parts.append("")
+    parts.append(SHAPE2_STANDING_RULE_INSTRUCTIONS)
+    parts.append(
+        "evidence_excerpt must be copied verbatim from the human message,"
+        " with no ellipses."
+    )
+    parts.append(DETECTOR_SCHEMA_LINE)
+    return "\n".join(parts)
+
+
 # --- shape 3 -----------------------------------------------------------------
 
 
@@ -408,8 +524,13 @@ def shape3_reasoning_details(cur: TurnDigest) -> dict[str, Any]:
     }
 
 
-def render_items(items: list[dict[str, Any]]) -> str:
-    """Render a turn's items one line each; unknown kinds are skipped."""
+def render_items(items: list[dict[str, Any]], *, peer_messages: bool = False) -> str:
+    """Render a turn's items one line each; unknown kinds are skipped.
+
+    ``peer_message`` items (eval arm D) render as a labelled message from
+    another agent session only when *peer_messages* is true, so the default
+    output is byte-identical to today's.
+    """
     lines: list[str] = []
     for item in items:
         kind = item.get("kind")
@@ -422,6 +543,8 @@ def render_items(items: list[dict[str, Any]]) -> str:
             lines.append(f"[tool_result error={err}] {item.get('excerpt') or ''}")
         elif kind == "reasoning":
             lines.append(f"[reasoning] {item.get('text') or ''}")
+        elif kind == "peer_message" and peer_messages:
+            lines.append(f"[peer {item.get('sender')}] {item.get('text') or ''}")
     return "\n".join(lines)
 
 
@@ -450,9 +573,12 @@ SHAPE3_FIELDS = (
 )
 
 
-def build_shape3_prompt(cur: TurnDigest) -> str:
+def build_shape3_prompt(cur: TurnDigest, *, peer_messages: bool = False) -> str:
     """Prompt asking whether the agent reached a corrected understanding or root cause in this turn."""  # noqa: E501
-    parts = ["One turn of a coding agent, in order:", render_items(cur.items)]
+    parts = [
+        "One turn of a coding agent, in order:",
+        render_items(cur.items, peer_messages=peer_messages),
+    ]
     if shape3_prompt_details(cur)["final_rendered"]:
         parts.append(f"[assistant final] {_shape3_final(cur)}")
     parts.extend(["", SHAPE3_INSTRUCTIONS, SHAPE3_FIELDS, DETECTOR_SCHEMA_LINE])

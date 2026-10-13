@@ -295,6 +295,65 @@ async def test_detect_digest_reads_env_threshold(
     assert shape2.details == {"min_confidence": 0.95}
 
 
+def test_production_shape2_arm_constants() -> None:
+    """The eval arms default to today's production behaviour (H-024)."""
+    assert surprise_worker.SHAPE2_CONTEXT_MODE == "previous_turn"
+    assert surprise_worker.SHAPE2_PROMPT_VARIANT == "default"
+    assert surprise_worker.SHAPE2_PEER_MESSAGES is False
+
+
+async def test_detect_digest_defaults_call_production_builders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-override detect_digest call (the drain_once path) keeps today's prompts."""
+    prev = surprise_worker.digest_from_row(
+        _row(final_message="port 8080 is free", user_prompt="go")
+    )
+    cur_items = [
+        {
+            "kind": "tool_call",
+            "tool_use_id": "t1",
+            "tool": "Bash",
+            "target": "ls",
+            "target_class": "ls",
+        },
+        {"kind": "tool_result", "tool_use_id": "t1", "is_error": False, "excerpt": "x"},
+        {"kind": "assistant_text", "text": "done"},
+    ]
+    cur = surprise_worker.digest_from_row(
+        _row(
+            event_id="s:1",
+            turn_index=1,
+            user_prompt="no, 8080 is taken by caddy, use 8081",
+            items=json.dumps(cur_items),
+        )
+    )
+    seen2: list[tuple[Any, Any]] = []
+    seen3: list[dict[str, Any]] = []
+    real2 = surprise_worker.build_shape2_prompt
+    real3 = surprise_worker.build_shape3_prompt
+
+    def spy2(prev_d: Any, cur_d: Any) -> str:
+        seen2.append((prev_d, cur_d))
+        return real2(prev_d, cur_d)
+
+    def spy3(cur_d: Any, *, peer_messages: bool = False) -> str:
+        seen3.append({"cur": cur_d, "peer_messages": peer_messages})
+        return real3(cur_d, peer_messages=peer_messages)
+
+    monkeypatch.setattr(surprise_worker, "build_shape2_prompt", spy2)
+    monkeypatch.setattr(surprise_worker, "build_shape3_prompt", spy3)
+    llm = FakeLLM()
+    llm.enqueue(_SHAPE2_TRUE)
+    llm.enqueue('{"surprise": false}')
+    records = await surprise_worker.detect_digest(llm, cur, [prev, cur])
+    assert len(seen2) == 1
+    assert seen2[0] == (prev, cur)
+    assert len(seen3) == 1
+    assert seen3[0] == {"cur": cur, "peer_messages": False}
+    assert next(r for r in records if r.shape == 2).outcome == "candidate"
+
+
 # --- background worker (AC-18) -----------------------------------------------------
 
 

@@ -30,6 +30,7 @@ SCRIPT_PATH = EVAL_DIR / "surprise_eval.py"
 DIGESTS_FIXTURE = EVAL_DIR / "fixtures" / "synthetic_cases.jsonl"
 MINED_FIXTURE = EVAL_DIR / "fixtures" / "synthetic_mined_cases.jsonl"
 CONCLUSION_FIXTURE = EVAL_DIR / "fixtures" / "synthetic_shape3_conclusion_cases.jsonl"
+TURNS_FIXTURE = EVAL_DIR / "fixtures" / "synthetic_turns_cases.jsonl"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -1007,7 +1008,7 @@ def test_y_model_required_only_for_shapes_2_3(tmp_path, capsys, made):
 
 
 def test_z_fixture_ids_and_outcome_drift_guard():
-    for path in (DIGESTS_FIXTURE, MINED_FIXTURE, CONCLUSION_FIXTURE):
+    for path in (DIGESTS_FIXTURE, MINED_FIXTURE, CONCLUSION_FIXTURE, TURNS_FIXTURE):
         assert all(cid.startswith("syn-") for cid in _fixture_cases(path))
     assert typing.get_args(surprise.DetectionOutcome) == se.OUTCOMES
     for group in (se.ERROR_OUTCOMES, se.MODEL_POSITIVE_OUTCOMES, se.NO_CALL_OUTCOMES):
@@ -1048,6 +1049,14 @@ def test_z_digest_item_keys_match_server_union():
         typing.get_args(c.model_fields["kind"].annotation)[0]: set(c.model_fields)
         for c in typing.get_args(typing.get_args(TurnItem)[0])
     }
+    assert {k: set(v) for k, v in se.PEER_ITEM_KEYS.items()} == {
+        "peer_message": {"kind", "sender", "text"}
+    }
+    server_kinds = {
+        typing.get_args(c.model_fields["kind"].annotation)[0]
+        for c in typing.get_args(typing.get_args(TurnItem)[0])
+    }
+    assert set(se.PEER_ITEM_KEYS).isdisjoint(server_kinds)
 
 
 def test_validate_accepts_reasoning_item(tmp_path, capsys):
@@ -1084,3 +1093,373 @@ def test_validate_accepts_harness_correction_item(tmp_path, capsys):
     path = _write_cases(tmp_path / "cases.jsonl", [case])
     assert se.main(["validate", "--cases", str(path)]) == 0
     assert json.loads(capsys.readouterr().out)["cases"] == 1
+
+
+# --- H-024: eval-only shape-2 arms (context window, standing rule, peers) ------
+
+
+def _turns_case(cid: str, label: bool, prompt_b: str | None = "use 8081") -> dict[str, Any]:
+    """The pinned 4-turn sequence: two peer-started turns between the human prompts."""
+    return {
+        "id": cid,
+        "shape": 2,
+        "label": label,
+        "label_source": "synthetic",
+        "frame": "synthetic",
+        "turns": [
+            {
+                "user_prompt": "start the dashboard",
+                "items": [{"kind": "assistant_text", "text": "T1: Port 8080 is free"}],
+                "final_message": None,
+            },
+            {
+                "user_prompt": None,
+                "items": [{"kind": "assistant_text", "text": "T2: still free"}],
+                "final_message": None,
+            },
+            {
+                "user_prompt": None,
+                "items": [],
+                "final_message": "F: the dashboard will bind 8080",
+            },
+            {"user_prompt": prompt_b, "items": [], "final_message": None},
+        ],
+    }
+
+
+def test_arm_default_flags_reproduce_todays_prompts(tmp_path, capsys, made):
+    res = _run(capsys, tmp_path / "o", DIGESTS_FIXTURE, "--model", "stub-model")
+    assert res["code"] == 0
+    cases = {c.id: c for c in se.load_cases(DIGESTS_FIXTURE)}
+    prompts = [c[1] for c in StubLLM.calls]
+    s2 = cases["syn-s2-pos"]
+    assert surprise.build_shape2_prompt(s2.digests[-2], s2.digests[-1]) in prompts
+    s3 = cases["syn-s3-pos"]
+    assert surprise.build_shape3_prompt(s3.digests[0]) in prompts
+    assert not any("[peer " in p for p in prompts)
+
+
+def test_arm_explicit_default_flags_match_no_flag_rows(tmp_path, capsys, made):
+    a = _run(capsys, tmp_path / "o1", DIGESTS_FIXTURE, "--model", "stub-model")
+    b = _run(
+        capsys,
+        tmp_path / "o2",
+        DIGESTS_FIXTURE,
+        "--model",
+        "stub-model",
+        "--shape2-context",
+        "previous_turn",
+        "--shape2-prompt",
+        "default",
+        "--peer-messages",
+        "off",
+    )
+    assert a["code"] == b["code"] == 0
+    assert a["rows"] == b["rows"]
+    assert b["report"]["args"]["shape2_context"] == "previous_turn"
+    assert b["report"]["args"]["shape2_prompt"] == "default"
+    assert b["report"]["args"]["peer_messages"] == "off"
+    assert (
+        "shape2_context=previous_turn shape2_prompt=default peer_messages=off"
+        in b["md"].splitlines()[1]
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (
+            ["--shape2-context", "bogus"],
+            "run: --shape2-context must be one of previous_turn,since_human_prompt",
+        ),
+        (
+            ["--shape2-prompt", "bogus"],
+            "run: --shape2-prompt must be one of default,standing_rule",
+        ),
+        (
+            ["--peer-messages", "bogus"],
+            "run: --peer-messages must be one of off,on",
+        ),
+    ],
+)
+def test_arm_invalid_flag_values_exit_2(tmp_path, capsys, made, extra, message):
+    out = tmp_path / "o"
+    code = se.main(
+        ["run", "--cases", str(DIGESTS_FIXTURE), "--out", str(out), "--model", "m", *extra]
+    )
+    assert code == 2
+    assert message in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_arm_validate_accepts_peer_items_and_turns_fixture(tmp_path, capsys):
+    case = copy.deepcopy(_fixture_cases()["syn-s3-pos"])
+    case["id"] = "syn-peer-1"
+    case["digests"][0]["items"].append(
+        {"kind": "peer_message", "sender": "ci-bot", "text": "main is green"}
+    )
+    path = _write_cases(tmp_path / "cases.jsonl", [case])
+    assert se.main(["validate", "--cases", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["cases"] == 1
+    assert se.main(["validate", "--cases", str(TURNS_FIXTURE)]) == 0
+    assert json.loads(capsys.readouterr().out)["cases"] == 2
+
+
+def test_arm_b_since_human_prompt_window(tmp_path, capsys, made):
+    path = _write_cases(tmp_path / "cases.jsonl", [_turns_case("syn-b1", True)])
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        path,
+        "--model",
+        "stub-model",
+        "--shape2-context",
+        "since_human_prompt",
+    )
+    assert res["code"] == 0
+    prompt = StubLLM.calls[0][1]
+    assert prompt.startswith("The assistant's previous turns:")
+    assert "T1: Port 8080 is free" in prompt
+    assert "T2: still free" in prompt
+    assert "Final message: F: the dashboard will bind 8080" in prompt
+    assert "start the dashboard" not in prompt
+    row = _row(res, "syn-b1")
+    assert row["shape2_context"] == "since_human_prompt"
+    assert row["shape2_prompt"] == "default"
+    assert row["peer_messages"] == "off"
+    assert row["shape2_context_turns"] == 3
+    assert row["shape2_context_anchor"] == 0
+
+
+def test_arm_b_previous_turn_renders_only_prev_turn(tmp_path, capsys, made):
+    path = _write_cases(tmp_path / "cases.jsonl", [_turns_case("syn-b2", True)])
+    res = _run(capsys, tmp_path / "o", path, "--model", "stub-model")
+    prompt = StubLLM.calls[0][1]
+    assert prompt.startswith("The assistant's previous turn:")
+    assert "Final message: F: the dashboard will bind 8080" in prompt
+    assert "T1:" not in prompt
+    assert "T2:" not in prompt
+    row = _row(res, "syn-b2")
+    assert row["llm_calls"] == 1
+    assert row["shape2_context_turns"] is None
+    assert row["shape2_context_anchor"] is None
+
+
+@pytest.mark.parametrize("ctx", ["previous_turn", "since_human_prompt"])
+def test_arm_b_target_without_user_prompt_skips(tmp_path, capsys, made, ctx):
+    case = _turns_case("syn-b3", False)
+    case["turns"][-1]["user_prompt"] = None
+    path = _write_cases(tmp_path / "cases.jsonl", [case])
+    res = _run(capsys, tmp_path / "o", path, "--model", "stub-model", "--shape2-context", ctx)
+    row = _row(res, "syn-b3")
+    assert (row["outcome"], row["reason"], row["llm_calls"]) == (
+        "not_applicable",
+        "no_user_prompt",
+        0,
+    )
+    assert StubLLM.calls == []
+
+
+def test_arm_b_no_prev_text_skips_even_with_window_text(tmp_path, capsys, made):
+    case = {
+        "id": "syn-b4",
+        "shape": 2,
+        "label": False,
+        "label_source": "synthetic",
+        "frame": "synthetic",
+        "turns": [
+            {
+                "user_prompt": "prompt A",
+                "items": [{"kind": "assistant_text", "text": "T1: earlier text"}],
+                "final_message": None,
+            },
+            {"user_prompt": None, "items": [], "final_message": None},
+            {"user_prompt": "prompt B", "items": [], "final_message": None},
+        ],
+    }
+    path = _write_cases(tmp_path / "cases.jsonl", [case])
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        path,
+        "--model",
+        "stub-model",
+        "--shape2-context",
+        "since_human_prompt",
+    )
+    row = _row(res, "syn-b4")
+    assert (row["outcome"], row["reason"], row["llm_calls"]) == (
+        "not_applicable",
+        "no_prev_text",
+        0,
+    )
+    assert StubLLM.calls == []
+
+
+def test_arm_b_digests_form_differs_only_in_header(tmp_path, capsys, made):
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        DIGESTS_FIXTURE,
+        "--model",
+        "stub-model",
+        "--shape2-context",
+        "since_human_prompt",
+    )
+    assert res["code"] == 0
+    cases = {c.id: c for c in se.load_cases(DIGESTS_FIXTURE)}
+    s2 = cases["syn-s2-pos"]
+    prompt = StubLLM.calls[0][1]
+    expected = surprise.build_shape2_context_prompt(
+        surprise.shape2_context_digests(s2.digests, s2.digests[-1]), s2.digests[-1]
+    )
+    assert prompt == expected
+    plain = surprise.build_shape2_prompt(s2.digests[-2], s2.digests[-1])
+    assert [
+        (x, y) for x, y in zip(prompt.splitlines(), plain.splitlines(), strict=True) if x != y
+    ] == [("The assistant's previous turns:", "The assistant's previous turn:")]
+    row = _row(res, "syn-s2-pos")
+    assert row["shape2_context_turns"] == 1
+    assert row["shape2_context_anchor"] == 0
+
+
+def test_arm_c_standing_rule_prompt_and_version(tmp_path, capsys, made):
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        DIGESTS_FIXTURE,
+        "--model",
+        "stub-model",
+        "--shape2-prompt",
+        "standing_rule",
+    )
+    assert res["code"] == 0
+    cases = {c.id: c for c in se.load_cases(DIGESTS_FIXTURE)}
+    s2 = cases["syn-s2-pos"]
+    prompt = StubLLM.calls[0][1]
+    assert prompt == surprise.build_shape2_standing_rule_prompt(s2.digests[-2], s2.digests[-1])
+    assert surprise.SHAPE2_STANDING_RULE_INSTRUCTIONS in prompt.splitlines()
+    assert (
+        "evidence_excerpt must be copied verbatim from the human message, with no"
+        " ellipses." in prompt.splitlines()
+    )
+    assert "Set it to false for new requests, preference or style changes" not in prompt
+    row = _row(res, "syn-s2-pos")
+    assert row["shape2_prompt"] == "standing_rule"
+    assert row["shape2_prompt_version"] == 1
+    assert row["detector_version"] == surprise.SURPRISE_DETECTOR_VERSION
+    assert res["report"]["shape2_prompt_version"] == 1
+    assert res["report"]["args"]["shape2_prompt"] == "standing_rule"
+
+    default = _run(capsys, tmp_path / "o2", DIGESTS_FIXTURE, "--model", "stub-model")
+    assert _row(default, "syn-s2-pos")["shape2_prompt_version"] == 4
+    assert default["report"]["shape2_prompt_version"] == 4
+    assert "shape2_prompt=standing_rule" not in default["md"].splitlines()[1]
+
+
+def test_arm_d_peer_messages_render_only_when_on(tmp_path, capsys, made):
+    case = _turns_case("syn-d1", True)
+    case["turns"][1]["items"] = [
+        {"kind": "peer_message", "sender": "jason-precision", "text": "GPU box is busy"},
+        {"kind": "peer_message", "sender": "ci-bot", "text": "main is green"},
+        {"kind": "assistant_text", "text": "T2: still free"},
+    ]
+    s3case = copy.deepcopy(_fixture_cases()["syn-s3-pos"])
+    s3case["id"] = "syn-d3"
+    s3case["digests"][0]["items"].append(
+        {"kind": "peer_message", "sender": "odin", "text": "disk is 90% free"}
+    )
+    path = _write_cases(tmp_path / "cases.jsonl", [case, s3case])
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        path,
+        "--model",
+        "stub-model",
+        "--shape2-context",
+        "since_human_prompt",
+        "--peer-messages",
+        "on",
+    )
+    assert res["code"] == 0
+    s2_prompt, s3_prompt = StubLLM.calls[0][1], StubLLM.calls[1][1]
+    assert "[peer jason-precision] GPU box is busy" in s2_prompt
+    assert "[peer ci-bot] main is green" in s2_prompt
+    assert "[peer odin] disk is 90% free" in s3_prompt
+    row2 = _row(res, "syn-d1")
+    assert row2["peer_items"] == 2
+    assert row2["peer_items_rendered"] == 2
+    row3 = _row(res, "syn-d3")
+    assert row3["peer_items"] == 1
+    assert row3["peer_items_rendered"] == 1
+
+    off = _run(capsys, tmp_path / "o2", path, "--model", "stub-model", "--peer-messages", "off")
+    for prompt in (StubLLM.calls[-2][1], StubLLM.calls[-1][1]):
+        assert "[peer " not in prompt
+    assert _row(off, "syn-d1")["peer_items"] == 2
+    assert _row(off, "syn-d1")["peer_items_rendered"] == 0
+    assert _row(off, "syn-d3")["peer_items"] == 1
+    assert _row(off, "syn-d3")["peer_items_rendered"] == 0
+
+
+@pytest.mark.parametrize("ctx", ["previous_turn", "since_human_prompt"])
+@pytest.mark.parametrize("prompt", ["default", "standing_rule"])
+@pytest.mark.parametrize("peers", ["off", "on"])
+def test_arm_combinations_produce_zero_anomalies(tmp_path, capsys, made, ctx, prompt, peers):
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        TURNS_FIXTURE,
+        "--model",
+        "stub-model",
+        "--shape2-context",
+        ctx,
+        "--shape2-prompt",
+        prompt,
+        "--peer-messages",
+        peers,
+    )
+    assert res["code"] == 0
+    assert all(r["anomaly"] is None for r in res["rows"])
+    assert all(r["harness_error"] is None for r in res["rows"])
+    assert res["report"]["args"] == {
+        "concurrency": 4,
+        "force": False,
+        "limit": None,
+        "peer_messages": peers,
+        "shape2_context": ctx,
+        "shape2_prompt": prompt,
+        "shapes": [1, 2, 3],
+        "timeout": None,
+    }
+
+
+def test_turns_form_validation_errors(tmp_path, capsys):
+    def _validate(case: dict[str, Any]) -> str:
+        path = _write_cases(tmp_path / "cases.jsonl", [case])
+        assert se.main(["validate", "--cases", str(path)]) == 2
+        return capsys.readouterr().err.strip()
+
+    wrong_shape = _turns_case("syn-t1", True)
+    wrong_shape["shape"] = 3
+    assert _validate(wrong_shape) == "validate: syn-t1: turns cases must be shape 2"
+
+    bad_case_key = _turns_case("syn-t2", True)
+    bad_case_key["bogus"] = 1
+    assert _validate(bad_case_key) == "validate: syn-t2: unknown keys ['bogus']"
+
+    bad_turn_key = _turns_case("syn-t3", True)
+    bad_turn_key["turns"][0]["extra"] = 1
+    assert _validate(bad_turn_key) == "validate: syn-t3: turn 0: unknown keys ['extra']"
+
+    bad_item = _turns_case("syn-t4", True)
+    bad_item["turns"][0]["items"][0]["bogus"] = 1
+    assert _validate(bad_item) == "validate: syn-t4: turn 0 item 0 has unknown keys"
+
+    bad_kind = _turns_case("syn-t5", True)
+    bad_kind["turns"][0]["items"] = [{"kind": "bogus", "text": "x"}]
+    assert _validate(bad_kind) == "validate: syn-t5: turn 0 item 0 has an unknown kind"
+
+    one_turn = _turns_case("syn-t6", True)
+    one_turn["turns"] = one_turn["turns"][:1]
+    assert "syn-t6: turns must be a list of at least 2 turns" in _validate(one_turn)

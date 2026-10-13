@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 import pydantic
 from kb_core import cues
+from kb_core.ingest.safety import redact_secrets
 from kb_core.llm import anthropic as anthropic_llm
 from kb_core.llm import json_parser
 from kb_service import config as service_config
@@ -113,6 +114,13 @@ MINED_ITEM_KEYS = {
     "tool_call": {"kind", "tool", "target"},
     "tool_result": {"kind", "is_error", "excerpt"},
 }
+# H-024 eval arm D: peer_message is accepted by the digests and turns case
+# forms ONLY. It is deliberately not in DIGEST_ITEM_KEYS (which must equal the
+# server TurnItem union) and never reaches TurnDigestRequest, the wire
+# contracts or the hook.
+PEER_ITEM_KEYS = {"peer_message": {"kind", "sender", "text"}}
+TURNS_CASE_KEYS = COMMON_CASE_KEYS | {"turns"}
+TURN_ELEMENT_KEYS = frozenset({"user_prompt", "items", "final_message"})
 
 RESULT_KEYS = (
     "case_id",
@@ -143,6 +151,14 @@ RESULT_KEYS = (
     "provider_warnings",
     "anomaly",
     "harness_error",
+    "shape2_context",
+    "shape2_prompt",
+    "peer_messages",
+    "shape2_prompt_version",
+    "shape2_context_turns",
+    "shape2_context_anchor",
+    "peer_items",
+    "peer_items_rendered",
 )
 CELL_KEYS = (
     "shape",
@@ -445,6 +461,15 @@ def _unknown_keys(cid: str, obj: dict[str, Any], allowed: frozenset[str] | set[s
         raise CaseError(f"{cid}: unknown keys {sorted(extra)}")
 
 
+def _check_peer_fields(cid: str, where: str, item: dict[str, Any]) -> None:
+    """Validate an eval-only peer_message item (arm D); *where* names its location."""
+    sender = item.get("sender")
+    if not isinstance(sender, str) or not 1 <= len(sender) <= 64:
+        raise CaseError(f"{cid}: {where} sender must be a str of 1-64 chars")
+    if not isinstance(item.get("text"), str):
+        raise CaseError(f"{cid}: {where} text must be a str")
+
+
 def _check_mined(cid: str, obj: dict[str, Any]) -> None:
     shape = obj["shape"]
     if shape == 1:
@@ -483,6 +508,7 @@ def _check_mined(cid: str, obj: dict[str, Any]) -> None:
 def _check_digest_structure(cid: str, shape: int, digests: Any) -> None:
     if not isinstance(digests, list) or not digests:
         raise CaseError(f"{cid}: digests must be a non-empty list")
+    item_keys = {**DIGEST_ITEM_KEYS, **PEER_ITEM_KEYS}
     for i, d in enumerate(digests):
         if not isinstance(d, dict):
             raise CaseError(f"{cid}: digest {i} is not an object")
@@ -500,10 +526,12 @@ def _check_digest_structure(cid: str, shape: int, digests: Any) -> None:
             if not isinstance(item, dict):
                 raise CaseError(f"{cid}: digest {i} item {j} is not an object")
             kind = item.get("kind")
-            if not isinstance(kind, str) or kind not in DIGEST_ITEM_KEYS:
+            if not isinstance(kind, str) or kind not in item_keys:
                 raise CaseError(f"{cid}: digest {i} item {j} has an unknown kind")
-            if not set(item) <= DIGEST_ITEM_KEYS[kind]:
+            if not set(item) <= item_keys[kind]:
                 raise CaseError(f"{cid}: digest {i} item {j} has unknown keys")
+            if kind == "peer_message":
+                _check_peer_fields(cid, f"digest {i} item {j}", item)
     if len({json.dumps(d["session_id"]) for d in digests}) != 1:
         raise CaseError(f"{cid}: digests must share one session_id")
     turns = [d["turn_index"] for d in digests]
@@ -520,14 +548,90 @@ def _check_digest_structure(cid: str, shape: int, digests: Any) -> None:
         raise CaseError(f"{cid}: shape 3 needs exactly 1 digest")
 
 
+def _check_turns(cid: str, obj: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate a shape-2 turns-form case and build its digest dicts.
+
+    Each element becomes one digest: ``turn_index`` 0..n-1 in list order,
+    ``session_id`` the case id, ``project`` the case project, ``truncated``
+    False and ``event_id`` ``<session_id>:<turn_index>``. The LAST element is
+    the target turn; the digests-form shape-2 sampling constraints (exactly
+    two consecutive turns, no tool_result in the second) deliberately do not
+    apply, because this form replays real multi-turn sequences.
+    """
+    turns = obj["turns"]
+    if not isinstance(turns, list) or len(turns) < 2:
+        raise CaseError(f"{cid}: turns must be a list of at least 2 turns")
+    session_id = obj["id"]
+    project = obj.get("project")
+    item_keys = {**DIGEST_ITEM_KEYS, **PEER_ITEM_KEYS}
+    dicts: list[dict[str, Any]] = []
+    for i, t in enumerate(turns):
+        if not isinstance(t, dict):
+            raise CaseError(f"{cid}: turn {i} is not an object")
+        extra = set(t) - TURN_ELEMENT_KEYS
+        if extra:
+            raise CaseError(f"{cid}: turn {i}: unknown keys {sorted(extra)}")
+        for key in ("user_prompt", "final_message"):
+            if key not in t:
+                raise CaseError(f"{cid}: turn {i}: missing {key}")
+            if t[key] is not None and not isinstance(t[key], str):
+                raise CaseError(f"{cid}: turn {i}: {key} must be a str or null")
+        if "items" not in t:
+            raise CaseError(f"{cid}: turn {i}: missing items")
+        items = t["items"]
+        if not isinstance(items, list):
+            raise CaseError(f"{cid}: turn {i}: items must be a list")
+        for j, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise CaseError(f"{cid}: turn {i} item {j} is not an object")
+            kind = item.get("kind")
+            if not isinstance(kind, str) or kind not in item_keys:
+                raise CaseError(f"{cid}: turn {i} item {j} has an unknown kind")
+            if not set(item) <= item_keys[kind]:
+                raise CaseError(f"{cid}: turn {i} item {j} has unknown keys")
+            if kind == "peer_message":
+                _check_peer_fields(cid, f"turn {i} item {j}", item)
+        dicts.append(
+            {
+                "session_id": session_id,
+                "turn_index": i,
+                "project": project,
+                "user_prompt": t["user_prompt"],
+                "items": [dict(item) for item in items],
+                "final_message": t["final_message"],
+                "truncated": False,
+            }
+        )
+    return dicts
+
+
 def _ingest_digests(
     cid: str, digests: list[dict[str, Any]]
 ) -> tuple[list[surprise.TurnDigest], list[str]]:
-    """Run each digest through the production ingest path (validate, cap, normalize, redact)."""
+    """Run each digest through the production ingest path (validate, cap, normalize, redact).
+
+    peer_message items are eval-only: they are stripped before
+    ``TurnDigestRequest.model_validate`` (so they never enter the pydantic
+    model, ``normalize_turn_tools`` or ``redact_turn_digest``, and their text
+    does not count toward the 64 KiB digest check or ``TURN_ITEMS_MAX``), each
+    text is redacted with ``kb_core.ingest.safety.redact_secrets``, sliced to
+    ``surprise.PEER_MESSAGE_TEXT_MAX`` and re-attached at its original index.
+    """
     out: list[surprise.TurnDigest] = []
     redactions: list[str] = []
     for i, d in enumerate(digests):
-        payload = {**d, "event_id": d.get("event_id", f"{d['session_id']}:{d['turn_index']}")}
+        peers: list[tuple[int, dict[str, Any]]] = []
+        rest: list[dict[str, Any]] = []
+        for j, item in enumerate(d.get("items") or []):
+            if isinstance(item, dict) and item.get("kind") == "peer_message":
+                peers.append((j, dict(item)))
+            else:
+                rest.append(item)
+        payload = {
+            **d,
+            "items": rest,
+            "event_id": d.get("event_id", f"{d['session_id']}:{d['turn_index']}"),
+        }
         try:
             req = TurnDigestRequest.model_validate(payload)
         except pydantic.ValidationError as exc:
@@ -546,21 +650,41 @@ def _ingest_digests(
         for t in types:
             if t not in redactions:
                 redactions.append(t)
-        out.append(
-            surprise_worker.digest_from_row(
-                {
-                    "event_id": r.event_id,
-                    "session_id": r.session_id,
-                    "project": r.project or "",
-                    "turn_index": r.turn_index,
-                    "user_prompt": r.user_prompt,
-                    "items": [item.model_dump() for item in r.items],
-                    "final_message": r.final_message,
-                    "truncated": r.truncated,
-                    "ts": r.ts or "",
-                }
+        redacted_peers: list[tuple[int, dict[str, Any]]] = []
+        for j, p in peers:
+            result = redact_secrets(str(p.get("text") or ""))
+            if result is None:
+                raise CaseError(f"{cid}: redaction unavailable")
+            text, found = result
+            for t in found:
+                if t not in redactions:
+                    redactions.append(t)
+            redacted_peers.append(
+                (
+                    j,
+                    {
+                        "kind": "peer_message",
+                        "sender": p.get("sender"),
+                        "text": text[: surprise.PEER_MESSAGE_TEXT_MAX],
+                    },
+                )
             )
+        digest = surprise_worker.digest_from_row(
+            {
+                "event_id": r.event_id,
+                "session_id": r.session_id,
+                "project": r.project or "",
+                "turn_index": r.turn_index,
+                "user_prompt": r.user_prompt,
+                "items": [item.model_dump() for item in r.items],
+                "final_message": r.final_message,
+                "truncated": r.truncated,
+                "ts": r.ts or "",
+            }
         )
+        for j, p in redacted_peers:
+            digest.items.insert(j, p)
+        out.append(digest)
     return out, redactions
 
 
@@ -610,10 +734,16 @@ def load_cases(path: Path) -> list[Case]:
         if "digests" in obj:
             _unknown_keys(cid, obj, DIGEST_CASE_KEYS)
             digest_dicts = obj["digests"]
+            _check_digest_structure(cid, shape, digest_dicts)
+        elif "turns" in obj:
+            _unknown_keys(cid, obj, TURNS_CASE_KEYS)
+            if shape != 2:
+                raise CaseError(f"{cid}: turns cases must be shape 2")
+            digest_dicts = _check_turns(cid, obj)
         else:
             _check_mined(cid, obj)
             digest_dicts = mined_to_digests(obj)
-        _check_digest_structure(cid, shape, digest_dicts)
+            _check_digest_structure(cid, shape, digest_dicts)
         digests, redactions = _ingest_digests(cid, digest_dicts)
         cases.append(
             Case(
@@ -741,7 +871,13 @@ class _EvalLogHandler(logging.Handler):
 # --- one evaluation ----------------------------------------------------------
 
 
-def _base_row(case: Case, model: str) -> dict[str, Any]:
+def _base_row(
+    case: Case,
+    model: str,
+    shape2_context: str,
+    shape2_prompt: str,
+    peer_messages: bool,
+) -> dict[str, Any]:
     row: dict[str, Any] = dict.fromkeys(RESULT_KEYS)
     row.update(
         case_id=case.id,
@@ -759,18 +895,39 @@ def _base_row(case: Case, model: str) -> dict[str, Any]:
         llm_calls=0,
         cross_shape_candidates=[],
         provider_warnings=[],
+        shape2_context=shape2_context,
+        shape2_prompt=shape2_prompt,
+        peer_messages="on" if peer_messages else "off",
+        shape2_prompt_version=(
+            surprise.SHAPE2_STANDING_RULE_VERSION
+            if shape2_prompt == "standing_rule"
+            else surprise.SURPRISE_DETECTOR_VERSION
+        ),
+        shape2_context_turns=None,
+        shape2_context_anchor=None,
+        peer_items=sum(1 for d in case.digests for i in d.items if i.get("kind") == "peer_message"),
+        peer_items_rendered=0,
     )
     return row
 
 
 async def _score(
-    case: Case, llm: Any, min_confidence_by_shape: dict[int, float], row: dict[str, Any]
+    case: Case,
+    llm: Any,
+    min_confidence_by_shape: dict[int, float],
+    row: dict[str, Any],
+    shape2_context: str,
+    shape2_prompt: str,
+    peer_messages: bool,
 ) -> None:
     records = await surprise_worker.detect_digest(
         llm,
         case.digests[-1],
         case.digests,
         min_confidence=min_confidence_by_shape.get(case.shape),
+        shape2_context=shape2_context,  # type: ignore[arg-type]
+        shape2_prompt=shape2_prompt,  # type: ignore[arg-type]
+        peer_messages=peer_messages,
     )
     for r in records:
         if r.outcome not in OUTCOMES:
@@ -779,6 +936,15 @@ async def _score(
     llm_calls = sum(1 for r in records if r.shape in (2, 3) and r.outcome not in NO_CALL_OUTCOMES)
     anomalies: list[str] = []
     row["llm_calls"] = llm_calls
+    if case.shape == 2 and shape2_context == "since_human_prompt":
+        row["shape2_context_turns"] = len(
+            surprise.shape2_context_digests(case.digests, case.digests[-1])
+        )
+        anchor = None
+        for d in case.digests:
+            if d.turn_index < case.digests[-1].turn_index and (d.user_prompt or "").strip():
+                anchor = d.turn_index
+        row["shape2_context_anchor"] = anchor
     if not own:
         row["outcome"] = "not_applicable"
         anomalies.append("own_records=0")
@@ -807,10 +973,25 @@ async def _score(
         row["detector_output"] = rec.candidate.detector_output if rec.candidate else None
         if rec.outcome not in NO_CALL_OUTCOMES:
             if case.shape == 2:
-                prompt = surprise.build_shape2_prompt(case.digests[0], case.digests[1])
+                if shape2_context == "since_human_prompt":
+                    prompt = surprise.build_shape2_context_prompt(
+                        surprise.shape2_context_digests(case.digests, case.digests[-1]),
+                        case.digests[-1],
+                        variant=shape2_prompt,  # type: ignore[arg-type]
+                        peer_messages=peer_messages,
+                    )
+                elif shape2_prompt == "standing_rule":
+                    prompt = surprise.build_shape2_standing_rule_prompt(
+                        case.digests[-2], case.digests[-1]
+                    )
+                else:
+                    prompt = surprise.build_shape2_prompt(case.digests[-2], case.digests[-1])
             else:
-                prompt = surprise.build_shape3_prompt(case.digests[0])
+                prompt = surprise.build_shape3_prompt(case.digests[0], peer_messages=peer_messages)
             row["prompt_sha256"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            row["peer_items_rendered"] = sum(
+                1 for line in prompt.splitlines() if line.startswith("[peer ")
+            )
             if rec.prompt_chars is not None and rec.prompt_chars != len(
                 surprise.SURPRISE_DETECTOR_SYSTEM
             ) + len(prompt):
@@ -839,15 +1020,26 @@ async def _evaluate(
     min_confidence_by_shape: dict[int, float],
     sem: asyncio.Semaphore,
     progress: dict[str, int],
+    shape2_context: str,
+    shape2_prompt: str,
+    peer_messages: bool,
 ) -> dict[str, Any]:
     async with sem:
         log: list[str] = []
         _EVAL_LOG.set(log)
-        row = _base_row(case, model)
+        row = _base_row(case, model, shape2_context, shape2_prompt, peer_messages)
         try:
-            await _score(case, llm, min_confidence_by_shape, row)
+            await _score(
+                case,
+                llm,
+                min_confidence_by_shape,
+                row,
+                shape2_context,
+                shape2_prompt,
+                peer_messages,
+            )
         except Exception as exc:
-            row = _base_row(case, model)
+            row = _base_row(case, model, shape2_context, shape2_prompt, peer_messages)
             row["harness_error"] = f"{type(exc).__name__}: {str(exc)[:_CUT]}"
         row["provider_warnings"] = log
         progress["done"] += 1
@@ -1074,7 +1266,10 @@ def _render_md(report: dict[str, Any], rows_by_cell: list[list[dict[str, Any]]])
         f" timeout_s={report['timeout_s']} production_timeout_s={report['production_timeout_s']}"
         f" min_confidence={report['min_confidence']:.2f}"
         f" min_confidence_by_shape="
-        + ",".join(f"s{k}={v:.2f}" for k, v in report["min_confidence_by_shape"].items()),
+        + ",".join(f"s{k}={v:.2f}" for k, v in report["min_confidence_by_shape"].items())
+        + f" shape2_context={report['args']['shape2_context']}"
+        f" shape2_prompt={report['args']['shape2_prompt']}"
+        f" peer_messages={report['args']['peer_messages']}",
         "",
         TABLE_HEADER,
         "|" + "---|" * 19,
@@ -1226,6 +1421,15 @@ def _arg_error(args: argparse.Namespace) -> tuple[str | None, list[int]]:
             parse_model_arm(m)
         except ArmError as exc:
             return f"--model {exc}", shapes
+    shape2_context = getattr(args, "shape2_context", "previous_turn")
+    if shape2_context not in ("previous_turn", "since_human_prompt"):
+        return "--shape2-context must be one of previous_turn,since_human_prompt", shapes
+    shape2_prompt = getattr(args, "shape2_prompt", "default")
+    if shape2_prompt not in ("default", "standing_rule"):
+        return "--shape2-prompt must be one of default,standing_rule", shapes
+    peer_messages = getattr(args, "peer_messages", "off")
+    if peer_messages not in ("off", "on"):
+        return "--peer-messages must be one of off,on", shapes
     return None, shapes
 
 
@@ -1276,6 +1480,14 @@ async def _run(
     timeout_s = args.timeout if args.timeout is not None else production_timeout_s
     models: list[str] = list(args.model)
     arms = [parse_model_arm(m) for m in models]
+    shape2_context = args.shape2_context
+    shape2_prompt = args.shape2_prompt
+    peer_messages = args.peer_messages == "on"
+    shape2_prompt_version = (
+        surprise.SHAPE2_STANDING_RULE_VERSION
+        if shape2_prompt == "standing_rule"
+        else surprise.SURPRISE_DETECTOR_VERSION
+    )
     model_cases = [c for c in cases if c.shape in (2, 3)]
     shape1_cases = [c for c in cases if c.shape == 1]
 
@@ -1301,7 +1513,20 @@ async def _run(
         provider_logger.setLevel(logging.WARNING)
     try:
         rows = await asyncio.gather(
-            *(_evaluate(c, m, llm, min_confidence_by_shape, sem, progress) for c, m, llm in jobs)
+            *(
+                _evaluate(
+                    c,
+                    m,
+                    llm,
+                    min_confidence_by_shape,
+                    sem,
+                    progress,
+                    shape2_context,
+                    shape2_prompt,
+                    peer_messages,
+                )
+                for c, m, llm in jobs
+            )
         )
     finally:
         provider_logger.removeHandler(handler)
@@ -1351,9 +1576,13 @@ async def _run(
             "concurrency": args.concurrency,
             "force": args.force,
             "limit": args.limit,
+            "peer_messages": args.peer_messages,
+            "shape2_context": args.shape2_context,
+            "shape2_prompt": args.shape2_prompt,
             "shapes": shapes,
             "timeout": args.timeout,
         },
+        "shape2_prompt_version": shape2_prompt_version,
         "versions": {
             name: _version(name) for name in ("anthropic", "kb-core", "personal-kb-web-service")
         },
@@ -1410,6 +1639,9 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--limit", type=int, default=None)
     r.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     r.add_argument("--timeout", type=float, default=None)
+    r.add_argument("--shape2-context", default="previous_turn")
+    r.add_argument("--shape2-prompt", default="default")
+    r.add_argument("--peer-messages", default="off")
     r.add_argument("--force", action="store_true", default=False)
     return parser
 

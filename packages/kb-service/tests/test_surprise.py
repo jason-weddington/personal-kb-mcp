@@ -6,19 +6,24 @@ from kb_core.cues import target_class
 
 from kb_service.surprise import (
     DETECTOR_SCHEMA_LINE,
+    SHAPE2_STANDING_RULE_INSTRUCTIONS,
+    SHAPE2_STANDING_RULE_VERSION,
     SHAPE3_FIELDS,
     SHAPE3_INSTRUCTIONS,
     SURPRISE_DETECTOR_VERSION,
     DetectorVerdict,
     NewCandidate,
     TurnDigest,
+    build_shape2_context_prompt,
     build_shape2_prompt,
+    build_shape2_standing_rule_prompt,
     build_shape3_prompt,
     detect_shape1,
     detect_shape4,
     evidence_grounded,
     parse_detector_response,
     render_items,
+    shape2_context_digests,
     shape2_skip_reason,
     shape3_prompt_details,
     shape3_reasoning_details,
@@ -560,6 +565,154 @@ def test_shape3_reasoning_details() -> None:
     assert blank["reasoning_chars"] == 2
     d = _digest(0, [call, result, _reasoning("x")])
     assert shape3_reasoning_details(d)["reasoning_after_result"] is True
+
+
+# --- H-024: eval-only shape-2 arms (context window, standing rule, peers) -----
+
+
+def _peer(sender: str, text: str) -> dict[str, Any]:
+    return {"kind": "peer_message", "sender": sender, "text": text}
+
+
+def test_shape2_context_digests_anchor_window() -> None:
+    d0 = _digest(0, [], user_prompt="prompt A")
+    d1 = _digest(1, [], user_prompt=None)
+    d2 = _digest(2, [], user_prompt=None)
+    cur = _digest(3, [], user_prompt="prompt B")
+    assert shape2_context_digests([d0, d1, d2, cur], cur) == [d0, d1, d2]
+
+
+def test_shape2_context_digests_anchor_is_most_recent_prompt() -> None:
+    earlier = _digest(0, [], user_prompt="old prompt")
+    anchor = _digest(1, [], user_prompt="prompt A")
+    d2 = _digest(2, [], user_prompt=None)
+    cur = _digest(3, [], user_prompt="prompt B")
+    assert shape2_context_digests([earlier, anchor, d2, cur], cur) == [anchor, d2]
+
+
+def test_shape2_context_digests_blank_prompt_is_not_an_anchor() -> None:
+    earlier = _digest(0, [], user_prompt="old prompt")
+    blank = _digest(1, [], user_prompt="   ")
+    d2 = _digest(2, [], user_prompt=None)
+    cur = _digest(3, [], user_prompt="prompt B")
+    window = shape2_context_digests([earlier, blank, d2, cur], cur)
+    assert window == [earlier, blank, d2]
+
+
+def test_shape2_context_digests_no_anchor_is_every_earlier_digest() -> None:
+    d1 = _digest(1, [], user_prompt=None)
+    d2 = _digest(2, [], user_prompt="")
+    cur = _digest(3, [], user_prompt="prompt B")
+    assert shape2_context_digests([d1, d2, cur], cur) == [d1, d2]
+
+
+def test_shape2_context_prompt_two_digest_window_bytes() -> None:
+    a = _digest(0, [_text("T1")], user_prompt="prompt A")
+    b = _digest(1, [_text("T2")], user_prompt=None, final_message="F")
+    cur = _digest(2, [], user_prompt="prompt B")
+    assert build_shape2_context_prompt([a, b], cur) == "\n".join(
+        [
+            "The assistant's previous turns:",
+            "T1",
+            "T2",
+            "Final message: F",
+            "",
+            "The human's next message:",
+            "prompt B",
+            "",
+            "Set surprise to true only when the human's message says a factual"
+            " claim or assumption from the assistant's previous turn was wrong."
+            " Set it to false for new requests, preference or style changes,"
+            " approvals and follow-up questions.",
+            "wrong_belief is the assistant's claim; corrected_fact is what the"
+            " human says is true. evidence_excerpt must be copied verbatim from"
+            " the human message, with no ellipses.",
+            DETECTOR_SCHEMA_LINE,
+        ]
+    )
+
+
+def test_shape2_context_prompt_one_digest_differs_only_in_header() -> None:
+    prev = _digest(0, [_text("I think so")], final_message="port 8080 is free")
+    cur = _digest(1, [], user_prompt="no, 8080 is taken")
+    context = build_shape2_context_prompt([prev], cur)
+    plain = build_shape2_prompt(prev, cur)
+    assert [
+        (x, y)
+        for x, y in zip(context.splitlines(), plain.splitlines(), strict=True)
+        if x != y
+    ] == [("The assistant's previous turns:", "The assistant's previous turn:")]
+
+
+def test_shape2_context_prompt_peer_lines_render_in_order() -> None:
+    a = _digest(
+        0,
+        [_peer("ci-bot", "main is green"), _text("T1"), _peer("odin", "disk ok")],
+        user_prompt="prompt A",
+    )
+    cur = _digest(1, [], user_prompt="prompt B")
+    on = build_shape2_context_prompt([a], cur, peer_messages=True).splitlines()
+    assert on[:4] == [
+        "The assistant's previous turns:",
+        "T1",
+        "[peer ci-bot] main is green",
+        "[peer odin] disk ok",
+    ]
+    off = build_shape2_context_prompt([a], cur, peer_messages=False)
+    assert "[peer " not in off
+
+
+def test_shape2_standing_rule_prompt_bytes() -> None:
+    prev = _digest(0, [_text("I will use jason-desktop")], final_message="plan set")
+    cur = _digest(1, [], user_prompt="jason-precision is the session host")
+    prompt = build_shape2_standing_rule_prompt(prev, cur)
+    assert prompt == "\n".join(
+        [
+            "The assistant's previous turn:",
+            "I will use jason-desktop",
+            "Final message: plan set",
+            "",
+            "The human's next message:",
+            "jason-precision is the session host",
+            "",
+            SHAPE2_STANDING_RULE_INSTRUCTIONS,
+            "evidence_excerpt must be copied verbatim from the human message,"
+            " with no ellipses.",
+            DETECTOR_SCHEMA_LINE,
+        ]
+    )
+    assert SHAPE2_STANDING_RULE_VERSION == 1
+
+
+def test_shape2_context_prompt_standing_rule_variant() -> None:
+    prev = _digest(0, [_text("plan")], final_message=None)
+    cur = _digest(1, [], user_prompt="the rule changed")
+    prompt = build_shape2_context_prompt([prev], cur, variant="standing_rule")
+    lines = prompt.splitlines()
+    assert lines[0] == "The assistant's previous turns:"
+    assert SHAPE2_STANDING_RULE_INSTRUCTIONS in lines
+    assert lines.index(SHAPE2_STANDING_RULE_INSTRUCTIONS) < lines.index(
+        "evidence_excerpt must be copied verbatim from the human message, with no"
+        " ellipses."
+    )
+    assert "Set it to false for new requests, preference or style changes" not in prompt
+    assert lines[-1] == DETECTOR_SCHEMA_LINE
+    pinned = build_shape2_standing_rule_prompt(prev, cur)
+    assert [
+        (x, y) for x, y in zip(lines, pinned.splitlines(), strict=True) if x != y
+    ] == [("The assistant's previous turns:", "The assistant's previous turn:")]
+
+
+def test_render_items_peer_branch() -> None:
+    items = [_text("a"), _peer("ci-bot", "main is green")]
+    assert render_items(items) == "[assistant] a"
+    assert render_items(items, peer_messages=True).splitlines() == [
+        "[assistant] a",
+        "[peer ci-bot] main is green",
+    ]
+    prompt = build_shape3_prompt(_digest(0, items), peer_messages=True)
+    assert "[peer ci-bot] main is green" in prompt
+    assert "[peer " not in build_shape3_prompt(_digest(0, items))
 
 
 # --- shape 4 -----------------------------------------------------------------
