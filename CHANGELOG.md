@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.13.2 (2026-10-12)
+
+### Bug Fixes
+
+- **b20d26be**: Scrolling the Graph inspector no longer bounces up and down
+  ([`3d8424b`](https://github.com/jason-weddington/personal-kb-mcp/commit/3d8424bc3f37b3cc5ca97b549aeb32b4f02ca645))
+
+
 ## v1.13.1 (2026-10-12)
 
 ### Bug Fixes
