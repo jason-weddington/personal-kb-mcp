@@ -61,6 +61,8 @@ _DEFAULT_EMBEDDING_TIMEOUT = 10.0
 _DEFAULT_EMBEDDING_KEEP_ALIVE = "30m"
 _DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
 _DEFAULT_ANTHROPIC_TIMEOUT = 30.0
+_ANTHROPIC_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+_ANTHROPIC_THINKING_MODES = frozenset({"disabled", "adaptive"})
 _DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 _DEFAULT_BEDROCK_REGION = "us-east-1"
 _DEFAULT_BEDROCK_TIMEOUT = 60.0
@@ -185,6 +187,35 @@ class AnthropicProviderConfig:
     Only takes effect when the client has a call recorder; ``False`` never
     sends it. The client also stops sending it after a 400 that names it.
     """
+
+    effort: str | None = None
+    """Optional reasoning effort level, sent as the request's ``output_config.effort``.
+
+    One of the literals ``low``, ``medium``, ``high``, ``xhigh`` or ``max``;
+    any other non-None value raises :class:`ValueError`. ``None`` sends no
+    ``output_config`` field at all, which keeps the model's own default.
+    """
+
+    thinking: str | None = None
+    """Optional thinking mode, sent as the request's ``thinking.type``.
+
+    ``"disabled"`` sends ``thinking = {"type": "disabled"}`` and ``"adaptive"``
+    sends ``thinking = {"type": "adaptive"}``; any other non-None value raises
+    :class:`ValueError`. ``None`` sends no ``thinking`` field at all. Note that
+    some models reject thinking disabled above certain effort levels.
+    """
+
+    def __post_init__(self) -> None:
+        """Validate the optional effort and thinking fields."""
+        if self.effort is not None and self.effort not in _ANTHROPIC_EFFORTS:
+            raise ValueError(
+                f"effort must be one of {sorted(_ANTHROPIC_EFFORTS)}, got {self.effort!r}"
+            )
+        if self.thinking is not None and self.thinking not in _ANTHROPIC_THINKING_MODES:
+            raise ValueError(
+                f"thinking must be one of {sorted(_ANTHROPIC_THINKING_MODES)},"
+                f" got {self.thinking!r}"
+            )
 
 
 @dataclass(frozen=True)

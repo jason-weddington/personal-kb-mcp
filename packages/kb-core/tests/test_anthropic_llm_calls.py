@@ -7,6 +7,7 @@ Every test is hermetic: the SDK client is replaced by a stub whose
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import logging
 import typing
@@ -598,3 +599,59 @@ async def test_500_does_not_retry() -> None:
     assert create.call_count == 1
     assert rec[0].diagnostics_state == "sent"
     assert llm._diagnostics_disabled is False
+
+
+# --- effort and thinking ------------------------------------------------------
+
+
+def test_provider_config_rejects_bad_effort_and_thinking() -> None:
+    with pytest.raises(ValueError, match="effort"):
+        AnthropicProviderConfig(effort="bogus")
+    with pytest.raises(ValueError, match="thinking"):
+        AnthropicProviderConfig(thinking="bogus")
+    assert AnthropicProviderConfig(effort="xhigh").effort == "xhigh"
+    assert AnthropicProviderConfig(thinking="adaptive").thinking == "adaptive"
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_chat"])
+@pytest.mark.parametrize(
+    ("effort", "thinking"),
+    [
+        (None, None),
+        ("low", None),
+        ("medium", None),
+        ("high", None),
+        ("xhigh", None),
+        ("max", None),
+        (None, "disabled"),
+        (None, "adaptive"),
+        ("high", "disabled"),
+    ],
+)
+async def test_create_kwargs_exact_effort_and_thinking(
+    method: str, effort: str | None, thinking: str | None
+) -> None:
+    llm, create = _client(
+        _response(),
+        model=_MODEL,
+        diagnostics=False,
+    )
+    llm._config = dataclasses.replace(llm._config, effort=effort, thinking=thinking)
+    if method == "generate":
+        await llm.generate("p", purpose="planner", system="sys")
+    else:
+        await llm.generate_chat([{"role": "user", "content": "p"}], purpose="planner", system="sys")
+    kwargs = create.call_args.kwargs
+    expected = {"model", "max_tokens", "messages", "system"}
+    if effort is not None:
+        expected.add("output_config")
+    if thinking is not None:
+        expected.add("thinking")
+    # `timeout` is added at the messages.create call site, not in the built dict.
+    assert set(kwargs) - {"timeout"} == expected
+    if effort is not None:
+        assert kwargs["output_config"] == {"effort": effort}
+    if thinking is not None:
+        assert kwargs["thinking"] == {"type": thinking}
+    else:
+        assert "thinking" not in kwargs

@@ -233,6 +233,39 @@ class CaseError(ValueError):
     """A case file failed validation."""
 
 
+class ArmError(ValueError):
+    """A ``--model`` arm string failed parsing."""
+
+
+_ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+_MODEL_ARM_RE = re.compile(
+    r"^(?P<model>[^@+]+?)(?:@(?P<effort>" + "|".join(_ANTHROPIC_EFFORTS) + r"))?"
+    r"(?P<nothink>\+nothink)?$"
+)
+
+
+def parse_model_arm(arm: str) -> tuple[str, str | None, str | None]:
+    """Parse a ``--model`` arm: ``MODEL[@EFFORT][+nothink]``.
+
+    Args:
+        arm: The full arm string as given on the command line.
+
+    Returns:
+        ``(model, effort, thinking)`` where ``model`` is the API model id,
+        ``effort`` is one of ``low, medium, high, xhigh, max`` (``output_config.effort``)
+        and ``thinking`` is ``"disabled"`` for ``+nothink`` (``thinking.type``).
+
+    Raises:
+        ArmError: On any other shape; the full arm string stays the label in
+            results and reports, so arms of one model at different levels stay
+            distinct.
+    """
+    m = _MODEL_ARM_RE.match(arm)
+    if m is None:
+        raise ArmError(f"invalid model arm {arm!r}; expected MODEL[@EFFORT][+nothink]")
+    return m.group("model"), m.group("effort"), "disabled" if m.group("nothink") else None
+
+
 @dataclass(frozen=True)
 class Case:
     """One validated, redacted eval case."""
@@ -663,7 +696,13 @@ def _r4(x: float | None) -> float | None:
 # --- model construction ------------------------------------------------------
 
 
-def make_llm(model: str, timeout: float | None) -> Any:
+def make_llm(
+    model: str,
+    timeout: float | None,
+    *,
+    effort: str | None = None,
+    thinking: str | None = None,
+) -> Any:
     """Build the detector client exactly as production does, minus the recorder.
 
     Production also attaches the llm_calls recorder, which makes the client
@@ -671,13 +710,16 @@ def make_llm(model: str, timeout: float | None) -> Any:
     recorder, so it sends no diagnostics and writes no llm_calls rows.
 
     Args:
-        model: The Anthropic model id.
+        model: The Anthropic model id (the part before ``@`` of a model arm).
         timeout: A per-request timeout override, or None for production's.
+        effort: The arm's effort level, sent as ``output_config.effort``.
+        thinking: The arm's thinking mode (``disabled`` for ``+nothink``),
+            sent as ``thinking.type``.
 
     Returns:
         An ``AnthropicLLMClient``.
     """
-    cfg = service_config.build_anthropic_config(model=model)
+    cfg = service_config.build_anthropic_config(model=model, effort=effort, thinking=thinking)
     if timeout is not None:
         cfg = dataclasses.replace(cfg, timeout=timeout)
     return anthropic_llm.AnthropicLLMClient(cfg)
@@ -1179,6 +1221,11 @@ def _arg_error(args: argparse.Namespace) -> tuple[str | None, list[int]]:
         return "--timeout must be > 0", shapes
     if len(set(args.model)) != len(args.model):
         return "--model values must be distinct", shapes
+    for m in args.model:
+        try:
+            parse_model_arm(m)
+        except ArmError as exc:
+            return f"--model {exc}", shapes
     return None, shapes
 
 
@@ -1228,12 +1275,16 @@ async def _run(
     production_timeout_s = service_config.get_anthropic_timeout()
     timeout_s = args.timeout if args.timeout is not None else production_timeout_s
     models: list[str] = list(args.model)
+    arms = [parse_model_arm(m) for m in models]
     model_cases = [c for c in cases if c.shape in (2, 3)]
     shape1_cases = [c for c in cases if c.shape == 1]
 
     llms: list[tuple[str, Any]] = []
     if model_cases:
-        llms = [(m, make_llm(m, args.timeout)) for m in models]
+        llms = [
+            (label, make_llm(model_id, args.timeout, effort=effort, thinking=thinking))
+            for label, (model_id, effort, thinking) in zip(models, arms, strict=True)
+        ]
     jobs: list[tuple[Case, str, Any]] = [
         (c, surprise.SHAPE1_DETECTOR_MODEL, None) for c in shape1_cases
     ]

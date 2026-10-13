@@ -247,6 +247,18 @@ class AnthropicLLMClient:
             cache_control["ttl"] = "1h"
         return [{"type": "text", "text": system, "cache_control": cache_control}]
 
+    def _apply_effort_thinking(self, kwargs: dict[str, Any]) -> None:
+        """Add the optional effort and thinking request fields when configured.
+
+        ``effort`` goes out as ``output_config.effort`` and ``thinking`` as
+        ``thinking = {"type": mode}``. Either being ``None`` (the default) adds
+        nothing, so the kwargs dict is byte-identical to before.
+        """
+        if self._config.effort is not None:
+            kwargs["output_config"] = {"effort": self._config.effort}
+        if self._config.thinking is not None:
+            kwargs["thinking"] = {"type": self._config.thinking}
+
     async def generate(
         self,
         prompt: str,
@@ -267,6 +279,7 @@ class AnthropicLLMClient:
             }
             if system is not None:
                 kwargs["system"] = self._system_block(system, purpose)
+            self._apply_effort_thinking(kwargs)
 
             response = await self._create(client, kwargs, purpose=purpose)
             result = _extract_text(response)
@@ -339,6 +352,7 @@ class AnthropicLLMClient:
             }
             if system is not None:
                 kwargs["system"] = self._system_block(system, purpose)
+            self._apply_effort_thinking(kwargs)
 
             response = await self._create(client, kwargs, purpose=purpose)
             result = _extract_text(response)

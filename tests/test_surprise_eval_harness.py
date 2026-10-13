@@ -123,8 +123,11 @@ def _env(monkeypatch):
 def made(monkeypatch):
     built: list[StubLLM] = []
 
-    def factory(model: str, timeout: float | None) -> StubLLM:
+    def factory(
+        model: str, timeout: float | None, effort: str | None = None, thinking: str | None = None
+    ) -> StubLLM:
         llm = StubLLM(model)
+        llm.arm = (model, effort, thinking)  # type: ignore[attr-defined]
         built.append(llm)
         return llm
 
@@ -621,6 +624,91 @@ def test_o_make_llm_parity(monkeypatch):
     prod = surprise_worker.get_detector_llm()
     assert prod is not None
     assert prod._config == se.make_llm("m", None)._config  # type: ignore[attr-defined]
+
+
+# --- model arms: --model MODEL[@EFFORT][+nothink] -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("arm", "parsed"),
+    [
+        ("stub-a", ("stub-a", None, None)),
+        ("stub-a@low", ("stub-a", "low", None)),
+        ("stub-a@medium", ("stub-a", "medium", None)),
+        ("stub-a@high", ("stub-a", "high", None)),
+        ("stub-a@xhigh", ("stub-a", "xhigh", None)),
+        ("stub-a@max", ("stub-a", "max", None)),
+        ("stub-a+nothink", ("stub-a", None, "disabled")),
+        ("stub-a@low+nothink", ("stub-a", "low", "disabled")),
+    ],
+)
+def test_parse_model_arm(arm, parsed):
+    assert se.parse_model_arm(arm) == parsed
+
+
+@pytest.mark.parametrize(
+    "arm",
+    ["stub-a@bogus", "stub-a@", "stub-a+nothinkfoo", "stub-a@low+nothink@high"],
+)
+def test_parse_model_arm_rejects(arm):
+    with pytest.raises(se.ArmError):
+        se.parse_model_arm(arm)
+
+
+def test_arg_error_rejects_unknown_effort(capsys):
+    args = types.SimpleNamespace(
+        shapes="1,2,3", concurrency=4, limit=None, timeout=None, model=["stub-a@bogus"]
+    )
+    reason, shapes = se._arg_error(args)
+    assert reason is not None and "stub-a@bogus" in reason
+    assert shapes == [1, 2, 3]
+    assert "stub-a@bogus" not in capsys.readouterr().out
+
+
+def test_run_rejects_unknown_effort_with_exit_2(tmp_path, capsys):
+    code = se.main(
+        [
+            "run",
+            "--cases",
+            str(DIGESTS_FIXTURE),
+            "--out",
+            str(tmp_path / "o"),
+            "--model",
+            "stub-a@bogus",
+        ]
+    )
+    assert code == 2
+    assert "stub-a@bogus" in capsys.readouterr().err
+
+
+def test_o_make_llm_passes_effort_and_thinking():
+    llm = se.make_llm("m", None, effort="low", thinking="disabled")
+    assert type(llm).__name__ == "AnthropicLLMClient"
+    cfg = llm._config
+    assert (cfg.effort, cfg.thinking) == ("low", "disabled")
+
+
+def test_effort_arms_run_as_distinct_labels(tmp_path, capsys, made):
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        DIGESTS_FIXTURE,
+        "--model",
+        "stub-a@low",
+        "--model",
+        "stub-a@high",
+        "--model",
+        "stub-a+nothink",
+    )
+    assert res["code"] == 0
+    assert [m.arm for m in made] == [
+        ("stub-a", "low", None),
+        ("stub-a", "high", None),
+        ("stub-a", None, "disabled"),
+    ]
+    assert res["report"]["models"] == ["stub-a@low", "stub-a@high", "stub-a+nothink"]
+    models_in_rows = {r["model"] for r in res["rows"] if r["shape"] in (2, 3)}
+    assert models_in_rows == {"stub-a@low", "stub-a@high", "stub-a+nothink"}
 
 
 # --- AC18: validation, refusals, pure functions ------------------------------

@@ -339,8 +339,19 @@ def get_llm_diagnostics() -> bool:
     return raw not in _LLM_DIAGNOSTICS_OFF
 
 
-def build_anthropic_config(*, model: str | None = None) -> "AnthropicProviderConfig":
-    """Snapshot env-driven Anthropic config into the explicit dataclass."""
+def build_anthropic_config(
+    *,
+    model: str | None = None,
+    effort: str | None = None,
+    thinking: str | None = None,
+) -> "AnthropicProviderConfig":
+    """Snapshot env-driven Anthropic config into the explicit dataclass.
+
+    ``effort`` and ``thinking`` are passed through to
+    ``AnthropicProviderConfig`` unchanged (``None`` sends neither field to the
+    API); no environment variable sets or overrides them, only eval callers
+    pass them today.
+    """
     from kb_core.config import AnthropicProviderConfig
 
     return AnthropicProviderConfig(
@@ -348,6 +359,8 @@ def build_anthropic_config(*, model: str | None = None) -> "AnthropicProviderCon
         timeout=get_anthropic_timeout(),
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
         diagnostics=get_llm_diagnostics(),
+        effort=effort,
+        thinking=thinking,
     )
 
 
