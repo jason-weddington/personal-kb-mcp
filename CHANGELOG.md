@@ -2,6 +2,38 @@
 
 <!-- version list -->
 
+## v1.18.0 (2026-10-14)
+
+### Chores
+
+- A pre-push hook runs the maintainer-local leak guard in tree-only mode before every push to origin
+  ([`5baede2`](https://github.com/jason-weddington/personal-kb-mcp/commit/5baede2ec25b8ec0b9031ce912b68f160ca12f00))
+
+### Documentation
+
+- **claude**: The hook runs for seven events since v1.15.0 (SubagentStop added)
+  ([`5b1d91f`](https://github.com/jason-weddington/personal-kb-mcp/commit/5b1d91fb63044913be52fb735cf18ea2877880a4))
+
+### Features
+
+- **439f4779**: Eval-only shape-2 arms for H-024: context since the human prompt, a standing-rule
+  prompt, and peer messages
+  ([`7890a89`](https://github.com/jason-weddington/personal-kb-mcp/commit/7890a896377d185278288af2acfc026867d2fae8))
+
+- **98ff92ea**: Surprise_eval runs eval candidates through the production distiller and critic
+  offline, with no writes
+  ([`401ca17`](https://github.com/jason-weddington/personal-kb-mcp/commit/401ca17b771dfad759fc8d01d26fc605bcd86062))
+
+- **992a834e**: Shape 2 reads everything since the human's last message and captures stated standing
+  rules (detector v5; KB_SURPRISE_SHAPE2=v4 reverts)
+  ([`028c171`](https://github.com/jason-weddington/personal-kb-mcp/commit/028c171ae45c2bb84f8addb6a6bbc97566155999))
+
+### Testing
+
+- Neutral host names in the shape-2 eval fixtures and tests
+  ([`b02a80c`](https://github.com/jason-weddington/personal-kb-mcp/commit/b02a80c69427602bc0d5059ac3f86943f4c26322))
+
+
 ## v1.17.0 (2026-10-13)
 
 ### Bug Fixes
