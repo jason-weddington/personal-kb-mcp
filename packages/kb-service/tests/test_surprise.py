@@ -304,8 +304,8 @@ def _text(t: str | None) -> dict[str, Any]:
     return {"kind": "assistant_text", "text": t}
 
 
-def test_detector_version_is_four() -> None:
-    assert SURPRISE_DETECTOR_VERSION == 4
+def test_detector_version_is_five() -> None:
+    assert SURPRISE_DETECTOR_VERSION == 5
 
 
 def test_shape3_skip_reasons() -> None:

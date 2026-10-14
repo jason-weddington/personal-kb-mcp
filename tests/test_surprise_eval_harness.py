@@ -1138,7 +1138,15 @@ def test_arm_default_flags_reproduce_todays_prompts(tmp_path, capsys, made):
     cases = {c.id: c for c in se.load_cases(DIGESTS_FIXTURE)}
     prompts = [c[1] for c in StubLLM.calls]
     s2 = cases["syn-s2-pos"]
-    assert surprise.build_shape2_prompt(s2.digests[-2], s2.digests[-1]) in prompts
+    assert (
+        surprise.build_shape2_context_prompt(
+            surprise.shape2_context_digests(s2.digests, s2.digests[-1]),
+            s2.digests[-1],
+            variant="standing_rule",
+            peer_messages=False,
+        )
+        in prompts
+    )
     s3 = cases["syn-s3-pos"]
     assert surprise.build_shape3_prompt(s3.digests[0]) in prompts
     assert not any("[peer " in p for p in prompts)
@@ -1153,21 +1161,48 @@ def test_arm_explicit_default_flags_match_no_flag_rows(tmp_path, capsys, made):
         "--model",
         "stub-model",
         "--shape2-context",
-        "previous_turn",
+        "since_human_prompt",
         "--shape2-prompt",
-        "default",
+        "standing_rule",
         "--peer-messages",
         "off",
     )
     assert a["code"] == b["code"] == 0
     assert a["rows"] == b["rows"]
-    assert b["report"]["args"]["shape2_context"] == "previous_turn"
-    assert b["report"]["args"]["shape2_prompt"] == "default"
+    assert b["report"]["args"]["shape2_context"] == "since_human_prompt"
+    assert b["report"]["args"]["shape2_prompt"] == "standing_rule"
     assert b["report"]["args"]["peer_messages"] == "off"
     assert (
-        "shape2_context=previous_turn shape2_prompt=default peer_messages=off"
-        in b["md"].splitlines()[1]
+        "shape2_context=since_human_prompt shape2_prompt=standing_rule"
+        " peer_messages=off" in b["md"].splitlines()[1]
     )
+
+
+def test_arm_old_default_flags_reproduce_v4_prompt(tmp_path, capsys, made):
+    """--shape2-context previous_turn --shape2-prompt default is the v4 arm."""
+    res = _run(
+        capsys,
+        tmp_path / "o",
+        DIGESTS_FIXTURE,
+        "--model",
+        "stub-model",
+        "--shape2-context",
+        "previous_turn",
+        "--shape2-prompt",
+        "default",
+    )
+    assert res["code"] == 0
+    cases = {c.id: c for c in se.load_cases(DIGESTS_FIXTURE)}
+    s2 = cases["syn-s2-pos"]
+    assert surprise.build_shape2_prompt(s2.digests[-2], s2.digests[-1]) in [
+        c[1] for c in StubLLM.calls
+    ]
+    assert not any("[peer " in c[1] for c in StubLLM.calls)
+    assert res["report"]["args"]["shape2_context"] == "previous_turn"
+    assert res["report"]["args"]["shape2_prompt"] == "default"
+    row = _row(res, "syn-s2-pos")
+    assert row["shape2_prompt_version"] == surprise_worker.SHAPE2_V4_DETECTOR_VERSION
+    assert res["report"]["shape2_prompt_version"] == surprise_worker.SHAPE2_V4_DETECTOR_VERSION
 
 
 @pytest.mark.parametrize(
@@ -1220,6 +1255,8 @@ def test_arm_b_since_human_prompt_window(tmp_path, capsys, made):
         "stub-model",
         "--shape2-context",
         "since_human_prompt",
+        "--shape2-prompt",
+        "default",
     )
     assert res["code"] == 0
     prompt = StubLLM.calls[0][1]
@@ -1238,7 +1275,9 @@ def test_arm_b_since_human_prompt_window(tmp_path, capsys, made):
 
 def test_arm_b_previous_turn_renders_only_prev_turn(tmp_path, capsys, made):
     path = _write_cases(tmp_path / "cases.jsonl", [_turns_case("syn-b2", True)])
-    res = _run(capsys, tmp_path / "o", path, "--model", "stub-model")
+    res = _run(
+        capsys, tmp_path / "o", path, "--model", "stub-model", "--shape2-context", "previous_turn"
+    )
     prompt = StubLLM.calls[0][1]
     assert prompt.startswith("The assistant's previous turn:")
     assert "Final message: F: the dashboard will bind 8080" in prompt
@@ -1310,6 +1349,8 @@ def test_arm_b_digests_form_differs_only_in_header(tmp_path, capsys, made):
         "stub-model",
         "--shape2-context",
         "since_human_prompt",
+        "--shape2-prompt",
+        "default",
     )
     assert res["code"] == 0
     cases = {c.id: c for c in se.load_cases(DIGESTS_FIXTURE)}
@@ -1335,6 +1376,8 @@ def test_arm_c_standing_rule_prompt_and_version(tmp_path, capsys, made):
         DIGESTS_FIXTURE,
         "--model",
         "stub-model",
+        "--shape2-context",
+        "previous_turn",
         "--shape2-prompt",
         "standing_rule",
     )
@@ -1356,9 +1399,23 @@ def test_arm_c_standing_rule_prompt_and_version(tmp_path, capsys, made):
     assert res["report"]["shape2_prompt_version"] == 1
     assert res["report"]["args"]["shape2_prompt"] == "standing_rule"
 
-    default = _run(capsys, tmp_path / "o2", DIGESTS_FIXTURE, "--model", "stub-model")
-    assert _row(default, "syn-s2-pos")["shape2_prompt_version"] == 4
-    assert default["report"]["shape2_prompt_version"] == 4
+    default = _run(
+        capsys,
+        tmp_path / "o2",
+        DIGESTS_FIXTURE,
+        "--model",
+        "stub-model",
+        "--shape2-context",
+        "previous_turn",
+        "--shape2-prompt",
+        "default",
+    )
+    assert _row(default, "syn-s2-pos")["shape2_prompt_version"] == (
+        surprise_worker.SHAPE2_V4_DETECTOR_VERSION
+    )
+    assert default["report"]["shape2_prompt_version"] == (
+        surprise_worker.SHAPE2_V4_DETECTOR_VERSION
+    )
     assert "shape2_prompt=standing_rule" not in default["md"].splitlines()[1]
 
 
@@ -1524,8 +1581,8 @@ def test_dv_off_reproduces_today(tmp_path, capsys, made):
         "force": False,
         "limit": None,
         "peer_messages": "off",
-        "shape2_context": "previous_turn",
-        "shape2_prompt": "default",
+        "shape2_context": "since_human_prompt",
+        "shape2_prompt": "standing_rule",
         "shapes": [1, 2, 3],
         "timeout": None,
     }

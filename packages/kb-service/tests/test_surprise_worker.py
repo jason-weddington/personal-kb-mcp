@@ -22,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import kb_service.database as database
-from kb_service import surprise_worker
+from kb_service import surprise, surprise_worker
 from kb_service.main import app
 from kb_service.surprise import (
     SURPRISE_DETECTOR_SYSTEM,
@@ -296,7 +296,7 @@ async def test_detect_digest_reads_env_threshold(
 
 
 def test_production_shape2_arm_constants() -> None:
-    """The eval arms default to today's production behaviour (H-024)."""
+    """The detect_digest keyword defaults are the v4 arm (KB_SURPRISE_SHAPE2=v4)."""
     assert surprise_worker.SHAPE2_CONTEXT_MODE == "previous_turn"
     assert surprise_worker.SHAPE2_PROMPT_VARIANT == "default"
     assert surprise_worker.SHAPE2_PEER_MESSAGES is False
@@ -305,7 +305,9 @@ def test_production_shape2_arm_constants() -> None:
 async def test_detect_digest_defaults_call_production_builders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A no-override detect_digest call (the drain_once path) keeps today's prompts."""
+    """A no-override detect_digest call keeps the v4 prompts (the drain passes
+    the arm explicitly, so these defaults are only the KB_SURPRISE_SHAPE2=v4
+    revert and the eval harness's explicit old-arm flags)."""
     prev = surprise_worker.digest_from_row(
         _row(final_message="port 8080 is free", user_prompt="go")
     )
@@ -781,6 +783,153 @@ def test_drain_shadow_then_idempotent(
     assert len(_query("SELECT 1 FROM surprise_candidates")) == 2
     assert len(_detections()) == 6
     assert ctx.distill_calls == []
+
+
+# --- shape-2 mode: KB_SURPRISE_SHAPE2 (v5 default, v4 revert) ------------------
+
+
+def _db_digests(session_id: str) -> list[Any]:
+    """Rebuild the drain's ``TurnDigest`` list for *session_id* from stored rows."""
+    rows = _query(
+        "SELECT * FROM turn_events WHERE session_id = ? ORDER BY turn_index", session_id
+    )
+    return [surprise_worker.digest_from_row(dict(r)) for r in rows]
+
+
+def _shape2_details(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    return [json.loads(r["details"]) for r in rows if r["shape"] == 2]
+
+
+def test_drain_shape2_default_is_v5(
+    local_client: TestClient,
+    ctx: _Ctx,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No env var: since_human_prompt + standing_rule, detector_version 5."""
+    monkeypatch.delenv("KB_SURPRISE_SHAPE2", raising=False)
+    _seed_f(local_client)
+    _enqueue(ctx.llm, SCRIPT_B)
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    body = _drain(local_client)
+    digests = _db_digests("s1")
+    cur = digests[-1]
+    window = surprise.shape2_context_digests(digests, cur)
+    expected = surprise.build_shape2_context_prompt(
+        window, cur, variant="standing_rule", peer_messages=False
+    )
+    assert ctx.llm.generate_calls[1][0] == expected
+    assert expected.startswith("The assistant's previous turns:")
+    assert "port 8080 is free" in expected
+    assert surprise.SHAPE2_STANDING_RULE_INSTRUCTIONS in expected
+    # Shape 3 is unchanged and no prompt ever renders a peer message.
+    assert ctx.llm.generate_calls[0][0] == surprise.build_shape3_prompt(
+        digests[0], peer_messages=False
+    )
+    assert not any("[peer " in c[0] for c in ctx.llm.generate_calls)
+    rows = _detections()
+    assert all(r["detector_version"] == 5 for r in rows)
+    assert body["candidates"][1]["turn_event_ids"] == ["s1:0", "s1:1"]
+    # Rows are in id order: s1:0 (not_applicable) then s1:1 (candidate).
+    skipped, cand = _shape2_details(rows)
+    assert cand["shape2_context"] == "since_human_prompt"
+    assert cand["shape2_prompt"] == "standing_rule"
+    assert cand["peer_messages"] is False
+    assert cand["shape2_window_turns"] == 1
+    assert skipped["shape2_context"] == "since_human_prompt"
+    assert skipped["shape2_window_turns"] == 0
+    line = _info_line(caplog)
+    assert "detector_version=5 shape2_mode=v5" in line
+    assert "shape2_max_window=1" in line
+
+
+def test_drain_shape2_env_v4_reverts(
+    local_client: TestClient,
+    ctx: _Ctx,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """KB_SURPRISE_SHAPE2=v4: byte-identical previous_turn/default prompt, version 4."""
+    monkeypatch.setenv("KB_SURPRISE_SHAPE2", "v4")
+    _seed_f(local_client)
+    _enqueue(ctx.llm, SCRIPT_B)
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    _drain(local_client)
+    digests = _db_digests("s1")
+    prev, cur = digests[-2], digests[-1]
+    expected = surprise.build_shape2_prompt(prev, cur)
+    assert ctx.llm.generate_calls[1][0] == expected
+    assert expected.startswith("The assistant's previous turn:")
+    assert (
+        "Set surprise to true only when the human's message says a factual" in expected
+    )
+    assert ctx.llm.generate_calls[0][0] == surprise.build_shape3_prompt(
+        digests[0], peer_messages=False
+    )
+    assert not any("[peer " in c[0] for c in ctx.llm.generate_calls)
+    rows = _detections()
+    assert all(r["detector_version"] == 4 for r in rows)
+    for details in _shape2_details(rows):
+        assert details["shape2_context"] == "previous_turn"
+        assert details["shape2_prompt"] == "default"
+        assert details["peer_messages"] is False
+        assert "shape2_window_turns" not in details
+    line = _info_line(caplog)
+    assert "detector_version=4 shape2_mode=v4 shape2_max_window=0" in line
+
+
+def test_drain_shape2_env_invalid_falls_back_to_v5(
+    local_client: TestClient,
+    ctx: _Ctx,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A bad value warns once per process, then behaves as v5."""
+    monkeypatch.setenv("KB_SURPRISE_SHAPE2", "bogus")
+    monkeypatch.setattr(surprise_worker, "_SHAPE2_MODE_WARNED", False)
+    _seed_f(local_client)
+    _enqueue(ctx.llm, SCRIPT_B)
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    _drain(local_client)
+    _drain(local_client)
+    digests = _db_digests("s1")
+    cur = digests[-1]
+    assert ctx.llm.generate_calls[1][0] == surprise.build_shape2_context_prompt(
+        surprise.shape2_context_digests(digests, cur),
+        cur,
+        variant="standing_rule",
+        peer_messages=False,
+    )
+    assert all(r["detector_version"] == 5 for r in _detections())
+    assert [
+        m for m in _messages(caplog, logging.WARNING) if "bad_shape2_mode" in m
+    ] == ["surprise_drain bad_shape2_mode value='bogus' fallback=v5"]
+    lines = [m for m in _messages(caplog, logging.INFO) if "surprise_drain mode=" in m]
+    assert len(lines) == 2
+    assert all("shape2_mode=v5_fallback" in m for m in lines)
+    assert all("detector_version=5" in m for m in lines)
+
+
+def test_resolve_shape2_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(surprise_worker, "_SHAPE2_MODE_WARNED", False)
+    for raw in ("", "v5", " V5 "):
+        monkeypatch.setenv("KB_SURPRISE_SHAPE2", raw)
+        assert surprise_worker.resolve_shape2_mode() == (
+            "since_human_prompt",
+            "standing_rule",
+            surprise.SURPRISE_DETECTOR_VERSION,
+        )
+    for raw in ("v4", " V4 "):
+        monkeypatch.setenv("KB_SURPRISE_SHAPE2", raw)
+        assert surprise_worker.resolve_shape2_mode() == (
+            "previous_turn",
+            "default",
+            surprise_worker.SHAPE2_V4_DETECTOR_VERSION,
+        )
+    assert surprise_worker.SHAPE2_V4_DETECTOR_VERSION == 4
+    assert (
+        surprise_worker.SHAPE2_V4_DETECTOR_VERSION != surprise.SURPRISE_DETECTOR_VERSION
+    )
 
 
 def test_drain_on_distills(

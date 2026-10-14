@@ -2,10 +2,11 @@
 
 Shape 1 (deterministic): a failed Bash call later succeeded by a different
 command of the same class. Shape 2 (one model call): the human's next message
-says a claim from the assistant's previous turn was wrong. Shape 3 (one model
-call): within one turn, after at least one tool result, the agent reaches a
-corrected understanding or a root cause backed by tool output; no earlier wrong
-claim by the agent is needed.
+corrects a claim or states a standing rule, judged over every assistant turn
+since the human's previous non-blank prompt. Shape 3 (one model call): within
+one turn, after at least one tool result, the agent reaches a corrected
+understanding or a root cause backed by tool output; no earlier wrong claim
+by the agent is needed.
 Shape 4 (deterministic): a harness_correction the harness reported as resolved,
 whose resolving tool calls are found in the session up to the current turn,
 becomes a candidate; other corrections are recorded only.
@@ -41,8 +42,10 @@ ParseReject = Literal["llm_error", "unparseable", "invalid_fields", "no_surprise
 # evidence_grounded, the DETECTOR_MIN_CONFIDENCE default, SHAPE1_IGNORED_CLASSES,
 # the shape-1 pairing rule or detect_shape4; the effective KB_SURPRISE_MIN_CONFIDENCE
 # threshold is recorded per row in surprise_detections.details.min_confidence
-# instead
-SURPRISE_DETECTOR_VERSION: int = 4
+# instead. v5: shape 2 selects the since_human_prompt context window plus the
+# standing_rule prompt variant; a detection made under KB_SURPRISE_SHAPE2=v4
+# (the previous_turn/default arm) records detector_version 4.
+SURPRISE_DETECTOR_VERSION: int = 5
 SHAPE1_DETECTOR_MODEL = "rule:shape1"
 SHAPE4_DETECTOR_MODEL = "rule:shape4"
 DETECTOR_MIN_CONFIDENCE = 0.7
@@ -79,11 +82,12 @@ DETECTOR_SCHEMA_LINE = (
     ' "evidence_excerpt": str, "confidence": number between 0 and 1}'
 )
 
-# --- H-024 eval-only shape-2 arms: types, versions and instructions ------------
-# These arm selectors and builders exist for scripts/surprise_eval only. The
-# production drain always runs the previous_turn/default path, so
-# SURPRISE_DETECTOR_VERSION stays 4; the standing-rule prompt is versioned
-# separately below.
+# --- H-024 shape-2 arms: types, versions and instructions ----------------------
+# Since detector v5 the production drain runs the since_human_prompt context
+# window with the standing_rule prompt (KB_SURPRISE_SHAPE2=v4 reverts to the
+# previous_turn/default arm). Only peer_message rendering remains eval-only;
+# the standing-rule instruction text alone is versioned by
+# SHAPE2_STANDING_RULE_VERSION below.
 Shape2Context = Literal["previous_turn", "since_human_prompt"]
 Shape2PromptVariant = Literal["default", "standing_rule"]
 SHAPE2_STANDING_RULE_VERSION: int = 1
@@ -360,7 +364,7 @@ def build_shape2_prompt(prev: TurnDigest, cur: TurnDigest) -> str:
 def shape2_context_digests(
     session_digests: list[TurnDigest], cur: TurnDigest
 ) -> list[TurnDigest]:
-    """Return the ``since_human_prompt`` context window for *cur* (eval arm B).
+    """Return the ``since_human_prompt`` context window for *cur*.
 
     The anchor is the most recent digest before *cur* whose ``user_prompt`` is
     a non-blank string; the window holds every digest at or after the anchor
@@ -388,7 +392,7 @@ def build_shape2_context_prompt(
     variant: Shape2PromptVariant = "default",
     peer_messages: bool = False,
 ) -> str:
-    """Prompt over a multi-turn context window (eval arms B, C and D).
+    """Prompt over a multi-turn context window.
 
     The window's digests render flat, ascending ``turn_index``, no separator
     lines; with one window digest the output differs from
@@ -433,7 +437,7 @@ def build_shape2_context_prompt(
 
 
 def build_shape2_standing_rule_prompt(prev: TurnDigest, cur: TurnDigest) -> str:
-    """Prompt asking whether the human stated a standing rule (eval arm C).
+    """Prompt asking whether the human stated a standing rule.
 
     Renders the same parts as ``build_shape2_prompt`` with the standing-rule
     instruction block; results carry ``SHAPE2_STANDING_RULE_VERSION``.

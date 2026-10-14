@@ -930,7 +930,7 @@ def _base_row(
         shape2_prompt_version=(
             surprise.SHAPE2_STANDING_RULE_VERSION
             if shape2_prompt == "standing_rule"
-            else surprise.SURPRISE_DETECTOR_VERSION
+            else surprise_worker.SHAPE2_V4_DETECTOR_VERSION
         ),
         shape2_context_turns=None,
         shape2_context_anchor=None,
@@ -1744,10 +1744,10 @@ def _arg_error(args: argparse.Namespace) -> tuple[str | None, list[int]]:
             parse_model_arm(m)
         except ArmError as exc:
             return f"--model {exc}", shapes
-    shape2_context = getattr(args, "shape2_context", "previous_turn")
+    shape2_context = getattr(args, "shape2_context", "since_human_prompt")
     if shape2_context not in ("previous_turn", "since_human_prompt"):
         return "--shape2-context must be one of previous_turn,since_human_prompt", shapes
-    shape2_prompt = getattr(args, "shape2_prompt", "default")
+    shape2_prompt = getattr(args, "shape2_prompt", "standing_rule")
     if shape2_prompt not in ("default", "standing_rule"):
         return "--shape2-prompt must be one of default,standing_rule", shapes
     peer_messages = getattr(args, "peer_messages", "off")
@@ -1821,7 +1821,7 @@ async def _run(
     shape2_prompt_version = (
         surprise.SHAPE2_STANDING_RULE_VERSION
         if shape2_prompt == "standing_rule"
-        else surprise.SURPRISE_DETECTOR_VERSION
+        else surprise_worker.SHAPE2_V4_DETECTOR_VERSION
     )
     model_cases = [c for c in cases if c.shape in (2, 3)]
     shape1_cases = [c for c in cases if c.shape == 1]
@@ -2011,8 +2011,8 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--limit", type=int, default=None)
     r.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     r.add_argument("--timeout", type=float, default=None)
-    r.add_argument("--shape2-context", default="previous_turn")
-    r.add_argument("--shape2-prompt", default="default")
+    r.add_argument("--shape2-context", default="since_human_prompt")
+    r.add_argument("--shape2-prompt", default="standing_rule")
     r.add_argument("--peer-messages", default="off")
     r.add_argument("--distil", default="off")
     r.add_argument("--distil-model", default=surprise_worker.SURPRISE_DISTILLER_DEFAULT_MODEL)

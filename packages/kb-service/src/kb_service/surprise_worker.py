@@ -9,7 +9,9 @@ records every decision in ``surprise_detections`` and every hit in
 shadow candidates without a dry run to ``dry_run_candidates``, which runs the
 same decision but records it in ``surprise_dry_runs`` instead of writing.
 ``KB_SURPRISE_CAPTURE``, read from the current environment at processing
-time, is the only switch on this path.
+time, flips a pass between off, shadow and on; ``KB_SURPRISE_SHAPE2``
+(selects the shape-2 arm: `v5` default, `v4` revert) is read once per pass
+next to it. Both are per-pass switches on this path.
 
 ``SurpriseCaptureWorker`` runs ``drain_once`` on a poll interval, but only
 against a Postgres kb-core backend; local SQLite installs process digests
@@ -129,13 +131,18 @@ from kb_service.turn_digest import (
 
 logger = logging.getLogger(__name__)
 
-# H-024 eval-only shape-2 arms: the production drain calls detect_digest
-# without these keyword overrides, so it always runs the previous_turn/default
-# arm with peers off. scripts/surprise_eval is the only caller that overrides;
-# no environment variable is read here.
+# H-024 shape-2 arms: the production drain resolves the mode once per pass
+# from KB_SURPRISE_SHAPE2 and passes shape2_context, shape2_prompt and
+# peer_messages=False explicitly to detect_digest. These keyword defaults are
+# the v4 arm (previous_turn/default, peers off), so a bare detect_digest call
+# is the old prompt; scripts/surprise_eval overrides the same selectors.
 SHAPE2_CONTEXT_MODE: Shape2Context = "previous_turn"
 SHAPE2_PROMPT_VARIANT: Shape2PromptVariant = "default"
 SHAPE2_PEER_MESSAGES: bool = False
+# detector_version recorded for a KB_SURPRISE_SHAPE2=v4 pass (the old prompt).
+SHAPE2_V4_DETECTOR_VERSION: int = 4
+# One bad_shape2_mode warning per process, even across drain passes.
+_SHAPE2_MODE_WARNED: bool = False
 
 SURPRISE_DETECTOR_DEFAULT_MODEL = "claude-sonnet-5-5"
 SURPRISE_WORKER_POLL_SECONDS = 60.0
@@ -320,6 +327,35 @@ def detector_min_confidence_by_shape() -> dict[int, float]:
     return out
 
 
+def _shape2_mode_label() -> str:
+    """Heartbeat label for the current ``KB_SURPRISE_SHAPE2`` value."""
+    raw = os.environ.get("KB_SURPRISE_SHAPE2", "").strip().lower()
+    if raw == "v4":
+        return "v4"
+    if raw in ("", "v5"):
+        return "v5"
+    return "v5_fallback"
+
+
+def resolve_shape2_mode() -> tuple[Shape2Context, Shape2PromptVariant, int]:
+    """Resolve ``KB_SURPRISE_SHAPE2`` into the shape-2 arm and its version.
+
+    ``v5`` (or unset) runs the since_human_prompt context window with the
+    standing_rule prompt and records ``SURPRISE_DETECTOR_VERSION``; ``v4``
+    reverts to the previous_turn/default arm and records
+    ``SHAPE2_V4_DETECTOR_VERSION``. Any other value warns once per process
+    and falls back to v5.
+    """
+    raw = os.environ.get("KB_SURPRISE_SHAPE2", "").strip().lower()
+    if raw == "v4":
+        return ("previous_turn", "default", SHAPE2_V4_DETECTOR_VERSION)
+    global _SHAPE2_MODE_WARNED
+    if raw not in ("", "v5") and not _SHAPE2_MODE_WARNED:
+        _SHAPE2_MODE_WARNED = True
+        logger.warning("surprise_drain bad_shape2_mode value=%r fallback=v5", raw)
+    return ("since_human_prompt", "standing_rule", SURPRISE_DETECTOR_VERSION)
+
+
 def detector_model_name(llm: Any) -> str:
     """The configured model id of *llm*, else its class name."""
     model = getattr(getattr(llm, "_config", None), "model", None)
@@ -469,10 +505,11 @@ async def detect_digest(
     Shape 4 adds zero or more records last (one per harness_correction item in
     *cur*) with no model call.
 
-    The three keyword-only arm selectors exist for scripts/surprise_eval; the
-    production ``drain_once`` call omits them, so it always runs the defaults.
-    The shape-2 skip rules always run on the turn_index-1 digest, in every
-    arm.
+    The three keyword-only arm selectors pick the shape-2 arm; the production
+    ``drain_once`` call passes them explicitly (since_human_prompt/standing_rule
+    under v5, previous_turn/default under ``KB_SURPRISE_SHAPE2=v4``, peers off
+    in both). The shape-2 skip rules always run on the turn_index-1 digest, in
+    every arm.
     """
 
     def floor(shape: int) -> float:
@@ -1731,6 +1768,7 @@ async def _insert_records(
     mode: SurpriseCaptureMode,
     flags: dict[str, bool],
     now: str,
+    detector_version: int,
 ) -> list[tuple[int, int]]:
     """Insert one digest's rows in one transaction; return (id, shape) pairs."""
     inserted: list[tuple[int, int]] = []
@@ -1762,7 +1800,7 @@ async def _insert_records(
                 record.outcome,
                 record.reason,
                 record.detector_model,
-                SURPRISE_DETECTOR_VERSION,
+                detector_version,
                 record.confidence,
                 candidate_id,
                 json.dumps({**record.details, **flags}),
@@ -1815,6 +1853,9 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
             logger.info("llm_calls pruned=%d", n)
     floors = detector_min_confidence_by_shape()
     floor2, floor3 = floors[2], floors[3]
+    shape2_context, shape2_prompt, shape2_version = resolve_shape2_mode()
+    shape2_mode = _shape2_mode_label()
+    shape2_max_window = 0
     llm = get_detector_llm()
     pending = await list_pending_turn_digests(pool)
     pending = sorted(pending, key=lambda d: (d.session_id, d.turn_index))
@@ -1867,9 +1908,33 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
             "turn_gap": p.turn_index > 0
             and not any(s.turn_index == p.turn_index - 1 for s in stored),
         }
+        window_turns: int | None = None
+        if shape2_context == "since_human_prompt":
+            window_turns = len(shape2_context_digests(session_digests, cur))
+            shape2_max_window = max(shape2_max_window, window_turns)
         records = await detect_digest(
-            llm, cur, session_digests, min_confidence_by_shape=floors
+            llm,
+            cur,
+            session_digests,
+            min_confidence_by_shape=floors,
+            shape2_context=shape2_context,
+            shape2_prompt=shape2_prompt,
+            peer_messages=False,
         )
+        # Per-row arm audit: every shape-2 row records the arm it ran under.
+        shape2_audit: dict[str, Any] = {
+            "shape2_context": shape2_context,
+            "shape2_prompt": shape2_prompt,
+            "peer_messages": False,
+        }
+        if window_turns is not None:
+            shape2_audit["shape2_window_turns"] = window_turns
+        records = [
+            dataclasses.replace(r, details={**r.details, **shape2_audit})
+            if r.shape == 2
+            else r
+            for r in records
+        ]
         for rec in records:
             if rec.shape in (2, 3) and rec.outcome not in (
                 "not_applicable",
@@ -1927,7 +1992,9 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
             if flag:
                 c[name] += 1
         try:
-            inserted = await _insert_records(pool, cur, records, mode, flags, now)
+            inserted = await _insert_records(
+                pool, cur, records, mode, flags, now, shape2_version
+            )
         except Exception as exc:
             logger.error(
                 "surprise_drain lost_after_claim event_id=%s exc=%s",
@@ -1973,7 +2040,8 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
     candidates = await _fetch_candidates(pool, ids)
 
     logger.info(
-        "surprise_drain mode=%s detector_version=%d min_confidence_s2=%.2f"
+        "surprise_drain mode=%s detector_version=%d shape2_mode=%s"
+        " shape2_max_window=%d min_confidence_s2=%.2f"
         " min_confidence_s3=%.2f pruned=%d"
         " pending=%d digests=%d double_detect=%d agent_skipped=%d"
         " new_candidates=%d shape1=%d"
@@ -1984,7 +2052,9 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
         " dry_run_input=%d shape4=%d shape4_records=%d shape4_unmatched=%d"
         " shape4_partial=%d",
         mode,
-        SURPRISE_DETECTOR_VERSION,
+        shape2_version,
+        shape2_mode,
+        shape2_max_window,
         floor2,
         floor3,
         pruned,
