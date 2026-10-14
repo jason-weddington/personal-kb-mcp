@@ -1422,14 +1422,14 @@ def test_arm_c_standing_rule_prompt_and_version(tmp_path, capsys, made):
 def test_arm_d_peer_messages_render_only_when_on(tmp_path, capsys, made):
     case = _turns_case("syn-d1", True)
     case["turns"][1]["items"] = [
-        {"kind": "peer_message", "sender": "jason-precision", "text": "GPU box is busy"},
+        {"kind": "peer_message", "sender": "host-b", "text": "GPU box is busy"},
         {"kind": "peer_message", "sender": "ci-bot", "text": "main is green"},
         {"kind": "assistant_text", "text": "T2: still free"},
     ]
     s3case = copy.deepcopy(_fixture_cases()["syn-s3-pos"])
     s3case["id"] = "syn-d3"
     s3case["digests"][0]["items"].append(
-        {"kind": "peer_message", "sender": "odin", "text": "disk is 90% free"}
+        {"kind": "peer_message", "sender": "gpu-host", "text": "disk is 90% free"}
     )
     path = _write_cases(tmp_path / "cases.jsonl", [case, s3case])
     res = _run(
@@ -1445,9 +1445,9 @@ def test_arm_d_peer_messages_render_only_when_on(tmp_path, capsys, made):
     )
     assert res["code"] == 0
     s2_prompt, s3_prompt = StubLLM.calls[0][1], StubLLM.calls[1][1]
-    assert "[peer jason-precision] GPU box is busy" in s2_prompt
+    assert "[peer host-b] GPU box is busy" in s2_prompt
     assert "[peer ci-bot] main is green" in s2_prompt
-    assert "[peer odin] disk is 90% free" in s3_prompt
+    assert "[peer gpu-host] disk is 90% free" in s3_prompt
     row2 = _row(res, "syn-d1")
     assert row2["peer_items"] == 2
     assert row2["peer_items_rendered"] == 2

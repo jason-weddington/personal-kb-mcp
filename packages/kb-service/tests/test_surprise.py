@@ -647,7 +647,7 @@ def test_shape2_context_prompt_one_digest_differs_only_in_header() -> None:
 def test_shape2_context_prompt_peer_lines_render_in_order() -> None:
     a = _digest(
         0,
-        [_peer("ci-bot", "main is green"), _text("T1"), _peer("odin", "disk ok")],
+        [_peer("ci-bot", "main is green"), _text("T1"), _peer("gpu-host", "disk ok")],
         user_prompt="prompt A",
     )
     cur = _digest(1, [], user_prompt="prompt B")
@@ -656,24 +656,24 @@ def test_shape2_context_prompt_peer_lines_render_in_order() -> None:
         "The assistant's previous turns:",
         "T1",
         "[peer ci-bot] main is green",
-        "[peer odin] disk ok",
+        "[peer gpu-host] disk ok",
     ]
     off = build_shape2_context_prompt([a], cur, peer_messages=False)
     assert "[peer " not in off
 
 
 def test_shape2_standing_rule_prompt_bytes() -> None:
-    prev = _digest(0, [_text("I will use jason-desktop")], final_message="plan set")
-    cur = _digest(1, [], user_prompt="jason-precision is the session host")
+    prev = _digest(0, [_text("I will use host-a")], final_message="plan set")
+    cur = _digest(1, [], user_prompt="host-b is the session host")
     prompt = build_shape2_standing_rule_prompt(prev, cur)
     assert prompt == "\n".join(
         [
             "The assistant's previous turn:",
-            "I will use jason-desktop",
+            "I will use host-a",
             "Final message: plan set",
             "",
             "The human's next message:",
-            "jason-precision is the session host",
+            "host-b is the session host",
             "",
             SHAPE2_STANDING_RULE_INSTRUCTIONS,
             "evidence_excerpt must be copied verbatim from the human message,"
