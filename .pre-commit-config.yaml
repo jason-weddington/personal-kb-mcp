@@ -80,6 +80,17 @@ repos:
         always_run: true
         stages: [pre-push]
 
+      # Maintainer-local leak guard on every push to origin (skipped when the
+      # gitignored ./release.guard.local.sh is absent, and for github pushes,
+      # which release.sh guards itself).
+      - id: leak-guard
+        name: leak guard (maintainer-local)
+        entry: scripts/run_leak_guard.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
       # Not wrapped in run_unless_docs_only.sh: a docs-only push is exactly where
       # a doc edit can delete a mention the test requires.
       - id: docs-coverage

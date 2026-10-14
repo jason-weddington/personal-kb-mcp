@@ -48,6 +48,9 @@
 # non-executable guard aborts too, unless --no-guard is given, which skips
 # the scan (loudly). With no `github` remote nothing is published publicly
 # and the guard does not run.
+# The same guard also runs in --tree-only mode on every push to origin, as
+# the pre-push hook scripts/run_leak_guard.sh, so a private name in a tracked
+# file is caught when its commit first leaves the machine.
 #
 # Optional maintainer-local post-push hook: if an executable
 # ./release.post.local.sh exists (gitignored), it runs after the pushes as
