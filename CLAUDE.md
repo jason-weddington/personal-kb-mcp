@@ -41,7 +41,7 @@
 
 ## `personal-kb-hook` (the harness hook)
 
-`personal-kb-hook` is a separate, stdlib-only package at `packages/personal-kb-hook/`: one console script that Claude Code runs for six hook events (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop). It never imports the main package or touches a database: it talks to kb-service over HTTP (prevention slice and gate, maps index, failure events, turn digests, listener) and is silent on every error path, exiting 0. What each event does, the settings snippet and the scratch files are in `docs/intelligent-kb.md` section 3; keep that section current when the hook changes.
+`personal-kb-hook` is a separate, stdlib-only package at `packages/personal-kb-hook/`: one console script that Claude Code runs for seven hook events (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStop). It never imports the main package or touches a database: it talks to kb-service over HTTP (prevention slice and gate, maps index, failure events, turn digests, listener) and is silent on every error path, exiting 0. What each event does, the settings snippet and the scratch files are in `docs/intelligent-kb.md` section 3; keep that section current when the hook changes.
 
 **Install**: `uv tool install` from this repo's `packages/personal-kb-hook` subdirectory (the README has the command). Production installs are pinned to the release tag by the maintainer's post-release hook.
 
