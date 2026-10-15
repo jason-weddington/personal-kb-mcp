@@ -716,6 +716,19 @@ SELECT shape, outcome, count(*) FROM surprise_detections
 WHERE ts >= '2026-10-04' GROUP BY 1, 2 ORDER BY 1, 3 DESC;
 ```
 
+**Per shape.** Every `surprise_distiller` and `surprise_critic` row carries the candidate it served in `candidate_id` (set in `surprise_worker._decide_one` through `candidate_scope`; every other purpose is NULL), so a join to `surprise_candidates` gives distiller and critic calls and tokens per shape.
+
+```sql
+-- Distiller and critic calls and tokens per capture shape since a date
+SELECT s.shape, l.purpose, count(*) AS calls,
+       sum(l.input_tokens) AS input, sum(l.output_tokens) AS output
+FROM llm_calls l
+JOIN surprise_candidates s ON s.id = l.candidate_id
+WHERE l.ts >= '2026-10-04'
+  AND l.purpose IN ('surprise_distiller', 'surprise_critic')
+GROUP BY s.shape, l.purpose ORDER BY s.shape, l.purpose;
+```
+
 Multiply token sums by current per-model pricing to get spend; no price table lives in the code.
 
 ## 22. Production state and switches
@@ -770,7 +783,7 @@ Related inputs that change automation behaviour without being switches: `HEADLES
 | `gate_decisions` | service | `POST /api/kb/prevention/decisions` | gate stats; distill (failure-context check) | never pruned |
 | `whisper_telemetry` | service | `POST /api/kb/telemetry/whispers` | efficacy analysis | never pruned |
 | `listener_decisions` | service | `POST /api/kb/listener` | report script, observe API | decision metadata and `vote_model` kept forever; `vote_prompt` and `vote_raw` NULLed at the turn_events retention window (`TURN_EVENTS_RETENTION_DAYS = 90`) |
-| `llm_calls` | service | recorder on every equipped client | observe API, cost queries | 90 days, pruned only by drains while capture is shadow or on |
+| `llm_calls` | service | recorder on every equipped client | observe API, cost queries (`candidate_id` attributes distiller and critic rows to the surprise candidate, so to a shape) | 90 days, pruned only by drains while capture is shadow or on |
 | `map_eligibility_override` | KB | admin override endpoints | eligibility, worklist, loop input | until cleared |
 | `map_cluster_ledger` | KB | cluster decline | cluster match | never pruned; no route clears a row |
 | `audit_events` (automation rows: `map_eligibility_override_set` and `_cleared`, `map_deleted`, `map_cluster_*`) | KB | eligibility overrides, map delete, cluster ledger | operators | never pruned |

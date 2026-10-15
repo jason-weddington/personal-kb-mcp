@@ -43,7 +43,11 @@ from kb_service.config import (
 )
 from kb_service.database import get_db
 from kb_service.db_types import DbPool
-from kb_service.llm_calls import prune_llm_calls, record_llm_call
+from kb_service.llm_calls import (
+    candidate_scope,
+    prune_llm_calls,
+    record_llm_call,
+)
 from kb_service.models import SurpriseCaptureMode
 from kb_service.prevention import load_resolutions
 from kb_service.resolution_hint import (
@@ -1224,9 +1228,10 @@ async def _decide_one(
     start = time.monotonic()
     raw: str | None
     try:
-        raw = await llm.generate(
-            prompt, purpose="surprise_distiller", system=SURPRISE_DISTILLER_SYSTEM
-        )
+        with candidate_scope(c.id):
+            raw = await llm.generate(
+                prompt, purpose="surprise_distiller", system=SURPRISE_DISTILLER_SYSTEM
+            )
     except Exception:
         raw, llm_reason = None, "exception"
     else:
@@ -1545,9 +1550,10 @@ async def _run_critic(
     start = time.monotonic()
     raw: str | None
     try:
-        raw = await critic.generate(
-            prompt, purpose="surprise_critic", system=SURPRISE_CRITIC_SYSTEM
-        )
+        with candidate_scope(c.id):
+            raw = await critic.generate(
+                prompt, purpose="surprise_critic", system=SURPRISE_CRITIC_SYSTEM
+            )
     except Exception:
         raw, llm_reason = None, "exception"
     else:

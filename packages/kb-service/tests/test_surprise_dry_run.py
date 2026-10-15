@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 import kb_service.database as database
 from kb_service import surprise_worker
 from kb_service.db_sqlite import SqlitePool
+from kb_service.llm_calls import current_candidate_id, drain_pending_llm_calls
 from kb_service.main import app
 from kb_service.surprise import DistillResult, SurpriseCandidate
 from kb_service.surprise_distill import (
@@ -44,6 +45,7 @@ from tests.test_surprise_distill_worker import (
     _lessons,
     _make_kb,
     _raise_detector,
+    _RecordingLLM,
     _w,
 )
 
@@ -335,6 +337,74 @@ async def test_mode_on_merge_is_unchanged(
 
 
 # --- drain_once wiring --------------------------------------------------------
+
+
+# --- llm_calls candidate attribution -------------------------------------------
+
+
+async def _attributed_drain(
+    pool: SqlitePool,
+    kb: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> int:
+    """Drain once in *mode* with recording fakes; return the decided candidate id.
+
+    The detector stub answers no-surprise, so the only candidate considered is
+    the one pre-seeded here: mode 'on' distills it, shadow dry-runs it. The
+    detector participates in the same drain, so its rows exercise the
+    candidate_id-NULL side of the contract too.
+    """
+    detector = _RecordingLLM()
+    detector.enqueue('{"surprise": false}')
+    monkeypatch.setattr(surprise_worker, "get_detector_llm", lambda: detector)
+    distiller = _RecordingLLM()
+    distiller.enqueue(D)
+    critic = _RecordingLLM()
+    monkeypatch.setattr(surprise_worker, "get_distiller_llm", lambda: distiller)
+    monkeypatch.setattr(surprise_worker, "get_critic_llm", lambda: critic)
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", mode)
+    await _turn(pool, "s0")
+    # turn 1 gives shape 2 a prev digest; its prompt needs a user_prompt
+    await _turn(pool, "s0", 1)
+    await pool.execute(
+        "UPDATE turn_events SET user_prompt = 'and fix it'"
+        " WHERE session_id = 's0' AND turn_index = 1"
+    )
+    status = "pending" if mode == "on" else "shadow"
+    c = await _cand(pool, "s1", status=status)
+    await drain_once(pool, kb)
+    await drain_pending_llm_calls()
+    rows = await pool.fetch("SELECT purpose, candidate_id FROM llm_calls ORDER BY id")
+    detector_rows = [r for r in rows if r["purpose"].startswith("surprise_detector")]
+    assert detector_rows and all(r["candidate_id"] is None for r in detector_rows)
+    assert [
+        r["candidate_id"] for r in rows if r["purpose"] == "surprise_distiller"
+    ] == [c.id]
+    assert [r["candidate_id"] for r in rows if r["purpose"] == "surprise_critic"] == [
+        c.id
+    ]
+    assert all(
+        r["purpose"] in ("surprise_critic", "surprise_distiller")
+        or r["purpose"].startswith("surprise_detector")
+        for r in rows
+    )
+    assert current_candidate_id.get() is None
+    return c.id
+
+
+async def test_drain_on_distiller_and_critic_rows_carry_candidate_id(
+    pool: SqlitePool, kb: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert await _attributed_drain(pool, kb, monkeypatch, "on")
+
+
+async def test_drain_shadow_dry_run_rows_carry_candidate_id(
+    pool: SqlitePool, kb: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cid = await _attributed_drain(pool, kb, monkeypatch, "shadow")
+    (r,) = await _dry_runs(pool)
+    assert r["candidate_id"] == cid
 
 
 async def test_drain_shadow_dry_runs_once(

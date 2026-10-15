@@ -180,6 +180,7 @@ def test_record_field_order() -> None:
         "latency_ms",
         "thinking",
         "effort",
+        "candidate_id",
     ]
 
 

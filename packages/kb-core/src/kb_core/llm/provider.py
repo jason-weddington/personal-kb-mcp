@@ -65,6 +65,8 @@ class LLMCallRecord:
     """Thinking mode the request carried (``disabled``/``adaptive``); None when none sent."""
     effort: str | None = None
     """Effort level the request carried (``output_config.effort``); None when none sent."""
+    candidate_id: int | None = None
+    """the surprise candidate a capture call served; set by kb-service, None elsewhere."""
 
 
 LLMCallRecorder = Callable[[LLMCallRecord], None]

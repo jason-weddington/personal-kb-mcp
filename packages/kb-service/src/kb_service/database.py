@@ -570,7 +570,8 @@ _SCHEMA_STATEMENTS: list[str] = [
     "cache_missed_input_tokens INTEGER, "
     "diagnostics_raw TEXT, "
     "system_sha256 TEXT, "
-    "latency_ms INTEGER NOT NULL)",
+    "latency_ms INTEGER NOT NULL, "
+    "candidate_id BIGINT)",
     "CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(ts)",
     "CREATE INDEX IF NOT EXISTS idx_llm_calls_purpose_ts ON llm_calls(purpose, ts)",
     # Subagent provenance (2026-10): failure_events gains the tool_use_id the
@@ -588,6 +589,10 @@ _SCHEMA_STATEMENTS: list[str] = [
     # Plain nullable TEXT, so no _SQLITE_CHECK_REBUILDS entry.
     "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS thinking TEXT",
     "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS effort TEXT",
+    # LLM ledger attribution (2026-10-15): the surprise candidate a
+    # surprise_distiller / surprise_critic call served; NULL for every other
+    # purpose. Plain nullable BIGINT, so no _SQLITE_CHECK_REBUILDS entry.
+    "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
 ]
 
 

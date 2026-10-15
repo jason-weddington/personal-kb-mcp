@@ -21,6 +21,8 @@ from kb_service import llm_calls, surprise_worker
 from kb_service.config import build_anthropic_config, get_llm_diagnostics
 from kb_service.db_sqlite import SqlitePool
 from kb_service.llm_calls import (
+    candidate_scope,
+    current_candidate_id,
     drain_pending_llm_calls,
     insert_llm_call,
     prune_llm_calls,
@@ -128,7 +130,10 @@ async def test_llm_calls_ddl_idempotent(local_env: Path) -> None:
         }
         assert {"llm_calls", "idx_llm_calls_ts", "idx_llm_calls_purpose_ts"} <= names
         cols = [r["name"] for r in await pool.fetch("PRAGMA table_info(llm_calls)")]
-        assert cols == ["id"] + [f.name for f in dataclasses.fields(LLMCallRecord)]
+        # SQLite fresh installs get candidate_id from the CREATE TABLE and the
+        # older text columns via ALTER, so the physical order is not the record
+        # field order; the names are the invariant.
+        assert set(cols) == {"id"} | {f.name for f in dataclasses.fields(LLMCallRecord)}
     finally:
         await database.close_db()
 
@@ -140,7 +145,7 @@ def test_insert_sql_columns_in_field_order() -> None:
     names = [f.name for f in dataclasses.fields(LLMCallRecord)]
     expected = (
         f"INSERT INTO llm_calls ({', '.join(names)}) "  # noqa: S608 - fixed columns
-        f"VALUES ({', '.join(f'${i}' for i in range(1, 22))})"
+        f"VALUES ({', '.join(f'${i}' for i in range(1, 23))})"
     )
     assert expected == llm_calls._INSERT_SQL
 
@@ -231,6 +236,43 @@ async def test_drain_timeout_cancels(
     assert "llm_calls drain timed out pending=1" in msgs
     assert not llm_calls._PENDING
     assert not [m for m in msgs if "insert failed" in m]
+
+
+# --- candidate attribution: contextvar and scope ------------------------------
+
+
+async def test_candidate_scope_sets_and_resets() -> None:
+    with candidate_scope(7):
+        assert current_candidate_id.get() == 7
+    assert current_candidate_id.get() is None
+
+
+async def test_candidate_scope_resets_on_exception() -> None:
+    with pytest.raises(RuntimeError), candidate_scope(3):
+        raise RuntimeError("boom")
+    assert current_candidate_id.get() is None
+
+
+async def test_candidate_scope_nesting_restores_outer() -> None:
+    with candidate_scope(1):
+        with candidate_scope(2):
+            assert current_candidate_id.get() == 2
+        assert current_candidate_id.get() == 1
+    assert current_candidate_id.get() is None
+
+
+async def test_record_llm_call_fills_candidate_id(pool: SqlitePool) -> None:
+    inside = _record()
+    outside = _record()
+    explicit = _record(candidate_id=5)
+    with candidate_scope(9):
+        record_llm_call(inside)
+    record_llm_call(outside)
+    with candidate_scope(6):
+        record_llm_call(explicit)
+    await drain_pending_llm_calls()
+    rows = await pool.fetch("SELECT candidate_id FROM llm_calls ORDER BY id")
+    assert [r["candidate_id"] for r in rows] == [9, None, 5]
 
 
 async def test_prune(pool: SqlitePool) -> None:

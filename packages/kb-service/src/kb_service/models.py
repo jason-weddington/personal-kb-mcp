@@ -2127,6 +2127,7 @@ class ObserveLlmCallRow(BaseModel):
     latency_ms: int
     thinking: str | None = None
     effort: str | None = None
+    candidate_id: int | None = None
 
 
 class ObserveListenerDecisionRow(BaseModel):

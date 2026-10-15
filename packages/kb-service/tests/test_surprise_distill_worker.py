@@ -21,11 +21,13 @@ import pytest
 from fastapi.testclient import TestClient
 from kb_core import create_sqlite
 from kb_core.config import IngestConfig
+from kb_core.llm.provider import LLMCallRecord
 from kb_core.near_duplicates import NearDuplicateCheck
 
 import kb_service.database as database
 from kb_service import surprise_worker
 from kb_service.db_sqlite import SqlitePool
+from kb_service.llm_calls import current_candidate_id, record_llm_call
 from kb_service.main import app
 from kb_service.prevention import build_gate_index, build_slice, load_resolutions
 from kb_service.store_distill import STORE_DISTILLER_SYSTEM
@@ -338,6 +340,61 @@ def _warnings(caplog: pytest.LogCaptureFixture, needle: str = "") -> list[str]:
         and r.levelno == logging.WARNING
         and needle in r.getMessage()
     ]
+
+
+# --- llm_calls candidate attribution -------------------------------------------
+
+
+def _ledger_record(purpose: str, text: str | None) -> LLMCallRecord:
+    """A minimal ``LLMCallRecord`` shaped like what the real client emits."""
+    return LLMCallRecord(
+        ts=datetime.now(UTC).isoformat(timespec="seconds"),
+        purpose=purpose,  # type: ignore[arg-type]
+        model="FakeLLM",
+        outcome="ok" if text is not None else "no_text",
+        error_type=None,
+        response_id=None,
+        stop_reason=None,
+        input_tokens=1,
+        output_tokens=2,
+        cache_creation_input_tokens=None,
+        cache_creation_1h_input_tokens=None,
+        cache_read_input_tokens=None,
+        diagnostics_state="sent",
+        previous_message_id=None,
+        cache_miss_reason=None,
+        cache_missed_input_tokens=None,
+        diagnostics_raw=None,
+        system_sha256=None,
+        latency_ms=1,
+    )
+
+
+class _RecordingLLM(FakeCritic):
+    """``FakeCritic`` that hands every answered call to the production recorder.
+
+    It scripts like any ``FakeLLM``, then writes a minimal ledger row through
+    ``record_llm_call`` so tests see exactly the ``llm_calls`` rows the real
+    recorder would produce for a distiller/critic/detector call.
+    """
+
+    async def generate(
+        self, prompt: Any, *, purpose: str, system: Any = None
+    ) -> str | None:
+        text = await super().generate(prompt, purpose=purpose, system=system)
+        record_llm_call(_ledger_record(purpose, text))
+        return text
+
+
+class _ExplodingLLM(FakeLLM):
+    """Distiller stub whose call raises while a candidate scope is active."""
+
+    async def generate(
+        self, prompt: Any, *, purpose: str, system: Any = None
+    ) -> str | None:
+        self.generate_calls.append((prompt, system))
+        self.purposes.append(purpose)
+        raise RuntimeError("distiller down")
 
 
 # --- get_distiller_llm (R7) ---------------------------------------------------
@@ -1907,3 +1964,17 @@ async def test_shape4_write_then_exact_merge(
     assert row["observed_sessions_after"] == 2
     rs, _ = await load_resolutions(kb.db, "p", True)
     assert build_gate_index(rs)[0] == []
+
+
+async def test_scope_resets_after_raising_distiller(
+    pool: SqlitePool, kb: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exception under candidate_scope leaves the contextvar None again."""
+    explode = _ExplodingLLM()
+    monkeypatch.setattr(surprise_worker, "get_distiller_llm", lambda: explode)
+    monkeypatch.setattr(surprise_worker, "get_critic_llm", lambda: FakeCritic())
+    c = await _s(pool, "s1")
+    await distill_candidates(pool, kb, [c], "on")
+    (row,) = await _rows(pool)
+    assert (row["outcome"], row["reason"]) == ("llm_error", "exception")
+    assert current_candidate_id.get() is None
