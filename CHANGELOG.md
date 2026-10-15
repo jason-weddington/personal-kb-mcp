@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.19.0 (2026-10-15)
+
+### Features
+
+- **433fbff4**: Distiller and critic ledger rows carry the surprise candidate id, so capture cost
+  attributes to shapes exactly
+  ([`e390dbd`](https://github.com/jason-weddington/personal-kb-mcp/commit/e390dbd507796aaa960a1f1c82a11bc959572aa5))
+
+
 ## v1.18.0 (2026-10-14)
 
 ### Chores
