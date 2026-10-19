@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.19.2 (2026-10-19)
+
+### Bug Fixes
+
+- **bedrock**: Bedrock credentials refresh for long-running services and fall back to boto3's
+  default credential chain
+  ([`a74587a`](https://github.com/jason-weddington/personal-kb-mcp/commit/a74587a2665132618742e248f2ec3e850d4cb236))
+
+- **bedrock**: The Bedrock provider uses Haiku 5.5 and Sonnet 5.5 with the same thinking and effort
+  settings as the Anthropic provider
+  ([`d525afd`](https://github.com/jason-weddington/personal-kb-mcp/commit/d525afdf0c55b949b51fc4923a478cf046750cd5))
+
+
 ## v1.19.1 (2026-10-19)
 
 ### Bug Fixes
