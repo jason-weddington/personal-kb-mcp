@@ -32,15 +32,21 @@ LLMPurpose = Literal[
 """Why an LLM call was made; a required keyword on every generate call."""
 
 LLMCallOutcome = Literal["ok", "no_text", "error"]
-"""ok: at least one text block; no_text: none (generate returns None); error: create raised."""
+"""ok: at least one text block; no_text: none (generate returns None); error: the call raised."""
 
 DiagnosticsState = Literal["sent", "off_config", "off_disabled", "fallback"]
-"""Whether the cache-diagnostics object was sent on a recorded call."""
+"""Whether the cache-diagnostics object was sent on a recorded call.
+
+Bedrock rows always carry ``off_config``: Converse has no diagnostics field.
+"""
 
 
 @dataclass(frozen=True)
 class LLMCallRecord:
-    """One recorded Claude API call: usage and cache diagnostics, by purpose."""
+    """One recorded Claude call on the Anthropic API or Bedrock Converse.
+
+    Holds usage and cache diagnostics, by purpose.
+    """
 
     ts: str
     purpose: LLMPurpose

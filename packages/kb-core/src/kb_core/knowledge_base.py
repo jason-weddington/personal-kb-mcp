@@ -274,8 +274,8 @@ def _build_llm(
 ) -> LLMProvider | None:
     """Build the LLM client for a single role, or ``None`` if unsupported.
 
-    ``recorder`` is attached to Anthropic clients only; Bedrock and Ollama
-    clients record nothing.
+    ``recorder`` is attached to Anthropic and Bedrock clients; Ollama clients
+    record nothing.
 
     Provider modules are imported lazily so that a bare ``import kb_core``
     never pulls anthropic/boto3/smithy (enforced by the purity guard).
@@ -287,7 +287,7 @@ def _build_llm(
     if role.provider == "bedrock":
         from kb_core.llm.bedrock import BedrockLLMClient
 
-        return BedrockLLMClient(role.bedrock)
+        return BedrockLLMClient(role.bedrock, recorder=recorder)
     if role.provider == "ollama":
         from kb_core.llm.ollama import OllamaLLMClient
 
@@ -384,9 +384,10 @@ class KnowledgeBase:
         default means "derive from ``config``". Overridden instances are
         NOT closed by :meth:`close` — the caller owns them.
 
-        ``llm_recorder`` is attached to every Anthropic client built from
-        ``config.providers`` (never to the pre-built overrides) and receives
-        one :class:`~kb_core.llm.provider.LLMCallRecord` per API call.
+        ``llm_recorder`` is attached to every Anthropic and Bedrock client
+        built from ``config.providers`` (never to the pre-built overrides) and
+        receives one :class:`~kb_core.llm.provider.LLMCallRecord` per API call
+        (per Converse attempt on Bedrock).
         """
         db = await _open_database(config.database)
 

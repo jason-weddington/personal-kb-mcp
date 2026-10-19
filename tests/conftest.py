@@ -201,9 +201,11 @@ _AMBIENT_DB_VARS = ("KB_DATABASE_URL", "KB_SERVICE_DATABASE_URL", "KB_DB_PATH")
 # Dispatch hosts set HEADLESS_BUILD_ENGINE, which would add X-KB-Harness to
 # every HttpBackend request in the gate; neither may leak into a test.
 _AMBIENT_WRITE_POLICY_VARS = ("HEADLESS_BUILD_ENGINE", "KB_WRITE_POLICY_DEFAULT_SURFACE")
+# An ambient provider choice would move surprise capture clients off Anthropic.
+_AMBIENT_LLM_PROVIDER_VARS = ("KB_QUERY_PROVIDER", "KB_SURPRISE_PROVIDER")
 
 
 @pytest.fixture(autouse=True)
 def _no_ambient_production_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in (*_AMBIENT_DB_VARS, *_AMBIENT_WRITE_POLICY_VARS):
+    for var in (*_AMBIENT_DB_VARS, *_AMBIENT_WRITE_POLICY_VARS, *_AMBIENT_LLM_PROVIDER_VARS):
         monkeypatch.delenv(var, raising=False)

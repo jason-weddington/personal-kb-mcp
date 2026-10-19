@@ -1405,6 +1405,7 @@ _AMBIENT_SURPRISE_VARS = (
     "KB_SURPRISE_MIN_CONFIDENCE_SHAPE3",
     "KB_SURPRISE_DISTILL_MODEL",
     "KB_SURPRISE_CRITIC_MODEL",
+    "KB_SURPRISE_PROVIDER",
 )
 
 # MCP-facing env (tool prefix, manager/contributor gating, auth mode, public URL)
@@ -1420,7 +1421,7 @@ _AMBIENT_MCP_VARS = (
 
 # The write-policy default surface must not leak in from a developer shell.
 _AMBIENT_WRITE_POLICY_VARS = ("KB_WRITE_POLICY_DEFAULT_SURFACE",)
-_AMBIENT_LLM_VARS = ("KB_LLM_DIAGNOSTICS",)
+_AMBIENT_LLM_VARS = ("KB_LLM_DIAGNOSTICS", "KB_QUERY_PROVIDER")
 
 
 @pytest.fixture(autouse=True)

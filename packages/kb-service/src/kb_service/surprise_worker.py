@@ -30,7 +30,7 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from kb_core.ingest.safety import detect_secrets_in_content, redact_secrets
 from kb_core.llm.provider import LLMProvider, LLMPurpose
@@ -39,6 +39,7 @@ from kb_core.models.entry import EntryType
 from kb_service.config import (
     NEAR_DUPLICATE_FLOOR_DEFAULT,
     build_anthropic_config,
+    build_bedrock_config,
     get_near_duplicate_floor,
 )
 from kb_service.database import get_db
@@ -151,14 +152,26 @@ _SHAPE2_MODE_WARNED: bool = False
 SURPRISE_DETECTOR_DEFAULT_MODEL = "claude-sonnet-5-5"
 SURPRISE_WORKER_POLL_SECONDS = 60.0
 
-_DETECTOR_LLM_CACHE: dict[str, LLMProvider] = {}
+_DETECTOR_LLM_CACHE: dict[tuple[str, str], LLMProvider] = {}
 
 SURPRISE_DISTILLER_DEFAULT_MODEL = "claude-sonnet-5-5"
-_DISTILLER_LLM_CACHE: dict[str, LLMProvider] = {}
+_DISTILLER_LLM_CACHE: dict[tuple[str, str], LLMProvider] = {}
 _DISTILLER_SYSTEM_CACHE_1H: frozenset[LLMPurpose] = frozenset({"surprise_distiller"})
 
 SURPRISE_CRITIC_DEFAULT_MODEL = "claude-sonnet-5-5"
-_CRITIC_LLM_CACHE: dict[str, LLMProvider] = {}
+_CRITIC_LLM_CACHE: dict[tuple[str, str], LLMProvider] = {}
+
+SurpriseProvider = Literal["anthropic", "bedrock"]
+"""The provider the surprise capture clients (detector, distiller, critic) run on."""
+SurpriseProviderSource = Literal["KB_SURPRISE_PROVIDER", "KB_QUERY_PROVIDER", "default"]
+"""Where the surprise capture provider came from."""
+
+_SURPRISE_PROVIDERS: dict[str, SurpriseProvider] = {
+    "anthropic": "anthropic",
+    "bedrock": "bedrock",
+}
+# One surprise_provider bad_value warning per process.
+_SURPRISE_PROVIDER_WARNED: bool = False
 
 _CANDIDATE_COLUMNS = (
     "id, shape, session_id, project, turn_event_ids, detector_model,"
@@ -186,103 +199,174 @@ _FAILED_OUTCOMES = frozenset({"llm_error", "unparseable", "invalid_fields"})
 # --- helpers -----------------------------------------------------------------
 
 
-def get_detector_llm() -> LLMProvider | None:
-    """Return the detector's own Anthropic client, cached per model.
+def _resolve_surprise_provider() -> tuple[SurpriseProvider, SurpriseProviderSource]:
+    """Return the surprise capture provider and where it came from; never raises.
 
-    The model is ``KB_SURPRISE_DETECTOR_MODEL`` or
-    ``SURPRISE_DETECTOR_DEFAULT_MODEL``. Never reads the KB's synthesis or
-    query providers and ignores ``KB_QUERY_PROVIDER``. None (nothing cached)
-    when the Anthropic client cannot be imported.
+    ``KB_SURPRISE_PROVIDER`` (``anthropic`` or ``bedrock``, case and
+    whitespace ignored) wins. Any other non-empty value warns once per process
+    and counts as unset. Unset, ``KB_QUERY_PROVIDER`` is followed when it is
+    ``anthropic`` or ``bedrock``; anything else (``ollama``, empty, garbage)
+    falls back to ``anthropic``. Both variables are read on every call.
     """
-    model = (
-        os.environ.get("KB_SURPRISE_DETECTOR_MODEL", "").strip()
-        or SURPRISE_DETECTOR_DEFAULT_MODEL
+    global _SURPRISE_PROVIDER_WARNED
+    raw = os.environ.get("KB_SURPRISE_PROVIDER", "").strip().lower()
+    chosen = _SURPRISE_PROVIDERS.get(raw)
+    if chosen is not None:
+        return chosen, "KB_SURPRISE_PROVIDER"
+    if raw and not _SURPRISE_PROVIDER_WARNED:
+        _SURPRISE_PROVIDER_WARNED = True
+        logger.warning("surprise_provider bad_value value=%r", raw)
+    query_raw = os.environ.get("KB_QUERY_PROVIDER", "").strip().lower()
+    query = _SURPRISE_PROVIDERS.get(query_raw)
+    if query is not None:
+        return query, "KB_QUERY_PROVIDER"
+    return "anthropic", "default"
+
+
+def get_surprise_provider() -> SurpriseProvider:
+    """The provider the surprise capture clients run on.
+
+    See ``_resolve_surprise_provider`` for the rule.
+    """
+    return _resolve_surprise_provider()[0]
+
+
+def _surprise_llm(
+    stage: str,
+    model_var: str,
+    anthropic_default: str,
+    cache: dict[tuple[str, str], LLMProvider],
+    system_cache_1h_purposes: frozenset[LLMPurpose],
+) -> LLMProvider | None:
+    """Build or reuse one surprise capture stage's client on the selected provider.
+
+    Cached per ``(provider, model)``. None, with nothing cached, when that
+    provider's client (or, on Bedrock, the Bedrock SDK) cannot be imported.
+    """
+    provider, source = _resolve_surprise_provider()
+    override = os.environ.get(model_var, "").strip()
+    client: LLMProvider
+    thinking: str | None
+    if provider == "bedrock":
+        try:
+            import aws_sdk_bedrock_runtime  # type: ignore[import-untyped]  # noqa: F401
+            from kb_core.llm.bedrock import _SONNET_MODEL, BedrockLLMClient
+        except ImportError:
+            return None
+        model = override or _SONNET_MODEL
+        cached = cache.get((provider, model))
+        if cached is not None:
+            return cached
+        bedrock_client = BedrockLLMClient(
+            build_bedrock_config(model=model),
+            recorder=record_llm_call,
+            system_cache_1h_purposes=system_cache_1h_purposes,
+        )
+        client, thinking = bedrock_client, bedrock_client._config.thinking
+        if model.startswith("claude-"):
+            logger.warning(
+                "surprise capture model=%s looks like an Anthropic API id"
+                " on provider bedrock",
+                model,
+            )
+    else:
+        model = override or anthropic_default
+        cached = cache.get((provider, model))
+        if cached is not None:
+            return cached
+        try:
+            from kb_core.llm.anthropic import AnthropicLLMClient
+        except ImportError:
+            return None
+        anthropic_client = AnthropicLLMClient(
+            build_anthropic_config(model=model),
+            recorder=record_llm_call,
+            system_cache_1h_purposes=system_cache_1h_purposes,
+        )
+        client, thinking = anthropic_client, anthropic_client._config.thinking
+        if "anthropic.claude" in model or model.startswith("arn:"):
+            logger.warning(
+                "surprise capture model=%s looks like a Bedrock model id"
+                " on provider anthropic",
+                model,
+            )
+    logger.info(
+        "surprise_llm client stage=%s provider=%s source=%s model=%s",
+        stage,
+        provider,
+        source,
+        model,
     )
-    cached = _DETECTOR_LLM_CACHE.get(model)
-    if cached is not None:
-        return cached
-    try:
-        from kb_core.llm.anthropic import AnthropicLLMClient
-    except ImportError:
-        return None
-    client = AnthropicLLMClient(
-        build_anthropic_config(model=model), recorder=record_llm_call
-    )
-    if client._config.thinking is not None:
+    if thinking is not None:
         logger.warning(
             "surprise capture client built with thinking=%s (expected None)",
-            client._config.thinking,
+            thinking,
         )
-    _DETECTOR_LLM_CACHE[model] = client
+    cache[(provider, model)] = client
     return client
+
+
+def get_detector_llm() -> LLMProvider | None:
+    """Return the detector's own client on the surprise capture provider.
+
+    The provider is ``KB_SURPRISE_PROVIDER`` (``anthropic`` or ``bedrock``),
+    else ``KB_QUERY_PROVIDER`` when that is ``anthropic`` or ``bedrock``, else
+    ``anthropic``. The model is ``KB_SURPRISE_DETECTOR_MODEL`` or the
+    provider's default: ``SURPRISE_DETECTOR_DEFAULT_MODEL`` on Anthropic,
+    kb_core's Bedrock Sonnet id on Bedrock. Cached per ``(provider, model)``.
+    Never reads the KB's synthesis or query clients. None (nothing cached)
+    when that provider's client, or on Bedrock the Bedrock SDK, cannot be
+    imported.
+    """
+    return _surprise_llm(
+        "detector",
+        "KB_SURPRISE_DETECTOR_MODEL",
+        SURPRISE_DETECTOR_DEFAULT_MODEL,
+        _DETECTOR_LLM_CACHE,
+        frozenset(),
+    )
 
 
 def get_distiller_llm() -> LLMProvider | None:
-    """Return the distiller's own Anthropic client, cached per model.
+    """Return the distiller's own client on the surprise capture provider.
 
-    The model is ``KB_SURPRISE_DISTILL_MODEL`` or
-    ``SURPRISE_DISTILLER_DEFAULT_MODEL``, read on every call. Independent of
-    the detector: never calls ``get_detector_llm``, never reads
-    ``KB_SURPRISE_DETECTOR_MODEL`` or the KB's synthesis/query providers, and
-    ignores ``KB_QUERY_PROVIDER``. None (nothing cached) when the Anthropic
-    client cannot be imported. The surprise distiller's system block (purpose
+    The provider follows the same rule as ``get_detector_llm``. The model is
+    ``KB_SURPRISE_DISTILL_MODEL`` or the provider's default
+    (``SURPRISE_DISTILLER_DEFAULT_MODEL`` on Anthropic, kb_core's Bedrock
+    Sonnet id on Bedrock), read on every call. Independent of the detector:
+    never calls ``get_detector_llm`` and never reads
+    ``KB_SURPRISE_DETECTOR_MODEL`` or the KB's synthesis/query clients. None
+    (nothing cached) when that provider's client, or on Bedrock the Bedrock
+    SDK, cannot be imported. The surprise distiller's system block (purpose
     surprise_distiller) gets the 1-hour cache TTL; the store distiller shares
     this client and keeps the 5-minute default.
     """
-    model = (
-        os.environ.get("KB_SURPRISE_DISTILL_MODEL", "").strip()
-        or SURPRISE_DISTILLER_DEFAULT_MODEL
+    return _surprise_llm(
+        "distiller",
+        "KB_SURPRISE_DISTILL_MODEL",
+        SURPRISE_DISTILLER_DEFAULT_MODEL,
+        _DISTILLER_LLM_CACHE,
+        _DISTILLER_SYSTEM_CACHE_1H,
     )
-    cached = _DISTILLER_LLM_CACHE.get(model)
-    if cached is not None:
-        return cached
-    try:
-        from kb_core.llm.anthropic import AnthropicLLMClient
-    except ImportError:
-        return None
-    client = AnthropicLLMClient(
-        build_anthropic_config(model=model),
-        recorder=record_llm_call,
-        system_cache_1h_purposes=_DISTILLER_SYSTEM_CACHE_1H,
-    )
-    if client._config.thinking is not None:
-        logger.warning(
-            "surprise capture client built with thinking=%s (expected None)",
-            client._config.thinking,
-        )
-    _DISTILLER_LLM_CACHE[model] = client
-    return client
 
 
 def get_critic_llm() -> LLMProvider | None:
-    """Return the critic's own Anthropic client, cached per model.
+    """Return the critic's own client on the surprise capture provider.
 
-    The model is ``KB_SURPRISE_CRITIC_MODEL`` or
-    ``SURPRISE_CRITIC_DEFAULT_MODEL``, read on every call. Independent of the
-    detector and the distiller clients and of ``KB_QUERY_PROVIDER``. None
-    (nothing cached) when the Anthropic client cannot be imported.
+    The provider follows the same rule as ``get_detector_llm``. The model is
+    ``KB_SURPRISE_CRITIC_MODEL`` or the provider's default
+    (``SURPRISE_CRITIC_DEFAULT_MODEL`` on Anthropic, kb_core's Bedrock Sonnet
+    id on Bedrock), read on every call. Independent of the detector and the
+    distiller clients. None (nothing cached) when that provider's client, or
+    on Bedrock the Bedrock SDK, cannot be imported.
     """
-    model = (
-        os.environ.get("KB_SURPRISE_CRITIC_MODEL", "").strip()
-        or SURPRISE_CRITIC_DEFAULT_MODEL
+    return _surprise_llm(
+        "critic",
+        "KB_SURPRISE_CRITIC_MODEL",
+        SURPRISE_CRITIC_DEFAULT_MODEL,
+        _CRITIC_LLM_CACHE,
+        frozenset(),
     )
-    cached = _CRITIC_LLM_CACHE.get(model)
-    if cached is not None:
-        return cached
-    try:
-        from kb_core.llm.anthropic import AnthropicLLMClient
-    except ImportError:
-        return None
-    client = AnthropicLLMClient(
-        build_anthropic_config(model=model), recorder=record_llm_call
-    )
-    if client._config.thinking is not None:
-        logger.warning(
-            "surprise capture client built with thinking=%s (expected None)",
-            client._config.thinking,
-        )
-    _CRITIC_LLM_CACHE[model] = client
-    return client
 
 
 def _read_floor(name: str) -> float | None:
@@ -690,7 +774,8 @@ async def distill_candidates(
     recovery must not corroborate the resolution it was handed); an exact match on
     (wrong belief, cue) against the project's resolutions, which merges
     without any LLM call; one distiller call (``get_distiller_llm``,
-    ``KB_SURPRISE_DISTILL_MODEL``, default claude-sonnet-5-5, never
+    ``KB_SURPRISE_DISTILL_MODEL``, default claude-sonnet-5-5 on Anthropic and
+    the Bedrock Sonnet 5.5 inference profile on Bedrock, never
     ``get_detector_llm``); parse, secret scan and resolution validation; a
     cosine match at ``KB_NEAR_DUPLICATE_FLOOR``; then a merge (an
     ``observed_sessions`` bump, with the triggering event id appended to

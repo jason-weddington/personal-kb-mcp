@@ -81,8 +81,11 @@ async def test_generate_with_system_prompt(mock_bedrock_client):
     call_args = mock_bedrock_client.converse.call_args
     converse_input = call_args[0][0]
     assert converse_input.system is not None
-    assert len(converse_input.system) == 1
+    assert len(converse_input.system) == 2
     assert converse_input.system[0].value == "You are helpful"
+    assert type(converse_input.system[1]).__name__ == "SystemContentBlockCachePoint"
+    assert converse_input.system[1].value.type == "default"
+    assert converse_input.system[1].value.ttl is None
 
 
 @needs_sdk

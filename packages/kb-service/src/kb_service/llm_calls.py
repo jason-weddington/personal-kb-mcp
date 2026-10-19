@@ -1,8 +1,9 @@
 """LLM call ledger: persist kb-core :class:`LLMCallRecord` rows to ``llm_calls``.
 
 :func:`record_llm_call` is the synchronous recorder handed to every
-kb-service ``AnthropicLLMClient``. It schedules the insert as a task on the
-running loop so the LLM call is never slowed, and a failed insert only logs.
+kb-service ``AnthropicLLMClient`` and ``BedrockLLMClient``. It schedules the
+insert as a task on the running loop so the LLM call is never slowed, and a
+failed insert only logs.
 :func:`drain_pending_llm_calls` awaits outstanding inserts at shutdown, and
 :func:`prune_llm_calls` drops rows past the retention window (run from the
 surprise drain).

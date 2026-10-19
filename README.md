@@ -15,7 +15,7 @@ No installation needed — just add the MCP config below and your client handles
 - **File ingestion** — Bulk-import existing notes, code, and docs from disk with LLM-powered extraction
 - **Multi-user attribution** — Server-side identity injection (`KB_CONTRIBUTOR`, `KB_TEAM`), per-entry attribution visible in all output, contributor/team search filters, audit trail for mutations
 - **Resolutions** — a `hints.resolution` object records a corrected belief (with an optional Bash command cue) that the service validates, stamps with provenance and delivers to future sessions; `packages/kb-service/scripts/seed_resolutions.py` seeds them from existing procedure entries (dry run by default)
-- **Surprise capture** — `KB_SURPRISE_CAPTURE` (`off|shadow|on`, default `off`) turns per-turn hook digests into detected corrections: `shadow` detects and stores candidates only, `on` also distills them and writes autonomous `lesson_learned` entries; `POST /api/kb/surprise/drain` runs one pass, `KB_SURPRISE_DISTILL_MODEL` picks the distiller model, and an observed-once resolution reaches the soft gate only after it recurs in a second session. Digests from other harnesses are stored under Claude Code's tool names (talos native names are mapped at ingest). Digests from harnesses that verify the agent's work (talos) can carry harness_correction items, which are detected deterministically as shape 4.
+- **Surprise capture** — `KB_SURPRISE_CAPTURE` (`off|shadow|on`, default `off`) turns per-turn hook digests into detected corrections: `shadow` detects and stores candidates only, `on` also distills them and writes autonomous `lesson_learned` entries; `POST /api/kb/surprise/drain` runs one pass, `KB_SURPRISE_DISTILL_MODEL` picks the distiller model (on Bedrock the model variables take Bedrock model ids), and an observed-once resolution reaches the soft gate only after it recurs in a second session. Digests from other harnesses are stored under Claude Code's tool names (talos native names are mapped at ingest). Digests from harnesses that verify the agent's work (talos) can carry harness_correction items, which are detected deterministically as shape 4.
 - **Graceful degradation** — Every optional component (Ollama, Anthropic, vector search) fails gracefully; core storage and FTS always work
 
 ## Prerequisites
@@ -131,7 +131,7 @@ ollama pull qwen3:4b               # for LLM features (graph enrichment, query p
 }
 ```
 
-Uses the cross-region inference profiles `us.anthropic.claude-haiku-5-5` for extraction and query (thinking disabled; override with `KB_BEDROCK_MODEL`) and `us.anthropic.claude-sonnet-5-5` for synthesis (effort low; override with `KB_BEDROCK_SYNTHESIS_MODEL`). These are the same models and settings as the Anthropic provider. For a non-Claude Bedrock model, set `KB_ANTHROPIC_THINKING=default` and `KB_SYNTHESIS_EFFORT=default` so neither setting is sent.
+Uses the cross-region inference profiles `us.anthropic.claude-haiku-5-5` for extraction and query (thinking disabled; override with `KB_BEDROCK_MODEL`) and `us.anthropic.claude-sonnet-5-5` for synthesis (effort low; override with `KB_BEDROCK_SYNTHESIS_MODEL`). These are the same models and settings as the Anthropic provider. For a non-Claude Bedrock model, set `KB_ANTHROPIC_THINKING=default` and `KB_SYNTHESIS_EFFORT=default` so neither setting is sent. Surprise capture's detector, distiller and critic follow `KB_QUERY_PROVIDER` onto Bedrock (`us.anthropic.claude-sonnet-5-5`) unless `KB_SURPRISE_PROVIDER` is set, so a Bedrock-only KB needs no `ANTHROPIC_API_KEY`, but its kb-service interpreter needs the Bedrock SDK (kb-core's `aws` extra, 0.4.0 or later).
 
 > **Legacy SigV4 auth** also works — set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` instead of `AWS_BEARER_TOKEN_BEDROCK`, or set `KB_AWS_PROFILE` to a named profile. With none of these, boto3's default credential chain is used (SSO or `aws login` sessions, instance and container roles), and temporary credentials are refreshed as they expire. Bearer token auth is preferred.
 
@@ -500,7 +500,7 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | `KB_PG_REGION` | `us-east-1` | AWS region for RDS IAM token signing |
 | **Provider selection** | | |
 | `KB_EXTRACTION_PROVIDER` | `anthropic` | LLM for graph enrichment (`anthropic`, `bedrock`, or `ollama`) |
-| `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning and synthesis (`anthropic`, `bedrock`, or `ollama`) |
+| `KB_QUERY_PROVIDER` | `anthropic` | LLM for query planning and synthesis (`anthropic`, `bedrock`, or `ollama`); also selects the surprise capture provider when `KB_SURPRISE_PROVIDER` is unset (anthropic or bedrock only) |
 
 > **Legacy SigV4 auth:** Bedrock also supports `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` for traditional IAM credentials. Bearer token auth (`AWS_BEARER_TOKEN_BEDROCK`) is the preferred method.
 

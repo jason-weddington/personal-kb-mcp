@@ -12,12 +12,18 @@ boto3, not in kb_core.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+
+from kb_core.llm.provider import LLMCallRecord
 
 if TYPE_CHECKING:
     from kb_core.config import BedrockProviderConfig
-    from kb_core.llm.provider import LLMPurpose, Message
+    from kb_core.llm.provider import LLMCallOutcome, LLMCallRecorder, LLMPurpose, Message
 
 logger = logging.getLogger(__name__)
 
@@ -186,19 +192,78 @@ _SONNET_MODEL = "us.anthropic.claude-sonnet-5-5"
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds — exponential: 1s, 2s, 4s
 
+_CACHE_POINT_MODEL_MARKER = "anthropic.claude"
+"""A model id containing this gets a system cache point; any other model id gets none."""
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Keep ``value`` only when it is a real int (not a bool)."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _cache_write_1h_tokens(usage: Any) -> int | None:
+    """Sum the 1-hour cache-write tokens in ``usage.cache_details``; None when it is not a list."""
+    details = getattr(usage, "cache_details", None)
+    if not isinstance(details, list):
+        return None
+    total = 0
+    for detail in details:
+        if getattr(detail, "ttl", None) != "1h":
+            continue
+        tokens = _int_or_none(getattr(detail, "input_tokens", None))
+        if tokens is not None:
+            total += tokens
+    return total
+
+
+def _wire_sha256(wire: list[dict[str, Any]]) -> str:
+    """Short stable hash of the system blocks as they go out on the wire."""
+    payload = json.dumps(wire, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _to_document(fields: dict[str, Any] | None) -> Any:
+    """Wrap request fields in a smithy ``Document``; None stays None."""
+    if not fields:
+        return None
+    from smithy_core.documents import Document
+
+    return Document(fields)
+
+
+def _response_text(response: Any) -> str:
+    """Join the str ``value`` items of a Converse response's output content."""
+    items = response.output.value.content
+    return "".join(v for v in (getattr(i, "value", None) for i in items) if isinstance(v, str))
+
 
 class BedrockLLMClient:
     """Generates text via the AWS Bedrock Converse API."""
 
-    def __init__(self, config: BedrockProviderConfig) -> None:
-        """Initialize with an explicit provider config."""
+    def __init__(
+        self,
+        config: BedrockProviderConfig,
+        *,
+        recorder: LLMCallRecorder | None = None,
+        system_cache_1h_purposes: frozenset[LLMPurpose] = frozenset(),
+    ) -> None:
+        """Initialize with an explicit provider config and an optional call recorder.
+
+        ``recorder`` receives one :class:`LLMCallRecord` per Converse attempt.
+        ``system_cache_1h_purposes`` lists the purposes whose system cache
+        point gets the 1-hour TTL instead of the 5-minute default.
+        """
         self._config = config
+        self._recorder = recorder
+        self._system_cache_1h_purposes = system_cache_1h_purposes
         self._client: Any = None
         self._available: bool | None = None
         self._auth_method: str | None = None
 
-    def _additional_fields(self) -> Any:
-        """Return the Converse ``additionalModelRequestFields`` document, or None.
+    def _additional_fields_dict(self) -> dict[str, Any] | None:
+        """Return the ``additionalModelRequestFields`` as a plain dict, or None.
 
         Mirrors the Anthropic client: ``thinking`` goes out as
         ``thinking = {"type": mode}`` and ``effort`` as ``output_config.effort``.
@@ -209,11 +274,46 @@ class BedrockLLMClient:
             fields["thinking"] = {"type": self._config.thinking}
         if self._config.effort is not None:
             fields["output_config"] = {"effort": self._config.effort}
-        if not fields:
-            return None
-        from smithy_core.documents import Document
+        return fields or None
 
-        return Document(fields)
+    def _additional_fields(self) -> Any:
+        """Return the Converse ``additionalModelRequestFields`` document, or None."""
+        return _to_document(self._additional_fields_dict())
+
+    def _system_blocks(
+        self, system: str, purpose: LLMPurpose
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        """Build the system blocks as (SDK blocks, wire dicts).
+
+        A Claude model id gets a cache point after the system text, the
+        Converse form of the Anthropic client's system breakpoint, with the
+        1-hour TTL when ``purpose`` is in ``system_cache_1h_purposes``. Any
+        other model id gets the bare text block, as before caching existed.
+        """
+        from aws_sdk_bedrock_runtime.models import SystemContentBlockText
+
+        if _CACHE_POINT_MODEL_MARKER not in self._config.model:
+            return [SystemContentBlockText(value=system)], [{"text": system}]
+
+        from aws_sdk_bedrock_runtime.models import (
+            CachePointBlock,
+            CachePointType,
+            CacheTTL,
+            SystemContentBlockCachePoint,
+        )
+
+        wire_point: dict[str, Any] = {"type": "default"}
+        ttl: str | None = None
+        if purpose in self._system_cache_1h_purposes:
+            ttl = CacheTTL.ONE_HOUR.value
+            wire_point["ttl"] = ttl
+        blocks: list[Any] = [
+            SystemContentBlockText(value=system),
+            SystemContentBlockCachePoint(
+                value=CachePointBlock(type=CachePointType.DEFAULT.value, ttl=ttl)
+            ),
+        ]
+        return blocks, [{"text": system}, {"cachePoint": wire_point}]
 
     async def is_available(self) -> bool:
         """Check availability. Only caches success — retries on failure."""
@@ -253,9 +353,9 @@ class BedrockLLMClient:
                 ConverseInput,
                 InferenceConfiguration,
                 Message,
-                SystemContentBlockText,
             )
 
+            fields = self._additional_fields_dict()
             converse_input = ConverseInput(
                 model_id=self._config.model,
                 messages=[
@@ -265,14 +365,28 @@ class BedrockLLMClient:
                     ),
                 ],
                 inference_config=InferenceConfiguration(max_tokens=4096),
-                additional_model_request_fields=self._additional_fields(),
+                additional_model_request_fields=_to_document(fields),
             )
+            system_sha256: str | None = None
             if system is not None:
-                converse_input.system = [SystemContentBlockText(value=system)]
+                blocks, wire = self._system_blocks(system, purpose)
+                converse_input.system = blocks
+                system_sha256 = _wire_sha256(wire)
 
-            return await self._converse_with_retry(client, converse_input)
+            return await self._converse_with_retry(
+                client,
+                converse_input,
+                purpose=purpose,
+                system_sha256=system_sha256,
+                fields=fields,
+            )
         except Exception:
-            logger.warning("Bedrock generation failed", exc_info=True)
+            logger.warning(
+                "Bedrock generation failed purpose=%s model=%s",
+                purpose,
+                self._config.model,
+                exc_info=True,
+            )
             self._available = None
             return None
 
@@ -283,7 +397,11 @@ class BedrockLLMClient:
         purpose: LLMPurpose,
         system: str | None = None,
     ) -> str | None:
-        """Generate text from a conversation history."""
+        """Generate text from a conversation history.
+
+        A Claude model id gets the same system cache point as ``generate``.
+        There is no rolling message breakpoint.
+        """
         try:
             client = self._get_client()
             if client is None:
@@ -293,7 +411,6 @@ class BedrockLLMClient:
                 ContentBlockText,
                 ConverseInput,
                 InferenceConfiguration,
-                SystemContentBlockText,
             )
             from aws_sdk_bedrock_runtime.models import Message as BRMessage
 
@@ -304,48 +421,166 @@ class BedrockLLMClient:
                 )
                 for m in messages
             ]
+            fields = self._additional_fields_dict()
             converse_input = ConverseInput(
                 model_id=self._config.model,
                 messages=br_messages,
                 inference_config=InferenceConfiguration(max_tokens=4096),
-                additional_model_request_fields=self._additional_fields(),
+                additional_model_request_fields=_to_document(fields),
             )
+            system_sha256: str | None = None
             if system is not None:
-                converse_input.system = [SystemContentBlockText(value=system)]
+                blocks, wire = self._system_blocks(system, purpose)
+                converse_input.system = blocks
+                system_sha256 = _wire_sha256(wire)
 
-            return await self._converse_with_retry(client, converse_input)
+            return await self._converse_with_retry(
+                client,
+                converse_input,
+                purpose=purpose,
+                system_sha256=system_sha256,
+                fields=fields,
+            )
         except Exception:
-            logger.warning("Bedrock chat generation failed", exc_info=True)
+            logger.warning(
+                "Bedrock chat generation failed purpose=%s model=%s",
+                purpose,
+                self._config.model,
+                exc_info=True,
+            )
             self._available = None
             return None
 
-    async def _converse_with_retry(self, client: Any, converse_input: Any) -> str:
-        """Call client.converse with exponential-backoff retries."""
+    def _record(
+        self,
+        *,
+        purpose: LLMPurpose,
+        start: float,
+        outcome: LLMCallOutcome,
+        response: Any,
+        error: BaseException | None,
+        system_sha256: str | None,
+        fields: dict[str, Any] | None,
+    ) -> None:
+        """Hand one attempt's record to the recorder; a recorder failure is only logged."""
+        recorder = self._recorder
+        if recorder is None:
+            return
+        try:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            tokens: list[int | None] = [None] * 5
+            stop_reason: str | None = None
+            if error is None:
+                raw_stop = getattr(response, "stop_reason", None)
+                stop_reason = raw_stop if isinstance(raw_stop, str) else None
+                usage = getattr(response, "usage", None)
+                tokens = [
+                    _int_or_none(getattr(usage, "input_tokens", None)),
+                    _int_or_none(getattr(usage, "output_tokens", None)),
+                    _int_or_none(getattr(usage, "cache_write_input_tokens", None)),
+                    _cache_write_1h_tokens(usage),
+                    _int_or_none(getattr(usage, "cache_read_input_tokens", None)),
+                ]
+            request_fields = fields or {}
+            recorder(
+                LLMCallRecord(
+                    ts=datetime.now(UTC).isoformat(timespec="seconds"),
+                    purpose=purpose,
+                    model=self._config.model,
+                    outcome=outcome,
+                    error_type=type(error).__name__ if error is not None else None,
+                    response_id=None,
+                    stop_reason=stop_reason,
+                    input_tokens=tokens[0],
+                    output_tokens=tokens[1],
+                    cache_creation_input_tokens=tokens[2],
+                    cache_creation_1h_input_tokens=tokens[3],
+                    cache_read_input_tokens=tokens[4],
+                    diagnostics_state="off_config",
+                    previous_message_id=None,
+                    cache_miss_reason=None,
+                    cache_missed_input_tokens=None,
+                    diagnostics_raw=None,
+                    system_sha256=system_sha256,
+                    latency_ms=latency_ms,
+                    thinking=request_fields.get("thinking", {}).get("type"),
+                    effort=request_fields.get("output_config", {}).get("effort"),
+                )
+            )
+        except Exception:
+            logger.warning("llm-call recorder failed purpose=%s", purpose, exc_info=True)
+
+    async def _converse_with_retry(
+        self,
+        client: Any,
+        converse_input: Any,
+        *,
+        purpose: LLMPurpose,
+        system_sha256: str | None,
+        fields: dict[str, Any] | None,
+    ) -> str:
+        """Call client.converse with a per-attempt timeout and exponential-backoff retries.
+
+        Each attempt is bounded by ``config.timeout`` and, with a recorder
+        set, writes exactly one record: ``ok``, ``no_text`` (converse returned
+        but carried no text) or ``error`` (converse or the timeout raised).
+        """
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
+            start = time.monotonic()
             try:
-                response = await client.converse(converse_input)
-                items = response.output.value.content
-                result = "".join(
-                    v for v in (getattr(i, "value", None) for i in items) if isinstance(v, str)
+                response = await asyncio.wait_for(
+                    client.converse(converse_input), timeout=self._config.timeout
                 )
-                if not result:
-                    # Reasoning-only (or empty) output: treat as a failed call.
-                    raise ValueError("Bedrock response contained no text content")
-                self._available = True
-                return result
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
+                self._record(
+                    purpose=purpose,
+                    start=start,
+                    outcome="error",
+                    response=None,
+                    error=exc,
+                    system_sha256=system_sha256,
+                    fields=fields,
+                )
+                if not isinstance(exc, Exception):
+                    raise
                 last_exc = exc
-                if attempt < _MAX_RETRIES:
-                    delay = _RETRY_BASE_DELAY * (2**attempt)
-                    logger.warning(
-                        "Bedrock converse attempt %d/%d failed, retrying in %.1fs: %s",
-                        attempt + 1,
-                        _MAX_RETRIES + 1,
-                        delay,
-                        exc,
-                    )
-                    await asyncio.sleep(delay)
+            else:
+                try:
+                    result = _response_text(response)
+                except Exception as exc:
+                    result = ""
+                    last_exc = exc
+                else:
+                    if not result:
+                        # Reasoning-only (or empty) output: treat as a failed call.
+                        last_exc = ValueError("Bedrock response contained no text content")
+                self._record(
+                    purpose=purpose,
+                    start=start,
+                    outcome="ok" if result else "no_text",
+                    response=response,
+                    error=None,
+                    system_sha256=system_sha256,
+                    fields=fields,
+                )
+                if result:
+                    self._available = True
+                    return result
+            if attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY * (2**attempt)
+                logger.warning(
+                    "bedrock converse failed attempt=%d/%d purpose=%s model=%s "
+                    "error_type=%s retry_in=%.1fs: %s",
+                    attempt + 1,
+                    _MAX_RETRIES + 1,
+                    purpose,
+                    self._config.model,
+                    type(last_exc).__name__,
+                    delay,
+                    last_exc,
+                )
+                await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
     def _get_client(self) -> Any:

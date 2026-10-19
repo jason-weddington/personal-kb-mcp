@@ -1023,6 +1023,18 @@ def test_build_llm_bedrock_and_ollama_still_build() -> None:
     assert isinstance(_build_llm(ProviderRoleConfig(provider="ollama"), _recorder), OllamaLLMClient)
 
 
+def test_build_llm_bedrock_attaches_recorder() -> None:
+    from kb_core.config import ProviderRoleConfig
+    from kb_core.knowledge_base import _build_llm
+
+    recorded = _build_llm(ProviderRoleConfig(provider="bedrock"), _recorder)
+    plain = _build_llm(ProviderRoleConfig(provider="bedrock"))
+    assert recorded._recorder is _recorder  # type: ignore[union-attr]
+    assert plain._recorder is None  # type: ignore[union-attr]
+    assert recorded._system_cache_1h_purposes == frozenset()  # type: ignore[union-attr]
+    assert plain._system_cache_1h_purposes == frozenset()  # type: ignore[union-attr]
+
+
 async def test_create_sqlite_forwards_llm_recorder(tmp_path: Any) -> None:
     from kb_core.config import ProviderConfig, ProviderRoleConfig
 

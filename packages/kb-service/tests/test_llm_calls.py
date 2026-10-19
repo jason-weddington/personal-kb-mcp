@@ -332,3 +332,29 @@ def test_every_service_anthropic_client_has_a_recorder() -> None:
         if not any(kw.arg == "recorder" for kw in node.keywords)
     ]
     assert missing == []
+
+
+def _bedrock_calls() -> list[tuple[Path, ast.Call]]:
+    out: list[tuple[Path, ast.Call]] = []
+    for path in sorted(_SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (isinstance(func, ast.Name) and func.id == "BedrockLLMClient") or (
+                isinstance(func, ast.Attribute) and func.attr == "BedrockLLMClient"
+            ):
+                out.append((path, node))
+    return out
+
+
+def test_every_service_bedrock_client_has_a_recorder() -> None:
+    calls = _bedrock_calls()
+    assert calls, "expected BedrockLLMClient constructions in kb_service"
+    missing = [
+        f"{path.relative_to(_SRC)}:{node.lineno}"
+        for path, node in calls
+        if not any(kw.arg == "recorder" for kw in node.keywords)
+    ]
+    assert missing == []

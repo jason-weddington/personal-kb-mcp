@@ -39,7 +39,7 @@ personal-kb = "personal_kb.__main__:main"
 
 [project.optional-dependencies]
 aws = [
-    "aws-sdk-bedrock-runtime>=0.3.0",
+    "aws-sdk-bedrock-runtime>=0.4.0",  # 0.4.0: CachePointBlock.ttl, CacheTTL, TokenUsage.cache_details
     # Profile and default-chain credentials (KB_AWS_PROFILE, SSO, aws login, instance roles).
     "boto3>=1.28",
     # Control-char escaping fix upstreamed in smithy-lang/smithy-python#647
