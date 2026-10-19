@@ -68,9 +68,47 @@ def test_build_provider_config_synthesis_uses_sonnet_for_bedrock():
 
     from personal_kb.config import build_provider_config
 
-    with patch.dict("os.environ", {"KB_QUERY_PROVIDER": "bedrock"}):
+    with patch.dict(
+        "os.environ",
+        {
+            "KB_QUERY_PROVIDER": "bedrock",
+            "KB_BEDROCK_SYNTHESIS_MODEL": "",
+            "KB_SYNTHESIS_EFFORT": "",
+        },
+    ):
         cfg = build_provider_config()
-        assert cfg.synthesis.bedrock.model == BEDROCK_SONNET
+        assert cfg.synthesis.bedrock.model == BEDROCK_SONNET == "us.anthropic.claude-sonnet-5-5"
+        assert cfg.synthesis.bedrock.effort == "low"
+        assert cfg.synthesis.bedrock.thinking is None
+
+
+def test_build_provider_config_bedrock_mirrors_anthropic_settings(monkeypatch):
+    """Bedrock extraction/query get Haiku 5.5 with thinking disabled, like Anthropic."""
+    from personal_kb.config import build_provider_config
+
+    for var in ("KB_BEDROCK_MODEL", "KB_ANTHROPIC_THINKING", "KB_BEDROCK_SYNTHESIS_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("KB_EXTRACTION_PROVIDER", "bedrock")
+    monkeypatch.setenv("KB_QUERY_PROVIDER", "bedrock")
+    cfg = build_provider_config()
+    for role in (cfg.extraction, cfg.query):
+        assert role.bedrock.model == "us.anthropic.claude-haiku-5-5"
+        assert role.bedrock.thinking == "disabled"
+        assert role.bedrock.effort is None
+
+
+def test_build_provider_config_bedrock_synthesis_override(monkeypatch):
+    """KB_BEDROCK_SYNTHESIS_MODEL reaches only the Bedrock synthesis role."""
+    from personal_kb.config import build_provider_config
+
+    monkeypatch.setenv("KB_BEDROCK_SYNTHESIS_MODEL", " us.anthropic.claude-sonnet-4-6 ")
+    monkeypatch.setenv("KB_SYNTHESIS_EFFORT", "default")
+    monkeypatch.delenv("KB_BEDROCK_MODEL", raising=False)
+    cfg = build_provider_config()
+    assert cfg.synthesis.bedrock.model == "us.anthropic.claude-sonnet-4-6"
+    assert cfg.synthesis.bedrock.effort is None
+    assert cfg.query.bedrock.model == "us.anthropic.claude-haiku-5-5"
+    assert cfg.synthesis.anthropic.model == "claude-sonnet-5-5"
 
 
 def test_build_provider_config_ollama_provider():

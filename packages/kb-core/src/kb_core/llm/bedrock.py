@@ -151,7 +151,7 @@ def _configure_bearer_auth(config: Any, bearer_token: str) -> None:
     config.auth_scheme_resolver.resolve_auth_scheme = patched_resolve
 
 
-_SONNET_MODEL = "us.anthropic.claude-sonnet-4-6"
+_SONNET_MODEL = "us.anthropic.claude-sonnet-5-5"
 """Default Bedrock model identifier for the human-facing synthesis role."""
 
 _MAX_RETRIES = 3
@@ -167,6 +167,24 @@ class BedrockLLMClient:
         self._client: Any = None
         self._available: bool | None = None
         self._auth_method: str | None = None
+
+    def _additional_fields(self) -> Any:
+        """Return the Converse ``additionalModelRequestFields`` document, or None.
+
+        Mirrors the Anthropic client: ``thinking`` goes out as
+        ``thinking = {"type": mode}`` and ``effort`` as ``output_config.effort``.
+        Neither configured sends no field, which keeps the model's defaults.
+        """
+        fields: dict[str, Any] = {}
+        if self._config.thinking is not None:
+            fields["thinking"] = {"type": self._config.thinking}
+        if self._config.effort is not None:
+            fields["output_config"] = {"effort": self._config.effort}
+        if not fields:
+            return None
+        from smithy_core.documents import Document
+
+        return Document(fields)
 
     async def is_available(self) -> bool:
         """Check availability. Only caches success — retries on failure."""
@@ -217,6 +235,7 @@ class BedrockLLMClient:
                     ),
                 ],
                 inference_config=InferenceConfiguration(max_tokens=4096),
+                additional_model_request_fields=self._additional_fields(),
             )
             if system is not None:
                 converse_input.system = [SystemContentBlockText(value=system)]
@@ -259,6 +278,7 @@ class BedrockLLMClient:
                 model_id=self._config.model,
                 messages=br_messages,
                 inference_config=InferenceConfiguration(max_tokens=4096),
+                additional_model_request_fields=self._additional_fields(),
             )
             if system is not None:
                 converse_input.system = [SystemContentBlockText(value=system)]

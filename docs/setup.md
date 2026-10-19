@@ -129,7 +129,8 @@ export them in your shell. No config files required.
 | `KB_SYNTHESIS_MODEL` | `claude-sonnet-5-5` | Anthropic model for the synthesis role (cited answers, web chat and the listener vote) |
 | `KB_SYNTHESIS_EFFORT` | `low` | Reasoning effort for the synthesis role: `low`, `medium`, `high`, `xhigh`, `max`, or `default` (sends no effort field, the model's own default); anything else warns and falls back to `low` |
 | `KB_ANTHROPIC_TIMEOUT` | `30.0` | Anthropic API timeout in seconds |
-| `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock cross-region inference profile |
+| `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5` | Bedrock cross-region inference profile for extraction and query |
+| `KB_BEDROCK_SYNTHESIS_MODEL` | `us.anthropic.claude-sonnet-5-5` | Bedrock cross-region inference profile for synthesis |
 | `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock requests |
 | `KB_BEDROCK_TIMEOUT` | `60.0` | Bedrock request timeout in seconds |
 | `KB_AWS_PROFILE` | (unset) | AWS credentials profile for Bedrock. Falls back to `personal_kb_bedrock` profile if it exists, then default credential chain. |

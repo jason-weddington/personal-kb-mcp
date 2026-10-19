@@ -70,7 +70,7 @@ module-level dependency on the provider package)."""
 _DEFAULT_SYNTHESIS_EFFORT = "low"
 _ANTHROPIC_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 _ANTHROPIC_THINKING_MODES = frozenset({"disabled", "adaptive"})
-_DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-5-5"
 _DEFAULT_BEDROCK_REGION = "us-east-1"
 _DEFAULT_BEDROCK_TIMEOUT = 60.0
 _DEFAULT_OLLAMA_LLM_MODEL = "qwen3:4b"
@@ -255,6 +255,35 @@ class BedrockProviderConfig:
     ``EnvironmentCredentialsResolver`` reads them at use time. This flag only
     controls whether to wire that resolver into the Bedrock client config.
     """
+
+    effort: str | None = None
+    """Optional reasoning effort level, sent in the Converse request's
+    ``additionalModelRequestFields`` as ``output_config.effort``.
+
+    Same literals and validation as :attr:`AnthropicProviderConfig.effort`;
+    ``None`` sends no ``output_config`` field, which keeps the model's default.
+    """
+
+    thinking: str | None = None
+    """Optional thinking mode, sent in ``additionalModelRequestFields`` as
+    ``thinking = {"type": mode}``.
+
+    Same literals and validation as :attr:`AnthropicProviderConfig.thinking`;
+    ``None`` sends no ``thinking`` field. A non-Claude Bedrock model may reject
+    either field, so set both to ``None`` for one.
+    """
+
+    def __post_init__(self) -> None:
+        """Validate the optional effort and thinking fields."""
+        if self.effort is not None and self.effort not in _ANTHROPIC_EFFORTS:
+            raise ValueError(
+                f"effort must be one of {sorted(_ANTHROPIC_EFFORTS)}, got {self.effort!r}"
+            )
+        if self.thinking is not None and self.thinking not in _ANTHROPIC_THINKING_MODES:
+            raise ValueError(
+                f"thinking must be one of {sorted(_ANTHROPIC_THINKING_MODES)},"
+                f" got {self.thinking!r}"
+            )
 
 
 @dataclass(frozen=True)

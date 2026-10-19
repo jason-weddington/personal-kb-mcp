@@ -131,7 +131,7 @@ ollama pull qwen3:4b               # for LLM features (graph enrichment, query p
 }
 ```
 
-Uses the cross-region inference profile `us.anthropic.claude-haiku-4-5-20251001-v1:0` by default (override with `KB_BEDROCK_MODEL`).
+Uses the cross-region inference profiles `us.anthropic.claude-haiku-5-5` for extraction and query (thinking disabled; override with `KB_BEDROCK_MODEL`) and `us.anthropic.claude-sonnet-5-5` for synthesis (effort low; override with `KB_BEDROCK_SYNTHESIS_MODEL`). These are the same models and settings as the Anthropic provider. For a non-Claude Bedrock model, set `KB_ANTHROPIC_THINKING=default` and `KB_SYNTHESIS_EFFORT=default` so neither setting is sent.
 
 > **Legacy SigV4 auth** also works — set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` instead of `AWS_BEARER_TOKEN_BEDROCK`. Bearer token auth is preferred.
 
@@ -491,9 +491,10 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | `KB_OLLAMA_KEEP_ALIVE` | `30m` | Per-request Ollama `keep_alive` sent with every embed call, so only the embedding model stays warm in VRAM |
 | **Bedrock (AWS-managed Claude)** | | |
 | `AWS_BEARER_TOKEN_BEDROCK` | _(unset)_ | Bearer token for Bedrock auth (preferred method) |
-| `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model ID (cross-region inference profile) |
+| `KB_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5` | Bedrock model ID for extraction and query (cross-region inference profile) |
+| `KB_BEDROCK_SYNTHESIS_MODEL` | `us.anthropic.claude-sonnet-5-5` | Bedrock model ID for synthesis (cited answers, chat) |
 | `KB_BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
-| `KB_BEDROCK_TIMEOUT` | `30.0` | Request timeout in seconds |
+| `KB_BEDROCK_TIMEOUT` | `60.0` | Request timeout in seconds |
 | **Aurora/RDS IAM auth** | | |
 | `KB_PG_IAM_AUTH` | _(unset)_ | Set `TRUE` for RDS/Aurora IAM authentication |
 | `KB_PG_REGION` | `us-east-1` | AWS region for RDS IAM token signing |

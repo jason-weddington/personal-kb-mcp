@@ -18,10 +18,12 @@ needs_sdk = pytest.mark.skipif(not _has_sdk, reason="aws-sdk-bedrock-runtime not
 
 def _client(
     *,
-    model: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    model: str = "us.anthropic.claude-haiku-5-5",
     profile: str | None = None,
     bearer_token: str | None = None,
     has_env_credentials: bool = False,
+    thinking: str | None = None,
+    effort: str | None = None,
 ) -> BedrockLLMClient:
     """Helper: build a client with an explicit BedrockProviderConfig."""
     return BedrockLLMClient(
@@ -30,6 +32,8 @@ def _client(
             profile=profile,
             bearer_token=bearer_token,
             has_env_credentials=has_env_credentials,
+            thinking=thinking,
+            effort=effort,
         )
     )
 
@@ -221,7 +225,85 @@ def test_model_override():
 def test_model_default():
     """Default config carries the default Bedrock model id."""
     llm = BedrockLLMClient(BedrockProviderConfig())
-    assert llm._config.model == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert llm._config.model == "us.anthropic.claude-haiku-5-5"
+
+
+def test_sonnet_model_is_sonnet_5_5_profile():
+    """The Bedrock synthesis default is the Sonnet 5.5 US inference profile."""
+    from kb_core.llm.bedrock import _SONNET_MODEL
+
+    assert _SONNET_MODEL == "us.anthropic.claude-sonnet-5-5"
+
+
+def _sent_fields(mock_client):
+    fields = mock_client.converse.call_args[0][0].additional_model_request_fields
+    return None if fields is None else fields.as_value()
+
+
+@needs_sdk
+@pytest.mark.asyncio
+async def test_generate_sends_no_additional_fields_by_default(mock_bedrock_client):
+    """No thinking and no effort configured: the request keeps model defaults."""
+    await _client().generate("p", purpose="planner")
+    assert _sent_fields(mock_bedrock_client) is None
+
+
+@needs_sdk
+@pytest.mark.asyncio
+async def test_generate_sends_thinking_disabled(mock_bedrock_client):
+    """thinking="disabled" goes out as additionalModelRequestFields.thinking."""
+    await _client(thinking="disabled").generate("p", purpose="planner")
+    assert _sent_fields(mock_bedrock_client) == {"thinking": {"type": "disabled"}}
+
+
+@needs_sdk
+@pytest.mark.asyncio
+async def test_generate_chat_sends_effort(mock_bedrock_client):
+    """effort="low" goes out as additionalModelRequestFields.output_config.effort."""
+    llm = _client(model="us.anthropic.claude-sonnet-5-5", effort="low")
+    await llm.generate_chat([{"role": "user", "content": "hi"}], purpose="chat")
+    assert _sent_fields(mock_bedrock_client) == {"output_config": {"effort": "low"}}
+
+
+@needs_sdk
+@pytest.mark.asyncio
+async def test_generate_sends_both_fields(mock_bedrock_client):
+    """Both configured: one document carrying both keys."""
+    await _client(thinking="adaptive", effort="medium").generate("p", purpose="planner")
+    assert _sent_fields(mock_bedrock_client) == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "medium"},
+    }
+
+
+@needs_sdk
+def test_additional_fields_serialize_on_the_wire():
+    """The SDK's JSON codec renders the document as additionalModelRequestFields."""
+    from aws_sdk_bedrock_runtime.models import (
+        ContentBlockText,
+        ConverseInput,
+        InferenceConfiguration,
+        Message,
+    )
+    from smithy_json import JSONCodec
+
+    llm = _client(thinking="disabled")
+    ci = ConverseInput(
+        model_id="m",
+        messages=[Message(role="user", content=[ContentBlockText(value="hi")])],
+        inference_config=InferenceConfiguration(max_tokens=10),
+        additional_model_request_fields=llm._additional_fields(),
+    )
+    assert b'"additionalModelRequestFields":{"thinking":{"type":"disabled"}}' in (
+        JSONCodec().serialize(ci)
+    )
+
+
+@pytest.mark.parametrize(("field", "value"), [("thinking", "enabled"), ("effort", "extreme")])
+def test_invalid_thinking_or_effort_rejected(field, value):
+    """The Bedrock config validates thinking/effort like the Anthropic one."""
+    with pytest.raises(ValueError, match=field):
+        BedrockProviderConfig(**{field: value})
 
 
 @pytest.mark.asyncio

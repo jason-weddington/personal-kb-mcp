@@ -17,6 +17,8 @@ from kb_service.config import (
     build_provider_config,
     get_anthropic_model,
     get_anthropic_thinking,
+    get_bedrock_model,
+    get_bedrock_synthesis_model,
     get_synthesis_effort,
     get_synthesis_model,
 )
@@ -32,6 +34,8 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KB_ANTHROPIC_THINKING", raising=False)
     monkeypatch.delenv("KB_SYNTHESIS_MODEL", raising=False)
     monkeypatch.delenv("KB_SYNTHESIS_EFFORT", raising=False)
+    monkeypatch.delenv("KB_BEDROCK_MODEL", raising=False)
+    monkeypatch.delenv("KB_BEDROCK_SYNTHESIS_MODEL", raising=False)
 
 
 # --- getters --------------------------------------------------------------------
@@ -279,3 +283,49 @@ def test_build_provider_config_logs_llm_roles(
         f"synthesis_model={_SONNET} synthesis_thinking=None synthesis_effort=low"
     )
     assert shape in caplog.text
+
+
+# --- Bedrock parity -----------------------------------------------------------
+
+
+def test_bedrock_model_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bedrock defaults are the 5.5 US inference profiles, as on the Anthropic path."""
+    _clear_env(monkeypatch)
+    assert get_bedrock_model() == "us.anthropic.claude-haiku-5-5"
+    assert get_bedrock_synthesis_model() == "us.anthropic.claude-sonnet-5-5"
+
+
+def test_bedrock_synthesis_model_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KB_BEDROCK_SYNTHESIS_MODEL", " us.anthropic.claude-sonnet-4-6 ")
+    assert get_bedrock_synthesis_model() == "us.anthropic.claude-sonnet-4-6"
+
+
+def test_build_provider_config_bedrock_mirrors_anthropic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bedrock roles get the same thinking and effort settings as Anthropic."""
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("KB_EXTRACTION_PROVIDER", "bedrock")
+    monkeypatch.setenv("KB_QUERY_PROVIDER", "bedrock")
+    cfg = build_provider_config()
+    for role in (cfg.extraction, cfg.query):
+        assert role.provider == "bedrock"
+        assert role.bedrock.model == "us.anthropic.claude-haiku-5-5"
+        assert role.bedrock.thinking == "disabled"
+        assert role.bedrock.effort is None
+    assert cfg.synthesis.provider == "bedrock"
+    assert cfg.synthesis.bedrock.model == "us.anthropic.claude-sonnet-5-5"
+    assert cfg.synthesis.bedrock.effort == "low"
+    assert cfg.synthesis.bedrock.thinking is None
+
+
+def test_build_provider_config_bedrock_default_sentinels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default sentinels send neither field, e.g. for a non-Claude model."""
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("KB_ANTHROPIC_THINKING", "default")
+    monkeypatch.setenv("KB_SYNTHESIS_EFFORT", "default")
+    cfg = build_provider_config()
+    assert cfg.query.bedrock.thinking is None
+    assert cfg.synthesis.bedrock.effort is None

@@ -209,9 +209,23 @@ def get_query_provider() -> str:
 
 def get_bedrock_model() -> str:
     """Return the Bedrock model ID from KB_BEDROCK_MODEL."""
-    return os.environ.get(
-        "KB_BEDROCK_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-    )
+    return os.environ.get("KB_BEDROCK_MODEL", "us.anthropic.claude-haiku-5-5")
+
+
+def get_bedrock_synthesis_model() -> str:
+    """Return the synthesis-role Bedrock model from KB_BEDROCK_SYNTHESIS_MODEL.
+
+    Unset or empty means the kb-core Bedrock ``_SONNET_MODEL`` default
+    (``us.anthropic.claude-sonnet-5-5``); any other non-empty value is used
+    verbatim (whitespace stripped, no validation). Applies only to the
+    synthesis role on Bedrock.
+    """
+    raw = os.environ.get("KB_BEDROCK_SYNTHESIS_MODEL", "").strip()
+    if raw:
+        return raw
+    from kb_core.llm.bedrock import _SONNET_MODEL
+
+    return _SONNET_MODEL
 
 
 def get_bedrock_region() -> str:
@@ -442,7 +456,9 @@ def build_anthropic_config(
     )
 
 
-def build_bedrock_config(*, model: str | None = None) -> "BedrockProviderConfig":
+def build_bedrock_config(
+    *, model: str | None = None, thinking: str | None = None, effort: str | None = None
+) -> "BedrockProviderConfig":
     """Snapshot env-driven Bedrock config into the explicit dataclass."""
     from kb_core.config import BedrockProviderConfig
 
@@ -453,6 +469,8 @@ def build_bedrock_config(*, model: str | None = None) -> "BedrockProviderConfig"
         profile=get_aws_profile(),
         bearer_token=os.environ.get("AWS_BEARER_TOKEN_BEDROCK"),
         has_env_credentials=bool(os.environ.get("AWS_ACCESS_KEY_ID")),
+        thinking=thinking,
+        effort=effort,
     )
 
 
@@ -478,19 +496,23 @@ def build_provider_config() -> "ProviderConfig":
     thinking mode from ``KB_ANTHROPIC_THINKING`` (disabled by default).
     """
     from kb_core.config import ProviderConfig, ProviderRoleConfig
-    from kb_core.llm.bedrock import _SONNET_MODEL as _BEDROCK_SONNET
 
     extraction_provider = get_extraction_provider()
     query_provider = get_query_provider()
 
-    anthropic = build_anthropic_config(thinking=get_anthropic_thinking())
-    bedrock = build_bedrock_config()
+    # One read so an invalid value warns once per build. The same mode reaches
+    # Claude on Bedrock: same models, same measured setting.
+    thinking = get_anthropic_thinking()
+    anthropic = build_anthropic_config(thinking=thinking)
+    bedrock = build_bedrock_config(thinking=thinking)
     ollama = build_ollama_provider_config()
 
     synthesis_anthropic = build_anthropic_config(
         model=get_synthesis_model(), effort=get_synthesis_effort()
     )
-    synthesis_bedrock = build_bedrock_config(model=_BEDROCK_SONNET)
+    synthesis_bedrock = build_bedrock_config(
+        model=get_bedrock_synthesis_model(), effort=get_synthesis_effort()
+    )
 
     extraction_role = ProviderRoleConfig(
         provider=extraction_provider,  # type: ignore[arg-type]
@@ -514,7 +536,8 @@ def build_provider_config() -> "ProviderConfig":
     logger.info(
         "llm roles extraction_model=%s extraction_thinking=%s query_model=%s"
         " query_thinking=%s synthesis_model=%s synthesis_thinking=%s"
-        " synthesis_effort=%s",
+        " synthesis_effort=%s extraction_provider=%s query_provider=%s"
+        " bedrock_model=%s bedrock_synthesis_model=%s",
         anthropic.model,
         anthropic.thinking,
         anthropic.model,
@@ -522,6 +545,10 @@ def build_provider_config() -> "ProviderConfig":
         synthesis_anthropic.model,
         synthesis_anthropic.thinking,
         synthesis_anthropic.effort,
+        extraction_provider,
+        query_provider,
+        bedrock.model,
+        synthesis_bedrock.model,
     )
     return ProviderConfig(
         extraction=extraction_role,
