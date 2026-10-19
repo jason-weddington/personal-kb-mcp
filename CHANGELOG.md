@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.20.0 (2026-10-19)
+
+### Features
+
+- **surprise**: Surprise capture runs on the Bedrock provider, and every Bedrock call is recorded in
+  llm_calls with a cached system prompt
+  ([`ebf090c`](https://github.com/jason-weddington/personal-kb-mcp/commit/ebf090c0da8211d50f3d8baa7dd74f13a9c9c047))
+
+
 ## v1.19.2 (2026-10-19)
 
 ### Bug Fixes
