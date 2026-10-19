@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.19.1 (2026-10-19)
+
+### Bug Fixes
+
+- **client**: A loopback URL with a real API key is a hosted KB, so the MCP server never spawns,
+  replaces or stops it
+  ([`eae37cd`](https://github.com/jason-weddington/personal-kb-mcp/commit/eae37cd32d65143d3381a60a8942fe9ec5186a12))
+
+
 ## v1.19.0 (2026-10-15)
 
 ### Features
