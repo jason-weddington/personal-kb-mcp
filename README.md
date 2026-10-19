@@ -133,7 +133,7 @@ ollama pull qwen3:4b               # for LLM features (graph enrichment, query p
 
 Uses the cross-region inference profiles `us.anthropic.claude-haiku-5-5` for extraction and query (thinking disabled; override with `KB_BEDROCK_MODEL`) and `us.anthropic.claude-sonnet-5-5` for synthesis (effort low; override with `KB_BEDROCK_SYNTHESIS_MODEL`). These are the same models and settings as the Anthropic provider. For a non-Claude Bedrock model, set `KB_ANTHROPIC_THINKING=default` and `KB_SYNTHESIS_EFFORT=default` so neither setting is sent.
 
-> **Legacy SigV4 auth** also works — set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` instead of `AWS_BEARER_TOKEN_BEDROCK`. Bearer token auth is preferred.
+> **Legacy SigV4 auth** also works — set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` instead of `AWS_BEARER_TOKEN_BEDROCK`, or set `KB_AWS_PROFILE` to a named profile. With none of these, boto3's default credential chain is used (SSO or `aws login` sessions, instance and container roles), and temporary credentials are refreshed as they expire. Bearer token auth is preferred.
 
 ### Ollama setup (if using embeddings or local LLM)
 

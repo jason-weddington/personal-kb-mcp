@@ -419,6 +419,105 @@ async def test_profile_fallback_when_boto3_missing():
         assert _find_aws_profile(None) is None
 
 
+def _frozen(access_key: str) -> MagicMock:
+    frozen = MagicMock()
+    frozen.access_key = access_key
+    frozen.secret_key = "test-secret"  # noqa: S105
+    frozen.token = "tok"  # noqa: S105
+    return frozen
+
+
+def _boto3_with(credentials_by_profile: dict[str | None, MagicMock | None]) -> MagicMock:
+    """A fake boto3 whose Session(profile_name=p).get_credentials() is the given value.
+
+    No profile is named ``personal_kb_bedrock``, so convention detection never fires.
+    """
+    mock_boto3 = MagicMock()
+
+    def _session(profile_name: str | None = None) -> MagicMock:
+        session = MagicMock()
+        session.available_profiles = ["default"]
+        session.get_credentials.return_value = credentials_by_profile.get(profile_name)
+        return session
+
+    mock_boto3.Session.side_effect = _session
+    return mock_boto3
+
+
+def _creds(*frozen: MagicMock) -> MagicMock:
+    creds = MagicMock()
+    creds.get_frozen_credentials.side_effect = list(frozen)
+    return creds
+
+
+@needs_sdk
+def test_default_chain_used_when_nothing_else_is_configured():
+    """With no profile, bearer token or env keys, boto3's default chain signs."""
+    mock_boto3 = _boto3_with({None: _creds(_frozen("AKIA_DEFAULT"))})
+    with patch.dict("sys.modules", {"boto3": mock_boto3}):
+        llm = _client()
+        assert llm._get_client() is not None
+    assert llm._auth_method == "default-chain"
+
+
+@needs_sdk
+def test_named_profile_without_credentials_never_uses_default_chain():
+    """An unresolvable KB_AWS_PROFILE must not fall through to another account."""
+    mock_boto3 = _boto3_with({"work": None, None: _creds(_frozen("AKIA_DEFAULT"))})
+    with patch.dict("sys.modules", {"boto3": mock_boto3}):
+        llm = _client(profile="work")
+        llm._get_client()
+    assert llm._auth_method is None
+
+
+@needs_sdk
+def test_env_credentials_used_when_boto3_missing():
+    with patch.dict("sys.modules", {"boto3": None}):
+        llm = _client(has_env_credentials=True)
+        llm._get_client()
+    assert llm._auth_method == "env"
+
+
+@needs_sdk
+@pytest.mark.asyncio
+async def test_no_credentials_anywhere_is_unavailable():
+    mock_boto3 = _boto3_with({None: None})
+    with patch.dict("sys.modules", {"boto3": mock_boto3}):
+        llm = _client()
+        assert await llm.is_available() is False
+    assert llm._auth_method is None
+
+
+@needs_sdk
+@pytest.mark.asyncio
+async def test_profile_credentials_are_refetched_on_every_request():
+    """Temporary credentials that refresh must reach the signer, not a startup snapshot."""
+    creds = _creds(_frozen("AKIA_FIRST"), _frozen("AKIA_REFRESHED"))
+    mock_boto3 = _boto3_with({"work": creds})
+    with patch.dict("sys.modules", {"boto3": mock_boto3}):
+        llm = _client(profile="work")
+        client = llm._get_client()
+    resolver = client._config.aws_credentials_identity_resolver
+    first = await resolver.get_identity(properties={})
+    second = await resolver.get_identity(properties={})
+    assert llm._auth_method == "profile:work"
+    assert first.access_key_id == "AKIA_FIRST"
+    assert first.session_token == "tok"  # noqa: S105
+    assert second.access_key_id == "AKIA_REFRESHED"
+
+
+@needs_sdk
+@pytest.mark.asyncio
+async def test_resolver_raises_when_credentials_stop_resolving():
+    from kb_core.llm.bedrock import _session_credentials_resolver
+    from smithy_core.exceptions import SmithyIdentityError
+
+    session = MagicMock()
+    session.get_credentials.return_value = None
+    with pytest.raises(SmithyIdentityError):
+        await _session_credentials_resolver(session).get_identity(properties={})
+
+
 def _converse_response(*values):
     """Build a converse response; non-str values mimic reasoning-content unions."""
     items = []

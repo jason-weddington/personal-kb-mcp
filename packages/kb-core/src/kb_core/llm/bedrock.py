@@ -4,8 +4,9 @@ Channel-agnostic: takes an :class:`~kb_core.config.BedrockProviderConfig`
 at construction time. No ``os.environ`` reads inside this module — the
 channel snapshots ``AWS_BEARER_TOKEN_BEDROCK`` and the presence of
 ``AWS_ACCESS_KEY_ID`` into the config. The smithy ``Environment-
-CredentialsResolver`` may still read AWS env vars at use time; that
-read happens inside smithy_aws_core, not in kb_core.
+CredentialsResolver`` and boto3's default credential chain may still read
+AWS env vars at use time; those reads happen inside smithy_aws_core and
+boto3, not in kb_core.
 """
 
 from __future__ import annotations
@@ -25,35 +26,63 @@ _CONVENTION_PROFILE = "personal_kb_bedrock"
 """Auto-detected AWS profile name when ``config.profile`` is unset."""
 
 
-def _resolve_profile_credentials(profile_name: str) -> dict[str, str] | None:
-    """Resolve AWS credentials from a named profile via boto3.
+def _credentialed_session(profile_name: str | None) -> Any | None:
+    """Return a boto3 Session whose credentials resolve now, or None.
 
-    Returns a dict with ``access_key``, ``secret_key``, and optionally
-    ``token``, or ``None`` if the profile doesn't exist or credentials
-    can't be resolved.
+    ``profile_name=None`` means boto3's default credential chain: environment
+    variables, the shared config (including SSO and ``aws login`` sessions),
+    then container and instance roles. Returns None when boto3 is missing,
+    the profile doesn't exist, or no credentials resolve.
     """
     try:
         import boto3
     except ImportError:
-        logger.debug("boto3 not installed — cannot resolve profile '%s'", profile_name)
+        logger.debug("boto3 not installed — cannot resolve AWS credentials")
         return None
 
     try:
         session = boto3.Session(profile_name=profile_name)
-        creds = session.get_credentials()
-        if creds is None:
+        if session.get_credentials() is None:
             return None
-        frozen = creds.get_frozen_credentials()
-        result: dict[str, str] = {
-            "access_key": frozen.access_key,
-            "secret_key": frozen.secret_key,
-        }
-        if frozen.token:
-            result["token"] = frozen.token
-        return result
+        return session
     except Exception:
-        logger.debug("Failed to resolve credentials for profile '%s'", profile_name, exc_info=True)
+        logger.debug("Failed to resolve AWS credentials (profile %r)", profile_name, exc_info=True)
         return None
+
+
+def _frozen_credentials(session: Any) -> Any | None:
+    """Return the session's current credentials, refreshing them if they are near expiry."""
+    creds = session.get_credentials()
+    return None if creds is None else creds.get_frozen_credentials()
+
+
+def _session_credentials_resolver(session: Any) -> Any:
+    """Return a smithy credentials resolver that asks *session* on every request.
+
+    boto3 refreshes temporary credentials (SSO, ``aws login``, assumed and
+    instance roles) as they near expiry, so a long-running service keeps
+    signing with live keys. A snapshot taken when the client was created
+    would start failing the moment the session behind it expired.
+    """
+    from smithy_aws_core.identity.components import AWSCredentialsIdentity
+    from smithy_core.exceptions import SmithyIdentityError
+
+    # The session is held in this closure, not on the instance: the generated
+    # client deep-copies its config on every call, and a deep-copied session
+    # would lose the credentials it has already refreshed.
+    class _SessionCredentialsResolver:
+        async def get_identity(self, *, properties: Any) -> AWSCredentialsIdentity:
+            # A refresh can make a network call; keep it off the event loop.
+            frozen = await asyncio.to_thread(_frozen_credentials, session)
+            if frozen is None:
+                raise SmithyIdentityError("AWS credentials no longer resolve")
+            return AWSCredentialsIdentity(
+                access_key_id=frozen.access_key,
+                secret_access_key=frozen.secret_key,
+                session_token=frozen.token,
+            )
+
+    return _SessionCredentialsResolver()
 
 
 def _find_aws_profile(explicit_profile: str | None) -> str | None:
@@ -197,7 +226,8 @@ class BedrockLLMClient:
             if self._auth_method is None:
                 logger.warning(
                     "No AWS credentials found (checked profile, "
-                    "personal_kb_bedrock profile, bearer token, env credentials)"
+                    "personal_kb_bedrock profile, bearer token, env credentials, "
+                    "default credential chain)"
                     " — Bedrock LLM disabled",
                 )
                 return False
@@ -327,20 +357,20 @@ class BedrockLLMClient:
 
                 config = Config(region=self._config.region)
 
-                # Wire up auth — priority: profile > bearer token > env vars
+                # Wire up auth — priority: profile > bearer token > env vars >
+                # default chain. A named profile that doesn't resolve never
+                # falls through to the default chain, which may be another account.
                 profile = _find_aws_profile(self._config.profile)
                 if profile:
-                    creds = _resolve_profile_credentials(profile)
-                    if creds:
-                        from smithy_aws_core.identity.static import StaticCredentialsResolver
-
-                        config.aws_access_key_id = creds["access_key"]
-                        config.aws_secret_access_key = creds["secret_key"]
-                        if "token" in creds:
-                            config.aws_session_token = creds["token"]
-                        config.aws_credentials_identity_resolver = StaticCredentialsResolver()  # type: ignore[no-untyped-call]
+                    session = _credentialed_session(profile)
+                    if session is not None:
+                        config.aws_credentials_identity_resolver = _session_credentials_resolver(
+                            session
+                        )
                         self._auth_method = f"profile:{profile}"
                         logger.info("Bedrock: using SigV4 auth (profile '%s')", profile)
+                    else:
+                        logger.warning("Bedrock: AWS profile '%s' has no credentials", profile)
                 if self._auth_method is None and self._config.bearer_token:
                     _configure_bearer_auth(config, self._config.bearer_token)
                     self._auth_method = "bearer"
@@ -351,6 +381,14 @@ class BedrockLLMClient:
                     config.aws_credentials_identity_resolver = EnvironmentCredentialsResolver()  # type: ignore[no-untyped-call]
                     self._auth_method = "env"
                     logger.info("Bedrock: using SigV4 auth (env vars)")
+                elif self._auth_method is None and not profile:
+                    session = _credentialed_session(None)
+                    if session is not None:
+                        config.aws_credentials_identity_resolver = _session_credentials_resolver(
+                            session
+                        )
+                        self._auth_method = "default-chain"
+                        logger.info("Bedrock: using SigV4 auth (default credential chain)")
 
                 self._client = BedrockRuntimeClient(config)
             except ImportError:

@@ -40,6 +40,8 @@ personal-kb = "personal_kb.__main__:main"
 [project.optional-dependencies]
 aws = [
     "aws-sdk-bedrock-runtime>=0.3.0",
+    # Profile and default-chain credentials (KB_AWS_PROFILE, SSO, aws login, instance roles).
+    "boto3>=1.28",
     # Control-char escaping fix upstreamed in smithy-lang/smithy-python#647
     # (merged 2026-03-13), released in smithy-json 0.2.2 (2026-04-07). The
     # >=0.2.2 floor guarantees the fix; no fork/git pin needed.

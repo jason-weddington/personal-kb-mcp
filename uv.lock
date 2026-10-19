@@ -1214,6 +1214,7 @@ anthropic = [
 ]
 aws = [
     { name = "aws-sdk-bedrock-runtime" },
+    { name = "boto3" },
     { name = "smithy-json" },
 ]
 iam = [
@@ -1237,6 +1238,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
     { name = "aws-sdk-bedrock-runtime", marker = "extra == 'aws'", specifier = ">=0.3.0" },
+    { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.28" },
     { name = "boto3", marker = "extra == 'iam'", specifier = ">=1.28" },
     { name = "detect-secrets", marker = "extra == 'safety'", specifier = ">=1.4" },
     { name = "httpx", specifier = ">=0.28" },
@@ -1684,6 +1686,7 @@ dependencies = [
 [package.optional-dependencies]
 aws = [
     { name = "aws-sdk-bedrock-runtime" },
+    { name = "boto3" },
     { name = "smithy-json" },
 ]
 iam = [
@@ -1717,6 +1720,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
     { name = "aws-sdk-bedrock-runtime", marker = "extra == 'aws'", specifier = ">=0.3.0" },
+    { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.28" },
     { name = "boto3", marker = "extra == 'iam'", specifier = ">=1.28" },
     { name = "detect-secrets", specifier = ">=1.4" },
     { name = "fastmcp", specifier = ">=2.0" },

@@ -60,6 +60,8 @@ iam = [
 # >=0.2.2 floor guarantees the fix; no fork/git pin needed.
 aws = [
     "aws-sdk-bedrock-runtime>=0.3.0",
+    # Profile and default-chain credentials (KB_AWS_PROFILE, SSO, aws login, instance roles).
+    "boto3>=1.28",
     "smithy-json>=0.2.2",
 ]
 # Anthropic provider for LLM calls

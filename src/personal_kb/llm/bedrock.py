@@ -10,7 +10,6 @@ from kb_core.llm.bedrock import (
     BedrockLLMClient,
     _configure_bearer_auth,
     _find_aws_profile,
-    _resolve_profile_credentials,
 )
 
 __all__ = [
@@ -19,5 +18,4 @@ __all__ = [
     "BedrockLLMClient",
     "_configure_bearer_auth",
     "_find_aws_profile",
-    "_resolve_profile_credentials",
 ]
