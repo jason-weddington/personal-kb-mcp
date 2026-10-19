@@ -47,11 +47,15 @@ def compare_versions(client: str | None, server: object) -> str | None:
     )
 
 
-async def check_version_skew(base_url: str) -> str | None:
-    """Return a skew message for a non-loopback *base_url*, logging a WARNING."""
-    from personal_kb.daemon import _fetch_health, is_loopback_url
+async def check_version_skew(base_url: str, *, api_key: str) -> str | None:
+    """Return a skew message for any KB but the local daemon, logging a WARNING.
 
-    if is_loopback_url(base_url):
+    The local daemon (loopback + sentinel key) is skipped: the install-id
+    handshake already guarantees it runs this client's install.
+    """
+    from personal_kb.daemon import _fetch_health, manages_local_daemon
+
+    if manages_local_daemon(base_url, api_key):
         return None
     body = await _fetch_health(base_url)
     server = body.get("version") if body else None

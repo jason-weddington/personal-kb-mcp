@@ -61,7 +61,7 @@ talks to it over loopback. Two things are required for that flow to work:
 
 The `kb-service` console script ships with `personal-kb` (the `[local]` extra is kept for compatibility), so a plain `uvx` install has everything it needs.
 
-**No configuration is needed for a local KB.** When `PERSONAL_KB_URL` is unset (or empty) the MCP server uses `http://127.0.0.1:8765`, sends the fixed non-secret API key `local-no-auth` (the spawned daemon runs with `KB_AUTH_MODE=none` and ignores it), and spawns the daemon on first use. The personal-kb-hook applies the same defaults but never spawns the daemon: if nothing is listening it stays silent. Set `PERSONAL_KB_URL` only to point at a hosted KB, and then `PERSONAL_KB_API_KEY` is required (a remote URL without a key is a startup error, never the sentinel). An explicit loopback URL on another port spawns the daemon on that port.
+**No configuration is needed for a local KB.** When `PERSONAL_KB_URL` is unset (or empty) the MCP server uses `http://127.0.0.1:8765`, sends the fixed non-secret API key `local-no-auth` (the spawned daemon runs with `KB_AUTH_MODE=none` and ignores it), and spawns the daemon on first use. The personal-kb-hook applies the same defaults but never spawns the daemon: if nothing is listening it stays silent. Set `PERSONAL_KB_URL` only to point at a hosted KB, and then `PERSONAL_KB_API_KEY` is required (a remote URL without a key is a startup error, never the sentinel). An explicit loopback URL on another port spawns the daemon on that port. A loopback URL with a real `PERSONAL_KB_API_KEY` counts as a hosted KB (a kb-service running on the same machine, or one reached through an SSH tunnel), so the MCP server connects to it and never spawns, replaces or stops it.
 
 ### With Anthropic (simplest)
 
@@ -456,7 +456,7 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | Variable | Default | Description |
 |---|---|---|
 | **Thin client (always set)** | | |
-| `PERSONAL_KB_URL` | `http://127.0.0.1:8765` | `kb-service` URL. Unset or empty means local mode (the MCP server auto-spawns a daemon on this port). Set it only for a hosted KB. |
+| `PERSONAL_KB_URL` | `http://127.0.0.1:8765` | `kb-service` URL. Unset or empty means local mode (the MCP server auto-spawns a daemon on this port). Set it only for a hosted KB. A loopback URL with a real `PERSONAL_KB_API_KEY` is a hosted KB too (co-located or SSH-tunnelled) and is never spawned or stopped. |
 | `PERSONAL_KB_API_KEY` | `local-no-auth` for loopback URLs; required otherwise | Bearer token for `kb-service`. Defaults to the sentinel only when the URL is loopback (the daemon ignores it). Remote mode: a per-machine API key minted from the service's Settings → API Keys pane. |
 | **Core** | | |
 | `KB_DATABASE_URL` | _(unset)_ | PostgreSQL URL — passed through to `kb-service` (the MCP server itself never opens a DB) |

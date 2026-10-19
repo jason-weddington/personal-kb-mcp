@@ -85,6 +85,22 @@ def test_loopback_url_detection(url: str, expected: bool) -> None:
     assert daemon.is_loopback_url(url) is expected
 
 
+@pytest.mark.parametrize(
+    ("url", "key", "expected"),
+    [
+        ("http://127.0.0.1:8765", "local-no-auth", True),
+        ("http://localhost:9000", "local-no-auth", True),
+        # A real key on loopback is a hosted KB (co-located or SSH-tunnelled).
+        ("http://127.0.0.1:8765", "kb_live_abc", False),
+        ("http://localhost:8765", "", False),
+        ("https://kb.example.com", "local-no-auth", False),
+    ],
+)
+def test_manages_local_daemon(url: str, key: str, expected: bool) -> None:
+    """Only loopback + the sentinel key is the client-owned local daemon."""
+    assert daemon.manages_local_daemon(url, key) is expected
+
+
 def test_parse_port_from_url() -> None:
     """``parse_port`` extracts the integer port from a URL."""
     assert daemon.parse_port("http://127.0.0.1:8765") == 8765
@@ -353,6 +369,7 @@ async def test_lifespan_opens_http_backend_over_loopback(
     Mocks ``ensure_daemon`` so we don't need a real subprocess.
     """
     monkeypatch.setenv("PERSONAL_KB_URL", "http://127.0.0.1:8765")
+    monkeypatch.delenv("PERSONAL_KB_API_KEY", raising=False)
 
     ensure_mock = AsyncMock(return_value=None)
     monkeypatch.setattr("personal_kb.daemon.ensure_daemon", ensure_mock)
@@ -387,6 +404,26 @@ async def test_lifespan_remote_url_skips_ensure_daemon(
     async with lifespan(mcp) as ctx:
         ensure_mock.assert_not_called()
         assert isinstance(ctx["backend"], HttpBackend)
+
+
+async def test_lifespan_hosted_kb_on_loopback_skips_ensure_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loopback URL with a real key is a hosted KB: never spawn, replace or stop it."""
+    monkeypatch.setenv("PERSONAL_KB_URL", "http://127.0.0.1:8765")
+    monkeypatch.setenv("PERSONAL_KB_API_KEY", "kb_live_abc")
+
+    ensure_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr("personal_kb.daemon.ensure_daemon", ensure_mock)
+    monkeypatch.setattr("personal_kb.backend.http.HttpBackend.open", AsyncMock())
+    monkeypatch.setattr("personal_kb.version_skew.check_version_skew", AsyncMock(return_value=None))
+
+    from personal_kb.server import lifespan
+
+    mcp = FastMCP("test-hosted-loopback", lifespan=lifespan)
+    async with lifespan(mcp) as ctx:
+        ensure_mock.assert_not_called()
+        assert ctx["backend"]._api_key == "kb_live_abc"
 
 
 async def test_lifespan_unset_url_uses_local_default(monkeypatch: pytest.MonkeyPatch) -> None:

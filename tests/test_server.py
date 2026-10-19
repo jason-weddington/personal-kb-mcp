@@ -397,10 +397,22 @@ def test_build_instructions_mentions_resolution_hint():
 # --- stdio deprecation note (MCP over HTTP overlap) --------------------------
 
 
-def test_stdio_deprecation_note_silent_for_loopback():
+def test_stdio_deprecation_note_silent_for_local_daemon():
+    from personal_kb.config import LOCAL_KB_API_KEY
     from personal_kb.server import stdio_deprecation_note
 
-    assert stdio_deprecation_note("http://127.0.0.1:8765") is None
+    assert stdio_deprecation_note("http://127.0.0.1:8765", api_key=LOCAL_KB_API_KEY) is None
+
+
+def test_stdio_deprecation_note_for_hosted_kb_on_loopback(monkeypatch):
+    """A real key on a loopback URL is a hosted KB (co-located or SSH-tunnelled)."""
+    from personal_kb.server import stdio_deprecation_note
+
+    monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
+    note = stdio_deprecation_note("http://127.0.0.1:8765", api_key="secret-k")
+    assert note is not None
+    assert "http://127.0.0.1:8765/mcp" in note
+    assert "secret-k" not in note
 
 
 def test_stdio_deprecation_note_for_hosted_url(monkeypatch):
@@ -408,7 +420,7 @@ def test_stdio_deprecation_note_for_hosted_url(monkeypatch):
 
     monkeypatch.delenv("KB_INSTANCE_ROLE", raising=False)
     monkeypatch.setenv("PERSONAL_KB_API_KEY", "secret-k")
-    note = stdio_deprecation_note("https://kb.example.com/")
+    note = stdio_deprecation_note("https://kb.example.com/", api_key="secret-k")
     assert note is not None
     assert "https://kb.example.com/mcp" in note
     assert "--transport http" in note
@@ -421,7 +433,7 @@ def test_stdio_deprecation_note_team_server_name(monkeypatch):
     from personal_kb.server import stdio_deprecation_note
 
     monkeypatch.setenv("KB_INSTANCE_ROLE", "team")
-    note = stdio_deprecation_note("https://team.example.com")
+    note = stdio_deprecation_note("https://team.example.com", api_key="k")
     assert note is not None
     assert "claude mcp add --transport http team-kb https://team.example.com/mcp" in note
 
@@ -437,7 +449,7 @@ async def test_lifespan_yields_and_logs_deprecation_note(monkeypatch, tmp_path, 
     async def _noop(self):
         return None
 
-    async def _no_skew(_url):
+    async def _no_skew(_url, *, api_key):
         return None
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -454,7 +466,9 @@ async def test_lifespan_yields_and_logs_deprecation_note(monkeypatch, tmp_path, 
     try:
         with caplog.at_level(logging.WARNING, logger="personal_kb.server"):
             async with lifespan(MagicMock()) as state:
-                assert state["deprecation_note"] == stdio_deprecation_note("https://kb.example.com")
+                assert state["deprecation_note"] == stdio_deprecation_note(
+                    "https://kb.example.com", api_key="secret-k"
+                )
         warnings = [
             r
             for r in caplog.records

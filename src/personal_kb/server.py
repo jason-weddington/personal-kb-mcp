@@ -39,16 +39,17 @@ from personal_kb.tools.kb_store_batch import register_kb_store_batch
 from personal_kb.tools.kb_summarize import register_kb_summarize
 
 
-def stdio_deprecation_note(kb_service_url: str) -> str | None:
+def stdio_deprecation_note(kb_service_url: str, *, api_key: str) -> str | None:
     """Return the stdio-server deprecation note for a hosted KB, else None.
 
-    Local (loopback) installs get no note: HTTP has no daemon auto-start yet,
-    so the stdio server is still their only zero-setup path. The note names
-    the ``$PERSONAL_KB_API_KEY`` variable literally and never its value.
+    Local-daemon installs (loopback URL with the sentinel key) get no note:
+    HTTP has no daemon auto-start yet, so the stdio server is still their only
+    zero-setup path. A hosted KB on loopback (real key) does get it. The note
+    names the ``$PERSONAL_KB_API_KEY`` variable literally and never its value.
     """
-    from personal_kb.daemon import is_loopback_url
+    from personal_kb.daemon import manages_local_daemon
 
-    if is_loopback_url(kb_service_url):
+    if manages_local_daemon(kb_service_url, api_key):
         return None
     url = kb_service_url.rstrip("/")
     name = "team-kb" if os.environ.get("KB_INSTANCE_ROLE", "").lower() == "team" else "personal-kb"
@@ -66,10 +67,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 
     An unset/empty ``PERSONAL_KB_URL`` means local mode (``LOCAL_KB_URL``).
     The MCP server opens an :class:`HttpBackend` against that URL in every mode. When the
-    URL targets a loopback host (``127.0.0.1`` / ``localhost``), the
-    lifespan runs :func:`ensure_daemon` as a pre-step — spawning a
-    detached, singleton ``kb-service`` daemon if ``/api/health`` is
-    unhealthy. For a remote (non-loopback) URL, no spawn occurs.
+    URL targets a loopback host (``127.0.0.1`` / ``localhost``) AND the key is
+    the local sentinel, the lifespan runs :func:`ensure_daemon` as a pre-step —
+    spawning a detached, singleton ``kb-service`` daemon if ``/api/health`` is
+    unhealthy. A remote URL, or a loopback URL with a real key (a hosted KB on
+    this machine or behind an SSH tunnel), never spawns or stops anything.
 
     The daemon outlives the MCP session: the ``finally`` block closes
     ONLY the HTTP client, never the daemon process.
@@ -96,7 +98,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 
     from personal_kb.backend import HttpBackend
     from personal_kb.config import get_personal_kb_api_key
-    from personal_kb.daemon import ensure_daemon, is_loopback_url
+    from personal_kb.daemon import ensure_daemon, manages_local_daemon
 
     api_key = get_personal_kb_api_key()
     if api_key is None:
@@ -106,9 +108,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         )
         raise RuntimeError(msg)
 
-    # Loopback URLs trigger the spawn pre-step.  Remote URLs go straight
-    # to HttpBackend.open() — no daemon, no pidfile, no health poll.
-    if is_loopback_url(kb_service_url):
+    # Only the local daemon (loopback + sentinel key) gets the spawn pre-step.
+    # Remote URLs and hosted-on-loopback KBs go straight to HttpBackend.open()
+    # — no daemon, no pidfile, no health poll, and never a shutdown.
+    if manages_local_daemon(kb_service_url, api_key):
         logger.info(
             "Local mode — ensuring kb-service daemon at %s before connecting",
             kb_service_url,
@@ -122,10 +125,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     try:
         from personal_kb.version_skew import check_version_skew
 
-        skew_note = await check_version_skew(kb_service_url)
+        skew_note = await check_version_skew(kb_service_url, api_key=api_key)
     except Exception:
         logger.debug("version skew check failed", exc_info=True)
-    note = stdio_deprecation_note(kb_service_url)
+    note = stdio_deprecation_note(kb_service_url, api_key=api_key)
     if note is not None:
         logger.warning("%s", note)
     try:

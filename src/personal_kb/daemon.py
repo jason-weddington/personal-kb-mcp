@@ -39,6 +39,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from personal_kb.config import LOCAL_KB_API_KEY
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,6 +110,17 @@ def is_loopback_url(base_url: str) -> bool:
         return False
     host = (parsed.hostname or "").lower()
     return host in _LOOPBACK_HOSTS
+
+
+def manages_local_daemon(base_url: str, api_key: str) -> bool:
+    """Return True when this client owns the kb-service daemon at *base_url*.
+
+    Only a loopback URL used with the local sentinel key is the auto-spawned,
+    no-auth daemon. A loopback URL with a real API key is a hosted kb-service
+    reached on this machine (co-located, or through an SSH tunnel): the client
+    must never spawn, replace or stop it, and treats it like any remote KB.
+    """
+    return is_loopback_url(base_url) and api_key == LOCAL_KB_API_KEY
 
 
 def parse_port(base_url: str) -> int:

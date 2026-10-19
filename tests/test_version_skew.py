@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from personal_kb import version_skew
+from personal_kb.config import LOCAL_KB_API_KEY
 from personal_kb.version_skew import check_version_skew, compare_versions
 
 
@@ -48,7 +49,7 @@ async def test_remote_newer_client_warns(
     monkeypatch.setattr(version_skew, "client_version", lambda: "0.68.0")
     _mock_health(monkeypatch, {"status": "ok", "version": "0.67.0"})
     with caplog.at_level(logging.WARNING):
-        msg = await check_version_skew("https://kb.example.com")
+        msg = await check_version_skew("https://kb.example.com", api_key="k")
     assert msg and "0.68.0" in msg and "0.67.0" in msg
     assert any(r.levelno == logging.WARNING for r in caplog.records)
 
@@ -56,9 +57,9 @@ async def test_remote_newer_client_warns(
 async def test_remote_equal_or_older_silent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(version_skew, "client_version", lambda: "0.67.0")
     _mock_health(monkeypatch, {"status": "ok", "version": "0.67.0"})
-    assert await check_version_skew("https://kb.example.com") is None
+    assert await check_version_skew("https://kb.example.com", api_key="k") is None
     _mock_health(monkeypatch, {"status": "ok", "version": "0.70.0"})
-    assert await check_version_skew("https://kb.example.com") is None
+    assert await check_version_skew("https://kb.example.com", api_key="k") is None
 
 
 async def test_loopback_skips_check(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,15 +69,23 @@ async def test_loopback_skips_check(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("health must not be fetched for loopback")
 
     monkeypatch.setattr("personal_kb.daemon._fetch_health", boom)
-    assert await check_version_skew("http://127.0.0.1:8765") is None
+    assert await check_version_skew("http://127.0.0.1:8765", api_key=LOCAL_KB_API_KEY) is None
+
+
+async def test_hosted_kb_on_loopback_is_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A loopback URL with a real key is a hosted KB, so skew is still checked."""
+    monkeypatch.setattr(version_skew, "client_version", lambda: "0.71.0")
+    _mock_health(monkeypatch, {"status": "ok", "version": "0.70.0"})
+    msg = await check_version_skew("http://127.0.0.1:8765", api_key="k")
+    assert msg is not None
 
 
 async def test_missing_server_version_is_silent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(version_skew, "client_version", lambda: "9.9.9")
     _mock_health(monkeypatch, {"status": "ok"})
-    assert await check_version_skew("https://kb.example.com") is None
+    assert await check_version_skew("https://kb.example.com", api_key="k") is None
     _mock_health(monkeypatch, None)
-    assert await check_version_skew("https://kb.example.com") is None
+    assert await check_version_skew("https://kb.example.com", api_key="k") is None
 
 
 async def test_preflight_appends_skew_line() -> None:

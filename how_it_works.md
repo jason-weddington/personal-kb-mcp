@@ -843,7 +843,7 @@ The cursor is a decimal offset string, so rows can be skipped or repeated when e
 
 **Configuration.** `PERSONAL_KB_URL` defaults to `http://127.0.0.1:8765` (local mode). `PERSONAL_KB_API_KEY` defaults to the sentinel `local-no-auth` only for loopback hosts (`127.0.0.1`, `localhost`, `::1`).
 
-**Local daemon.** For a loopback URL the lifespan calls `daemon.ensure_daemon(url)` first, so a fresh install works with no configuration:
+**Local daemon.** For a loopback URL used with the sentinel key (`daemon.manages_local_daemon`), the lifespan calls `daemon.ensure_daemon(url)` first, so a fresh install works with no configuration. A loopback URL with a real `PERSONAL_KB_API_KEY` is a hosted kb-service on the same machine or behind an SSH tunnel: the client treats it like any remote KB, never spawns, replaces or stops it, and still runs the version-skew check and the stdio deprecation note. The local-daemon steps:
 
 1. `GET /api/health` (2 s). Healthy with `install_id` equal to this client's `sys.prefix`: reuse it.
 2. Healthy but from another install: replace it at most once per process, via `POST /api/admin/shutdown`, else SIGTERM of the pidfile pid when `/proc/<pid>/cmdline` contains `kb-service`, then wait up to 10 s for the port.
@@ -959,7 +959,7 @@ This table lists every core environment variable. Read-by values: **service** (k
 | `KB_TEAM` | legacy client config only | unset | **Unused by the service**; team comes from `PUT /api/settings` |
 | `KB_INSTANCE_ROLE` | service, client | unset | `personal` or `team` tool-name prefix and role paragraph |
 | `KB_LOG_LEVEL` | service, client | INFO (service), WARNING (client) | Log level |
-| `PERSONAL_KB_URL` | client | `http://127.0.0.1:8765` | kb-service base URL; loopback triggers the local daemon |
+| `PERSONAL_KB_URL` | client | `http://127.0.0.1:8765` | kb-service base URL; loopback with the sentinel key triggers the local daemon |
 | `PERSONAL_KB_API_KEY` | client | `local-no-auth` on loopback only | Bearer key |
 | `PERSONAL_KB_DAEMON_STATE_DIR` | client | `~/.local/share/personal_kb` | Daemon pidfile and log directory |
 | `HEADLESS_BUILD_ENGINE` | client | unset | Sent as `X-KB-Engine` with `X-KB-Harness: claude-code` |
