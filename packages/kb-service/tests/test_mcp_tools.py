@@ -7,6 +7,7 @@ functions are called directly with ``context.backend_for_request`` patched to
 return a stub implementing the InProcessBackend method signatures.
 """
 
+import copy
 import logging
 from collections.abc import Callable
 from types import ModuleType
@@ -1448,3 +1449,279 @@ async def test_store_batch_queued_appends_ttl_failures(
     assert lines[1] == "Failed entries (retry these):"
     assert lines[2].startswith("  Entry 1 (bad): ")
     assert len(lines) == 3
+
+
+# ─── resolution parameter (kb_store / kb_store_batch) ────────────────────────
+
+_RES = {"wrong_belief": "a", "corrected_fact": "b"}
+_LESSON = {
+    "short_title": "L",
+    "long_title": "Lesson",
+    "knowledge_details": "details",
+    "supersedes": "none",
+    "entry_type": "lesson_learned",
+}
+
+
+@pytest.mark.parametrize(
+    ("value", "check"),
+    [
+        ("maybe", "not_object"),
+        ({**_RES, "provenance": {}}, "unknown_keys"),
+        ({"corrected_fact": "b"}, "wrong_belief"),
+        ({"wrong_belief": "  ", "corrected_fact": "b"}, "wrong_belief"),
+        ({"wrong_belief": "a"}, "corrected_fact"),
+        ({**_RES, "evidence": 1}, "evidence"),
+        ({**_RES, "cue": "Bash"}, "cue_not_object"),
+        (
+            {**_RES, "cue": {"tool": "Bash", "target_class": "git push", "x": 1}},
+            "cue_unknown_keys",
+        ),
+        ({**_RES, "cue": {"tool": "Bash"}}, "cue_fields"),
+        (
+            {**_RES, "cue": {"tool": "B", "target_class": "g p", "args_prefix": ""}},
+            "args_prefix",
+        ),
+        ({**_RES, "scope": "team"}, "scope"),
+    ],
+)
+def test_validate_resolution_failures(value: object, check: str) -> None:
+    result = kb_store._validate_resolution(value)
+    assert result is not None
+    assert result[0] == check
+    assert result[1].startswith("Error: resolution")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "none",
+        _RES,
+        {**_RES, "evidence": "e", "scope": "global"},
+        {
+            **_RES,
+            "cue": {
+                "tool": "Bash",
+                "target_class": "git push",
+                "args_prefix": "github",
+            },
+        },
+    ],
+)
+def test_validate_resolution_ok(value: object) -> None:
+    assert kb_store._validate_resolution(value) is None
+
+
+async def test_store_lesson_requires_resolution(
+    store_fn: Any, stub: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    out = await store_fn(**_LESSON)
+    assert out == kb_store.RESOLUTION_REQUIRED_ERROR
+    stub.store.assert_not_called()
+    assert "outcome=rejected rule=required check=none mode=absent" in caplog.text
+    assert "user_id=none key_id=none" in caplog.text
+
+
+@pytest.mark.parametrize("et", [None, "factual_reference", "decision"])
+async def test_store_non_lesson_needs_no_resolution(
+    store_fn: Any, stub: MagicMock, et: str | None
+) -> None:
+    stub.store = AsyncMock(return_value=("created", entry(), None))
+    args = {k: v for k, v in _LESSON.items() if k != "entry_type"}
+    if et:
+        args["entry_type"] = et
+    assert (await store_fn(**args)).startswith("Created")
+
+
+async def test_store_lesson_none_sends_no_hints(store_fn: Any, stub: MagicMock) -> None:
+    stub.store = AsyncMock(return_value=("created", entry(), None))
+    await store_fn(**_LESSON, resolution="none")
+    assert stub.store.await_args.kwargs["hints"] is None
+
+
+async def test_store_lesson_object_maps_into_hints(
+    store_fn: Any, stub: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    stored = entry(hints={"resolution": dict(_RES)})
+    stub.store = AsyncMock(return_value=("created", stored, None))
+    hints = {"person": "jason"}
+    res = {**_RES, "cue": {"tool": "Bash", "target_class": "git push"}}
+    expected = copy.deepcopy(res)
+    await store_fn(**_LESSON, resolution=res, hints=hints)
+    assert stub.store.await_args.kwargs["hints"] == {
+        "person": "jason",
+        "resolution": expected,
+    }
+    assert hints == {"person": "jason"}
+    assert res == expected
+    assert "outcome=accepted rule=none check=none mode=object" in caplog.text
+    assert "resolution_stored=True" in caplog.text
+    assert "mismatch" not in caplog.text
+
+
+async def test_store_resolution_dropped_warns(
+    store_fn: Any, stub: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    stub.store = AsyncMock(return_value=("created", entry(), None))
+    await store_fn(**_LESSON, resolution=_RES)
+    assert "resolution-client mismatch op=store path=create entry_id=" in caplog.text
+
+
+async def test_store_none_stored_without_resolution_no_warning(
+    store_fn: Any, stub: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    stub.store = AsyncMock(return_value=("created", entry(), None))
+    await store_fn(**_LESSON, resolution="none")
+    assert "mode=none" in caplog.text
+    assert "resolution_stored=False" in caplog.text
+    assert "mismatch" not in caplog.text
+
+
+async def test_store_hints_resolution_alone_satisfies(
+    store_fn: Any, stub: MagicMock
+) -> None:
+    stub.store = AsyncMock(return_value=("created", entry(), None))
+    hints = {"resolution": {"corrected_fact": "b"}}
+    await store_fn(**_LESSON, hints=hints)
+    assert stub.store.await_args.kwargs["hints"] == hints
+
+
+_CONFLICT = (
+    "Error: resolution and hints.resolution are both set; pass it once, as resolution."
+)
+
+
+@pytest.mark.parametrize("res", [_RES, "none"])
+async def test_store_resolution_conflict(
+    store_fn: Any, stub: MagicMock, res: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    out = await store_fn(**_LESSON, resolution=res, hints={"resolution": {}})
+    assert out == _CONFLICT
+    stub.store.assert_not_called()
+    assert "rule=hints_conflict" in caplog.text
+
+
+async def test_store_update_conflict_and_mapping(
+    store_fn: Any, stub: MagicMock
+) -> None:
+    upd = {"supersedes": "none", "update_entry_id": "kb-00001", "change_reason": "r"}
+    assert await store_fn(**upd, resolution=_RES, hints={"resolution": {}}) == _CONFLICT
+    stub.store.assert_not_called()
+    stub.store = AsyncMock(return_value=("updated", entry(version=2), None))
+    await store_fn(**upd, resolution=_RES)
+    assert stub.store.await_args.kwargs["hints"] == {"resolution": _RES}
+    await store_fn(**upd, resolution="none")
+    assert stub.store.await_args.kwargs["hints"] is None
+    await store_fn(**upd, entry_type="lesson_learned")
+    assert stub.store.await_count == 3
+
+
+async def test_store_hints_not_object_with_resolution(
+    store_fn: Any, stub: MagicMock
+) -> None:
+    out = await store_fn(**_LESSON, resolution=_RES, hints="x")
+    assert out == "Error: hints must be an object when resolution is set (got 'x')."
+    stub.store.assert_not_called()
+
+
+async def test_store_deactivate_rejects_resolution(
+    store_fn: Any, stub: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    out = await store_fn(
+        supersedes="none",
+        deactivate_entry_id="kb-00001",
+        change_reason="r",
+        resolution="none",
+    )
+    assert out == "Error: resolution does not apply to deactivate_entry_id."
+    stub.deactivate.assert_not_called()
+    assert "path=deactivate outcome=rejected rule=misplaced" in caplog.text
+    assert "supersession-client" not in caplog.text
+
+
+async def test_store_bad_resolution_shape(
+    store_fn: Any, stub: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    out = await store_fn(**_LESSON, resolution={"corrected_fact": "b"})
+    assert (
+        out
+        == "Error: resolution.wrong_belief is required and must be a non-blank string."
+    )
+    stub.store.assert_not_called()
+    assert "rule=bad_shape check=wrong_belief" in caplog.text
+
+
+async def test_batch_resolution_errors(batch_fn: Any, stub: MagicMock) -> None:
+    ok = {**_LESSON, "short_title": "ok", "resolution": "none"}
+    bad = dict(_LESSON)
+    out = await batch_fn(entries=[ok, bad])
+    assert out.startswith("Error: entry 1: a lesson_learned entry requires resolution:")
+    out = await batch_fn(entries=[{**ok, "resolution": "maybe"}])
+    assert out == (
+        "Error: entry 0: resolution must be an object or the literal "
+        "\"none\" (got 'maybe')."
+    )
+    out = await batch_fn(entries=[{**ok, "resolution": _RES, "hints": "x"}])
+    assert (
+        out
+        == "Error: entry 0: hints must be an object when resolution is set (got 'x')."
+    )
+    out = await batch_fn(
+        entries=[{**ok, "resolution": _RES, "hints": {"resolution": {}}}]
+    )
+    assert out == "Error: entry 0: " + _CONFLICT.removeprefix("Error: ")
+    out = await batch_fn(entries=[{**ok, "resolution": None}])
+    assert out.startswith("Error: entry 0: a lesson_learned entry requires resolution:")
+    stub.store_batch.assert_not_called()
+
+
+async def test_batch_resolution_mapping_and_logs(
+    batch_fn: Any, stub: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    e0 = {**_LESSON, "short_title": "e0", "resolution": dict(_RES)}
+    e1 = {**_LESSON, "short_title": "e1", "resolution": "none"}
+    e2 = {
+        **_LESSON,
+        "short_title": "e2",
+        "hints": {"resolution": {"corrected_fact": "b"}},
+    }
+    before = copy.deepcopy([e0, e1, e2])
+    created = [
+        entry(id="kb-00001", hints={}),
+        entry(id="kb-00002"),
+        entry(id="kb-00003", hints={"resolution": {"corrected_fact": "b"}}),
+    ]
+    stub.store_batch = AsyncMock(return_value=(created, [], [[], [], []]))
+    await batch_fn(entries=[e0, e1, e2])
+    sent = stub.store_batch.await_args.args[0]
+    assert all("resolution" not in s for s in sent)
+    assert sent[0]["hints"] == {"resolution": _RES}
+    assert "hints" not in sent[1]
+    assert sent[2]["hints"] == {"resolution": {"corrected_fact": "b"}}
+    assert [e0, e1, e2] == before
+    assert (
+        caplog.text.count(
+            "resolution-client op=store_batch path=create outcome=accepted"
+        )
+        == 3
+    )
+    assert caplog.text.count("resolution-client stored op=store_batch") == 3
+    assert caplog.text.count("resolution-client mismatch op=store_batch") == 1
+
+
+async def test_batch_stored_length_mismatch_logged(
+    batch_fn: Any, stub: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kb_service")
+    stub.store_batch = AsyncMock(return_value=([entry()], [], [[]]))
+    e = {**_LESSON, "resolution": "none"}
+    await batch_fn(entries=[e, {**e, "short_title": "x"}])
+    assert "mode=unknown created=1 requested=2" in caplog.text

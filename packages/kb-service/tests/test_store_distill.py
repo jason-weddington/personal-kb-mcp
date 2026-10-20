@@ -256,6 +256,20 @@ def test_knowledge_details() -> None:
 _NOW = datetime(2026, 10, 10, tzinfo=UTC)
 
 
+def test_store_kwargs_keeps_resolution() -> None:
+    resolution = {
+        "wrong_belief": "a",
+        "corrected_fact": "b",
+        "provenance": {"capture": "autonomous", "grounding": "asserted"},
+        "observed_sessions": 1,
+        "scope": "project",
+    }
+    c = _cand(entry_type="lesson_learned", hints={"resolution": resolution})
+    kw = build_store_kwargs(c, _VERDICT, now=_NOW)
+    assert kw["hints"]["resolution"] == resolution
+    assert kw["entry_type"] is EntryType.LESSON_LEARNED
+
+
 def test_store_kwargs() -> None:
     c = _cand(
         tags=["gate", "write-policy"],

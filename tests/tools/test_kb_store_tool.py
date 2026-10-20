@@ -13,6 +13,7 @@ Pure-function tests (``format_store_result``, ``_mental_map_has_pointer``,
 not route through the tool backend and are exercised directly.
 """
 
+import copy
 import json
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -24,9 +25,11 @@ from personal_kb.backend.http import HttpBackend
 from personal_kb.models.entry import EntryType, KnowledgeEntry
 from personal_kb.tools.kb_store import (
     ORPHAN_MAP_ERROR,
+    RESOLUTION_REQUIRED_ERROR,
     _mental_map_has_pointer,
     _validate_distinct_from,
     _validate_hints_supersedes_conflict,
+    _validate_resolution,
     _validate_sensitivity,
     _validate_supersedes,
     format_store_result,
@@ -966,3 +969,202 @@ async def test_write_policy_403_renders_detail() -> None:
         ctx=_make_ctx(handler),
     )
     assert result == f"Error: {detail}"
+
+
+# ---------------------------------------------------------------------------
+# resolution parameter
+# ---------------------------------------------------------------------------
+
+_RES = {"wrong_belief": "a", "corrected_fact": "b"}
+_LESSON = {
+    "short_title": "L",
+    "long_title": "Lesson",
+    "knowledge_details": "details",
+    "supersedes": "none",
+    "entry_type": EntryType.LESSON_LEARNED,
+}
+_CONFLICT = "Error: resolution and hints.resolution are both set; pass it once, as resolution."
+
+
+def _res_handler(entry: dict[str, Any]):
+    bodies: list[dict[str, Any]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        action = "updated" if bodies[-1].get("update_entry_id") else "created"
+        return httpx.Response(200, json={"action": action, "entry": entry})
+
+    return handler, bodies
+
+
+@pytest.mark.parametrize(
+    ("value", "check"),
+    [
+        ("maybe", "not_object"),
+        ({**_RES, "provenance": {}}, "unknown_keys"),
+        ({"corrected_fact": "b"}, "wrong_belief"),
+        ({"wrong_belief": "  ", "corrected_fact": "b"}, "wrong_belief"),
+        ({"wrong_belief": "a"}, "corrected_fact"),
+        ({**_RES, "evidence": 1}, "evidence"),
+        ({**_RES, "cue": "Bash"}, "cue_not_object"),
+        ({**_RES, "cue": {"tool": "Bash", "target_class": "git push", "x": 1}}, "cue_unknown_keys"),
+        ({**_RES, "cue": {"tool": "Bash"}}, "cue_fields"),
+        ({**_RES, "cue": {"tool": "B", "target_class": "g p", "args_prefix": ""}}, "args_prefix"),
+        ({**_RES, "scope": "team"}, "scope"),
+    ],
+)
+def test_validate_resolution_failures(value: object, check: str) -> None:
+    result = _validate_resolution(value)
+    assert result is not None
+    assert result[0] == check
+    assert result[1].startswith("Error: resolution")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "none",
+        _RES,
+        {**_RES, "evidence": "e", "scope": "global"},
+        {**_RES, "cue": {"tool": "Bash", "target_class": "git push", "args_prefix": "github"}},
+    ],
+)
+def test_validate_resolution_ok(value: object) -> None:
+    assert _validate_resolution(value) is None
+
+
+@pytest.mark.asyncio
+async def test_lesson_requires_resolution(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    out = await _register_and_capture()(**_LESSON, ctx=_make_ctx(_never_called_handler()))
+    assert out == RESOLUTION_REQUIRED_ERROR
+    assert "outcome=rejected rule=required check=none mode=absent" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("et", [None, EntryType.FACTUAL_REFERENCE, EntryType.DECISION])
+async def test_non_lesson_needs_no_resolution(et: EntryType | None) -> None:
+    handler, bodies = _res_handler(_entry_json())
+    args = {k: v for k, v in _LESSON.items() if k != "entry_type"}
+    if et:
+        args["entry_type"] = et
+    await _register_and_capture()(**args, ctx=_make_ctx(handler))
+    assert len(bodies) == 1
+
+
+@pytest.mark.asyncio
+async def test_lesson_none_sends_no_resolution_or_hints() -> None:
+    handler, bodies = _res_handler(_entry_json())
+    await _register_and_capture()(**_LESSON, resolution="none", ctx=_make_ctx(handler))
+    assert "resolution" not in bodies[0]
+    assert "hints" not in bodies[0]
+
+
+@pytest.mark.asyncio
+async def test_lesson_object_maps_into_hints(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    stored = {**_entry_json(), "hints": {"resolution": dict(_RES)}}
+    handler, bodies = _res_handler(stored)
+    hints = {"person": "jason"}
+    res = {**_RES, "cue": {"tool": "Bash", "target_class": "git push"}}
+    expected = copy.deepcopy(res)
+    await _register_and_capture()(**_LESSON, resolution=res, hints=hints, ctx=_make_ctx(handler))
+    assert bodies[0]["hints"] == {"person": "jason", "resolution": expected}
+    assert "resolution" not in bodies[0]
+    assert hints == {"person": "jason"}
+    assert res == expected
+    assert "outcome=accepted rule=none check=none mode=object" in caplog.text
+    assert "resolution_stored=True" in caplog.text
+    assert "mismatch" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_resolution_dropped_by_server_warns(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    handler, _ = _res_handler(_entry_json())
+    await _register_and_capture()(**_LESSON, resolution=_RES, ctx=_make_ctx(handler))
+    assert "resolution-client mismatch op=store path=create entry_id=kb-00001 mode=object" in (
+        caplog.text
+    )
+
+
+@pytest.mark.asyncio
+async def test_none_resolution_not_stored_no_warning(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    handler, _ = _res_handler(_entry_json())
+    await _register_and_capture()(**_LESSON, resolution="none", ctx=_make_ctx(handler))
+    assert "stored op=store path=create mode=none entry_id=kb-00001" in caplog.text
+    assert "resolution_stored=False" in caplog.text
+    assert "mismatch" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_hints_resolution_alone_satisfies(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    handler, bodies = _res_handler(_entry_json())
+    hints = {"resolution": {"corrected_fact": "b"}}
+    await _register_and_capture()(**_LESSON, hints=hints, ctx=_make_ctx(handler))
+    assert bodies[0]["hints"] == hints
+    assert "mode=hints" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("res", [_RES, "none"])
+async def test_resolution_conflict(res: object, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    out = await _register_and_capture()(
+        **_LESSON, resolution=res, hints={"resolution": {}}, ctx=_make_ctx(_never_called_handler())
+    )
+    assert out == _CONFLICT
+    assert "rule=hints_conflict" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_update_resolution_semantics() -> None:
+    upd = {"supersedes": "none", "update_entry_id": "kb-00001", "change_reason": "r"}
+    tool = _register_and_capture()
+    out = await tool(
+        **upd, resolution=_RES, hints={"resolution": {}}, ctx=_make_ctx(_never_called_handler())
+    )
+    assert out == _CONFLICT
+    handler, bodies = _res_handler(_entry_json())
+    ctx = _make_ctx(handler)
+    await tool(**upd, resolution=_RES, ctx=ctx)
+    assert bodies[0]["hints"] == {"resolution": _RES}
+    await tool(**upd, resolution="none", ctx=ctx)
+    assert "hints" not in bodies[1]
+    await tool(**upd, entry_type=EntryType.LESSON_LEARNED, ctx=ctx)
+    assert len(bodies) == 3
+
+
+@pytest.mark.asyncio
+async def test_hints_not_object_with_resolution() -> None:
+    out = await _register_and_capture()(
+        **_LESSON, resolution=_RES, hints="x", ctx=_make_ctx(_never_called_handler())
+    )
+    assert out == "Error: hints must be an object when resolution is set (got 'x')."
+
+
+@pytest.mark.asyncio
+async def test_deactivate_rejects_resolution(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    out = await _register_and_capture()(
+        supersedes="none",
+        deactivate_entry_id="kb-00001",
+        change_reason="r",
+        resolution="none",
+        ctx=_make_ctx(_never_called_handler()),
+    )
+    assert out == "Error: resolution does not apply to deactivate_entry_id."
+    assert "path=deactivate outcome=rejected rule=misplaced" in caplog.text
+    assert "supersession-client" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_bad_resolution_shape_logged(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    out = await _register_and_capture()(
+        **_LESSON, resolution={"corrected_fact": "b"}, ctx=_make_ctx(_never_called_handler())
+    )
+    assert out == "Error: resolution.wrong_belief is required and must be a non-blank string."
+    assert "rule=bad_shape check=wrong_belief" in caplog.text

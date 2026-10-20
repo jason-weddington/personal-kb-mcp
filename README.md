@@ -14,7 +14,7 @@ No installation needed — just add the MCP config below and your client handles
 - **Synthesized answers** — `kb_summarize` retrieves relevant entries and uses Claude Haiku to produce cited prose answers
 - **File ingestion** — Bulk-import existing notes, code, and docs from disk with LLM-powered extraction
 - **Multi-user attribution** — Server-side identity injection (`KB_CONTRIBUTOR`, `KB_TEAM`), per-entry attribution visible in all output, contributor/team search filters, audit trail for mutations
-- **Resolutions** — a `hints.resolution` object records a corrected belief (with an optional Bash command cue) that the service validates, stamps with provenance and delivers to future sessions; `packages/kb-service/scripts/seed_resolutions.py` seeds them from existing procedure entries (dry run by default)
+- **Resolutions** — the corrected belief is recorded through `kb_store`'s `resolution` parameter (stored as `hints.resolution`; `lesson_learned` creates require it or `"none"`), with an optional Bash command cue; the service validates it, stamps it with provenance and delivers it to future sessions; `packages/kb-service/scripts/seed_resolutions.py` seeds them from existing procedure entries (dry run by default)
 - **Surprise capture** — `KB_SURPRISE_CAPTURE` (`off|shadow|on`, default `off`) turns per-turn hook digests into detected corrections: `shadow` detects and stores candidates only, `on` also distills them and writes autonomous `lesson_learned` entries; `POST /api/kb/surprise/drain` runs one pass, `KB_SURPRISE_DISTILL_MODEL` picks the distiller model (on Bedrock the model variables take Bedrock model ids), and an observed-once resolution reaches the soft gate only after it recurs in a second session. Digests from other harnesses are stored under Claude Code's tool names (talos native names are mapped at ingest). Digests from harnesses that verify the agent's work (talos) can carry harness_correction items, which are detected deterministically as shape 4.
 - **Graceful degradation** — Every optional component (Ollama, Anthropic, vector search) fails gracefully; core storage and FTS always work
 
@@ -194,11 +194,13 @@ Store or update a knowledge entry. Each entry has a short title, long title, ful
 
 **Supersession.** When a new entry replaces older ones, declare it with the `supersedes` parameter of `kb_store`. It is **required** on every call: a list of `kb-XXXXX` ids, or the literal `"none"` when the entry replaces nothing (`[]` is rejected as ambiguous; on deactivate and metadata-only updates pass `"none"`). Combining `supersedes="none"` with a non-empty `hints.supersedes` is rejected; list the ids in `supersedes`. `distinct_from` (create only) lists existing entries the new one is deliberately distinct from, and `superseded_by` (with `deactivate_entry_id`) names the entry that replaces the deactivated one. `change_reason` is required on update and deactivate. `kb_store_batch` entries require `supersedes` too. The hosted service checks every newly named target before writing: it must exist, be active, not be a `mental_map`, not be the entry itself, and not already supersede the writer. A rejected target fails the whole write with a 422 that names the problem. Each superseded entry's `superseded_by` then points at its newest superseder, and the field is maintained automatically when superseders are stored, updated or deactivated. On an update, supersedes targets are only ever added, never retracted. Updates and deactivations through the hosted service require a `change_reason` that says what changed and why; when you deactivate an entry because a newer one replaces it, also pass `superseded_by`.
 
+**Resolution.** A `lesson_learned` create requires the `resolution` parameter: an object with `wrong_belief` and `corrected_fact` (both non-blank), optional `evidence`, `cue` and `scope` (`project` or `global`), or the literal `"none"` when the lesson is not a corrected belief. The KB pushes only resolutions to future sessions (the session-start gotcha list and, for a Bash cue, the pre-command gate), so a lesson stored without one is found only by search. A `hints.resolution` key satisfies the requirement instead; passing both is an error. It is optional on update (an object replaces the stored resolution) and rejected with `deactivate_entry_id`. Add a cue only for one specific Bash command, because a two-word Bash cue can arm the gate.
+
 **Near-duplicate guard.** On the hosted service, creating an entry whose text is at or above cosine 0.88 (`KB_NEAR_DUPLICATE_FLOOR`) to an existing active entry in the same project is rejected with a 409 that lists the candidates. Cover every listed id with one of three escapes: `update_entry_id=<id>` (it is the same fact, so update that entry), `supersedes=[<id>]` (the new entry replaces it), or `distinct_from=[<id>]` (they are genuinely different facts; older clients pass `hints={"distinct_from": [...]}`). Map entries, entries without a project, and creates made while embeddings are unavailable are not checked.
 
 ### `kb_store_batch`
 
-Store multiple entries in a single call (max 10). More efficient than repeated `kb_store` — uses a single LLM call for graph enrichment across all entries.
+Store multiple entries in a single call (max 10). More efficient than repeated `kb_store` — uses a single LLM call for graph enrichment across all entries. Each entry carries its own `resolution` under the same rule as `kb_store`.
 
 ### `kb_search`
 
@@ -681,6 +683,9 @@ decision, or discovered a non-obvious behavior — kb_store it immediately.
 - Use tags for discoverability and project_ref for scoping
 - supersedes is a required kb_store parameter: the kb ids this entry
   replaces, or "none".
+- A lesson_learned needs resolution: {"wrong_belief": "...",
+  "corrected_fact": "..."} (add a Bash cue only for one specific
+  command), or "none" when no belief was corrected.
 - Use hints to build the knowledge graph: {"tool": "sqlite"},
   {"person": "jason"}
 - Use kb_store_batch when capturing multiple related entries

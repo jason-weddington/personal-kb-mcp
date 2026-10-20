@@ -150,11 +150,24 @@ def _entries() -> list[dict[str, Any]]:
 # than v1.1.0 rejects the extra argument and the smoke fails loudly, which is
 # the right outcome: that is not an upgrade path anyone is on.
 _NONE = {"supersedes": "none"}
+# kb_store/kb_store_batch now require ``resolution`` on a lesson_learned create. SEED
+# runs on the OLD build, whose kb_store rejects an unknown ``resolution`` argument
+# (its batch backend silently ignores the key), so only the batch lessons carry
+# "none" and the single store at index 11 is a decision instead of a lesson.
+_LESSON = {"resolution": "none"}
 
 SEED: list[tuple[str, dict[str, Any]]] = [
-    ("kb_store_batch", {"entries": [{**e, **_NONE} for e in _entries()[:10]]}),
+    (
+        "kb_store_batch",
+        {
+            "entries": [
+                {**e, **_NONE, **(_LESSON if e["entry_type"] == "lesson_learned" else {})}
+                for e in _entries()[:10]
+            ]
+        },
+    ),
     ("kb_store", {**_entries()[10], **_NONE}),
-    ("kb_store", {**_entries()[11], **_NONE}),
+    ("kb_store", {**_entries()[11], "entry_type": "decision", **_NONE}),
     (
         "kb_store",
         {

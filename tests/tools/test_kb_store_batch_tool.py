@@ -16,6 +16,7 @@ sensitivity) still inject a backend so ``backend_from_lifespan`` succeeds, even
 though the MockTransport handler is never hit.
 """
 
+import copy
 import json
 from typing import Any
 
@@ -485,3 +486,87 @@ async def test_queued_batch_appends_ttl_failures() -> None:
     assert lines[1] == "Failed entries (retry these):"
     assert lines[2].startswith("  Entry 1 (Bad): ")
     assert len(lines) == 3
+
+
+# ---------------------------------------------------------------------------
+# resolution parameter
+# ---------------------------------------------------------------------------
+
+_RES = {"wrong_belief": "a", "corrected_fact": "b"}
+
+
+def _lesson(**kw: Any) -> dict[str, Any]:
+    return _entry_dict(entry_type="lesson_learned", **kw)
+
+
+@pytest.mark.asyncio
+async def test_batch_resolution_errors(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    handler, called = _unhit_handler()
+    ls = _lifespan(handler)
+    out = await batch_store_entries([_lesson(resolution="none"), _lesson()], ls)
+    assert out.startswith("Error: entry 1: a lesson_learned entry requires resolution:")
+    assert caplog.text.count("resolution-client op=store_batch path=create outcome=accepted") == 1
+    assert caplog.text.count("outcome=rejected rule=required") == 1
+    out = await batch_store_entries([_lesson(resolution="maybe")], ls)
+    assert (
+        out == "Error: entry 0: resolution must be an object or the literal \"none\" (got 'maybe')."
+    )
+    out = await batch_store_entries([_lesson(resolution=_RES, hints="x")], ls)
+    assert out == "Error: entry 0: hints must be an object when resolution is set (got 'x')."
+    out = await batch_store_entries([_lesson(resolution=_RES, hints={"resolution": {}})], ls)
+    assert out == (
+        "Error: entry 0: resolution and hints.resolution are both set; pass it once, as resolution."
+    )
+    out = await batch_store_entries([_lesson(resolution=None)], ls)
+    assert out.startswith("Error: entry 0: a lesson_learned entry requires resolution:")
+    assert not called
+
+
+@pytest.mark.asyncio
+async def test_batch_hints_resolution_alone_satisfies() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"created": [_entry_json("kb-00001")]})
+
+    hints = {"resolution": {"corrected_fact": "b"}}
+    await batch_store_entries([_lesson(hints=hints)], _lifespan(handler))
+    assert bodies[0]["entries"][0]["hints"] == hints
+
+
+@pytest.mark.asyncio
+async def test_batch_resolution_mapping_logs_and_no_mutation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+    bodies: list[dict[str, Any]] = []
+    with_res = {**_entry_json("kb-00001"), "hints": {}}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"created": [with_res, _entry_json("kb-00002", "Second")]})
+
+    entries = [_lesson(resolution=dict(_RES)), _lesson(short_title="Second", resolution="none")]
+    before = copy.deepcopy(entries)
+    await batch_store_entries(entries, _lifespan(handler))
+    sent = bodies[0]["entries"]
+    assert sent[0]["hints"] == {"resolution": _RES}
+    assert "hints" not in sent[1]
+    assert all("resolution" not in s for s in sent)
+    assert entries == before
+    assert caplog.text.count("resolution-client op=store_batch path=create outcome=accepted") == 2
+    assert caplog.text.count("resolution-client stored op=store_batch") == 2
+    assert caplog.text.count("resolution-client mismatch op=store_batch") == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_stored_count_mismatch_logged(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    handler = _created_handler(_entry_json("kb-00001"))
+    await batch_store_entries(
+        [_lesson(resolution="none"), _lesson(short_title="x", resolution="none")],
+        _lifespan(handler),
+    )
+    assert "mode=unknown created=1 requested=2" in caplog.text

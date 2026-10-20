@@ -183,9 +183,9 @@ trivia and session state; search first and update with update_entry_id.
 tags and project_ref.
 - hints link the graph: {"tool": "sqlite"}, {"related_entities": [{"id": "kb-00003", \
 "edge_type": "depends_on"}]}.
-- A corrected belief gets {"resolution": {"corrected_fact": "...", "wrong_belief": \
-"...", "cue": {"tool": "Bash", "target_class": "git remote"}}}. Only entries with a \
-resolution are pushed to future sessions before the mistake repeats.
+- lesson_learned requires the resolution parameter: {"wrong_belief": "...", \
+"corrected_fact": "..."}, or "none" if no belief was corrected. Add a cue only when \
+one Bash command caused the mistake. Only resolutions are pushed to future sessions.
 - kb_ingest: extract entries from local files, directories or globs, deduplicated \
 against the KB.
 - kb_ingest_url: ingest a web page (or pass content you already fetched).

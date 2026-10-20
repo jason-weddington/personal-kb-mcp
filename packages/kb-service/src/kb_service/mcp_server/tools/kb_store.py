@@ -18,6 +18,7 @@ from kb_service.config import is_safety_skip
 from kb_service.mcp_server import context
 from kb_service.mcp_server.backend import QueuedStore
 from kb_service.mcp_server.errors import BackendHttpError, map_error
+from kb_service.mcp_server.observability import _principal_fields
 from kb_service.mcp_server.tools.map_lint import lint_map_body
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,9 @@ HINTS_DESCRIPTION = (
     "grounding: observed|asserted, event_id}, observed_sessions (int >= 1), "
     "scope (project|global; global applies in every project). The server "
     "defaults capture to 'deliberate' and grounding to 'asserted' and rejects "
-    "a malformed resolution with 422."
+    "a malformed resolution with 422. "
+    "Prefer the top-level resolution parameter, which lesson_learned requires; "
+    "passing both is an error."
 )
 
 _VALID_SENSITIVITY = {"internal", "restricted", "public"}
@@ -83,6 +86,12 @@ _STORE_DESCRIPTION = (
     "This avoids pulling and rewriting the full entry content.\n"
     "\n"
     "Use deactivate_entry_id to soft-delete incorrect or obsolete entries.\n"
+    "\n"
+    "A lesson_learned create requires resolution: the wrong belief and the corrected\n"
+    'fact, or "none" when the lesson is not a corrected belief. The KB pushes only\n'
+    "resolutions to future sessions (the session-start gotcha list and the pre-command"
+    "\ngate), so a lesson stored without one is found only if someone "
+    "searches for it.\n"
     "\n"
     "Use entry_type to classify the knowledge:\n"
     "- factual_reference: version numbers, API endpoints, config values\n"
@@ -179,6 +188,244 @@ def _reject(
 
 def _supersedes_rule(message: str) -> str:
     return "empty_list" if "ambiguous" in message else "bad_shape"
+
+
+RESOLUTION_DESCRIPTION = (
+    "Required when creating a lesson_learned entry; optional otherwise. "
+    'Either the literal "none" (the lesson is not a corrected belief) '
+    "or an object: wrong_belief (required str: what was believed that "
+    "turned out wrong), corrected_fact (required str: what is actually "
+    "true), evidence (str), cue {tool, target_class, args_prefix} where "
+    "a Bash target_class is the two-word normalized command class such "
+    "as 'git push' and args_prefix (optional str) narrows the match to "
+    "commands whose arguments start with it, scope (project|global; "
+    "global applies in every project). A Bash cue with a two-word "
+    "target_class can arm the pre-command gate, which denies a matching "
+    "command once per lesson per day, so add a cue only when one "
+    "specific command caused the mistake and set args_prefix to narrow "
+    "it. The KB pushes only resolutions to future sessions (the "
+    "session-start gotcha list and, for a Bash cue, the pre-command "
+    "gate); a lesson stored without one is found only by search. It is "
+    "stored as hints.resolution, so do not also pass hints.resolution. "
+    'On update an object replaces the stored resolution and "none" '
+    "leaves it unchanged. Not allowed with deactivate_entry_id."
+)
+
+RESOLUTION_REQUIRED_ERROR = (
+    "Error: a lesson_learned entry requires resolution: an object "
+    '{"wrong_belief": "...", "corrected_fact": "..."} naming the belief '
+    "that turned out wrong and the fact that replaced it (optional "
+    'evidence, cue, scope), or the literal "none" when the lesson is '
+    "not a corrected belief. The KB pushes only resolutions to future "
+    "sessions (the session-start gotcha list and the pre-command gate); "
+    "a lesson stored without one is found only by search."
+)
+_RESOLUTION_CONFLICT_ERROR = (
+    "Error: resolution and hints.resolution are both set; pass it once, as resolution."
+)
+_RESOLUTION_DEACTIVATE_ERROR = (
+    "Error: resolution does not apply to deactivate_entry_id."
+)
+_RESOLUTION_KEYS = {"wrong_belief", "corrected_fact", "evidence", "cue", "scope"}
+_RESOLUTION_CUE_KEYS = {"tool", "target_class", "args_prefix"}
+_CUE_OBJECT_ERROR = (
+    "Error: resolution.cue must be an object with non-blank tool and "
+    "target_class strings."
+)
+
+
+def _non_blank(value: object) -> bool:
+    return isinstance(value, str) and value.strip() != ""
+
+
+def _validate_resolution(value: object) -> tuple[str, str] | None:
+    """Return ``(check, message)`` if *value* is not a valid resolution, None if OK."""
+    if not isinstance(value, dict) and not (isinstance(value, str) and value == "none"):
+        return (
+            "not_object",
+            'Error: resolution must be an object or the literal "none" (got '
+            + repr(value)
+            + ").",
+        )
+    if not isinstance(value, dict):
+        return None
+    unknown = set(value) - _RESOLUTION_KEYS
+    if unknown:
+        return (
+            "unknown_keys",
+            "Error: resolution has unknown keys "
+            + repr(sorted(unknown))
+            + "; allowed: wrong_belief, corrected_fact, evidence, cue, scope "
+            "(provenance and observed_sessions are server-managed).",
+        )
+    if not _non_blank(value.get("wrong_belief")):
+        return (
+            "wrong_belief",
+            "Error: resolution.wrong_belief is required and must be a non-blank "
+            "string.",
+        )
+    if not _non_blank(value.get("corrected_fact")):
+        return (
+            "corrected_fact",
+            "Error: resolution.corrected_fact is required and must be a non-blank "
+            "string.",
+        )
+    if "evidence" in value and not isinstance(value["evidence"], str):
+        return ("evidence", "Error: resolution.evidence must be a string.")
+    if "cue" in value:
+        cue = value["cue"]
+        if not isinstance(cue, dict):
+            return ("cue_not_object", _CUE_OBJECT_ERROR)
+        cue_unknown = set(cue) - _RESOLUTION_CUE_KEYS
+        if cue_unknown:
+            return (
+                "cue_unknown_keys",
+                "Error: resolution.cue has unknown keys "
+                + repr(sorted(cue_unknown))
+                + "; allowed: tool, target_class, args_prefix.",
+            )
+        if not _non_blank(cue.get("tool")) or not _non_blank(cue.get("target_class")):
+            return ("cue_fields", _CUE_OBJECT_ERROR)
+        if "args_prefix" in cue and not _non_blank(cue["args_prefix"]):
+            return (
+                "args_prefix",
+                "Error: resolution.cue.args_prefix must be a non-blank string.",
+            )
+    if "scope" in value and value["scope"] not in ("project", "global"):
+        return ("scope", 'Error: resolution.scope must be "project" or "global".')
+    return None
+
+
+def _has_hints_resolution(hints: object) -> bool:
+    return isinstance(hints, dict) and "resolution" in hints
+
+
+def _resolution_mode(value: object, hints: object) -> str:
+    """How the caller supplied a resolution: object, none, invalid, hints or absent."""
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, str) and value == "none":
+        return "none"
+    if value is not None:
+        return "invalid"
+    if _has_hints_resolution(hints):
+        return "hints"
+    return "absent"
+
+
+def _entry_type_label(entry_type: object) -> object:
+    return entry_type.value if isinstance(entry_type, EntryType) else entry_type
+
+
+def _log_resolution_decision(
+    op: str,
+    path: str,
+    outcome: str,
+    rule: str,
+    check: str,
+    value: object,
+    hints: object,
+    entry_type: object,
+) -> None:
+    logger.info(
+        "resolution-client op=%s path=%s outcome=%s rule=%s check=%s mode=%s "
+        "entry_type=%s "
+        "user_id=%s key_id=%s",
+        op,
+        path,
+        outcome,
+        rule,
+        check,
+        _resolution_mode(value, hints),
+        _entry_type_label(entry_type),
+        *_principal_fields()[:2],
+    )
+
+
+def _log_resolution_stored(
+    op: str,
+    path: str,
+    mode: str,
+    entry: KnowledgeEntry,
+) -> None:
+    """Log what the server returned; warn when a resolution was dropped."""
+    stored = "resolution" in entry.hints
+    logger.info(
+        "resolution-client stored op=%s path=%s mode=%s entry_id=%s entry_type=%s "
+        "resolution_stored=%s user_id=%s key_id=%s",
+        op,
+        path,
+        mode,
+        entry.id,
+        _entry_type_label(entry.entry_type),
+        stored,
+        *_principal_fields()[:2],
+    )
+    if mode in ("object", "hints") and not stored:
+        logger.warning(
+            "resolution-client mismatch op=%s path=%s entry_id=%s mode=%s "
+            "(server skew or regression)",
+            op,
+            path,
+            entry.id,
+            mode,
+        )
+
+
+def _map_resolution(
+    resolution: object, hints: dict[str, object] | None
+) -> dict[str, object] | None:
+    """Fold a resolution object into a copy of hints; "none" leaves hints as passed."""
+    if isinstance(resolution, dict):
+        return {**(hints or {}), "resolution": dict(resolution)}
+    return hints
+
+
+def _check_resolution(
+    op: str,
+    path: str,
+    resolution: object,
+    hints: object,
+    entry_type: object,
+    *,
+    require: bool,
+) -> str | None:
+    """Run the resolution checks; return an error message or None."""
+
+    def fail(rule: str, check: str, message: str) -> str:
+        _log_resolution_decision(
+            op, path, "rejected", rule, check, resolution, hints, entry_type
+        )
+        return message
+
+    if resolution is not None:
+        shape = _validate_resolution(resolution)
+        if shape:
+            return fail("bad_shape", shape[0], shape[1])
+        if (
+            isinstance(resolution, dict)
+            and hints is not None
+            and not isinstance(hints, dict)
+        ):
+            return fail(
+                "bad_shape",
+                "hints_not_object",
+                "Error: hints must be an object when resolution is set (got "
+                + repr(hints)
+                + ").",
+            )
+        if _has_hints_resolution(hints):
+            return fail("hints_conflict", "none", _RESOLUTION_CONFLICT_ERROR)
+    elif (
+        require
+        and entry_type == EntryType.LESSON_LEARNED
+        and not _has_hints_resolution(hints)
+    ):
+        return fail("required", "none", RESOLUTION_REQUIRED_ERROR)
+    _log_resolution_decision(
+        op, path, "accepted", "none", "none", resolution, hints, entry_type
+    )
+    return None
 
 
 def _validate_sensitivity(sensitivity: str | None) -> str | None:
@@ -350,6 +597,10 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         superseded_by: Annotated[
             str | None, Field(description=SUPERSEDED_BY_DESCRIPTION)
         ] = None,
+        resolution: Annotated[
+            dict[str, object] | Literal["none"] | None,
+            Field(description=RESOLUTION_DESCRIPTION),
+        ] = None,
     ) -> str:
         """Store or update a knowledge entry in the knowledge base."""
         backend = context.backend_for_request()
@@ -389,6 +640,18 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     supersedes,
                     "Error: distinct_from applies to create only.",
                 )
+            if resolution is not None:
+                _log_resolution_decision(
+                    "store",
+                    "deactivate",
+                    "rejected",
+                    "misplaced",
+                    "none",
+                    resolution,
+                    hints,
+                    None,
+                )
+                return _RESOLUTION_DEACTIVATE_ERROR
             _log_decision("store", "deactivate", "accepted", "none", supersedes)
             try:
                 entry = await backend.deactivate(
@@ -434,6 +697,13 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     "Error: distinct_from applies to create only.",
                 )
             _log_decision("store", "update", "accepted", "none", supersedes)
+            res_err = _check_resolution(
+                "store", "update", resolution, hints, entry_type, require=False
+            )
+            if res_err:
+                return res_err
+            res_mode = _resolution_mode(resolution, hints)
+            hints = _map_resolution(resolution, hints)
             sens_err = _validate_sensitivity(sensitivity)
             if sens_err:
                 return sens_err
@@ -475,6 +745,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
                     f" {res.candidate_id}; updates are never queued."
                 )
             _action, entry, ids = res
+            _log_resolution_stored("store", "update", res_mode, entry)
             if ids is None and isinstance(supersedes, list) and supersedes:
                 logger.warning(
                     "supersession-client mismatch op=update sent=%r superseded_ids=%r "
@@ -517,6 +788,13 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         if df_err:
             return _reject("create", "bad_shape", supersedes, df_err)
         _log_decision("store", "create", "accepted", "none", supersedes)
+        res_err = _check_resolution(
+            "store", "create", resolution, hints, entry_type, require=True
+        )
+        if res_err:
+            return res_err
+        res_mode = _resolution_mode(resolution, hints)
+        hints = _map_resolution(resolution, hints)
 
         sens_err = _validate_sensitivity(sensitivity)
         if sens_err:
@@ -566,6 +844,7 @@ def register_kb_store(mcp: FastMCP, prefix: str = "kb_") -> None:
         if isinstance(res, QueuedStore):
             return format_queued_store(res)
         _action, entry, ids = res
+        _log_resolution_stored("store", "create", res_mode, entry)
         hint_sup = hints.get("supersedes") if isinstance(hints, dict) else None
         expected_sup: set[str] = (
             set(supersedes) if isinstance(supersedes, list) else set()

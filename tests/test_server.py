@@ -427,8 +427,36 @@ def test_instructions_supersedes_is_a_parameter_not_a_hint():
     assert "supersedes is a required kb_store parameter" in text
 
 
+@pytest.mark.parametrize(("role", "name"), [(None, "kb_store"), ("personal", "personal_kb_store")])
+async def test_kb_store_schema_has_optional_resolution(role, name):
+    import os
+
+    from personal_kb.tools.kb_store import RESOLUTION_DESCRIPTION
+
+    env = {"KB_INSTANCE_ROLE": role} if role else {}
+    with patch.dict("os.environ", env, clear=False):
+        if not role:
+            os.environ.pop("KB_INSTANCE_ROLE", None)
+        mcp = create_server()
+        tools = {t.name: t for t in await mcp.list_tools()}
+    schema = tools[name].parameters
+    assert "resolution" in schema["properties"]
+    assert "resolution" not in schema["required"]
+    prop = schema["properties"]["resolution"]
+    assert prop["description"] == RESOLUTION_DESCRIPTION
+    assert {"const": "none", "type": "string"} in prop["anyOf"]
+
+
+def test_instructions_describe_required_lesson_resolution():
+    from kb_service.mcp_server.server import _build_instructions as http_instructions
+
+    for text in (_build_instructions("kb_"), http_instructions("kb_")):
+        assert "lesson_learned requires the resolution parameter" in text
+        assert "A corrected belief gets" not in text
+
+
 def test_build_instructions_mentions_resolution_hint():
-    """The hints section documents the resolution hint."""
+    """The STORE section documents the resolution parameter."""
     assert "resolution" in _build_instructions("kb_")
 
 

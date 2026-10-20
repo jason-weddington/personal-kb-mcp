@@ -180,6 +180,51 @@ CALLS: list[tuple[str, dict[str, Any]]] = [
             "dry_run": True,
         },
     ),
+    (
+        "kb_store",
+        {
+            "short_title": "Parity lesson",
+            **F,
+            "entry_type": "lesson_learned",
+            "supersedes": "none",
+            "resolution": {
+                "wrong_belief": "git push github main is fine",
+                "corrected_fact": "Push to origin, never to github",
+                "cue": {"tool": "Bash", "target_class": "git push"},
+            },
+        },
+    ),
+    (
+        "kb_store",
+        {
+            "short_title": "Parity lesson none",
+            **F,
+            "entry_type": "lesson_learned",
+            "supersedes": "none",
+            "resolution": "none",
+        },
+    ),
+    (
+        "kb_store_batch",
+        {
+            "entries": [
+                {
+                    "short_title": "Batch lesson",
+                    **F,
+                    "entry_type": "lesson_learned",
+                    "supersedes": "none",
+                    "resolution": {"wrong_belief": "a", "corrected_fact": "b"},
+                },
+                {
+                    "short_title": "Batch lesson none",
+                    **F,
+                    "entry_type": "lesson_learned",
+                    "supersedes": "none",
+                    "resolution": "none",
+                },
+            ]
+        },
+    ),
 ]
 
 
@@ -322,12 +367,15 @@ async def test_output_parity_over_call_sequence(
     async with app.router.lifespan_context(app):
         b = await _channel_b(app, CALLS)
 
-    assert len(a) == len(b) == len(CALLS) == 25
+    assert len(a) == len(b) == len(CALLS) == 28
     for i, (name, _kwargs) in enumerate(CALLS):
         assert _norm(b[i]) == _norm(a[i]), f"call {i + 1} {name}"
     # Sanity: the sequence exercised real writes, not just errors.
     assert a[0].startswith("Created kb-00001 (v1)")
     assert b[16].startswith("Batch: 2 entries created")
+    assert a[25].startswith("Created ")
+    assert a[26].startswith("Created ")
+    assert b[27].startswith("Batch: 2 entries created")
 
 
 WRITE_POLICY_CALLS: list[tuple[str, dict[str, Any]]] = [
@@ -602,6 +650,87 @@ REJECTIONS: list[tuple[str, dict[str, Any]]] = [
     (
         "kb_map_eligibility_override",
         {"project_ref": "p", "eligible": True, "reason": "x" * 2001},
+    ),
+    # kb_store / kb_store_batch — resolution
+    ("kb_store", {"short_title": "s", **F, "entry_type": "lesson_learned", "supersedes": "none"}),
+    (
+        "kb_store",
+        {
+            "short_title": "s",
+            **F,
+            "entry_type": "lesson_learned",
+            "supersedes": "none",
+            "resolution": {"corrected_fact": "x"},
+        },
+    ),
+    (
+        "kb_store",
+        {
+            "short_title": "s",
+            **F,
+            "supersedes": "none",
+            "resolution": {
+                "wrong_belief": "a",
+                "corrected_fact": "b",
+                "provenance": {"capture": "deliberate"},
+            },
+        },
+    ),
+    (
+        "kb_store",
+        {
+            "short_title": "s",
+            **F,
+            "supersedes": "none",
+            "resolution": {"wrong_belief": "a", "corrected_fact": "b"},
+            "hints": {"resolution": {"corrected_fact": "b"}},
+        },
+    ),
+    (
+        "kb_store",
+        {
+            "deactivate_entry_id": "kb-00001",
+            "change_reason": "r",
+            "supersedes": "none",
+            "resolution": "none",
+        },
+    ),
+    (
+        "kb_store",
+        {
+            "update_entry_id": "kb-00001",
+            "change_reason": "r",
+            "supersedes": "none",
+            "resolution": {"wrong_belief": "a", "corrected_fact": "b"},
+            "hints": {"resolution": {"corrected_fact": "b"}},
+        },
+    ),
+    (
+        "kb_store_batch",
+        {
+            "entries": [
+                {"short_title": "s", **F, "supersedes": "none"},
+                {"short_title": "t", **F, "entry_type": "lesson_learned", "supersedes": "none"},
+            ]
+        },
+    ),
+    (
+        "kb_store_batch",
+        {"entries": [{"short_title": "s", **F, "supersedes": "none", "resolution": "maybe"}]},
+    ),
+    (
+        "kb_store_batch",
+        {
+            "entries": [
+                {
+                    "short_title": "s",
+                    **F,
+                    "supersedes": "none",
+                    "hints": "x",
+                    "resolution": {"wrong_belief": "a", "corrected_fact": "b"},
+                }
+            ]
+        },
     ),
 ]
 

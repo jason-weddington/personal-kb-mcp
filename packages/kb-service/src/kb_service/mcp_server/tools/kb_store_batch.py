@@ -19,7 +19,11 @@ from kb_service.mcp_server.backend import QueuedBatch
 from kb_service.mcp_server.errors import BackendHttpError, map_error
 from kb_service.mcp_server.tools.kb_store import (
     _VALID_SENSITIVITY,
+    _check_resolution,
     _log_decision,
+    _log_resolution_stored,
+    _map_resolution,
+    _resolution_mode,
     _validate_distinct_from,
     _validate_hints_supersedes_conflict,
     _validate_supersedes,
@@ -38,8 +42,9 @@ _ENTRIES_DESCRIPTION = (
     'supersedes (list of kb-XXXXX ids or "none"). '
     "Optional: entry_type, project_ref, source_context, "
     "confidence_level, tags, hints, sensitivity, ttl, distinct_from. "
-    "hints may carry a resolution object "
-    "(see the store tool's hints description)."
+    "resolution is required when entry_type is lesson_learned: an object "
+    'with wrong_belief and corrected_fact, or "none" '
+    "(see the store tool's resolution description)."
 )
 
 
@@ -94,6 +99,31 @@ async def batch_store_entries(entries: list[dict[str, Any]]) -> str:
                 _log_decision("store_batch", "create", "rejected", rule, sup)
                 return f"Error: entry {i}: " + err.removeprefix("Error: ")
         _log_decision("store_batch", "create", "accepted", "none", sup)
+
+    # Validate resolution per entry (whole batch is rejected on any failure), then
+    # fold each resolution object into that entry's hints. The backends build their
+    # request from a key whitelist, so a top-level "resolution" must not reach them.
+    modes: list[str] = []
+    mapped_entries: list[dict[str, Any]] = []
+    for i, entry_dict in enumerate(entries):
+        res_value = entry_dict.get("resolution")
+        res_hints = entry_dict.get("hints")
+        res_err = _check_resolution(
+            "store_batch",
+            "create",
+            res_value,
+            res_hints,
+            entry_dict.get("entry_type"),
+            require=True,
+        )
+        if res_err:
+            return f"Error: entry {i}: " + res_err.removeprefix("Error: ")
+        modes.append(_resolution_mode(res_value, res_hints))
+        copy = {k: v for k, v in entry_dict.items() if k != "resolution"}
+        if isinstance(res_value, dict):
+            copy["hints"] = _map_resolution(res_value, res_hints)
+        mapped_entries.append(copy)
+    entries = mapped_entries
 
     for i, entry_dict in enumerate(entries):
         sens = entry_dict.get("sensitivity")
@@ -167,6 +197,19 @@ async def batch_store_entries(entries: list[dict[str, Any]]) -> str:
         return queued
     created, backend_failed, superseded_ids = res
 
+    if len(created) == len(valid_entries):
+        for pos, entry in enumerate(created):
+            _log_resolution_stored(
+                "store_batch", "create", modes[original_index[pos]], entry
+            )
+    else:
+        logger.info(
+            "resolution-client stored op=store_batch path=create mode=unknown "
+            "created=%d requested=%d",
+            len(created),
+            len(valid_entries),
+        )
+
     backend_failed = [
         (original_index[idx] if 0 <= idx < len(original_index) else idx, t, err)
         for idx, t, err in backend_failed
@@ -231,7 +274,8 @@ def _store_batch_description(prefix: str) -> str:
         "Optional fields: entry_type (default: factual_reference), project_ref, "
         "source_context, confidence_level (default: 0.9), tags, hints, ttl, "
         "distinct_from. "
-        f"hints may carry a resolution object; see {prefix}store."
+        f"resolution is required when entry_type is lesson_learned: an object with "
+        f'wrong_belief and corrected_fact, or "none"; see {prefix}store.'
     )
 
 
