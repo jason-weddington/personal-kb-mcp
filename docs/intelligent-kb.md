@@ -4,7 +4,7 @@ This document covers every part of the KB that runs without an agent asking for 
 
 Maintenance rule: a change to a hook event, an automation endpoint or table, a switch or its default, or a delivery rule updates this file in the same change. Section 22 is the registry of automation switches.
 
-Contents: [1 North star](#1-north-star-an-agent-that-learns-from-experience) · [2 The loop](#2-the-loop-on-one-screen) · [3 The hook](#3-the-hook-one-stdlib-process-seven-events) · [4 The lesson record](#4-the-lesson-record-hintsresolution-and-the-trust-model) · [5 Failure-cue index](#5-capture-a-the-failure-cue-index) · [6 Turn digests](#6-capture-b-turn-digests) · [7 Write policy](#7-capture-c-the-write-policy-unattended-agents-propose-never-write) · [8 Surprise detection](#8-distill-i-surprise-detection) · [9 Distiller and critic](#9-distill-ii-distiller-critic-match-and-expiry) · [10 Queued stores](#10-distill-iii-queued-stores-shape-5-w1-w9) · [11 Shadow mode](#11-shadow-mode-and-the-audit-endpoint) · [12 Prevention fetch](#12-deliver-i-get-apikbprevention-and-the-hooks-prevention-cache) · [13 Gotcha slice](#13-deliver-ii-the-sessionstart-gotcha-slice) · [14 Soft gate](#14-prevent-the-pretooluse-soft-gate) · [15 Failure context](#15-deliver-iii-failure-context) · [16 Orientation push](#16-orientation-push-maps-directory-and-tool-inventory) · [17 Listener](#17-the-anticipatory-listener-paused) · [18 Map maintenance](#18-map-maintenance-somnus-the-server-side-contract) · [19 Harness portability](#19-harness-portability-talos-and-the-wire-contracts) · [20 Measure](#20-measure-telling-whether-the-loop-works) · [21 Cost](#21-what-the-automation-costs) · [22 Switches](#22-production-state-and-switches) · [23 Tables](#23-data-the-loop-keeps-tables-and-retention) · [24 Evaluation](#24-how-it-is-evaluated) · [25 Known gaps](#25-known-gaps-and-open-questions)
+Contents: [1 North star](#1-north-star-an-agent-that-learns-from-experience) · [2 The loop](#2-the-loop-on-one-screen) · [3 The hook](#3-the-hook-one-stdlib-process-seven-events) · [4 The lesson record](#4-the-lesson-record-hintsresolution-and-the-trust-model) · [5 Failure-cue index](#5-capture-a-the-failure-cue-index) · [6 Turn digests](#6-capture-b-turn-digests) · [7 Write policy](#7-capture-c-the-write-policy-unattended-agents-propose-never-write) · [8 Surprise detection](#8-distill-i-surprise-detection) · [9 Distiller and critic](#9-distill-ii-distiller-critic-match-and-expiry) · [10 Queued stores](#10-distill-iii-queued-stores-shape-5-w1-w9) · [11 Shadow mode](#11-shadow-mode-and-the-audit-endpoint) · [12 Prevention fetch](#12-deliver-i-get-apikbprevention-and-the-hooks-prevention-cache) · [13 Gotcha slice](#13-deliver-ii-the-sessionstart-gotcha-slice) · [14 Soft gate](#14-prevent-the-pretooluse-soft-gate) · [15 Failure context](#15-deliver-iii-failure-context) · [16 Orientation push](#16-orientation-push-maps-directory-and-tool-inventory) · [17 Listener](#17-the-anticipatory-listener) · [18 Map maintenance](#18-map-maintenance-somnus-the-server-side-contract) · [19 Harness portability](#19-harness-portability-talos-and-the-wire-contracts) · [20 Measure](#20-measure-telling-whether-the-loop-works) · [21 Cost](#21-what-the-automation-costs) · [22 Switches](#22-production-state-and-switches) · [23 Tables](#23-data-the-loop-keeps-tables-and-retention) · [24 Evaluation](#24-how-it-is-evaluated) · [25 Known gaps](#25-known-gaps-and-open-questions)
 
 ## 1. North star: an agent that learns from experience
 
@@ -78,7 +78,7 @@ flowchart TD
   R["External nightly runner (somnus)<br/>GET /api/kb/map-worklist, /api/kb/map-loop-input"] --> O["POST /api/kb/map-op<br/>mental_map entries"]
   O --> MI["GET /api/kb/maps-index"]
   MI --> DIR["SessionStart maps directory<br/>new-maps delta on UserPromptSubmit"]
-  O --> LS["Listener at Stop (paused)<br/>POST /api/kb/listener"]
+  O --> LS["Listener at Stop<br/>POST /api/kb/listener"]
   LS --> W["Whisper on next UserPromptSubmit"]
   DIR --> WT["whisper_telemetry"]
   W --> WT
@@ -567,9 +567,9 @@ These two SessionStart pushes tell the agent what exists (maps, personal tools) 
 
 **Tool inventory** (`tool_inventory.build_inventory`, every SessionStart source, not suppressed). `KB_TOOL_DIRS` is a colon-separated list of directories (opt-in, nothing scanned when unset); `KB_TOOL_INVENTORY` set to `0`, `false`, `no` or `off` disables it. Eligible entries are regular, non-hidden executable files not ending in `.md` or `~`; the first directory wins on a duplicate name. Each description is the first header comment, docstring or usage line from the first 30 lines or 4096 bytes (files over 64 KiB or containing NUL are name-only), with a leading `<name> - ` stripped, capped at 120 characters. Output groups tools under `Personal tools in <dir>:` as `<name> — <description>` lines, capped at 40 tools, 2000 characters and a 50 ms scan, with `(+N more not shown)` and `(list truncated: scan time limit reached)` trailers. Every call appends one decision row (`disabled`, `no_dirs`, `no_tools`, `budget_empty`, `emitted` or `error`, with counts and elapsed time) to the local `tool-inventory.jsonl`. It has no consumption signal.
 
-## 17. The anticipatory listener (paused)
+## 17. The anticipatory listener
 
-**Status.** Off by default at both ends, and paused on the maintainer's KB since 2026-10-10: 0 of 20 whispers were consumed in 14 days, at about 150 Sonnet calls a day while on. The code stays, and re-enabling is one env line per end (`KB_LISTENER_ENABLED=TRUE` on the service, `PERSONAL_KB_LISTENER=1` on the hook). A planned benchmark arm decides whether it returns.
+**Status.** Off by default at both ends; switching it on takes one env line per end (`KB_LISTENER_ENABLED=TRUE` on the service, `PERSONAL_KB_LISTENER=1` on the hook). On the maintainer's KB it was paused on 2026-10-10, after 0 of 20 whispers were consumed in 14 days at about 150 Sonnet calls a day. It was switched back on at 2026-10-13 04:30Z, after applied-science study PR-001-c found that in kb-bench it rescues traps (discordant pairs Sonnet b=9 c=0, Opus b=39 c=0). Since then it whispers about 10 to 25 times a day. Whether production whispers are consumed is not yet measured: the consumption flag lives in per-session hook logs, which are not kept centrally.
 
 **What it does.** After a turn whose final message asserts facts about the domain of one or two other mental maps, it whispers those maps' pointers into the next prompt. Silence is the default, because a false positive costs more than a miss.
 
@@ -774,8 +774,8 @@ Service switches are process environment, so flipping one means changing kb-serv
 | `KB_SOFT_GATE_MAX_DENIES_PER_HOUR` | service per prevention fetch | 6 | not recorded | next Stop |
 | `KB_SOFT_GATE_REARM_HOURS` | service per prevention fetch | 24 | not recorded | next Stop |
 | `KB_DELIVER_OBSERVED_ONCE` | service per prevention fetch | on (only `FALSE` disables) | not recorded | next fetch |
-| `KB_LISTENER_ENABLED` | service per request | `FALSE` | paused since 2026-10-10 | next request |
-| `PERSONAL_KB_LISTENER` | hook env | off | paused since 2026-10-10 | next hook run |
+| `KB_LISTENER_ENABLED` | service per request | `FALSE` | `TRUE` since 2026-10-13 (paused 2026-10-10 to 10-13) | next request |
+| `PERSONAL_KB_LISTENER` | hook env | off | `1` since 2026-10-13 (paused 2026-10-10 to 10-13) | next hook run |
 | `KB_LISTENER_HEADLESS` | hook env | off | not recorded | next hook run |
 | `KB_FAILURE_CONTEXT` | hook env (synchronous PostToolUseFailure entry) | off | on in the maintainer's synced settings | next hook run |
 | `KB_GOTCHA_SLICE` | hook env | on | on | next SessionStart |

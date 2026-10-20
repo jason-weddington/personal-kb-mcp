@@ -81,7 +81,7 @@ Every piece of knowledge is a `KnowledgeEntry` (`kb_core/models/entry.py`). `Ent
 | `related_entities` | `GraphBuilder` | List of kb-id strings or `{id or target, edge_type or type}` dicts; items typed `supersedes` or `distinct_from` are ignored with a warning |
 | `person`, `tool` | `GraphBuilder` | `mentions_person` / `uses_tool` edges to lower-cased nodes |
 | `resolution` | prevention channels | A corrected belief (see [intelligent-kb.md §4](docs/intelligent-kb.md#4-the-lesson-record-hintsresolution-and-the-trust-model)) |
-| `operated_via` | anticipatory listener, on `mental_map` entries | See [intelligent-kb.md §17](docs/intelligent-kb.md#17-the-anticipatory-listener-paused) |
+| `operated_via` | anticipatory listener, on `mental_map` entries | See [intelligent-kb.md §17](docs/intelligent-kb.md#17-the-anticipatory-listener) |
 | `surprise_capture` | prevention admission | Stamped by autonomous capture (see [intelligent-kb.md §9](docs/intelligent-kb.md#9-distill-ii-distiller-critic-match-and-expiry)) |
 | `write_policy` | audit | Stamped on entries written from a queued candidate (see [intelligent-kb.md §10](docs/intelligent-kb.md#10-distill-iii-queued-stores-shape-5-w1-w9)) |
 
@@ -720,7 +720,7 @@ Auth values: **none** (unauthenticated); **user** (any authenticated user, JWT o
 | `/api/kb/cluster-ledger/match` | POST | `cluster_ledger_routes.py` | user | [intelligent §18](docs/intelligent-kb.md#18-map-maintenance-somnus-the-server-side-contract) |
 | `/api/kb/cluster-ledger/decline` | POST | `cluster_ledger_routes.py` | user | [intelligent §18](docs/intelligent-kb.md#18-map-maintenance-somnus-the-server-side-contract) |
 | `/api/kb/pointer-candidates` | POST | `nudge_routes.py` | user | [intelligent §18](docs/intelligent-kb.md#18-map-maintenance-somnus-the-server-side-contract) |
-| `/api/kb/listener` | POST | `listener_routes.py` | user | [intelligent §17](docs/intelligent-kb.md#17-the-anticipatory-listener-paused) |
+| `/api/kb/listener` | POST | `listener_routes.py` | user | [intelligent §17](docs/intelligent-kb.md#17-the-anticipatory-listener) |
 | `/api/kb/telemetry/whispers` | POST | `telemetry_routes.py` | user | [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
 | `/api/kb/event` | POST | `event_routes.py` | user | [intelligent §5](docs/intelligent-kb.md#5-capture-a-the-failure-cue-index) |
 | `/api/kb/event/heartbeat` | GET | `event_routes.py` | user | [intelligent §5](docs/intelligent-kb.md#5-capture-a-the-failure-cue-index) |
