@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.21.0 (2026-10-20)
+
+### Features
+
+- **kb_store**: A lesson_learned store requires an explicit resolution or "none", so lessons agents
+  write reach the session-start slice and the gate
+  ([`4aefd90`](https://github.com/jason-weddington/personal-kb-mcp/commit/4aefd9038e53fa2e8d5ca909a44ea872fab54dbf))
+
+
 ## v1.20.0 (2026-10-19)
 
 ### Features
