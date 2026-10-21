@@ -1155,3 +1155,26 @@ def test_subagent_absent_session_id_key_fully_silent(
     assert turn_spawns == []
     assert drops() == []
     assert state_bytes() is None
+
+
+def test_kb_get_target_holds_requested_ids(tmp_path: Path) -> None:
+    def kb_get(uuid: str, tid: str, entry_id: Any) -> dict[str, Any]:
+        block = {
+            "type": "tool_use", "id": tid, "name": "mcp__personal-kb__kb_get",
+            "input": {"entry_id": entry_id},
+        }  # fmt: skip
+        return {"type": "assistant", "uuid": uuid, "message": {"content": [block]}}
+
+    path = write(
+        tmp_path / "t.jsonl",
+        [
+            prompt("u1", "look these up"),
+            kb_get("u2", "t1", "kb-01724"),
+            kb_get("u3", "t2", ["kb-01724", "kb-03488"]),
+        ],
+    )
+    w = read_turn(path, None)
+    assert w is not None
+    calls = [i for i in w.items if i["kind"] == "tool_call"]
+    assert [c["target"] for c in calls] == ["kb-01724", "kb-01724,kb-03488"]
+    assert [c["target_class"] for c in calls] == ["", ""]

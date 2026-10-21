@@ -139,15 +139,31 @@ class FailureCue:
     cue_key: str
 
 
+_KB_GET_TOOLS = frozenset({"mcp__personal-kb__kb_get", "mcp__team-kb__team_kb_get"})
+
+
+def _kb_get_ids(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        ids = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+        return ",".join(ids)
+    return ""
+
+
 def extract_target(tool: str, tool_input: object) -> str:
     """Return the raw target a tool was pointed at, or ``''``.
 
     Bash → ``command``; file tools → ``file_path``; NotebookEdit →
-    ``notebook_path``; Glob/Grep → ``pattern``. Anything else (including MCP
-    tools), a missing key, a non-str value or a non-dict input yields ``''``.
+    ``notebook_path``; Glob/Grep → ``pattern``; the KB get tools
+    (``mcp__personal-kb__kb_get``, ``mcp__team-kb__team_kb_get``) → the
+    requested ``entry_id`` values, stripped and comma-joined. Every other tool
+    (including other MCP tools), a missing key, a non-str value or a non-dict input yields ``''``.
     """
     if not isinstance(tool_input, dict):
         return ""
+    if tool in _KB_GET_TOOLS:
+        return _kb_get_ids(tool_input.get("entry_id"))
     if tool == "Bash":
         key = "command"
     elif tool in _FILE_TOOLS:

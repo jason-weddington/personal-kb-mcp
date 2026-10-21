@@ -62,6 +62,16 @@ def test_version_is_two() -> None:
         ("mcp__x__y", {"command": "x"}, ""),
         ("Bash", None, ""),
         ("Read", "not-a-dict", ""),
+        ("mcp__personal-kb__kb_get", {"entry_id": " kb-01724 "}, "kb-01724"),
+        ("mcp__personal-kb__kb_get", {"entry_id": ["kb-01724", "kb-03488"]}, "kb-01724,kb-03488"),
+        ("mcp__personal-kb__kb_get", {"entry_id": ["kb-1", " ", 5, " kb-2 "]}, "kb-1,kb-2"),
+        ("mcp__personal-kb__kb_get", {"entry_id": [" ", 5]}, ""),
+        ("mcp__personal-kb__kb_get", {"entry_id": 5}, ""),
+        ("mcp__personal-kb__kb_get", {}, ""),
+        ("mcp__personal-kb__kb_get", None, ""),
+        ("mcp__personal-kb__kb_get", "kb-1", ""),
+        ("mcp__team-kb__team_kb_get", {"entry_id": "kb-00001"}, "kb-00001"),
+        ("mcp__team-kb__team_kb_get", {"entry_id": ["a", "b"]}, "a,b"),
     ],
 )
 def test_extract_target(tool: str, tool_input: object, expected: str) -> None:
@@ -332,3 +342,7 @@ def test_build_cue_truncation_equivalence() -> None:
     full = build_cue("Bash", {"command": "ls"}, long_text, "p", "/home/j")
     truncated = build_cue("Bash", {"command": "ls"}, long_text[:4000], "p", "/home/j")
     assert full == truncated
+
+
+def test_kb_get_target_class_unchanged() -> None:
+    assert target_class("mcp__personal-kb__kb_get", "kb-00001,kb-00002") == ""

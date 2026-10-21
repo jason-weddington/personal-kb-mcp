@@ -25,6 +25,14 @@ _EXTRACT_VECTORS: list[tuple[str, object]] = [
     ("mcp__x__y", {"command": "x"}),
     ("Bash", None),
     ("Read", "not-a-dict"),
+    ("mcp__personal-kb__kb_get", {"entry_id": " kb-01724 "}),
+    ("mcp__personal-kb__kb_get", {"entry_id": ["kb-01724", " ", 5, " kb-03488"]}),
+    ("mcp__personal-kb__kb_get", {"entry_id": [5]}),
+    ("mcp__personal-kb__kb_get", {"entry_id": 5}),
+    ("mcp__personal-kb__kb_get", {}),
+    ("mcp__personal-kb__kb_get", None),
+    ("mcp__team-kb__team_kb_get", {"entry_id": "kb-00001"}),
+    ("mcp__team-kb__kb_get", {"entry_id": "kb-00001"}),
 ]
 
 _BASH_VECTORS = [
@@ -48,6 +56,8 @@ _FILE_VECTORS = [
     ("NotebookEdit", "/a/n.ipynb"),
     ("mcp__agent-gtd__get_item", ""),
     ("Grep", "foo"),
+    ("mcp__personal-kb__kb_get", "kb-00001,kb-00002"),
+    ("mcp__team-kb__team_kb_get", "kb-00001"),
 ]
 
 _PINNED = [
