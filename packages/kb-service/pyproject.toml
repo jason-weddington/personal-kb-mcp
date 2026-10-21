@@ -11,6 +11,7 @@ dependencies = [
     "httpx>=0.28",
     "kb-core[postgres,ingest,anthropic,safety]==1.23.1",
     "mcp>=1.26,<2",
+    "numpy>=2.0",
     "pydantic>=2.10",
     "pyjwt>=2.9",
     "python-multipart>=0.0.9",

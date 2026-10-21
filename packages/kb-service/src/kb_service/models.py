@@ -1745,6 +1745,82 @@ class PreventionResponse(BaseModel):
     tool_map: dict[str, str] = Field(default_factory=dict)
 
 
+# ``reason`` on ``POST /api/kb/belief-check``, in check order. Frozen once
+# published: a new member is a breaking (enum-added) contract change.
+# checked = scoring ran, matches holds 1..BELIEF_CHECK_TOP_K entries including
+#   below-threshold ones, scored < candidates means a partial check
+# no-project = project.strip() == ''
+# project-disabled = project is listed in KB_SOFT_GATE_DISABLED_PROJECTS
+#   (case-insensitive)
+# no-embedder = the KB is FTS-only (no embedder configured)
+# no-chunks = text and reasoning yield no chunk of BELIEF_CHECK_MIN_CHUNK_CHARS
+#   or more
+# no-candidates = no gate-trusted resolution with a non-empty wrong_belief
+#   applies to the project
+# timeout = BELIEF_CHECK_DEADLINE_S passed before the resolution load or the
+#   chunk embedding finished
+# warming = chunks embedded but no candidate had a cached vector because a warm
+#   task was still running (this request's, past the deadline, or another
+#   request's covering other entries)
+# embed-failed = the embedder is configured but failed (chunk embed returned
+#   None, raised, returned the wrong count or no usable vector; includes an
+#   unreachable embedder such as kb-bench with embeddings off) or the warm task
+#   finished without caching any candidate
+# error = any other exception
+BeliefCheckReason = Literal[
+    "checked",
+    "no-project",
+    "project-disabled",
+    "no-embedder",
+    "no-chunks",
+    "no-candidates",
+    "timeout",
+    "warming",
+    "embed-failed",
+    "error",
+]
+
+
+class BeliefCheckPendingCall(BaseModel):
+    """A tool call the agent is about to make: native tool name (not canonicalized) and a short input summary; not scored in matcher_version 1."""  # noqa: E501
+
+    tool: str
+    input_summary: str
+
+
+class BeliefCheckRequest(BaseModel):
+    """``POST /api/kb/belief-check``: the agent's latest text and reasoning, each truncated server-side to its last 4096 characters; session_id and turn_index are only logged."""  # noqa: E501
+
+    text: str
+    reasoning: str | None = None
+    project: str
+    pending_calls: list[BeliefCheckPendingCall] = Field(default_factory=list)
+    session_id: str | None = None
+    turn_index: int | None = None
+
+
+class BeliefCheckMatch(BaseModel):
+    """One recorded wrong belief and its raw cosine score (max over chunks) against the request."""  # noqa: E501
+
+    entry_id: str
+    score: float
+    wrong_belief: str
+    corrected_fact: str
+    provenance_label: str
+
+
+class BeliefCheckResponse(BaseModel):
+    """``POST /api/kb/belief-check``: top matches by score including below-threshold ones; inject only when ``matches[0].score >= threshold``; ``scored < candidates`` is a partial check."""  # noqa: E501
+
+    matches: list[BeliefCheckMatch]
+    threshold: float
+    matcher_version: int
+    reason: BeliefCheckReason
+    candidates: int
+    scored: int
+    embed_model: str
+
+
 GateDecision = Literal[
     "denied",
     "would_deny",

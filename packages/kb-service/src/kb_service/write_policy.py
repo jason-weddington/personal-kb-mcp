@@ -680,6 +680,7 @@ WRITE_ROUTE_CLASSES: dict[str, str] = {
     "POST /api/kb/event": "no_entry_write",
     "POST /api/kb/turn": "no_entry_write",
     "POST /api/kb/prevention/decisions": "no_entry_write",
+    "POST /api/kb/belief-check": "no_entry_write",
     "POST /api/kb/telemetry/whispers": "no_entry_write",
     "POST /api/kb/map-lint": "no_entry_write",
     "POST /api/kb/pointer-candidates": "no_entry_write",

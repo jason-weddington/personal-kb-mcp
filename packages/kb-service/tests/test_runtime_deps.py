@@ -23,3 +23,7 @@ def test_fastmcp_is_a_runtime_dependency() -> None:
 
 def test_mcp_is_a_runtime_dependency() -> None:
     assert any(d.startswith("mcp>=1.26") for d in _deps())
+
+
+def test_numpy_is_a_runtime_dependency() -> None:
+    assert any(d.startswith("numpy") for d in _deps())

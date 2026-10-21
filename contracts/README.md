@@ -2,15 +2,15 @@
 
 ## What this is
 
-Golden request/response fixtures for the endpoints a harness calls, `GET /api/kb/prevention`, `POST /api/kb/turn` and `POST /api/kb/event`. They are used today by the Claude Code hook and are intended for talos to vendor (adoption is a harness-design item), so a schema change breaks the other side's tests instead of drifting silently.
+Golden request/response fixtures for the endpoints a harness calls, `GET /api/kb/prevention`, `POST /api/kb/turn`, `POST /api/kb/event` and `POST /api/kb/belief-check`. They are used today by the Claude Code hook and are intended for talos to vendor (adoption is a harness-design item), so a schema change breaks the other side's tests instead of drifting silently.
 
 ## File format
 
-`prevention.json` and `turn.json` each carry the top-level keys `contract`, `contract_version`, `generated_by`, `method`, `path`, `request` and `response`; `turn.json` also has `request.max_body_bytes`.
+`prevention.json`, `turn.json` and `belief_check.json` each carry the top-level keys `contract`, `contract_version`, `generated_by`, `method`, `path`, `request` and `response`; `turn.json` also has `request.max_body_bytes`.
 
 Examples are listed in `examples` arrays: request and response examples are `{name, body}` envelopes, and the prevention request examples are `{name, query}` envelopes.
 
-The schemas are pydantic `model_json_schema()` output (JSON Schema draft 2020-12) for `PreventionResponse`, `TurnDigestRequest` and `TurnDigestResponse`, including the docstring-derived `description` and `title` keys.
+The schemas are pydantic `model_json_schema()` output (JSON Schema draft 2020-12) for `PreventionResponse`, `TurnDigestRequest`, `TurnDigestResponse`, `BeliefCheckRequest` and `BeliefCheckResponse`, including the docstring-derived `description` and `title` keys.
 
 `request.query_schema` in `prevention.json` is derived from FastAPI's OpenAPI parameters and carries `additionalProperties: false`; body schemas do not, because pydantic silently drops unknown body keys.
 
@@ -56,6 +56,40 @@ Mapped harnesses send their native error text (talos opens with `exit 1 (0.01s)`
 
 `event_id` must be unique per session; a repeated `event_id` is answered `duplicate` and not stored again.
 
+## POST /api/kb/belief-check
+
+Auth is the same as GET /api/kb/prevention.
+
+The route never answers 5xx: a schema-invalid body is 422, everything else is 200 with a `reason`, and `matches` is `[]` on every reason except `checked`.
+
+The ten reasons in check order: `no-project` (the stripped project is blank), `project-disabled` (the project is in `KB_SOFT_GATE_DISABLED_PROJECTS`), `no-embedder` (the KB is FTS-only), `no-chunks` (text and reasoning yield no chunk of 16 or more characters), `no-candidates` (no trusted resolution with a wrong belief applies), `timeout` (the server deadline passed before the resolution load or the chunk embed finished), then `warming` (no candidate vector was cached yet because a warm task is still running), `embed-failed` (the embedder is configured but failed or cached nothing; kb-bench with embeddings off answers `embed-failed`, not `no-embedder`) or `checked` (scoring ran); `error` on any exception.
+
+`matches` are the top 3 by score, descending, INCLUDING below-threshold ones; a consumer injects only when `matches[0].score >= threshold`.
+
+`checked` with `scored < candidates` is a partial check and must not be counted as a clean negative.
+
+`score` is raw cosine similarity, unrounded, and depends on the server's embedder model; `matcher_version` does not change with the model, so scores and threshold are comparable only between responses with equal (`matcher_version`, `embed_model`).
+
+`matcher_version` changes on any threshold, chunking, candidate or scoring change, with no `contract_version` bump.
+
+`text` and `reasoning` are truncated server-side to their last 4096 characters and never rejected for length.
+
+The project is the `project` field stripped; it is matched case-sensitively against resolutions (the kill-switch list is case-insensitive), there is no `cwd` fallback, and blank is `no-project`.
+
+`pending_calls` tool names are native, not canonicalized, and are not scored in matcher_version 1.
+
+The server keeps no per-session state, so a consumer injects a given `entry_id` at most once per session, or once per its own re-arm window, because a negated restatement of a wrong belief can score like the belief itself.
+
+A server start empties the vector cache; each uncached candidate costs about 8 ms on the production embedder (qwen3-embedding:0.6b, dim 1024), up to 500 candidates, embedded in background batches of 32, so checks right after a start answer `warming` or a partial `checked`, and a consumer sends one warm-up check at memory connect (any text of 16 or more characters) and discards the result.
+
+`session_id` and `turn_index` are only logged; they are the join key (`session_id`, `turn_index`) to `turn_events` for auditing a match.
+
+A server older than this endpoint answers 404; a consumer treats 404, any non-200 and a timeout as no match (fail open).
+
+A consumer that measures records per call the full response body, the `session_id` and `turn_index` it sent, and its own client-side timeouts.
+
+A new `BeliefCheckReason` member is a breaking response change (enum-added) and needs a `CONTRACT_VERSIONS` bump.
+
 ## Seeing drift in production
 
 The server logs `turn_event reason=invalid` (422, loc and type only) and `turn_event reason=too-large` (413), and counts both in `route_outcomes` (plus `unmapped_tools`) on GET /api/kb/turn/heartbeat.
@@ -63,6 +97,8 @@ The server logs `turn_event reason=invalid` (422, loc and type only) and `turn_e
 The hook's turn-digest log records `http_status` and `server_reason` per send.
 
 A /api/kb/prevention failure shows only as the server WARNING `prevention_fetch failed`.
+
+A /api/kb/belief-check failure shows as the server WARNING `belief_check failed`; every request logs one INFO `belief_check ` line with `reason`, `detail`, `top_id` and `top_score`, and warm-ups log `belief_check_warm`.
 
 ## Regenerating
 
@@ -78,7 +114,7 @@ The enforcing tests are `packages/kb-service/tests/test_contracts_service.py` an
 
 For requests a breaking change is a removed or renamed field, a narrowed type, a lower `max*`/`max_body_bytes` or higher `min*`, a newly required field or query param, a removed enum member or TurnItem kind, or a changed path or method.
 
-For responses it is a removed or renamed field, a field becoming optional or nullable, a widened type, or a new member of any response enum (`TurnDigestResponse.reason`, `PreventionResponse.surprise_capture`).
+For responses it is a removed or renamed field, a field becoming optional or nullable, a widened type, or a new member of any response enum (`TurnDigestResponse.reason`, `PreventionResponse.surprise_capture`, `BeliefCheckResponse.reason`).
 
 These regenerate with no bump: a new optional request field or query param, a new TurnItem kind, a new response field with a default, and description or title-only changes.
 

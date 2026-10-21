@@ -6,6 +6,7 @@ are monkeypatched here so the suite never touches a real database or embedder.
 parametrizable, and ``database.get_db`` is replaced with a minimal fake pool.
 """
 
+import asyncio
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -1122,6 +1123,53 @@ def make_map_eligibility_verdict(
         decided_by=decided_by,
         orphaned=orphaned,
     )
+
+
+class ScriptedSingleEmbedder:
+    """Deterministic embedder with ``embed`` only (no ``embed_batch``).
+
+    Maps each text to its vector in *vectors*, else *default*; a text with
+    neither raises ``KeyError``. ``calls`` records every text list embedded.
+    """
+
+    def __init__(
+        self,
+        vectors: dict[str, list[float]],
+        default: list[float] | None = None,
+        delay_s: float = 0.0,
+    ) -> None:
+        self.vectors = vectors
+        self.default = default
+        self.delay_s = delay_s
+        self.calls: list[list[str]] = []
+
+    def _vector(self, text: str) -> list[float]:
+        if text in self.vectors:
+            return self.vectors[text]
+        if self.default is None:
+            raise KeyError(text)
+        return self.default
+
+    async def embed(self, text: str) -> list[float]:
+        self.calls.append([text])
+        if self.delay_s > 0:
+            await asyncio.sleep(self.delay_s)
+        return self._vector(text)
+
+    async def search_similar(
+        self, *args: Any, **kwargs: Any
+    ) -> list[tuple[str, float]]:
+        return []
+
+
+class ScriptedEmbedder(ScriptedSingleEmbedder):
+    """:class:`ScriptedSingleEmbedder` plus a batch ``embed_batch``."""
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]] | None:
+        self.calls.append(list(texts))
+        if self.delay_s > 0:
+            await asyncio.sleep(self.delay_s)
+        return [self._vector(t) for t in texts]
 
 
 def fake_user() -> User:

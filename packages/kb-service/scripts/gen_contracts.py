@@ -2,8 +2,9 @@
 """Generate the wire-contract fixtures under ``contracts/``.
 
 The fixtures are golden request/response JSON for ``GET /api/kb/prevention``,
-``POST /api/kb/turn`` and ``POST /api/kb/event``. They are written only by this
-script and never edited by hand; see ``contracts/README.md``.
+``POST /api/kb/turn``, ``POST /api/kb/event`` and ``POST /api/kb/belief-check``.
+They are written only by this script and never edited by hand; see
+``contracts/README.md``.
 
 A breaking change to a contract (see :func:`breaking_changes`) makes this script
 refuse to write until ``CONTRACT_VERSIONS`` is bumped.
@@ -22,8 +23,14 @@ from typing import Any
 from kb_core.cues import build_cue
 
 from kb_service import harness_tools
+from kb_service.belief_check import (
+    BELIEF_CHECK_MATCHER_VERSION,
+    BELIEF_CHECK_THRESHOLD,
+)
 from kb_service.main import app
 from kb_service.models import (
+    BeliefCheckRequest,
+    BeliefCheckResponse,
     EventRequest,
     EventResponse,
     GateSettings,
@@ -46,7 +53,14 @@ from kb_service.turn_digest import TURN_DIGEST_MAX_BYTES
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTRACTS_DIR = REPO_ROOT / "contracts"
 GENERATED_BY = "packages/kb-service/scripts/gen_contracts.py"
-CONTRACT_VERSIONS: dict[str, int] = {"prevention": 1, "turn": 1, "event": 1}
+CONTRACT_VERSIONS: dict[str, int] = {
+    "prevention": 1,
+    "turn": 1,
+    "event": 1,
+    "belief_check": 1,
+}
+# A literal, so the build does not depend on KB_EMBEDDING_MODEL.
+_CONTRACT_EMBED_MODEL = "qwen3-embedding:0.6b"
 
 _CLAUDE_CODE_ITEMS: list[dict[str, Any]] = [
     {"kind": "assistant_text", "text": "Pushing the branch now."},
@@ -583,12 +597,206 @@ def build_event() -> dict[str, Any]:
     }
 
 
+_BC_REQUESTS: list[tuple[str, dict[str, Any]]] = [
+    (
+        "talos_turn",
+        {
+            "text": "Tests are green. Push feature branches to the mirror remote.",
+            "reasoning": (
+                "The branch is ready for review, so it should go to the shared"
+                " remote now."
+            ),
+            "project": "personal-kb",
+            "pending_calls": [
+                {"tool": "bash", "input_summary": "git push mirror feat/x"}
+            ],
+            "session_id": "contract-session-2",
+            "turn_index": 4,
+        },
+    ),
+    (
+        "minimal",
+        {
+            "text": "Push feature branches to the mirror remote.",
+            "project": "personal-kb",
+        },
+    ),
+]
+
+_BC_ENTRIES: dict[str, tuple[str, str, str]] = {
+    "kb-00101": (
+        _CUE_PUSH.wrong_belief,
+        _CUE_PUSH.corrected_fact,
+        "deliberate/observed",
+    ),
+    "kb-00102": (
+        _CUE_REMOTE.wrong_belief,
+        _CUE_REMOTE.corrected_fact,
+        "autonomous/observed",
+    ),
+    "kb-00105": (
+        "Iterate with the bare uv run pytest.",
+        "Iterate with uv run pytest -m 'not eval'; the bare command runs the"
+        " live-API eval tests.",
+        "deliberate/asserted",
+    ),
+}
+
+
+def _bc_match(entry_id: str, score: float) -> dict[str, Any]:
+    wrong, fact, label = _BC_ENTRIES[entry_id]
+    return {
+        "entry_id": entry_id,
+        "score": score,
+        "wrong_belief": wrong,
+        "corrected_fact": fact,
+        "provenance_label": label,
+    }
+
+
+def _bc_response(
+    reason: str,
+    matches: list[dict[str, Any]],
+    candidates: int,
+    scored: int,
+    embed_model: str = _CONTRACT_EMBED_MODEL,
+) -> dict[str, Any]:
+    return {
+        "matches": matches,
+        "threshold": BELIEF_CHECK_THRESHOLD,
+        "matcher_version": BELIEF_CHECK_MATCHER_VERSION,
+        "reason": reason,
+        "candidates": candidates,
+        "scored": scored,
+        "embed_model": embed_model,
+    }
+
+
+def _check_belief_examples(examples: list[tuple[str, dict[str, Any]]]) -> None:
+    """Fail closed when the examples stop illustrating the contract."""
+    by_name = dict(examples)
+    match_top = by_name["match"]["matches"][0]["score"]
+    near_top = by_name["near_miss"]["matches"][0]["score"]
+    if not match_top >= BELIEF_CHECK_THRESHOLD > near_top:
+        raise ValueError(
+            "belief_check examples: match must reach the threshold and near_miss"
+            f" must not (match={match_top}, near_miss={near_top},"
+            f" threshold={BELIEF_CHECK_THRESHOLD})"
+        )
+    for name, body in examples:
+        matches = body["matches"]
+        if body["reason"] == "checked":
+            scores = [m["score"] for m in matches]
+            if not 1 <= len(matches) <= 3:
+                raise ValueError(f"belief_check example {name}: 1..3 matches")
+            if scores != sorted(scores, reverse=True):
+                raise ValueError(f"belief_check example {name}: scores not descending")
+            if body["scored"] > body["candidates"]:
+                raise ValueError(f"belief_check example {name}: scored > candidates")
+        for m in matches:
+            label = m["provenance_label"]
+            if not m["wrong_belief"] or "observed once" in label:
+                raise ValueError(f"belief_check example {name}: untrusted match")
+            if "supersedes-edge" in label:
+                raise ValueError(f"belief_check example {name}: supersedes-edge match")
+    partial = by_name["partial"]
+    if not partial["scored"] < partial["candidates"]:
+        raise ValueError("belief_check example partial: scored must be < candidates")
+
+
+def build_belief_check() -> dict[str, Any]:
+    """Build the ``belief_check.json`` document."""
+    response_schema = BeliefCheckResponse.model_json_schema()
+    reasons = response_schema["properties"]["reason"]["enum"]
+    raws: list[tuple[str, dict[str, Any]]] = [
+        (
+            "match",
+            _bc_response(
+                "checked",
+                [
+                    _bc_match("kb-00101", 0.9132),
+                    _bc_match("kb-00102", 0.6120),
+                    _bc_match("kb-00105", 0.5507),
+                ],
+                3,
+                3,
+            ),
+        ),
+        (
+            "near_miss",
+            _bc_response(
+                "checked",
+                [
+                    _bc_match("kb-00101", 0.8013),
+                    _bc_match("kb-00102", 0.5120),
+                    _bc_match("kb-00105", 0.4710),
+                ],
+                3,
+                3,
+            ),
+        ),
+        (
+            "partial",
+            _bc_response(
+                "checked",
+                [_bc_match("kb-00102", 0.6120), _bc_match("kb-00105", 0.5507)],
+                3,
+                2,
+            ),
+        ),
+    ]
+    for r in reasons:
+        if r == "checked":
+            continue
+        raws.append(
+            (
+                r,
+                _bc_response(
+                    r,
+                    [],
+                    3 if r in ("timeout", "warming", "embed-failed") else 0,
+                    0,
+                    "" if r == "no-embedder" else _CONTRACT_EMBED_MODEL,
+                ),
+            )
+        )
+    _check_belief_examples(raws)
+    return {
+        **_header("belief_check", "POST", "/api/kb/belief-check"),
+        "request": {
+            "schema": BeliefCheckRequest.model_json_schema(),
+            "examples": [
+                {
+                    "name": n,
+                    "body": BeliefCheckRequest.model_validate(raw).model_dump(
+                        mode="json"
+                    ),
+                }
+                for n, raw in _BC_REQUESTS
+            ],
+        },
+        "response": {
+            "schema": response_schema,
+            "examples": [
+                {
+                    "name": n,
+                    "body": BeliefCheckResponse.model_validate(raw).model_dump(
+                        mode="json"
+                    ),
+                }
+                for n, raw in raws
+            ],
+        },
+    }
+
+
 def build_contracts() -> dict[str, dict[str, Any]]:
     """Return every generated document, keyed by file name."""
     return {
         "prevention.json": build_prevention(),
         "turn.json": build_turn(),
         "event.json": build_event(),
+        "belief_check.json": build_belief_check(),
     }
 
 

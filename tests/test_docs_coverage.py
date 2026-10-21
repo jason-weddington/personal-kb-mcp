@@ -445,6 +445,16 @@ DOC_PINNED: dict[str, tuple[str, Path]] = {
     "SURPRISE_LESSON_TTL_DAYS": ("kb_service.surprise_distill", AUTOMATION_DOC),
     "MAP_BODY_BASE_CHARS": ("kb_core.map_lint", CORE_DOC),
     "STALE_FILTER_THRESHOLD": ("kb_core.confidence.decay", CORE_DOC),
+    "BELIEF_CHECK_THRESHOLD": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_MATCHER_VERSION": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_TOP_K": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_MAX_CHUNKS": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_MIN_CHUNK_CHARS": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_MAX_CHUNK_CHARS": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_MAX_INPUT_CHARS": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_MAX_CANDIDATES": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_DEADLINE_S": ("kb_service.belief_check", AUTOMATION_DOC),
+    "BELIEF_CHECK_WARM_BATCH": ("kb_service.belief_check", AUTOMATION_DOC),
 }
 
 

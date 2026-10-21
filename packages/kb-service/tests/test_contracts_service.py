@@ -17,9 +17,13 @@ from jsonschema import Draft202012Validator
 from kb_core import create_sqlite
 
 import kb_service.database as database
+from kb_service import belief_check
 from kb_service.auth import get_current_user
 from kb_service.main import app
 from kb_service.models import (
+    BeliefCheckReason,
+    BeliefCheckRequest,
+    BeliefCheckResponse,
     EventRequest,
     EventResponse,
     PreventionResponse,
@@ -27,7 +31,12 @@ from kb_service.models import (
     TurnDigestResponse,
 )
 from kb_service.routes import turn_routes
-from tests.conftest import FakeKnowledgeBase, fake_user
+from tests.conftest import (
+    FakeKnowledgeBase,
+    ScriptedEmbedder,
+    ScriptedSingleEmbedder,
+    fake_user,
+)
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -70,6 +79,10 @@ def _prevention() -> dict[str, Any]:
 
 def _turn() -> dict[str, Any]:
     return _load("turn.json")
+
+
+def _belief() -> dict[str, Any]:
+    return _load("belief_check.json")
 
 
 # --- freshness and generator CLI ---------------------------------------------
@@ -391,6 +404,7 @@ def test_response_examples_follow_reason_enum() -> None:
     [
         (PreventionResponse, "prevention.json", "response"),
         (TurnDigestRequest, "turn.json", "request"),
+        (BeliefCheckRequest, "belief_check.json", "request"),
     ],
 )
 def test_defaulted_fields_are_exercised(model: Any, doc_name: str, zone: str) -> None:
@@ -408,12 +422,14 @@ def test_defaulted_fields_are_exercised(model: Any, doc_name: str, zone: str) ->
 
 
 def test_example_envelopes() -> None:
-    prevention, turn = _prevention(), _turn()
+    prevention, turn, belief = _prevention(), _turn(), _belief()
     lists = [
         (prevention["request"]["examples"], {"name", "query"}),
         (prevention["response"]["examples"], {"name", "body"}),
         (turn["request"]["examples"], {"name", "body"}),
         (turn["response"]["examples"], {"name", "body"}),
+        (belief["request"]["examples"], {"name", "body"}),
+        (belief["response"]["examples"], {"name", "body"}),
     ]
     for examples, keys in lists:
         assert isinstance(examples, list)
@@ -427,6 +443,8 @@ def test_bodies_round_trip() -> None:
         (TurnDigestRequest, _turn()["request"]["examples"]),
         (TurnDigestResponse, _turn()["response"]["examples"]),
         (PreventionResponse, _prevention()["response"]["examples"]),
+        (BeliefCheckRequest, _belief()["request"]["examples"]),
+        (BeliefCheckResponse, _belief()["response"]["examples"]),
     ]
     for model, examples in cases:
         for ex in examples:
@@ -441,6 +459,8 @@ def _schemas() -> list[tuple[str, dict[str, Any]]]:
         ("prevention response", prevention["response"]["schema"]),
         ("turn request", turn["request"]["schema"]),
         ("turn response", turn["response"]["schema"]),
+        ("belief_check request", _belief()["request"]["schema"]),
+        ("belief_check response", _belief()["response"]["schema"]),
     ]
 
 
@@ -460,6 +480,8 @@ def test_examples_validate_against_schemas() -> None:
         (prevention["response"]["schema"], prevention["response"]["examples"]),
         (turn["request"]["schema"], turn["request"]["examples"]),
         (turn["response"]["schema"], turn["response"]["examples"]),
+        (_belief()["request"]["schema"], _belief()["request"]["examples"]),
+        (_belief()["response"]["schema"], _belief()["response"]["examples"]),
     ]
     for schema, examples in pairs:
         validator = Draft202012Validator(schema)
@@ -487,7 +509,7 @@ def test_no_ambient_values() -> None:
     prevention, turn = _prevention(), _turn()
     texts = [
         json.dumps(e[key])
-        for doc in (prevention, turn)
+        for doc in (prevention, turn, _belief())
         for zone in ("request", "response")
         for e in doc[zone]["examples"]
         for key in ("body", "query")
@@ -515,7 +537,7 @@ def test_no_ambient_values() -> None:
 
 def test_fixture_routes_exist() -> None:
     routes = [r for r in app.routes if isinstance(r, APIRoute)]
-    for doc in (_prevention(), _turn()):
+    for doc in (_prevention(), _turn(), _belief()):
         assert any(
             r.path == doc["path"] and doc["method"] in r.methods for r in routes
         ), doc["path"]
@@ -533,6 +555,9 @@ def test_readme_documents_the_contract() -> None:
         "turn_event reason=too-large",
         "route_outcomes",
         "prevention_fetch failed",
+        "belief_check.json",
+        "belief_check failed",
+        "BeliefCheckResponse.reason",
     ):
         assert needle in text, needle
 
@@ -805,3 +830,138 @@ def test_event_examples_match_live_route(turn_client: TestClient, name: str) -> 
         "cue_key": want["cue_key"],
         "normalizer_version": want["normalizer_version"],
     }
+
+
+# --- POST /api/kb/belief-check against the committed fixture -------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_belief_check() -> Iterator[None]:
+    belief_check.reset_state()
+    yield
+    belief_check.reset_state()
+
+
+def test_belief_check_response_example_names() -> None:
+    names = [e["name"] for e in _belief()["response"]["examples"]]
+    reasons = list(BeliefCheckReason.__args__)
+    assert names == ["match", "near_miss", "partial"] + [
+        r for r in reasons if r != "checked"
+    ]
+
+
+def test_belief_check_examples_carry_the_module_constants() -> None:
+    for ex in _belief()["response"]["examples"]:
+        body = ex["body"]
+        assert body["threshold"] == belief_check.BELIEF_CHECK_THRESHOLD, ex["name"]
+        assert body["matcher_version"] == belief_check.BELIEF_CHECK_MATCHER_VERSION
+        if body["reason"] != "checked":
+            assert body["matches"] == [], ex["name"]
+
+
+@pytest.mark.parametrize("threshold", [0.95, 0.80])
+def test_belief_check_builder_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, threshold: float
+) -> None:
+    monkeypatch.setattr(gc, "BELIEF_CHECK_THRESHOLD", threshold)
+    with pytest.raises(ValueError):
+        gc.build_belief_check()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda raws: raws[0][1]["matches"].append(raws[0][1]["matches"][0]),
+        lambda raws: raws[0][1]["matches"].reverse(),
+        lambda raws: raws[0][1].update(scored=9),
+        lambda raws: raws[2][1].update(scored=3),
+        lambda raws: raws[0][1]["matches"][0].update(wrong_belief=""),
+        lambda raws: raws[0][1]["matches"][0].update(
+            provenance_label="autonomous/observed, observed once, unconfirmed"
+        ),
+        lambda raws: raws[0][1]["matches"][0].update(
+            provenance_label="supersedes-edge"
+        ),
+    ],
+)
+def test_belief_check_example_rules(
+    monkeypatch: pytest.MonkeyPatch, mutate: Any
+) -> None:
+    real = gc._check_belief_examples
+
+    def tampered(raws: list[tuple[str, dict[str, Any]]]) -> None:
+        mutate(raws)
+        real(raws)
+
+    monkeypatch.setattr(gc, "_check_belief_examples", tampered)
+    with pytest.raises(ValueError):
+        gc.build_belief_check()
+
+
+async def _seed_belief(kb: Any) -> None:
+    await kb.store(
+        short_title="Contract belief",
+        long_title="Contract belief resolution",
+        knowledge_details="contract",
+        project_ref="personal-kb",
+        hints={
+            "resolution": {
+                "corrected_fact": "Push feature branches to origin.",
+                "wrong_belief": "Push feature branches to the mirror remote.",
+                "provenance": {"capture": "deliberate", "grounding": "observed"},
+            }
+        },
+        enrich=False,
+    )
+
+
+@pytest.fixture
+def belief_client(
+    real_client: TestClient,
+    fake_kb: FakeKnowledgeBase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
+    monkeypatch.delenv("KB_EMBEDDING_MODEL", raising=False)
+    scripted = ScriptedEmbedder(
+        {"Push feature branches to the mirror remote.": [1.0, 0.0]},
+        default=[0.0, 1.0],
+    )
+    monkeypatch.setattr(fake_kb, "embedder", scripted)
+    monkeypatch.setattr(fake_kb, "embed_batch", scripted.embed_batch, raising=False)
+    yield real_client
+
+
+async def test_belief_check_talos_turn_matches_fixture(
+    kb: Any, belief_client: TestClient
+) -> None:
+    await _seed_belief(kb)
+    belief = _belief()
+    req = _examples(belief["request"]["examples"])["talos_turn"]
+    resp = belief_client.post("/api/kb/belief-check", json=req)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reason"] == "checked"
+    assert Draft202012Validator(belief["response"]["schema"]).is_valid(body)
+    ex = _examples(belief["response"]["examples"])["match"]
+    assert set(body) == set(ex)
+    assert set(body["matches"][0]) == set(ex["matches"][0])
+    assert body["threshold"] == ex["threshold"]
+    assert body["matcher_version"] == ex["matcher_version"]
+    assert body["embed_model"] == "qwen3-embedding:0.6b"
+    assert body["candidates"] == body["scored"] == 1
+    assert body["matches"][0]["score"] == pytest.approx(1.0)
+
+
+async def test_belief_check_minimal_validates(
+    kb: Any, belief_client: TestClient
+) -> None:
+    await _seed_belief(kb)
+    belief = _belief()
+    req = _examples(belief["request"]["examples"])["minimal"]
+    resp = belief_client.post("/api/kb/belief-check", json=req)
+    assert resp.status_code == 200
+    assert Draft202012Validator(belief["response"]["schema"]).is_valid(resp.json())
+
+
+def test_scripted_single_embedder_has_no_batch() -> None:
+    assert not hasattr(ScriptedSingleEmbedder({}), "embed_batch")

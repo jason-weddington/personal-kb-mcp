@@ -731,6 +731,7 @@ Auth values: **none** (unauthenticated); **user** (any authenticated user, JWT o
 | `/api/kb/prevention` | GET | `prevention_routes.py` | user | [intelligent §12](docs/intelligent-kb.md#12-deliver-i-get-apikbprevention-and-the-hooks-prevention-cache) |
 | `/api/kb/prevention/decisions` | POST | `prevention_routes.py` | user | [intelligent §14](docs/intelligent-kb.md#14-prevent-the-pretooluse-soft-gate) |
 | `/api/kb/prevention/stats` | GET | `prevention_routes.py` | user | [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
+| `/api/kb/belief-check` | POST | `belief_check_routes.py` | user | [intelligent §15](docs/intelligent-kb.md#mid-thought-belief-check-post-apikbbelief-check) |
 | `/api/kb/metrics/repeat-rate` | GET | `metrics_routes.py` | user | [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
 | `/api/kb/observe/turn-events` | GET | `observe_routes.py` | admin | [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
 | `/api/kb/observe/failure-events` | GET | `observe_routes.py` | admin | [intelligent §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
