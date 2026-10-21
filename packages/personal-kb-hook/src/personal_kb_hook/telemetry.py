@@ -59,6 +59,10 @@ _TIMEOUT: float = 3.0
 _TELEMETRY_PATH = "/api/kb/telemetry/whispers"
 _ORPHAN_SWEEP_CAP = 20
 
+# A log modified within this many seconds is presumed to belong to a live
+# session (its own Stop will flush it) and is left alone by orphan_sweep.
+_ORPHAN_MIN_AGE_SECONDS = 86400
+
 # Absolute wall budget for orphan_sweep's whole loop, independent of the
 # file-count cap above. Checked with a monotonic clock before each POST so a
 # host with many orphaned logs and a hanging/slow KB service cannot turn
@@ -291,6 +295,13 @@ def orphan_sweep(current_session_id: str) -> None:
     deletes the orphaned file. Safety net for sessions where Stop did not
     fire. Silent-on-failure; stdlib only.
 
+    Age rule: a log whose mtime is under :data:`_ORPHAN_MIN_AGE_SECONDS`
+    (24 h) is skipped — not POSTed, not deleted, not counted against the
+    cap — because parallel live sessions share this directory and wiping
+    their logs would lose later consumption credit. Logs of sessions whose
+    Stop never fired go stale and are swept. A file whose mtime cannot be
+    read is skipped (never delete what cannot be dated).
+
     Bounded by TWO independent limits: the :data:`_ORPHAN_SWEEP_CAP` file
     count, AND an absolute :data:`_ORPHAN_SWEEP_BUDGET_SECONDS` wall budget
     measured with ``time.monotonic()`` (never ``time.time()``, which can
@@ -316,6 +327,12 @@ def orphan_sweep(current_session_id: str) -> None:
                 return
             sid = _parse_session_id_from_filename(path.name)
             if sid is None or sid == current_session_id:
+                continue
+            try:
+                age = time.time() - path.stat().st_mtime
+            except OSError:
+                continue
+            if age < _ORPHAN_MIN_AGE_SECONDS:
                 continue
             if time.monotonic() >= deadline:
                 # Budget exhausted: stop now, leave remaining files for the

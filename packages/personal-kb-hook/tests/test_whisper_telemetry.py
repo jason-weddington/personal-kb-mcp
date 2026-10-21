@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import socket
 import sys
 import time
@@ -914,6 +915,7 @@ def test_orphan_sweep_flushes_and_deletes_foreign_session_log(
     )
     foreign_path = get_whisper_log_path(foreign)
     assert foreign_path.exists()
+    _age_log(foreign, _OLD)
 
     recorder = _Recorder()
     monkeypatch.setattr(urllib.request, "urlopen", recorder)
@@ -1112,6 +1114,16 @@ def test_append_row_silent_when_dir_unwritable(
 # ─── (9) inline-POST timeout bounding (GTD 54675d39) ────────────────────────
 
 
+def _age_log(session_id: str, seconds: float) -> None:
+    """Set a session log's mtime to ``seconds`` ago."""
+    path = get_whisper_log_path(session_id)
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
+_OLD = 25 * 3600
+
+
 def _seed_orphan_log(session_id: str, map_id: str) -> None:
     """Append one minimal roster row to an orphan session's whisper-log."""
     telemetry.append_row(
@@ -1159,6 +1171,7 @@ def test_orphan_sweep_swallows_hung_opener_and_leaves_file(
     _seed_orphan_log(foreign, "kb-hung")
     foreign_path = get_whisper_log_path(foreign)
     assert foreign_path.exists()
+    _age_log(foreign, _OLD)
 
     # Must not raise.
     telemetry.orphan_sweep("sess-current")
@@ -1181,6 +1194,8 @@ def test_orphan_sweep_stops_at_wall_budget_and_leaves_remaining_files(
     path_b = get_whisper_log_path("sess-orphan-b")
     path_c = get_whisper_log_path("sess-orphan-c")
     assert path_a.exists() and path_b.exists() and path_c.exists()
+    for sid in ("sess-orphan-a", "sess-orphan-b", "sess-orphan-c"):
+        _age_log(sid, _OLD)
 
     recorder = _Recorder()
     monkeypatch.setattr(urllib.request, "urlopen", recorder)
@@ -1209,6 +1224,7 @@ def test_orphan_sweep_success_still_unlinks_file(
     _seed_orphan_log("sess-orphan-ok", "kb-ok")
     path = get_whisper_log_path("sess-orphan-ok")
     assert path.exists()
+    _age_log("sess-orphan-ok", _OLD)
 
     recorder = _Recorder()
     monkeypatch.setattr(urllib.request, "urlopen", recorder)
@@ -1217,6 +1233,58 @@ def test_orphan_sweep_success_still_unlinks_file(
 
     assert len(recorder.calls) == 1
     assert not path.exists()
+
+
+def test_orphan_sweep_skips_young_foreign_log(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    _seed_orphan_log("sess-young", "kb-y")
+    _age_log("sess-young", 60)
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+    telemetry.orphan_sweep("sess-current")
+    assert recorder.calls == []
+    assert get_whisper_log_path("sess-young").exists()
+
+
+def test_orphan_sweep_sweeps_old_foreign_log(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    _seed_orphan_log("sess-old", "kb-o")
+    _age_log("sess-old", _OLD)
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+    telemetry.orphan_sweep("sess-current")
+    assert len(recorder.calls) == 1
+    assert not get_whisper_log_path("sess-old").exists()
+
+
+def test_orphan_sweep_young_files_do_not_consume_cap(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    monkeypatch.setattr(telemetry, "_ORPHAN_SWEEP_CAP", 1)
+    _seed_orphan_log("sess-a-young", "kb-y")
+    _seed_orphan_log("sess-b-old", "kb-o")
+    _age_log("sess-a-young", 60)
+    _age_log("sess-b-old", _OLD)
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+    telemetry.orphan_sweep("sess-current")
+    assert len(recorder.calls) == 1
+    assert get_whisper_log_path("sess-a-young").exists()
+    assert not get_whisper_log_path("sess-b-old").exists()
+
+
+def test_orphan_sweep_skips_current_session_regardless_of_age(
+    monkeypatch: pytest.MonkeyPatch, hook_env: dict[str, Path]
+) -> None:
+    _seed_orphan_log("sess-current", "kb-c")
+    _age_log("sess-current", _OLD)
+    recorder = _Recorder()
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+    telemetry.orphan_sweep("sess-current")
+    assert recorder.calls == []
+    assert get_whisper_log_path("sess-current").exists()
 
 
 def test_flush_session_normal_success_posts_every_row_unchanged(
