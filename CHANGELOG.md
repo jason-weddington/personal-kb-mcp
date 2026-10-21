@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v1.23.0 (2026-10-20)
+
+### Bug Fixes
+
+- **hook**: The whisper-log orphan sweep leaves live sessions' logs alone, so consumption in
+  parallel sessions is credited
+  ([`dfd83d5`](https://github.com/jason-weddington/personal-kb-mcp/commit/dfd83d5d2f4135a8fcfd7706aaeec315ed4fc2f8))
+
+### Features
+
+- **observe**: The observe API serves whisper_telemetry, so the lab can track whisper and roster
+  consumption without hand queries
+  ([`17163db`](https://github.com/jason-weddington/personal-kb-mcp/commit/17163dbfc21f8f1a3165a6673bb8fb7aee2d1265))
+
+
 ## v1.22.0 (2026-10-20)
 
 ### Documentation
