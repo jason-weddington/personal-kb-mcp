@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v1.22.0 (2026-10-20)
+
+### Documentation
+
+- The intelligent KB is capture, inject and relevance; session start is best effort
+  ([`1e0bdb2`](https://github.com/jason-weddington/personal-kb-mcp/commit/1e0bdb2e34db7031e8d492bd3ae6f9d8dd397396))
+
+- The listener has been back on since 2026-10-13 (PR-001-c), not paused
+  ([`bfc1431`](https://github.com/jason-weddington/personal-kb-mcp/commit/bfc14310ee09d57a72300f205ed6f79da882bb5c))
+
+### Features
+
+- **hook**: Turn digests record the entry ids a kb_get requested, so whisper consumption can be
+  measured
+  ([`f920773`](https://github.com/jason-weddington/personal-kb-mcp/commit/f92077366be1e65731c380aacf2ab9a122dd2ba1))
+
+
 ## v1.21.0 (2026-10-20)
 
 ### Features
