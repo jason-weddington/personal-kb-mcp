@@ -1,18 +1,20 @@
 """Admin-only, read-only, keyset-paginated raw-signal feeds for the observatory.
 
 ``GET /api/kb/observe/{turn-events,failure-events,surprise-detections,
-llm-calls,listener-decisions}``.
+llm-calls,listener-decisions,whisper-telemetry}``.
 ``llm-calls`` filters on ``ts`` and returns ``diagnostics_raw`` as the stored
 text (not parsed), so the text ``null`` and SQL NULL stay distinct. Nothing
 here writes or marks anything.
 """
 
+import base64
+import binascii
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from kb_service.auth import require_admin
 from kb_service.database import get_db
@@ -27,6 +29,8 @@ from kb_service.models import (
     ObserveSurpriseDetectionsResponse,
     ObserveTurnEventRow,
     ObserveTurnEventsResponse,
+    ObserveWhisperTelemetryResponse,
+    ObserveWhisperTelemetryRow,
     User,
 )
 
@@ -230,3 +234,87 @@ async def observe_listener_decisions(
     return ObserveListenerDecisionsResponse(
         rows=[ObserveListenerDecisionRow(**r) for r in rows], next_after_id=next_id
     )
+
+
+_WHISPER_TABLE = "whisper_telemetry"
+_WHISPER_ORDER = "emitted_ts, session_id, surface, map_id"
+
+
+def _encode_cursor(row: dict[str, Any]) -> str:
+    key = [row["emitted_ts"], row["session_id"], row["surface"], row["map_id"]]
+    return base64.urlsafe_b64encode(json.dumps(key).encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> list[str]:
+    try:
+        key = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+    except (binascii.Error, ValueError, UnicodeError):
+        raise HTTPException(status_code=422, detail="invalid cursor") from None
+    if (
+        not isinstance(key, list)
+        or len(key) != 4
+        or not all(isinstance(k, str) for k in key)
+    ):
+        raise HTTPException(status_code=422, detail="invalid cursor")
+    return key
+
+
+@router.get("/whisper-telemetry", response_model=ObserveWhisperTelemetryResponse)
+async def observe_whisper_telemetry(
+    admin: Annotated[User, Depends(require_admin)],
+    since: _Since = None,
+    until: _Until = None,
+    surface: Annotated[Literal["roster", "listener"] | None, Query()] = None,
+    limit: _Limit = DEFAULT_LIMIT,
+    after: Annotated[str | None, Query(description="Opaque cursor")] = None,
+) -> ObserveWhisperTelemetryResponse:
+    """Whisper consumption by ``emitted_ts, session_id, surface, map_id``.
+
+    Rows mutate after first flush, so consumers re-read a trailing window.
+    """
+    since_s = _as_utc_iso(since)
+    until_s = _as_utc_iso(until)
+    args: list[Any] = []
+    clauses: list[str] = []
+    if since_s is not None:
+        args.append(since_s)
+        clauses.append(f"emitted_ts >= ${len(args)}")
+    if until_s is not None:
+        args.append(until_s)
+        clauses.append(f"emitted_ts < ${len(args)}")
+    if surface is not None:
+        args.append(surface)
+        clauses.append(f"surface = ${len(args)}")
+    if after is not None:
+        key = _decode_cursor(after)
+        first = len(args) + 1
+        args.extend(key)
+        marks = ", ".join(f"${i}" for i in range(first, first + 4))
+        clauses.append(f"({_WHISPER_ORDER}) > ({marks})")
+    args.append(limit)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = (
+        f"SELECT * FROM {_WHISPER_TABLE}{where}"  # noqa: S608
+        f" ORDER BY {_WHISPER_ORDER} LIMIT ${len(args)}"
+    )
+    pool = await get_db()
+    raw = [dict(r) for r in await pool.fetch(sql, *args)]
+    rows = []
+    for row in raw:
+        row["trigger_context"] = _parse_json(row.get("trigger_context"), {})
+        row["consumed"] = bool(row.get("consumed"))
+        rows.append(ObserveWhisperTelemetryRow(**row))
+    logger.info(
+        "observe table=%s admin=%s since=%s until=%s surface=%s cursor=%s"
+        " limit=%d rows=%d",
+        _WHISPER_TABLE,
+        admin.id,
+        since_s,
+        until_s,
+        surface,
+        after is not None,
+        limit,
+        len(rows),
+    )
+    next_after = _encode_cursor(raw[-1]) if len(raw) == limit else None
+    return ObserveWhisperTelemetryResponse(rows=rows, next_after=next_after)

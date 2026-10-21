@@ -2198,6 +2198,36 @@ class ObserveListenerDecisionsResponse(BaseModel):
     next_after_id: int | None = None
 
 
+class ObserveWhisperTelemetryRow(BaseModel):
+    """One ``whisper_telemetry`` row (composite key, no surrogate id).
+
+    Rows mutate after their first flush: ``consumed``, ``consumed_ts``,
+    ``emit_count`` and ``last_emitted_ts`` are upserted.
+    """
+
+    session_id: str
+    host: str
+    surface: str
+    map_id: str
+    source_kb: str
+    cwd_project: str | None = None
+    trigger_context: dict[str, Any]
+    emitted_ts: str
+    last_emitted_ts: str | None = None
+    emit_count: int
+    consumed: bool
+    consumed_ts: str | None = None
+    build_engine: str | None = None
+    flushed_at: str
+
+
+class ObserveWhisperTelemetryResponse(BaseModel):
+    """A composite-keyset page of whisper telemetry rows."""
+
+    rows: list[ObserveWhisperTelemetryRow]
+    next_after: str | None = None
+
+
 # --- Browse (Home page) ---
 
 

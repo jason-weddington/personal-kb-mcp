@@ -1,5 +1,6 @@
 """GET /api/kb/observe/*: admin-only paged raw-signal feeds (real SQLite)."""
 
+import base64
 import sqlite3
 import types
 from collections.abc import Iterator
@@ -430,3 +431,90 @@ def test_observe_rows_expose_agent_columns(local_client: TestClient) -> None:
     assert by_event["cc:s:agentfail"]["tool_use_id"] == "t-agent"
     assert by_event["cc:s:agentfail"]["agent_id"] == "a1"
     assert by_event["cc:s:agentfail"]["agent_type"] == "general-purpose"
+
+
+def _insert_whisper(
+    session: str,
+    map_id: str,
+    ts: str = "2026-10-09T12:00:00+00:00",
+    surface: str = "roster",
+    consumed: int = 0,
+) -> None:
+    _sql(
+        "INSERT INTO whisper_telemetry (session_id, host, surface, map_id,"
+        " source_kb, cwd_project, trigger_context, emitted_ts, last_emitted_ts,"
+        " emit_count, consumed, flushed_at)"
+        " VALUES (?, 'h', ?, ?, 'kb', 'p', '{\"a\": 1}', ?, ?, 2, ?, ?)",
+        session,
+        surface,
+        map_id,
+        ts,
+        ts,
+        consumed,
+        ts,
+    )
+
+
+def test_whisper_telemetry_auth(
+    local_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_AUTH_MODE", raising=False)
+    path = "/api/kb/observe/whisper-telemetry"
+    assert local_client.get(path).status_code == 401
+    app.dependency_overrides[get_current_user] = fake_user
+    assert local_client.get(path).status_code == 403
+
+
+def test_whisper_telemetry_window_and_surface(local_client: TestClient) -> None:
+    _insert_whisper("a", "m1", "2026-01-01T00:00:00+00:00")
+    _insert_whisper("b", "m2", "2026-02-01T00:00:00+00:00", surface="listener")
+    _insert_whisper("c", "m3", "2026-03-01T00:00:00+00:00")
+    url = "/api/kb/observe/whisper-telemetry"
+    rows = local_client.get(
+        url, params={"since": "2026-02-01T00:00:00Z", "until": "2026-03-01T00:00:00Z"}
+    ).json()["rows"]
+    assert [r["session_id"] for r in rows] == ["b"]
+    rows = local_client.get(url, params={"surface": "roster"}).json()["rows"]
+    assert [r["session_id"] for r in rows] == ["a", "c"]
+    assert local_client.get(url, params={"surface": "other"}).status_code == 422
+
+
+def test_whisper_telemetry_paging_shared_ts(local_client: TestClient) -> None:
+    for s in ("a", "b", "c"):
+        _insert_whisper(s, "m")
+    url = "/api/kb/observe/whisper-telemetry"
+    first = local_client.get(url, params={"limit": 2}).json()
+    assert [r["session_id"] for r in first["rows"]] == ["a", "b"]
+    assert first["next_after"]
+    second = local_client.get(
+        url, params={"limit": 2, "after": first["next_after"]}
+    ).json()
+    assert [r["session_id"] for r in second["rows"]] == ["c"]
+    assert second["next_after"] is None
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "!!!",
+        base64.urlsafe_b64encode(b"not json").decode(),
+        base64.urlsafe_b64encode(b'["a", "b", "c"]').decode(),
+        base64.urlsafe_b64encode(b'["a", "b", "c", 4]').decode(),
+    ],
+)
+def test_whisper_telemetry_bad_cursor(local_client: TestClient, cursor: str) -> None:
+    resp = local_client.get(
+        "/api/kb/observe/whisper-telemetry", params={"after": cursor}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "invalid cursor"
+
+
+def test_whisper_telemetry_parsed_fields(local_client: TestClient) -> None:
+    _insert_whisper("a", "m1", consumed=1)
+    _insert_whisper("b", "m2", consumed=0)
+    rows = local_client.get("/api/kb/observe/whisper-telemetry").json()["rows"]
+    assert rows[0]["trigger_context"] == {"a": 1}
+    assert rows[0]["consumed"] is True
+    assert rows[1]["consumed"] is False
+    assert rows[0]["emit_count"] == 2
