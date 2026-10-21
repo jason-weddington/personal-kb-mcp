@@ -66,7 +66,8 @@ def _default_new_spec() -> str:
 
 LOCAL_PORT = 8765  # the documented local-mode default; the new build must pick it unaided
 
-# Read calls whose output must be identical before and after the upgrade.
+# Read calls checked before and after the upgrade. kb_search must keep the old top
+# hit and every old result (ranking may improve); the rest must be byte-identical.
 # kb_ask timeline/related are excluded: known regression tracked in GTD a8add5c1.
 READS: list[tuple[str, dict[str, Any]]] = [
     ("kb_search", {"query": "presigned URL expiry"}),
@@ -315,6 +316,21 @@ def _stop_daemon(home: Path) -> None:
         time.sleep(0.5)
 
 
+_HEADER_ID = re.compile(r"^\[(kb-\d+)\]")
+
+
+def _result_ids(output: str) -> list[str]:
+    """Entry ids on result header lines, in order, excluding the graph section."""
+    ids: list[str] = []
+    for line in output.splitlines():
+        if line.startswith("Related entries via graph:"):
+            break
+        m = _HEADER_ID.match(line)
+        if m:
+            ids.append(m.group(1))
+    return ids
+
+
 def _check(cond: bool, msg: str, results: list[tuple[str, bool]]) -> None:
     results.append((msg, cond))
     print(f"  [{'PASS' if cond else 'FAIL'}] {msg}", flush=True)
@@ -369,6 +385,16 @@ def main() -> int:
             results,
         )
         for (name, _), old, new in zip(READS, baseline_reads, after_reads, strict=True):
+            if name == "kb_search":
+                old_ids, new_ids = _result_ids(old), _result_ids(new)
+                _check(bool(old_ids), "kb_search baseline returned results", results)
+                same_top = bool(old_ids) and old_ids[:1] == new_ids[:1]
+                keeps_all = set(old_ids) <= set(new_ids)
+                _check(same_top, "kb_search keeps the old top hit", results)
+                _check(keeps_all, "kb_search keeps every old result", results)
+                if not (same_top and keeps_all):
+                    print(f"       old ids: {old_ids}\n       new ids: {new_ids}")
+                continue
             _check(old == new, f"{name} output identical to baseline", results)
             if old != new:
                 print(f"       old: {old[:300]!r}\n       new: {new[:300]!r}")

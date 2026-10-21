@@ -112,7 +112,9 @@ fi
 #    installs the build they run today, seeds a KB, upgrades to THIS commit
 #    with the identical environment, and checks reads, row counts, writes,
 #    the web UI and rollback. A failure here means the release would break
-#    them, so it blocks the release. Skip only deliberately:
+#    them, so it blocks the release. The kb_search check allows ranking changes
+#    that keep the old top hit and every old result, so SKIP_UPGRADE_SMOKE
+#    should not be needed for a search improvement. Skip only deliberately:
 #    SKIP_UPGRADE_SMOKE=1 ./release.sh
 if [ "${SKIP_UPGRADE_SMOKE:-}" = "1" ]; then
   echo "WARNING: SKIP_UPGRADE_SMOKE=1, so the work-user upgrade smoke test was NOT run." >&2
