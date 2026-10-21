@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v1.23.1 (2026-10-21)
+
+### Bug Fixes
+
+- **search**: A query with one word the answer lacks no longer drops it — partial-match full-text
+  search and a per-leg rank floor
+  ([`707d057`](https://github.com/jason-weddington/personal-kb-mcp/commit/707d057f6ec12217000fec8f1beb33b54af7261f))
+
+### Documentation
+
+- Inject points — today's channels, every Claude Code hook that can carry a fact, and where facts
+  belong in an owned agent loop
+  ([`2cee816`](https://github.com/jason-weddington/personal-kb-mcp/commit/2cee8167ca7a309e935f80d7f95f99676ff432f6))
+
+
 ## v1.23.0 (2026-10-20)
 
 ### Bug Fixes
