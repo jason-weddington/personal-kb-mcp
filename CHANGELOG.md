@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v1.24.0 (2026-10-21)
+
+### Chores
+
+- **release**: The work-user upgrade smoke allows an intended search ranking change
+  ([`9f2bbda`](https://github.com/jason-weddington/personal-kb-mcp/commit/9f2bbda9ee7f5131563892ebdb2bde08cacde00c))
+
+### Features
+
+- **belief-check**: POST /api/kb/belief-check ranks the KB's recorded wrong beliefs against an
+  agent's stated reasoning, for talos's mid-thought correction
+  ([`85ee47c`](https://github.com/jason-weddington/personal-kb-mcp/commit/85ee47c6f4d34dd3a656029cbe46e0582be044b9))
+
+
 ## v1.23.1 (2026-10-21)
 
 ### Bug Fixes
