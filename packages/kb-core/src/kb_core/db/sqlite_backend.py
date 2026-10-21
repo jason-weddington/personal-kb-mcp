@@ -15,6 +15,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from kb_core.db.backend import MAPPABLE_ENTRY_WHERE_SQL, MapEligibilityCounts
+from kb_core.db.fts_query import fts_min_coverage, fts_query_tokens
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -34,18 +35,6 @@ logger = logging.getLogger(__name__)
 def _serialize_f32(vec: list[float]) -> bytes:
     """Serialize a list of floats to a compact binary format for sqlite-vec."""
     return struct.pack(f"{len(vec)}f", *vec)
-
-
-def _escape_fts_query(query: str) -> str:
-    """Convert a natural language query to a safe FTS5 query.
-
-    Wraps each token in quotes to avoid FTS5 syntax errors from special chars.
-    """
-    tokens = query.split()
-    if not tokens:
-        return ""
-    cleaned = [t.replace('"', "") for t in tokens]
-    return " ".join(f'"{t}"' for t in cleaned if t)
 
 
 # Map-eligibility counts (nightly map maintenance, Loop 1). One statement,
@@ -212,23 +201,35 @@ class SQLiteBackend:
         contributor: str | None = None,
         team: str | None = None,
     ) -> list[tuple[str, float]]:
-        """Full-text search via FTS5 BM25.
+        """Full-text search via FTS5 BM25 with partial-match coverage.
 
-        Returns (entry_id, bm25_score) pairs. Lower scores are better
-        (FTS5 returns negative scores where more negative = better match).
+        The query is tokenized with ``fts_query_tokens``; each of the n
+        tokens is one quoted FTS5 phrase. Results are the entries matching
+        at least ``fts_min_coverage(n)`` of the phrases, ordered by
+        coverage descending, then bm25 score ascending (lower is better;
+        FTS5 scores are negative), then id. Returns (entry_id, bm25_score).
         """
-        fts_query = _escape_fts_query(query)
-        if not fts_query:
+        toks = fts_query_tokens(query)
+        if not toks:
             return []
+        phrases = ['"' + t + '"' for t in toks]
+        union = " UNION ALL ".join(
+            "SELECT rowid FROM knowledge_fts WHERE knowledge_fts MATCH ?" for _ in phrases
+        )
 
-        sql = """
-            SELECT e.id, bm25(knowledge_fts) as score
+        sql = f"""
+            WITH cov AS (
+                SELECT rowid, COUNT(*) AS c FROM ({union})
+                GROUP BY rowid HAVING COUNT(*) >= ?
+            )
+            SELECT e.id, bm25(knowledge_fts) AS score
             FROM knowledge_fts f
+            JOIN cov ON cov.rowid = f.rowid
             JOIN knowledge_entries e ON e.rowid = f.rowid
             WHERE knowledge_fts MATCH ?
             AND e.is_active = 1
-        """
-        params: list[str | int] = [fts_query]
+        """  # noqa: S608 - only placeholders are interpolated
+        params: list[str | int] = [*phrases, fts_min_coverage(len(toks)), " OR ".join(phrases)]
 
         if project_ref:
             sql += " AND e.project_ref = ?"
@@ -247,7 +248,7 @@ class SQLiteBackend:
             sql += " AND e.team = ?"
             params.append(team)
 
-        sql += " ORDER BY score LIMIT ?"
+        sql += " ORDER BY cov.c DESC, score, e.id LIMIT ?"
         params.append(limit)
 
         cursor = await self._conn.execute(sql, params)

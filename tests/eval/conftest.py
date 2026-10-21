@@ -1,5 +1,6 @@
 """Eval framework fixtures — ControlledEmbedder, corpus loader, eval_kb."""
 
+import hashlib
 import json
 import math
 from datetime import UTC, datetime, timedelta
@@ -19,7 +20,7 @@ class ControlledEmbedder:
     """Embedder with pre-assigned vectors for deterministic ranking tests.
 
     Registered texts get exact vectors; unregistered texts fall back to
-    a hash-based vector (same as FakeEmbedder but at dim=64).
+    a sha256-based, process-stable hash vector at dim=64.
     """
 
     def __init__(self, db, dim: int = 64):
@@ -75,8 +76,8 @@ class ControlledEmbedder:
 
 
 def _hash_vector(text: str, dim: int) -> list[float]:
-    """Deterministic hash-based vector (same as FakeEmbedder)."""
-    h = hash(text) & 0xFFFFFFFF
+    """Deterministic, process-stable hash vector (sha256-based; FakeEmbedder's salted hash() is not)."""  # noqa: E501
+    h = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:4], "big")
     vec = []
     for i in range(dim):
         val = ((h * (i + 1) * 2654435761) & 0xFFFFFFFF) / 0xFFFFFFFF

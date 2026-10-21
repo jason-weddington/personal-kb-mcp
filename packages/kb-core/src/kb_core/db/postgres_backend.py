@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from kb_core.db.backend import MAPPABLE_ENTRY_WHERE_SQL, MapEligibilityCounts
+from kb_core.db.fts_query import fts_min_coverage, fts_query_tokens
 
 if TYPE_CHECKING:
     import ssl as ssl_module
@@ -307,19 +308,33 @@ class PostgresBackend:
         contributor: str | None = None,
         team: str | None = None,
     ) -> list[tuple[str, float]]:
-        """Full-text search via tsvector + ts_rank_cd.
+        """Full-text search via tsvector + ts_rank_cd with partial-match coverage.
 
-        Returns (entry_id, score) pairs. Scores are negated so that
-        lower = better, matching the FTS5/bm25 convention.
+        The query is tokenized with ``fts_query_tokens``; each of the n
+        tokens becomes its own ``plainto_tsquery('english', ...)`` and the
+        match is their OR. Results are the entries matching at least
+        ``fts_min_coverage(n)`` of the tokens, ordered by coverage
+        descending, then score ascending (scores are negated
+        ``ts_rank_cd`` so lower is better, matching FTS5/bm25), then id.
+        Returns (entry_id, score) pairs.
         """
-        sql = """
-            SELECT e.id, -ts_rank_cd(e.search_vector, plainto_tsquery('english', $1)) as score
+        toks = fts_query_tokens(query)
+        n = len(toks)
+        if n == 0:
+            return []
+        per_token = [f"plainto_tsquery('english', ${i})" for i in range(1, n + 1)]
+        or_query = "(" + " || ".join(per_token) + ")"
+        coverage = "(" + " + ".join(f"(e.search_vector @@ {q})::int" for q in per_token) + ")"
+        sql = f"""
+            SELECT e.id, -ts_rank_cd(e.search_vector, {or_query}) AS score,
+                   {coverage} AS coverage
             FROM knowledge_entries e
-            WHERE e.search_vector @@ plainto_tsquery('english', $1)
+            WHERE e.search_vector @@ {or_query}
+            AND {coverage} >= ${n + 1}
             AND e.is_active = 1
-        """
-        params: list[Any] = [query]
-        param_idx = 2
+        """  # noqa: S608 - only placeholders are interpolated
+        params: list[Any] = [*toks, fts_min_coverage(n)]
+        param_idx = n + 2
 
         if project_ref:
             sql += f" AND e.project_ref = ${param_idx}"
@@ -343,7 +358,7 @@ class PostgresBackend:
             params.append(team)
             param_idx += 1
 
-        sql += f" ORDER BY score LIMIT ${param_idx}"
+        sql += f" ORDER BY coverage DESC, score, e.id LIMIT ${param_idx}"
         params.append(limit)
 
         async with self._conn() as conn:

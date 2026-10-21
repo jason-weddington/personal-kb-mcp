@@ -9,12 +9,16 @@ Acceptance criteria:
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
 from kb_core import create_sqlite
 from kb_core.models.entry import EntryType
 from kb_core.models.search import SearchQuery
 from kb_core.search.hybrid import RRF_K, hybrid_search
+
+if TYPE_CHECKING:
+    import pytest
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -269,3 +273,79 @@ async def test_search_result_defaults_backward_compatible() -> None:
     assert result.vector_similarity is None
     assert result.fts_matched is False
     assert result.fts_rank is None
+
+
+async def test_vector_leg_floor_keeps_top_three(tmp_path: Any) -> None:
+    """A vector-only hit in the vector leg's top RRF_LEG_FLOOR_RANK survives the
+    min_score_ratio filter even when the top hit is in both legs."""
+    kb = await create_sqlite(tmp_path / "kb.db")
+    try:
+        a = await _store_entry(kb, "note a", "alpha marker")
+        b = await _store_entry(kb, "note b", "bravo text")
+        c = await _store_entry(kb, "note c", "charlie text")
+        d = await _store_entry(kb, "note d", "delta text")
+        e = await _store_entry(kb, "note e", "echo text")
+        embedder = ControlledEmbedder(
+            [(a.id, 0.1), (b.id, 0.2), (c.id, 0.3), (d.id, 0.4), (e.id, 0.5)]
+        )
+
+        results, filtered = await hybrid_search(
+            kb.db, embedder, SearchQuery(query="alpha", limit=10)
+        )
+        assert [r.entry.id for r in results] == [a.id, b.id, c.id]
+        assert filtered == 2
+
+        results, filtered = await hybrid_search(
+            kb.db, embedder, SearchQuery(query="alpha", limit=10, min_score_ratio=0.0)
+        )
+        assert [r.entry.id for r in results] == [a.id, b.id, c.id, d.id, e.id]
+        assert filtered == 0
+    finally:
+        await kb.close()
+
+
+async def test_fts_leg_floor_keeps_top_three(tmp_path: Any) -> None:
+    """An FTS-only hit in the FTS leg's top RRF_LEG_FLOOR_RANK survives the filter;
+    bm25 ties break by id, so the fourth FTS hit is cut."""
+    kb = await create_sqlite(tmp_path / "kb.db")
+    try:
+        a = await _store_entry(kb, "note a", "gamma gamma")
+        b = await _store_entry(kb, "note b", "gamma one")
+        c = await _store_entry(kb, "note c", "gamma two")
+        await _store_entry(kb, "note d", "gamma six")
+        embedder = ControlledEmbedder([(a.id, 0.1)])
+
+        results, filtered = await hybrid_search(
+            kb.db, embedder, SearchQuery(query="gamma", limit=10)
+        )
+        assert [r.entry.id for r in results] == [a.id, b.id, c.id]
+        assert filtered == 1
+    finally:
+        await kb.close()
+
+
+async def test_fts_leg_failure_logs_marker(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When the backend FTS search raises, the search runs on the vector leg
+    alone and logs the fts-leg op=error marker."""
+    kb = await create_sqlite(tmp_path / "kb.db")
+    try:
+        a = await _store_entry(kb, "note a", "alpha marker")
+
+        async def _boom(*_args: Any, **_kwargs: Any) -> list[tuple[str, float]]:
+            raise RuntimeError("fts down")
+
+        monkeypatch.setattr(kb.db, "fts_search", _boom)
+        caplog.set_level(logging.WARNING, logger="kb_core.search.fts")
+        embedder = ControlledEmbedder([(a.id, 0.1)])
+
+        results, filtered = await hybrid_search(
+            kb.db, embedder, SearchQuery(query="alpha", limit=10)
+        )
+        assert [r.entry.id for r in results] == [a.id]
+        assert filtered == 0
+        assert all(r.fts_matched is False for r in results)
+        assert "fts-leg op=error" in caplog.text
+    finally:
+        await kb.close()

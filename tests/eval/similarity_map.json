@@ -160,6 +160,20 @@
         "pref-dispatch-over-inline",
         "pref-comm-terse-no-emoji"
       ]
+    },
+    {
+      "name": "paraphrase",
+      "axis": 63,
+      "queries": [
+        "q8x-paraphrase-missing-word",
+        "q8x-paraphrase-no-overlap"
+      ],
+      "entries": [
+        "whisper-consumption-dashboard-plan",
+        "whisper-uptake-metric",
+        "whisper-cooldown-window",
+        "whisper-consume-signal"
+      ]
     }
   ]
 }

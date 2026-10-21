@@ -72,6 +72,12 @@ from embedding_retry_queue_shape import (
     EXPECTED_PRIMARY_KEY,
     EXPECTED_TEXT_COLUMNS,
 )
+from fts_coverage_fixture import (
+    FTS_COVERAGE_CASES,
+    FTS_COVERAGE_ENTRY_INSERT_SQL,
+    FTS_COVERAGE_FILTER_CASE,
+    FTS_COVERAGE_SEED,
+)
 from kb_core import browse, create_postgres
 from kb_core.embedding_retry import (
     _claim_due,
@@ -1173,3 +1179,25 @@ async def test_browse_cases_on_postgres(pg_kb: PostgresBackend) -> None:
         (p.project_ref, p.entry_count, list(p.counts_by_type.items()), p.last_activity.isoformat())
         for p in projects.items
     ] == [(r, n, list(c.items()), ts) for r, n, c, ts in BROWSE_EXPECTED_PROJECTS]
+
+
+async def test_fts_coverage_cases_on_postgres(pg_kb: PostgresBackend) -> None:
+    """FTS partial-match coverage returns the SAME ids on Postgres as on SQLite.
+
+    Seeds the shared ``fts_coverage_fixture`` entries and asserts every
+    ``FTS_COVERAGE_CASES`` row plus ``FTS_COVERAGE_FILTER_CASE``.
+    """
+    for row in FTS_COVERAGE_SEED:
+        await pg_kb.execute(FTS_COVERAGE_ENTRY_INSERT_SQL, row)
+    await pg_kb.commit()
+
+    for query, expected, ordered in FTS_COVERAGE_CASES:
+        got = [eid for eid, _ in await pg_kb.fts_search(query, limit=10)]
+        if ordered:
+            assert got == expected, query
+        else:
+            assert sorted(got) == sorted(expected), query
+
+    query, entry_type, expected = FTS_COVERAGE_FILTER_CASE
+    got = [eid for eid, _ in await pg_kb.fts_search(query, entry_type=entry_type, limit=10)]
+    assert got == expected

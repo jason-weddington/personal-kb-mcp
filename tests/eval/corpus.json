@@ -724,5 +724,52 @@
       "user-pref"
     ],
     "project_ref": "memory-layer"
+  },
+  {
+    "short_title": "whisper-consumption-dashboard-plan",
+    "long_title": "Proposal: a dashboard to measure whisper telemetry consumption",
+    "knowledge_details": "Proposal, not built: a dashboard that would measure whisper telemetry consumption and the read rate of each whisper hint, per project and per session. Deferred until the lab asks for it.",
+    "entry_type": "decision",
+    "tags": [
+      "whisper",
+      "telemetry",
+      "proposal"
+    ],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "whisper-uptake-metric",
+    "long_title": "Whisper uptake metric: share of fired whispers an agent opened",
+    "knowledge_details": "Uptake is the share of fired whispers that the agent opened with kb_get within the same session. It is computed per session from the turn digests; a whisper the agent never opened counts against uptake.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "whisper",
+      "uptake",
+      "observe"
+    ],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "whisper-cooldown-window",
+    "long_title": "Whisper cooldown: the same entry is not whispered again within an hour",
+    "knowledge_details": "After an entry is whispered, the hook suppresses it for sixty minutes so a long session is not nagged by repeats.",
+    "entry_type": "pattern_convention",
+    "tags": [
+      "whisper",
+      "hook"
+    ],
+    "project_ref": "personal-kb"
+  },
+  {
+    "short_title": "whisper-consume-signal",
+    "long_title": "Whisper telemetry: consume signal valid after the July cutover",
+    "knowledge_details": "The whisper telemetry consume signal records when an agent opens a whispered entry with kb_get after the whisper fired. Rows before the cutover predate the requested-ids field and are invalid. Count consumed whispers per session from the observe API.",
+    "entry_type": "factual_reference",
+    "tags": [
+      "whisper",
+      "telemetry",
+      "observe"
+    ],
+    "project_ref": "personal-kb"
   }
 ]

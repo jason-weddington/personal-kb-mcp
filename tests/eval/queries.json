@@ -567,5 +567,35 @@
     "include_stale": false,
     "category": "preference",
     "comment": "Keyword-strong preference recall for communication style entry"
+  },
+  {
+    "id": "q8x-paraphrase-missing-word",
+    "query": "measure whisper telemetry consumption",
+    "top_k": 5,
+    "expected": [
+      "whisper-consume-signal"
+    ],
+    "excluded": [],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "paraphrase",
+    "comment": "FTS-lever isolation: the answer has 2 of 4 query words (lacks measure, consumption) and is vector #4 behind a both-legs not-built proposal"
+  },
+  {
+    "id": "q8x-paraphrase-no-overlap",
+    "query": "whisper hint read rate",
+    "top_k": 5,
+    "expected": [
+      "whisper-uptake-metric"
+    ],
+    "excluded": [],
+    "exact_order": false,
+    "project_ref": null,
+    "tags": null,
+    "include_stale": false,
+    "category": "paraphrase",
+    "comment": "Fusion-lever isolation: the answer shares 1 of 4 query words and is vector #2 behind a both-legs not-built proposal"
   }
 ]

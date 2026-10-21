@@ -6,6 +6,9 @@ from kb_core.db.backend import Database
 
 logger = logging.getLogger(__name__)
 
+# Log marker for an FTS-leg failure (the search then runs on the vector leg alone).
+FTS_LEG_MARKER = "fts-leg"
+
 
 async def fts_search(
     db: Database,
@@ -17,10 +20,13 @@ async def fts_search(
     contributor: str | None = None,
     team: str | None = None,
 ) -> list[tuple[str, float]]:
-    """Search using FTS5 BM25 ranking.
+    """Search the full-text index of the backend.
 
-    Returns (entry_id, bm25_score) pairs. Lower BM25 scores are better matches
-    (FTS5 returns negative scores where more negative = better match).
+    Results are the entries matching at least ``fts_min_coverage(n)`` of the
+    n tokens from ``fts_query_tokens``, ordered by coverage descending, then
+    score ascending (lower is better), then id. Returns (entry_id, score)
+    pairs. On any backend exception, logs a ``fts-leg op=error`` warning and
+    returns no hits.
     """
     if not query.strip():
         return []
@@ -36,5 +42,5 @@ async def fts_search(
             team=team,
         )
     except Exception:
-        logger.warning("FTS search failed for query: %s", query, exc_info=True)
+        logger.warning("%s op=error query=%r", FTS_LEG_MARKER, query[:80], exc_info=True)
         return []

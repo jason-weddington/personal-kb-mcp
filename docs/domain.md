@@ -228,7 +228,7 @@ Unknown keys are stored and passed to the LLM enricher as additional context.
 | `limit` | `int` | `10` | Max results (1–50) |
 | `include_stale` | `bool` | `False` | Include low-confidence entries |
 | `include_expired` | `bool` | `False` | Include past-TTL entries |
-| `min_score_ratio` | `float` | `0.5` | Relative threshold (fraction of top score) |
+| `min_score_ratio` | `float` | `0.5` | Relative threshold (fraction of top score); each leg's top 3 ids always survive |
 
 ## Pointers
 

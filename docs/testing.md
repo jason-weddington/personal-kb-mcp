@@ -268,7 +268,7 @@ When filing a bug:
 
 ### Search quality baseline
 
-The `tests/eval/baseline.json` file records search quality metrics (MRR=0.85, NDCG=0.89)
+The `tests/eval/baseline.json` file records search quality metrics (current numbers in how_it_works.md §14)
 against the controlled corpus. It must be regenerated and committed alongside any change to:
 - RRF fusion weights or formula (`search/hybrid.py`)
 - BM25 query construction (`search/fts.py`)
@@ -320,9 +320,9 @@ be run manually.
 ## Pointers
 
 - `tests/eval/conftest.py` — `ControlledEmbedder`, corpus loading, DB setup for eval
-- `tests/eval/baseline.json` — current search baseline (MRR=0.85, NDCG=0.89)
+- `tests/eval/baseline.json` — current search baseline (current numbers in how_it_works.md §14)
 - `tests/eval/agent_baseline.json` — current agent baseline (MRR=1.00, NDCG=1.00)
-- `tests/eval/corpus.json` — 32 controlled test entries
+- `tests/eval/corpus.json` — 62 controlled test entries
 - `tests/eval/queries.json` — 15 golden queries with relevance judgments
 - `tests/eval/metrics.py` — MRR, NDCG, recall@k calculation functions
 - `tests/eval/similarity_map.json` — cluster definitions for ControlledEmbedder

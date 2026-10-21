@@ -427,6 +427,9 @@ def test_markdown_well_formed() -> None:
 
 DOC_PINNED: dict[str, tuple[str, Path]] = {
     "RRF_K": ("kb_core.search.hybrid", CORE_DOC),
+    "RRF_LEG_FLOOR_RANK": ("kb_core.search.hybrid", CORE_DOC),
+    "FTS_MAX_QUERY_TOKENS": ("kb_core.db.fts_query", CORE_DOC),
+    "FTS_MAX_MISSING_TOKENS": ("kb_core.db.fts_query", CORE_DOC),
     "_FAST_PATH_THRESHOLD": ("kb_core.graph.agent", CORE_DOC),
     "NEAR_DUPLICATE_NEIGHBOURS": ("kb_core.near_duplicates", CORE_DOC),
     "CUE_NORMALIZER_VERSION": ("kb_core.cues", AUTOMATION_DOC),

@@ -1,8 +1,8 @@
 {
   "aggregate": {
-    "mean_mrr": 0.9137,
+    "mean_mrr": 0.9667,
     "mean_recall_at_k": 1.0,
-    "mean_ndcg_at_k": 0.9302
+    "mean_ndcg_at_k": 0.9651
   },
   "abstention": {
     "correct_rejection_rate": 1.0
@@ -13,84 +13,84 @@
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 4
+      "result_count": 5
     },
     "q02-fts5-search": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 2
+      "result_count": 3
     },
     "q03-wal-mode": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 2
+      "result_count": 4
     },
     "q04-fastapi-vs-flask": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 3
     },
     "q05-rest-auth": {
-      "mrr": 0.3333,
+      "mrr": 1.0,
       "recall_at_k": 1.0,
-      "ndcg_at_k": 0.5,
+      "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 4
     },
     "q06-cors-setup": {
-      "mrr": 0.25,
+      "mrr": 1.0,
       "recall_at_k": 1.0,
-      "ndcg_at_k": 0.4307,
+      "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 4
     },
     "q07-docker-setup": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 1
+      "result_count": 3
     },
     "q08-ci-pipeline": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 2
+      "result_count": 3
     },
     "q09-race-condition": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 3
     },
     "q10-encoding-bug": {
-      "mrr": 0.5,
+      "mrr": 1.0,
       "recall_at_k": 1.0,
-      "ndcg_at_k": 0.6309,
+      "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 5
+      "result_count": 3
     },
     "q11-project-filter": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 2
+      "result_count": 5
     },
     "q12-project-web": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 2
+      "result_count": 3
     },
     "q13-sparse-security": {
       "mrr": 1.0,
@@ -121,9 +121,9 @@
       "result_count": 2
     },
     "q43-current-deploy-runbook": {
-      "mrr": 0.5,
+      "mrr": 1.0,
       "recall_at_k": 1.0,
-      "ndcg_at_k": 0.6309,
+      "ndcg_at_k": 1.0,
       "top_k": 5,
       "result_count": 2
     },
@@ -137,16 +137,16 @@
     "q5x-python-runtime-stale": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.9197,
       "top_k": 5,
-      "result_count": 4
+      "result_count": 5
     },
     "q5x-embedding-model": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 4
+      "result_count": 3
     },
     "q5x-embedding-model-stale-still-absent": {
       "mrr": 1.0,
@@ -165,23 +165,23 @@
     "q5x-service-port-history": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.9197,
       "top_k": 10,
-      "result_count": 5
+      "result_count": 9
     },
     "q5x-secrets-current": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 3
+      "result_count": 4
     },
     "q6x-stale-flag-recovers": {
       "mrr": 1.0,
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 2
+      "result_count": 1
     },
     "q7x-current-units": {
       "mrr": 1.0,
@@ -202,7 +202,21 @@
       "recall_at_k": 1.0,
       "ndcg_at_k": 1.0,
       "top_k": 5,
-      "result_count": 2
+      "result_count": 3
+    },
+    "q8x-paraphrase-missing-word": {
+      "mrr": 0.5,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.6309,
+      "top_k": 5,
+      "result_count": 4
+    },
+    "q8x-paraphrase-no-overlap": {
+      "mrr": 0.5,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.6309,
+      "top_k": 5,
+      "result_count": 3
     }
   }
 }

@@ -75,7 +75,7 @@ Two storage backends are supported: **SQLite** (default, zero-config) and **Post
 1. Agent calls `kb_search` with query string and optional filters
 2. `hybrid_search()` runs FTS5 BM25 and vector KNN in parallel
 3. Results merged via Reciprocal Rank Fusion (RRF_K=60): `score = 1/(k + rank_fts) + 1/(k + rank_vec)`
-4. Entries below `min_score_ratio * max_score` filtered out (default 0.5)
+4. Entries below `min_score_ratio * max_score` filtered out (default 0.5), except that each leg's top `RRF_LEG_FLOOR_RANK` (3) ids always survive
 5. `compute_effective_confidence()` applied to each result (exponential time decay)
 6. If results are sparse, graph hints surfaced to help agent discover related entries
 7. Search event recorded in `search_events` table for telemetry

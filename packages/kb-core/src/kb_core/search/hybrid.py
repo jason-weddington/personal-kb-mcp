@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # RRF constant — standard value from the literature
 RRF_K = 60
+# An id ranked this high in either leg survives the min_score_ratio filter.
+RRF_LEG_FLOOR_RANK = 3
 
 # Log-line prefix for supersession-aware read filtering
 SUPERSESSION_READ_MARKER = "supersession-read"
@@ -105,7 +107,18 @@ async def hybrid_search(
     if sorted_ids and query.min_score_ratio > 0:
         top_score = rrf_scores[sorted_ids[0]]
         min_score = top_score * query.min_score_ratio
-        sorted_ids = [eid for eid in sorted_ids if rrf_scores[eid] >= min_score]
+        vec_rank_map = {eid: rank + 1 for rank, (eid, _d) in enumerate(vec_results)}
+
+        def _keep(eid: str) -> bool:
+            if rrf_scores[eid] >= min_score:
+                return True
+            fts_rank = fts_rank_map.get(eid)
+            if fts_rank is not None and fts_rank <= RRF_LEG_FLOOR_RANK:
+                return True
+            vec_rank = vec_rank_map.get(eid)
+            return vec_rank is not None and vec_rank <= RRF_LEG_FLOOR_RANK
+
+        sorted_ids = [eid for eid in sorted_ids if _keep(eid)]
     filtered_count = pre_filter_count - len(sorted_ids)
 
     # Build results

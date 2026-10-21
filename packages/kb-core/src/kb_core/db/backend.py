@@ -112,7 +112,13 @@ class Database(Protocol):
         contributor: str | None = None,
         team: str | None = None,
     ) -> list[tuple[str, float]]:
-        """Full-text search. Returns (entry_id, score) — lower = better."""
+        """Full-text search. Returns (entry_id, score) — lower = better.
+
+        Results are the entries matching at least ``fts_min_coverage(n)`` of
+        the n tokens from ``fts_query_tokens`` (``kb_core.db.fts_query``),
+        ordered by coverage descending, then score ascending (lower is
+        better), then id.
+        """
         ...
 
     async def vector_store(self, entry_id: str, embedding: list[float]) -> None:
