@@ -33,6 +33,8 @@ class NearDuplicateCheck:
     eligible_count: int = 0
     embed_ms: int = 0
     search_ms: int = 0
+    embedding: list[float] | None = None
+    embedded_text: str | None = None
 
 
 async def find_near_duplicates(

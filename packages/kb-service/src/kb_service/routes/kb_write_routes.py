@@ -532,6 +532,7 @@ async def store(
             team=attr.team,
             sensitivity=body.sensitivity,
             expires_at=expires_at,
+            precomputed_embedding=decision.precomputed_embedding,
         )
         if effective:
             await _warn_if_build_failed(kb, entry.id, effective)
@@ -883,11 +884,12 @@ async def store_batch(
 
     # ── build facade dicts ────────────────────────────────────────────────
     entry_dicts: list[dict[str, Any]] = []
-    for raw, effective, distinct, stamped_hints in zip(
+    for raw, effective, distinct, stamped_hints, decision in zip(
         body.entries,
         batch_supersedes,
         batch_distinct_from,
         batch_hints,
+        batch_decisions,
         strict=True,
     ):
         expires_at = compute_expires_at(raw.ttl) if raw.ttl is not None else None
@@ -913,6 +915,7 @@ async def store_batch(
                 "expires_at": expires_at,
                 "contributor": attr.contributor,
                 "team": attr.team,
+                "precomputed_embedding": decision.precomputed_embedding,
             }
         )
 

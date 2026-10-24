@@ -1156,6 +1156,7 @@ class _Decision:
     critic: CriticVerdict | None = None
     critic_called: bool = False
     store_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
+    precomputed_embedding: tuple[str, list[float]] | None = None
     update_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
@@ -1387,6 +1388,8 @@ async def _decide_one(
     )
     d.near_duplicate_status = check.status
     d.near_duplicate_floor = floor
+    if check.embedding is not None and check.embedded_text is not None:
+        d.precomputed_embedding = (check.embedded_text, check.embedding)
     if check.status != "checked":
         counts["near_dup_unavailable"] += 1
     elif check.candidates:
@@ -1529,6 +1532,8 @@ async def _decide_store_one(
     )
     d.near_duplicate_status = check.status
     d.near_duplicate_floor = floor
+    if check.embedding is not None and check.embedded_text is not None:
+        d.precomputed_embedding = (check.embedded_text, check.embedding)
     if check.status != "checked":
         counts["near_dup_unavailable"] += 1
     if check.candidates:
@@ -1721,7 +1726,12 @@ async def _execute_decision(kb: Any, d: _Decision, result: DistillResult) -> Non
     if d.outcome == "critic_rejected":
         d.outcome = "not_durable"
     elif d.outcome == "would_write":
-        entry = await kb.store(**d.store_kwargs)
+        extra: dict[str, Any] = (
+            {"precomputed_embedding": d.precomputed_embedding}
+            if d.precomputed_embedding is not None
+            else {}
+        )
+        entry = await kb.store(**d.store_kwargs, **extra)
         result.entries_written.append(entry.id)
         d.outcome, d.entry_id = "written", entry.id
     elif d.outcome == "would_merge":

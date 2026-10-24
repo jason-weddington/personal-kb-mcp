@@ -595,8 +595,13 @@ class KnowledgeBase:
         sensitivity: str | None = None,
         expires_at: datetime | None = None,
         enrich: bool = True,
+        precomputed_embedding: tuple[str, list[float]] | None = None,
     ) -> KnowledgeEntry:
         """Create one entry through the full store pipeline.
+
+        ``precomputed_embedding`` is a ``(text, vector)`` pair (the near-duplicate
+        guard's); the vector is used only when ``text`` equals the entry's
+        ``embedding_text`` exactly, otherwise the entry is embedded as usual.
 
         Creates the entry, embeds it (when an embedder is configured),
         builds deterministic graph edges, and optionally runs the LLM
@@ -627,7 +632,7 @@ class KnowledgeBase:
             expires_at=expires_at,
         )
 
-        await self._embed_one(entry)
+        await self._embed_one(entry, precomputed=precomputed_embedding)
         await self._build_graph(entry)
         if enrich:
             await self._enrich_one(entry)
@@ -643,11 +648,14 @@ class KnowledgeBase:
 
         Each ``entries`` dict requires ``short_title``, ``long_title``,
         ``knowledge_details`` and accepts the same optional fields as
-        :meth:`store`. Returns the list of created entries in input
+        :meth:`store`, plus an optional ``precomputed_embedding`` key holding a
+        ``(text, vector)`` pair; entries whose text equals their
+        ``embedding_text`` skip the embed call. Returns the list of created entries in input
         order. A failure on any single entry is logged and skipped — the
         rest still proceed.
         """
         created: list[KnowledgeEntry] = []
+        precomputed: dict[str, list[float]] = {}
         for entry_dict in entries:
             try:
                 entry_type_raw = entry_dict.get("entry_type", "factual_reference")
@@ -681,6 +689,9 @@ class KnowledgeBase:
 
             await self._build_graph(entry)
             created.append(entry)
+            pre = entry_dict.get("precomputed_embedding")
+            if pre is not None and pre[0] == entry.embedding_text and pre[1]:
+                precomputed[entry.id] = list(pre[1])
 
         # Batch embed (single backend call across the whole list).
         if created and self._embedder is not None:
@@ -693,13 +704,15 @@ class KnowledgeBase:
             marked_ids: set[str] = set()
             handled_via_embed_one: set[str] = set()
             try:
-                texts = [e.embedding_text for e in created]
+                to_embed = [e for e in created if e.id not in precomputed]
+                texts = [e.embedding_text for e in to_embed]
                 embed_batch = getattr(self._embedder, "embed_batch", None)
                 if callable(embed_batch):
-                    embeddings = await embed_batch(texts)
+                    embeddings = await embed_batch(texts) if texts else []
                     store_embeddings = getattr(self._embedder, "store_embeddings", None)
                     if embeddings is not None and callable(store_embeddings):
-                        pairs = list(zip([e.id for e in created], embeddings, strict=True))
+                        fresh = dict(zip([e.id for e in to_embed], embeddings, strict=True))
+                        pairs = [(e.id, precomputed.get(e.id) or fresh[e.id]) for e in created]
                         await store_embeddings(pairs)
                         for e in created:
                             await self._store.mark_embedding(e.id, True)
@@ -711,7 +724,10 @@ class KnowledgeBase:
                     # below (which would overwrite its more specific last_error).
                     for entry in created:
                         handled_via_embed_one.add(entry.id)
-                        if await self._embed_one(entry):
+                        vec = precomputed.get(entry.id)
+                        if await self._embed_one(
+                            entry, precomputed=(entry.embedding_text, vec) if vec else None
+                        ):
                             marked_ids.add(entry.id)
             except Exception:
                 logger.warning("store_batch: batch embedding failed", exc_info=True)
@@ -1277,9 +1293,8 @@ class KnowledgeBase:
         ``search_failed`` when the search raises. Never writes anything.
         """
         t0 = time.perf_counter()
-        embedding = await self.embed(
-            KnowledgeEntry.compose_embedding_text(short_title, long_title, knowledge_details)
-        )
+        text = KnowledgeEntry.compose_embedding_text(short_title, long_title, knowledge_details)
+        embedding = await self.embed(text)
         embed_ms = int((time.perf_counter() - t0) * 1000)
         if embedding is None:
             return NearDuplicateCheck(
@@ -1301,9 +1316,15 @@ class KnowledgeBase:
                 top_similarity=None,
                 embed_ms=embed_ms,
                 search_ms=int((time.perf_counter() - t1) * 1000),
+                embedding=embedding,
+                embedded_text=text,
             )
         return dataclasses.replace(
-            result, embed_ms=embed_ms, search_ms=int((time.perf_counter() - t1) * 1000)
+            result,
+            embed_ms=embed_ms,
+            search_ms=int((time.perf_counter() - t1) * 1000),
+            embedding=embedding,
+            embedded_text=text,
         )
 
     async def record_audit_event(
@@ -1534,7 +1555,12 @@ class KnowledgeBase:
 
     # -- Internal helpers ---------------------------------------------------
 
-    async def _embed_one(self, entry: KnowledgeEntry) -> bool:
+    async def _embed_one(
+        self,
+        entry: KnowledgeEntry,
+        *,
+        precomputed: tuple[str, list[float]] | None = None,
+    ) -> bool:
         """Embed a single entry. Failures are logged, enqueued for retry, and never raise.
 
         Returns ``True`` iff the vector was stored and ``mark_embedding`` reached.
@@ -1542,7 +1568,14 @@ class KnowledgeBase:
         if self._embedder is None:
             return False
         try:
-            embedding = await self._embedder.embed(entry.embedding_text)
+            if (
+                precomputed is not None
+                and precomputed[1]
+                and precomputed[0] == entry.embedding_text
+            ):
+                embedding: list[float] | None = precomputed[1]
+            else:
+                embedding = await self._embedder.embed(entry.embedding_text)
             if embedding is None:
                 await self._enqueue_retry(entry.id, error="embed returned None")
                 return False

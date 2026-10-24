@@ -87,6 +87,9 @@ class GuardDecision:
 
     outcome: str
     detail: dict[str, Any]
+    # (text, vector) from the guard's embed; handed to the store so the entry
+    # text is embedded once. None when the guard did not embed.
+    precomputed_embedding: tuple[str, list[float]] | None = None
 
 
 def _text_sha(short_title: str, long_title: str, knowledge_details: str) -> str:
@@ -226,7 +229,14 @@ async def enforce_near_duplicate_guard(
             short_title=short_title,
         )
         _log_decision(detail, contributor)
-        return GuardDecision(outcome=outcome, detail=detail)
+        pre = (
+            (check.embedded_text, check.embedding)
+            if check is not None
+            and check.embedding is not None
+            and check.embedded_text is not None
+            else None
+        )
+        return GuardDecision(outcome=outcome, detail=detail, precomputed_embedding=pre)
 
     if entry_type is EntryType.MENTAL_MAP:
         return finish("exempt_mental_map")
