@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.24.3 (2026-10-24)
+
+### Bug Fixes
+
+- **update**: A title-only update re-embeds the entry, because titles are part of the embedding text
+  ([`b2c5d94`](https://github.com/jason-weddington/personal-kb-mcp/commit/b2c5d940a257b9727ead3eadd197745c540ba29d))
+
+
 ## v1.24.2 (2026-10-24)
 
 ### Bug Fixes
