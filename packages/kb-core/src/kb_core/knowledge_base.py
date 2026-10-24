@@ -779,6 +779,7 @@ class KnowledgeBase:
         and an enricher is configured.
         """
         content_changed = knowledge_details is not None
+        before = await get_entry(self._db, entry_id)
         entry = await self._store.update_entry(
             entry_id,
             knowledge_details=knowledge_details,
@@ -797,8 +798,9 @@ class KnowledgeBase:
             clear_expiry=clear_expiry,
         )
 
-        # Re-embed only when the embedding text actually changed.
-        if content_changed:
+        # Re-embed only when the embedding text (titles + details) changed.
+        # A missing pre-update read never skips a needed embed.
+        if before is None or before.embedding_text != entry.embedding_text:
             await self._embed_one(entry)
         await self._build_graph(entry)
         if enrich and content_changed:

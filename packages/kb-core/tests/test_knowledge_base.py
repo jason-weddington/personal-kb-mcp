@@ -367,6 +367,54 @@ async def test_update_creates_new_version(kb_with_embedder: Any) -> None:
     assert updated.knowledge_details == "New content."
 
 
+async def _counting_update_kb(kb_with_embedder: Any) -> tuple[Any, Any, list[str]]:
+    kb, fake = kb_with_embedder
+    entry = await kb.store(
+        short_title="orig",
+        long_title="Original",
+        knowledge_details="Original content.",
+        enrich=False,
+    )
+    calls: list[str] = []
+    real = fake.embed
+
+    async def counting(text: str) -> Any:
+        calls.append(text)
+        return await real(text)
+
+    fake.embed = counting
+    return kb, entry, calls
+
+
+async def test_title_only_updates_reembed_once(kb_with_embedder: Any) -> None:
+    kb, entry, calls = await _counting_update_kb(kb_with_embedder)
+    updated = await kb.update(entry.id, short_title="renamed", change_reason="t", enrich=False)
+    assert calls == [updated.embedding_text]
+    assert "renamed" in calls[0]
+    calls.clear()
+    updated = await kb.update(entry.id, long_title="Renamed long", change_reason="t", enrich=False)
+    assert calls == [updated.embedding_text]
+
+
+async def test_non_embedding_updates_do_not_embed(kb_with_embedder: Any) -> None:
+    kb, entry, calls = await _counting_update_kb(kb_with_embedder)
+    await kb.update(entry.id, tags=["a"], change_reason="t", enrich=False)
+    await kb.update(entry.id, project_ref="proj", change_reason="t", enrich=False)
+    assert calls == []
+
+
+async def test_details_change_embeds_once_and_identical_details_do_not(
+    kb_with_embedder: Any,
+) -> None:
+    kb, entry, calls = await _counting_update_kb(kb_with_embedder)
+    await kb.update(
+        entry.id, knowledge_details="Original content.", change_reason="t", enrich=False
+    )
+    assert calls == []
+    await kb.update(entry.id, knowledge_details="Different.", change_reason="t", enrich=False)
+    assert len(calls) == 1
+
+
 async def test_deactivate_then_reactivate_roundtrip(kb_with_embedder: Any) -> None:
     """:meth:`deactivate` and :meth:`reactivate` flip the ``is_active`` flag."""
     kb, _ = kb_with_embedder
