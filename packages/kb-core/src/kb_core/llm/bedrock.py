@@ -186,6 +186,52 @@ def _configure_bearer_auth(config: Any, bearer_token: str) -> None:
     config.auth_scheme_resolver.resolve_auth_scheme = patched_resolve
 
 
+def build_runtime_client(config: BedrockProviderConfig) -> tuple[Any | None, str | None]:
+    """Create a ``BedrockRuntimeClient`` for *config* and name the auth method it uses.
+
+    Returns ``(None, None)`` when the SDK is not installed, and
+    ``(client, None)`` when no credentials resolve. Auth priority: profile >
+    bearer token > env vars > default chain. A named profile that doesn't
+    resolve never falls through to the default chain, which may be another
+    account. Shared by the LLM client and the Bedrock embedder so both sign
+    with the same account.
+    """
+    try:
+        from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient
+        from aws_sdk_bedrock_runtime.config import Config
+    except ImportError:
+        return None, None
+
+    sdk_config = Config(region=config.region)
+    auth_method: str | None = None
+    profile = _find_aws_profile(config.profile)
+    if profile:
+        session = _credentialed_session(profile)
+        if session is not None:
+            sdk_config.aws_credentials_identity_resolver = _session_credentials_resolver(session)
+            auth_method = f"profile:{profile}"
+            logger.info("Bedrock: using SigV4 auth (profile '%s')", profile)
+        else:
+            logger.warning("Bedrock: AWS profile '%s' has no credentials", profile)
+    if auth_method is None and config.bearer_token:
+        _configure_bearer_auth(sdk_config, config.bearer_token)
+        auth_method = "bearer"
+        logger.info("Bedrock: using bearer token auth")
+    elif auth_method is None and config.has_env_credentials:
+        from smithy_aws_core.identity import EnvironmentCredentialsResolver
+
+        sdk_config.aws_credentials_identity_resolver = EnvironmentCredentialsResolver()  # type: ignore[no-untyped-call]
+        auth_method = "env"
+        logger.info("Bedrock: using SigV4 auth (env vars)")
+    elif auth_method is None and not profile:
+        session = _credentialed_session(None)
+        if session is not None:
+            sdk_config.aws_credentials_identity_resolver = _session_credentials_resolver(session)
+            auth_method = "default-chain"
+            logger.info("Bedrock: using SigV4 auth (default credential chain)")
+    return BedrockRuntimeClient(sdk_config), auth_method
+
+
 _SONNET_MODEL = "us.anthropic.claude-sonnet-5-5"
 """Default Bedrock model identifier for the human-facing synthesis role."""
 
@@ -586,51 +632,13 @@ class BedrockLLMClient:
     def _get_client(self) -> Any:
         """Lazily create the BedrockRuntimeClient. Returns None if SDK missing."""
         if self._client is None:
-            try:
-                from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient
-                from aws_sdk_bedrock_runtime.config import Config
-
-                config = Config(region=self._config.region)
-
-                # Wire up auth — priority: profile > bearer token > env vars >
-                # default chain. A named profile that doesn't resolve never
-                # falls through to the default chain, which may be another account.
-                profile = _find_aws_profile(self._config.profile)
-                if profile:
-                    session = _credentialed_session(profile)
-                    if session is not None:
-                        config.aws_credentials_identity_resolver = _session_credentials_resolver(
-                            session
-                        )
-                        self._auth_method = f"profile:{profile}"
-                        logger.info("Bedrock: using SigV4 auth (profile '%s')", profile)
-                    else:
-                        logger.warning("Bedrock: AWS profile '%s' has no credentials", profile)
-                if self._auth_method is None and self._config.bearer_token:
-                    _configure_bearer_auth(config, self._config.bearer_token)
-                    self._auth_method = "bearer"
-                    logger.info("Bedrock: using bearer token auth")
-                elif self._auth_method is None and self._config.has_env_credentials:
-                    from smithy_aws_core.identity import EnvironmentCredentialsResolver
-
-                    config.aws_credentials_identity_resolver = EnvironmentCredentialsResolver()  # type: ignore[no-untyped-call]
-                    self._auth_method = "env"
-                    logger.info("Bedrock: using SigV4 auth (env vars)")
-                elif self._auth_method is None and not profile:
-                    session = _credentialed_session(None)
-                    if session is not None:
-                        config.aws_credentials_identity_resolver = _session_credentials_resolver(
-                            session
-                        )
-                        self._auth_method = "default-chain"
-                        logger.info("Bedrock: using SigV4 auth (default credential chain)")
-
-                self._client = BedrockRuntimeClient(config)
-            except ImportError:
+            client, self._auth_method = build_runtime_client(self._config)
+            if client is None:
                 logger.warning(
                     "aws-sdk-bedrock-runtime package not installed — Bedrock LLM disabled"
                 )
                 return None
+            self._client = client
         return self._client
 
     async def close(self) -> None:

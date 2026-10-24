@@ -110,3 +110,14 @@ async def test_embed_batch_keep_alive_passthrough_not_coerced() -> None:
 
     call_kwargs = http.post.call_args.kwargs
     assert call_kwargs["json"]["keep_alive"] == "0"
+
+
+def test_build_embedder_dispatch() -> None:
+    from kb_core.search.bedrock_embeddings import BedrockEmbeddingClient
+    from kb_core.search.embeddings import build_embedder
+
+    db = MagicMock()
+    assert type(build_embedder(db, EmbeddingConfig())) is EmbeddingClient
+    assert isinstance(
+        build_embedder(db, EmbeddingConfig(provider="bedrock")), BedrockEmbeddingClient
+    )

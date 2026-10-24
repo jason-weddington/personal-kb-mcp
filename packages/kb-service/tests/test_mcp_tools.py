@@ -229,6 +229,11 @@ def test_maintain_http_actions(
         "Error: action vacuum is not supported in HTTP mode"
         " — run it on the KB service host."
     )
+    assert text(call(mcp_client, "kb_maintain", {"action": "rebuild_embeddings"})) == (
+        "Error: action rebuild_embeddings is not supported in HTTP mode"
+        " — run `kb-service reembed` (add `--missing` for force=False)"
+        " on the KB service host."
+    )
     assert text(call(mcp_client, "kb_maintain", {"action": "nope"})).startswith(
         "Unknown action 'nope'."
     )

@@ -361,11 +361,11 @@ class EmbeddingRetryWorker:
             return
         if self._embedder is None:
             if self._embedding_config is not None:
-                from kb_core.search.embeddings import EmbeddingClient
+                from kb_core.search.embeddings import build_embedder
 
-                self._embedder = EmbeddingClient(
+                self._embedder = build_embedder(
                     self._db,
-                    config=dataclasses.replace(
+                    dataclasses.replace(
                         self._embedding_config, timeout=self._config.request_timeout
                     ),
                 )

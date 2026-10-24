@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
-from kb_core import embedding_retry
+from kb_core.search.reembed import reembed_entries
 from pydantic import Field
 
 from personal_kb.db.backend import Database
@@ -341,47 +341,16 @@ async def _action_rebuild_embeddings(
 ) -> str:
     """Re-embed entries. force=True re-embeds all, otherwise only missing."""
     if not await embedder.is_available():
-        return "Ollama is not available. Cannot rebuild embeddings."
+        return "Embedder is not available. Cannot rebuild embeddings."
 
-    if force:
-        entry_ids = await get_all_active_entry_ids(db)
-    else:
-        entry_ids = await store.get_entries_without_embeddings(limit=10000)
-
-    if not entry_ids:
+    result = await reembed_entries(db, store, embedder, only_missing=not force)
+    if result.processed == 0:
         return "No entries need embedding."
-
-    succeeded = 0
-    failed = 0
-    succeeded_ids: list[str] = []
-
-    for eid in entry_ids:
-        entry = await get_entry(db, eid)
-        if entry is None:
-            failed += 1
-            continue
-        try:
-            embedding = await embedder.embed(entry.embedding_text)
-            if embedding is not None:
-                await embedder.store_embedding(eid, embedding)
-                await store.mark_embedding(eid, True)
-                succeeded += 1
-                succeeded_ids.append(eid)
-            else:
-                failed += 1
-        except Exception:
-            logger.warning("Failed to embed %s", eid, exc_info=True)
-            failed += 1
-
-    # A manual rebuild fixes exactly what the background retry queue would
-    # have retried — clear those rows so the worker doesn't redundantly
-    # re-embed entries this rebuild already fixed.
-    await embedding_retry.resolve(db, succeeded_ids)
 
     mode = "all entries" if force else "entries without embeddings"
     return (
-        f"Rebuild embeddings ({mode}): {len(entry_ids)} processed,"
-        f" {succeeded} succeeded, {failed} failed"
+        f"Rebuild embeddings ({mode}): {result.processed} processed,"
+        f" {result.succeeded} succeeded, {result.failed} failed"
     )
 
 

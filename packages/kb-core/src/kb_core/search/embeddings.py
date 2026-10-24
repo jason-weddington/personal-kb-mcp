@@ -169,3 +169,12 @@ class EmbeddingClient:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
+
+
+def build_embedder(db: Database, config: EmbeddingConfig) -> EmbeddingClient:
+    """Return the embedding client for ``config.provider`` (Ollama or Bedrock)."""
+    if config.provider == "bedrock":
+        from kb_core.search.bedrock_embeddings import BedrockEmbeddingClient
+
+        return BedrockEmbeddingClient(db, config)
+    return EmbeddingClient(db, config=config)

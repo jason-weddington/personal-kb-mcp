@@ -135,6 +135,16 @@ Uses the cross-region inference profiles `us.anthropic.claude-haiku-5-5` for ext
 
 > **Legacy SigV4 auth** also works — set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` instead of `AWS_BEARER_TOKEN_BEDROCK`, or set `KB_AWS_PROFILE` to a named profile. With none of these, boto3's default credential chain is used (SSO or `aws login` sessions, instance and container roles), and temporary credentials are refreshed as they expire. Bearer token auth is preferred.
 
+### Switching embedding provider
+
+To embed with Amazon Titan Text Embeddings V2 through Bedrock instead of Ollama, using the same AWS account as the Bedrock LLM provider:
+
+1. Install with the `[local,aws]` extra, using the same `uvx --from "git+https://github.com/jason-weddington/personal-kb-mcp.git[local,aws]"` form shown under AWS Bedrock.
+2. Set the variables where kb-service actually reads them. For local (stdio/uvx) mode, add `KB_EMBEDDING_PROVIDER=bedrock` plus `AWS_BEARER_TOKEN_BEDROCK` (or `KB_AWS_PROFILE`) and `KB_BEDROCK_REGION` to the personal-kb MCP server's `"env"` block, because the auto-spawned daemon inherits that environment, not your shell's. For a self-run or hosted kb-service, set them in that service's environment or unit.
+3. Restart. In local mode, run `kill "$(cat ~/.local/share/personal_kb/kb-daemon.pid)"` (or `$PERSONAL_KB_DAEMON_STATE_DIR/kb-daemon.pid`), and the next session respawns the daemon with the new env; a daemon is not replaced on an env change alone. For hosted mode, restart the service.
+4. Run reembed with the same DB location and env: `KB_EMBEDDING_PROVIDER=bedrock KB_BEDROCK_REGION=... AWS_BEARER_TOKEN_BEDROCK=... uvx --from "git+https://github.com/jason-weddington/personal-kb-mcp.git[local,aws]" kb-service reembed` for local mode, or `kb-service reembed` in the service's environment for hosted mode. Before trusting the run, check that the summary reads `provider=bedrock, model=amazon.titan-embed-text-v2:0`. Add `--missing` to embed only entries without a vector.
+5. Caveats: the vector leg mixes old and new vectors until reembed finishes, and kb-service logs a model-mismatch WARNING at startup until then. `KB_EMBEDDING_DIM` must stay at the table's dimension: Titan V2 accepts 256, 512 or 1024, and the default 1024 needs no change. Changing the dimension requires recreating the vector table, and reembed refuses to run in that case. The IAM principal needs `bedrock:InvokeModel` on the Titan model. The similarity thresholds are calibrated on qwen3-embedding.
+
 ### Ollama setup (if using embeddings or local LLM)
 
 ```bash
@@ -487,7 +497,8 @@ Any error path — no `.kb_project`, no maps for the project, malformed stdin, w
 | `KB_OLLAMA_MODEL` | `qwen3:4b` | Model for generation tasks |
 | `KB_OLLAMA_LLM_TIMEOUT` | `120.0` | Generation timeout in seconds |
 | **Ollama embeddings** | | |
-| `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Model for vector embeddings |
+| `KB_EMBEDDING_PROVIDER` | `ollama` | Embedding provider: `ollama` or `bedrock` (Titan Text Embeddings V2) |
+| `KB_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` (`amazon.titan-embed-text-v2:0` when the provider is `bedrock`) | Model for vector embeddings |
 | `KB_EMBEDDING_DIM` | `1024` | Embedding vector dimensions |
 | `KB_OLLAMA_TIMEOUT` | `10.0` | Embedding timeout in seconds |
 | `KB_OLLAMA_KEEP_ALIVE` | `30m` | Per-request Ollama `keep_alive` sent with every embed call, so only the embedding model stays warm in VRAM |

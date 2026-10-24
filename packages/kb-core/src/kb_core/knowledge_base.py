@@ -75,7 +75,7 @@ from kb_core.near_duplicates import NearDuplicateCheck
 from kb_core.near_duplicates import find_near_duplicates as _find_near_duplicates
 from kb_core.preflight import build_project_context
 from kb_core.search.embedder_protocol import BatchEmbedder
-from kb_core.search.embeddings import EmbeddingClient
+from kb_core.search.embeddings import build_embedder
 from kb_core.search.hybrid import hybrid_search
 from kb_core.store.knowledge_store import KnowledgeStore, _record_audit_event
 
@@ -395,7 +395,7 @@ class KnowledgeBase:
         owned_embedder = False
         if isinstance(embedder, _UseConfig):
             if config.embedding is not None:
-                resolved_embedder: Embedder | None = EmbeddingClient(db, config=config.embedding)
+                resolved_embedder: Embedder | None = build_embedder(db, config.embedding)
                 owned_embedder = True
             else:
                 resolved_embedder = None

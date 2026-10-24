@@ -4,6 +4,7 @@ import logging
 
 import pytest
 
+import personal_kb.config as _cfg
 from personal_kb.config import (
     build_anthropic_config,
     get_anthropic_model,
@@ -289,3 +290,86 @@ def test_get_synthesis_effort_invalid_warns_and_falls_back(monkeypatch, caplog):
         assert get_synthesis_effort() == "low"
     hits = [r for r in caplog.records if r.levelno == logging.WARNING and "bogus" in r.getMessage()]
     assert len(hits) == 1
+
+
+_EMB_VARS = (
+    "KB_EMBEDDING_PROVIDER",
+    "KB_EMBEDDING_MODEL",
+    "KB_EMBEDDING_DIM",
+    "KB_OLLAMA_TIMEOUT",
+    "KB_BEDROCK_TIMEOUT",
+    "KB_BEDROCK_REGION",
+    "KB_AWS_PROFILE",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+)
+
+
+def _clean_embedding_env(monkeypatch):
+    for var in _EMB_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_embedding_provider_unset_is_ollama(monkeypatch):
+    _clean_embedding_env(monkeypatch)
+    assert _cfg.get_embedding_provider() == "ollama"
+
+
+def test_embedding_provider_empty_is_ollama(monkeypatch):
+    monkeypatch.setenv("KB_EMBEDDING_PROVIDER", "  ")
+    assert _cfg.get_embedding_provider() == "ollama"
+
+
+def test_embedding_provider_normalizes(monkeypatch):
+    monkeypatch.setenv("KB_EMBEDDING_PROVIDER", "BEDROCK")
+    assert _cfg.get_embedding_provider() == "bedrock"
+
+
+def test_embedding_provider_rejects_anthropic(monkeypatch):
+    monkeypatch.setenv("KB_EMBEDDING_PROVIDER", "anthropic")
+    with pytest.raises(ValueError):
+        _cfg.get_embedding_provider()
+
+
+def test_embedding_provider_rejects_unknown(monkeypatch):
+    monkeypatch.setenv("KB_EMBEDDING_PROVIDER", "foo")
+    with pytest.raises(
+        ValueError,
+        match=r"KB_EMBEDDING_PROVIDER='foo' is not valid. Choose from: bedrock, ollama",
+    ):
+        _cfg.get_embedding_provider()
+
+
+def test_embedding_model_defaults_by_provider(monkeypatch):
+    _clean_embedding_env(monkeypatch)
+    assert _cfg.get_embedding_model() == "qwen3-embedding:0.6b"
+    monkeypatch.setenv("KB_EMBEDDING_PROVIDER", "bedrock")
+    assert _cfg.get_embedding_model() == "amazon.titan-embed-text-v2:0"
+    monkeypatch.setenv("KB_EMBEDDING_PROVIDER", "ollama")
+    monkeypatch.setenv("KB_EMBEDDING_MODEL", "foo")
+    assert _cfg.get_embedding_model() == "foo"
+
+
+def test_build_embedding_config_ollama(monkeypatch):
+    _clean_embedding_env(monkeypatch)
+    cfg = _cfg.build_embedding_config()
+    assert cfg.provider == "ollama"
+    assert cfg.bedrock is None
+    assert cfg.timeout == 10.0
+    assert cfg.model == "qwen3-embedding:0.6b"
+    assert cfg.dim == 1024
+
+
+def test_build_embedding_config_bedrock(monkeypatch):
+    _clean_embedding_env(monkeypatch)
+    monkeypatch.setenv("KB_EMBEDDING_PROVIDER", "bedrock")
+    monkeypatch.setenv("KB_BEDROCK_REGION", "eu-west-1")
+    monkeypatch.setenv("KB_BEDROCK_TIMEOUT", "7")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "tok")
+    cfg = _cfg.build_embedding_config()
+    assert cfg.provider == "bedrock"
+    assert cfg.model == "amazon.titan-embed-text-v2:0"
+    assert cfg.timeout == 7.0
+    assert cfg.bedrock is not None
+    assert cfg.bedrock.region == "eu-west-1"
+    assert cfg.bedrock.bearer_token == "tok"  # noqa: S105

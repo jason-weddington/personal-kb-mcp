@@ -16,7 +16,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import kb_core.knowledge_base
 import pytest
+from kb_core.models.entry import EntryType
+from kb_core.search.embeddings import EmbeddingClient
 
 import kb_service.attribution as attribution_module
 import kb_service.database as database
@@ -148,6 +151,9 @@ _SCRUB_ENV = (
     "KB_DATABASE_URL",
     "ANTHROPIC_API_KEY",
     "KB_AWS_PROFILE",
+    "KB_EMBEDDING_PROVIDER",
+    "KB_EMBEDDING_MODEL",
+    "KB_EMBEDDING_DIM",
 )
 
 
@@ -367,3 +373,235 @@ def test_create_api_key_request_has_only_name() -> None:
     from kb_service.models import CreateApiKeyRequest
 
     assert set(CreateApiKeyRequest.model_fields) == {"name"}
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging() -> Iterator[None]:
+    """_reembed calls configure_logging(); undo its global handler/levels."""
+    import logging
+
+    root = logging.getLogger()
+    handlers = list(root.handlers)
+    level = root.level
+    saved = {n: logging.getLogger(n).level for n in ("kb_service", "kb_core")}
+    yield
+    root.handlers[:] = handlers
+    root.setLevel(level)
+    for n, lv in saved.items():
+        logging.getLogger(n).setLevel(lv)
+
+
+# --- reembed -------------------------------------------------------------------
+
+
+class FakeEmbedder(EmbeddingClient):
+    """Deterministic embedder; ``fail_texts`` get None, ``available`` toggles probe."""
+
+    def __init__(
+        self,
+        db: Any,
+        config: Any,
+        *,
+        out_dim: int,
+        fail_texts: frozenset[str] = frozenset(),
+        available: bool = True,
+    ) -> None:
+        super().__init__(db, config)
+        self.out_dim = out_dim
+        self.fail_texts = fail_texts
+        self.available = available
+
+    async def is_available(self) -> bool:
+        return self.available
+
+    async def embed(self, text: str) -> list[float] | None:
+        if text in self.fail_texts:
+            return None
+        return [1.0] + [0.0] * (self.out_dim - 1)
+
+
+def _install_fake(monkeypatch: pytest.MonkeyPatch, **kw: Any) -> None:
+    monkeypatch.setattr(
+        kb_core.knowledge_base,
+        "build_embedder",
+        lambda db, cfg: FakeEmbedder(db, cfg, **kw),
+    )
+
+
+async def _seed(n: int, *, embedded: int = 0) -> list[Any]:
+    import kb_service.main
+
+    kb = await kb_service.main._open_kb()
+    entries = []
+    try:
+        for i in range(n):
+            e = await kb.knowledge_store.create_entry(
+                short_title=f"t{i}",
+                long_title=f"t{i}",
+                knowledge_details=f"details {i}",
+                entry_type=EntryType.FACTUAL_REFERENCE,
+            )
+            entries.append(e)
+        for e in entries[:embedded]:
+            assert kb.embedder is not None
+            await kb.embedder.store_embedding(e.id, [0.5] + [0.0] * 1023)
+            await kb.knowledge_store.mark_embedding(e.id, True)
+    finally:
+        await kb.close()
+    return entries
+
+
+async def _state() -> tuple[dict[str, int], int]:
+    import kb_service.main
+
+    kb = await kb_service.main._open_kb()
+    try:
+        cur = await kb.db.execute("SELECT id, has_embedding FROM knowledge_entries")
+        flags = {r["id"]: r["has_embedding"] for r in await cur.fetchall()}
+        cur = await kb.db.execute("SELECT COUNT(*) AS n FROM knowledge_vec")
+        row = await cur.fetchone()
+        return flags, int(row["n"])
+    finally:
+        await kb.close()
+
+
+async def _model_row() -> str | None:
+    import kb_service.main
+
+    kb = await kb_service.main._open_kb()
+    try:
+        cur = await kb.db.execute(
+            "SELECT value FROM deployment_config WHERE key = 'embedding_model'"
+        )
+        row = await cur.fetchone()
+        return None if row is None else str(row["value"])
+    finally:
+        await kb.close()
+
+
+async def _set_model_row(value: str) -> None:
+    import kb_service.main
+
+    kb = await kb_service.main._open_kb()
+    try:
+        await kb.db.execute(
+            "INSERT INTO deployment_config (key, value, set_at)"
+            " VALUES ('embedding_model', ?, 'then')",
+            (value,),
+        )
+        await kb.db.commit()
+    finally:
+        await kb.close()
+
+
+@pytest.mark.parametrize(("flag", "want"), [([], False), (["--missing"], True)])
+def test_reembed_dispatch(
+    monkeypatch: pytest.MonkeyPatch, flag: list[str], want: bool
+) -> None:
+    seen: list[bool] = []
+
+    async def fake(only_missing: bool) -> str:
+        seen.append(only_missing)
+        return "ok"
+
+    monkeypatch.setattr(cli, "_reembed", fake)
+    monkeypatch.setattr("sys.argv", ["kb-service", "reembed", *flag])
+    cli.main()
+    assert seen == [want]
+
+
+async def test_reembed_all(local_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake(monkeypatch, out_dim=1024)
+    await _seed(3)
+    out = await cli._reembed(False)
+    assert out.startswith("Re-embedded all entries: 3 processed, 3 succeeded, 0 failed")
+    flags, vecs = await _state()
+    assert set(flags.values()) == {1}
+    assert vecs == 3
+
+
+async def test_reembed_missing(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(monkeypatch, out_dim=1024)
+    await _seed(3, embedded=2)
+    out = await cli._reembed(True)
+    assert "1 processed" in out
+    assert out.startswith("Re-embedded entries without embeddings")
+
+
+async def test_reembed_table_dim_guard(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(monkeypatch, out_dim=1024)
+    await _seed(2, embedded=2)
+    before = await _state()
+    monkeypatch.setenv("KB_EMBEDDING_DIM", "512")
+    _install_fake(monkeypatch, out_dim=512)
+    with pytest.raises(RuntimeError, match="knowledge_vec stores 1024"):
+        await cli._reembed(False)
+    monkeypatch.delenv("KB_EMBEDDING_DIM")
+    assert await _state() == before
+
+
+async def test_reembed_probe_length_guard(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(monkeypatch, out_dim=1024)
+    await _seed(2)
+    before = await _state()
+    _install_fake(monkeypatch, out_dim=512)
+    with pytest.raises(RuntimeError, match="512-dimension"):
+        await cli._reembed(False)
+    assert await _state() == before
+
+
+async def test_reembed_unavailable(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(monkeypatch, out_dim=1024, available=False)
+    with pytest.raises(RuntimeError, match="embedder unavailable"):
+        await cli._reembed(False)
+
+
+async def test_reembed_failure_exit_code(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(monkeypatch, out_dim=1024)
+    entries = await _seed(2)
+    _install_fake(
+        monkeypatch, out_dim=1024, fail_texts=frozenset({entries[0].embedding_text})
+    )
+    with pytest.raises(RuntimeError, match="1 failed") as exc:
+        await cli._reembed(False)
+    assert entries[0].id in str(exc.value)
+    monkeypatch.setattr("sys.argv", ["kb-service", "reembed"])
+    with pytest.raises(SystemExit) as se:
+        cli.main()
+    assert se.value.code == 1
+
+
+async def test_reembed_deployment_config(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(monkeypatch, out_dim=1024)
+    monkeypatch.setenv("KB_EMBEDDING_MODEL", "fake-model")
+    # No row present: none created, even after a clean all-mode run.
+    await _seed(1)
+    await cli._reembed(False)
+    assert await _model_row() is None
+    await _set_model_row("qwen3-embedding:0.6b")
+    await cli._reembed(True)
+    assert await _model_row() == "qwen3-embedding:0.6b"
+    await cli._reembed(False)
+    assert await _model_row() == "fake-model"
+
+
+async def test_reembed_empty_leaves_config(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(monkeypatch, out_dim=1024)
+    monkeypatch.setenv("KB_EMBEDDING_MODEL", "fake-model")
+    await _set_model_row("qwen3-embedding:0.6b")
+    assert await cli._reembed(False) == "No entries need embedding."
+    assert await _model_row() == "qwen3-embedding:0.6b"

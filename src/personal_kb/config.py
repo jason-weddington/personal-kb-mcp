@@ -74,9 +74,34 @@ def get_ollama_url() -> str:
     return os.environ.get("KB_OLLAMA_URL", "http://localhost:11434")
 
 
+_VALID_EMBEDDING_PROVIDERS = {"bedrock", "ollama"}
+
+
+def get_embedding_provider() -> str:
+    """Return the embedding provider from KB_EMBEDDING_PROVIDER (ollama or bedrock)."""
+    raw = os.environ.get("KB_EMBEDDING_PROVIDER", "").strip().lower()
+    if not raw:
+        return "ollama"
+    if raw not in _VALID_EMBEDDING_PROVIDERS:
+        choices = ", ".join(sorted(_VALID_EMBEDDING_PROVIDERS))
+        msg = f"KB_EMBEDDING_PROVIDER={raw!r} is not valid. Choose from: {choices}"
+        raise ValueError(msg)
+    return raw
+
+
 def get_embedding_model() -> str:
-    """Return the embedding model name from KB_EMBEDDING_MODEL."""
-    return os.environ.get("KB_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    """Return the embedding model name from KB_EMBEDDING_MODEL.
+
+    When unset, the default depends on the provider: Titan V2 on bedrock,
+    ``qwen3-embedding:0.6b`` otherwise.
+    """
+    if "KB_EMBEDDING_MODEL" in os.environ:
+        return os.environ["KB_EMBEDDING_MODEL"]
+    if get_embedding_provider() == "bedrock":
+        from kb_core.config import _DEFAULT_BEDROCK_EMBEDDING_MODEL
+
+        return _DEFAULT_BEDROCK_EMBEDDING_MODEL
+    return "qwen3-embedding:0.6b"
 
 
 def get_ollama_timeout() -> float:
@@ -308,12 +333,23 @@ def build_embedding_config() -> "EmbeddingConfig":
     """
     from kb_core.config import EmbeddingConfig
 
+    if get_embedding_provider() == "bedrock":
+        return EmbeddingConfig(
+            ollama_url=get_ollama_url(),
+            timeout=get_bedrock_timeout(),
+            model=get_embedding_model(),
+            dim=get_embedding_dim(),
+            keep_alive=get_embedding_keep_alive(),
+            provider="bedrock",
+            bedrock=build_bedrock_config(),
+        )
     return EmbeddingConfig(
         ollama_url=get_ollama_url(),
         timeout=get_ollama_timeout(),
         model=get_embedding_model(),
         dim=get_embedding_dim(),
         keep_alive=get_embedding_keep_alive(),
+        provider="ollama",
     )
 
 

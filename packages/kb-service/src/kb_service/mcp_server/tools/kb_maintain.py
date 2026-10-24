@@ -183,6 +183,12 @@ def register_kb_maintain(mcp: FastMCP, prefix: str = "kb_") -> None:
                 data.get("cleared_count", 0),
                 [tuple(c) for c in data.get("changed", [])],
             )
+        if action == "rebuild_embeddings":
+            return (
+                "Error: action rebuild_embeddings is not supported in HTTP mode"
+                " — run `kb-service reembed` (add `--missing` for force=False)"
+                " on the KB service host."
+            )
         return (
             f"Error: action {action} is not supported in HTTP mode"
             " — run it on the KB service host."

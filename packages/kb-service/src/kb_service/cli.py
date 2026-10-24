@@ -21,7 +21,10 @@ import sys
 import uuid
 from collections.abc import Coroutine
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
+
+REEMBED_PROGRESS_EVERY = 100
+REEMBED_FAILED_IDS_SHOWN = 20
 
 
 async def _create_admin(email: str, password: str) -> str:
@@ -266,6 +269,98 @@ async def _metrics_repeat_rate(
     return render_repeat_rate_markdown(resp)
 
 
+async def _reembed(only_missing: bool) -> str:
+    """Re-embed KB entries with the configured provider, after a preflight.
+
+    Every abort happens before any vector, flag or config row is written.
+    """
+    from kb_core.search.reembed import (
+        ReembedEmbedder,
+        reembed_entries,
+        vector_table_dim,
+    )
+
+    import kb_service.main
+
+    configure_logging()
+    kb = await kb_service.main._open_kb()
+    try:
+        emb_cfg = kb.config.embedding
+        if emb_cfg is None or kb.embedder is None:
+            raise RuntimeError(
+                "embedder unavailable (provider=none, model=none); nothing was changed"
+            )
+        embedder = cast("ReembedEmbedder", kb.embedder)
+        provider, model, dim = emb_cfg.provider, emb_cfg.model, emb_cfg.dim
+        unavailable = (
+            f"embedder unavailable (provider={provider}, model={model});"
+            " nothing was changed"
+        )
+
+        table_dim = await vector_table_dim(kb.db)
+        if table_dim is None:
+            raise RuntimeError(
+                "could not read the knowledge_vec dimension; nothing was changed"
+            )
+        if table_dim != dim:
+            raise RuntimeError(
+                f"knowledge_vec stores {table_dim}-dimension vectors but"
+                f" KB_EMBEDDING_DIM is {dim}; changing the dimension requires"
+                " recreating the knowledge_vec table, which reembed does not do;"
+                " nothing was changed"
+            )
+        if not await embedder.is_available():
+            raise RuntimeError(unavailable)
+        vec = await embedder.embed("reembed dimension probe")
+        if vec is None:
+            raise RuntimeError(unavailable)
+        if len(vec) != table_dim:
+            raise RuntimeError(
+                f"embedder returned {len(vec)}-dimension vectors but knowledge_vec"
+                f" stores {table_dim}; changing the dimension requires recreating the"
+                " knowledge_vec table, which reembed does not do; nothing was changed"
+            )
+
+        def cb(done: int, total: int, succeeded: int, failed: int) -> None:
+            print(
+                f"reembed: {done}/{total} ({succeeded} ok, {failed} failed)",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        result = await reembed_entries(
+            kb.db,
+            kb.knowledge_store,
+            embedder,
+            only_missing=only_missing,
+            on_progress=cb,
+            progress_every=REEMBED_PROGRESS_EVERY,
+        )
+        if result.processed == 0:
+            return "No entries need embedding."
+        mode = "entries without embeddings" if only_missing else "all entries"
+        summary = (
+            f"Re-embedded {mode}: {result.processed} processed,"
+            f" {result.succeeded} succeeded, {result.failed} failed"
+            f" (provider={provider}, model={model}, dim={dim})"
+        )
+        if result.failed > 0:
+            extra = result.failed - REEMBED_FAILED_IDS_SHOWN
+            more = f" (+{extra} more)" if extra > 0 else ""
+            shown = ", ".join(result.failed_ids[:REEMBED_FAILED_IDS_SHOWN])
+            raise RuntimeError(summary + "; failed ids: " + shown + more)
+        if not only_missing:
+            await kb.db.execute(
+                "UPDATE deployment_config SET value = ?, set_at = ?"
+                " WHERE key = 'embedding_model'",
+                (model, datetime.now(UTC).isoformat()),
+            )
+            await kb.db.commit()
+        return summary
+    finally:
+        await kb.close()
+
+
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _HANDLER_MARKER = "_kb_service_handler"
 
@@ -422,6 +517,22 @@ def main() -> None:
     )
     rr.add_argument("--json", action="store_true", help="Emit JSON, not markdown.")
 
+    re = subparsers.add_parser(
+        "reembed",
+        help=(
+            "Re-embed KB entries with the configured embedding provider"
+            " (run after switching provider or model)."
+        ),
+    )
+    re.add_argument(
+        "--missing",
+        action="store_true",
+        help=(
+            "Only embed entries that have no embedding"
+            " (default: re-embed every active entry)."
+        ),
+    )
+
     args = parser.parse_args()
 
     if args.command == "create-admin":
@@ -436,6 +547,8 @@ def main() -> None:
         _run(_list_keys(args.email))
     elif args.command == "set-key-surface":
         _run(_set_key_surface(args.key_id, args.surface))
+    elif args.command == "reembed":
+        _run(_reembed(args.missing))
     elif args.command == "serve":
         _serve(args.host, args.port)
     elif args.command == "metrics" and args.metrics_command == "repeat-rate":

@@ -14,7 +14,7 @@ mapping in the MCP server's startup wiring (later wave) is mechanical:
 * :class:`DatabaseConfig` — discriminated ``SqliteConfig | PostgresConfig``
   (covers ``KB_DB_PATH``, ``KB_DATABASE_URL``, ``KB_PG_POOL_*``,
   ``KB_PG_IAM_AUTH``, ``KB_PG_REGION``, ``KB_EMBEDDING_DIM``).
-* :class:`EmbeddingConfig` — Ollama embeddings (``KB_OLLAMA_URL``,
+* :class:`EmbeddingConfig` — embeddings (``KB_EMBEDDING_PROVIDER``, ``KB_OLLAMA_URL``,
   ``KB_EMBEDDING_MODEL``, ``KB_OLLAMA_TIMEOUT``, ``KB_EMBEDDING_DIM``).
 * :class:`ProviderConfig` — per-role (extraction / query / synthesis)
   LLM provider selection plus per-provider credentials/timeouts
@@ -62,6 +62,10 @@ _DEFAULT_OLLAMA_URL = "http://localhost:11434"
 _DEFAULT_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 _DEFAULT_EMBEDDING_TIMEOUT = 10.0
 _DEFAULT_EMBEDDING_KEEP_ALIVE = "30m"
+_DEFAULT_BEDROCK_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0"
+"""Default embedding model when :attr:`EmbeddingConfig.provider` is ``"bedrock"``."""
+TITAN_V2_DIMENSIONS = (256, 512, 1024)
+"""Output sizes Titan Text Embeddings V2 accepts in its ``dimensions`` request field."""
 _DEFAULT_ANTHROPIC_MODEL = "claude-haiku-5-5"
 _DEFAULT_ANTHROPIC_TIMEOUT = 30.0
 _DEFAULT_SYNTHESIS_MODEL = "claude-sonnet-5-5"
@@ -84,6 +88,9 @@ _DEFAULT_INGEST_CHUNK_OVERLAP = 600
 _DEFAULT_INGEST_DEDUP_THRESHOLD = 0.06
 _DEFAULT_AGENTIC_MAX_CALLS = 4
 
+
+EmbeddingProviderType = Literal["ollama", "bedrock"]
+"""Embedding backend identifier (``KB_EMBEDDING_PROVIDER``)."""
 
 ProviderType = Literal["anthropic", "bedrock", "ollama"]
 """LLM provider identifier. Mirrors ``personal_kb.config._VALID_PROVIDERS``."""
@@ -147,7 +154,16 @@ DatabaseConfig = SqliteConfig | PostgresConfig
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    """Configuration for the Ollama-hosted embedding model."""
+    """Configuration for the embedding model (Ollama by default, or Bedrock)."""
+
+    provider: EmbeddingProviderType = "ollama"
+    """Embedding backend. ``"bedrock"`` calls Titan-style ``InvokeModel`` embeddings
+    with the credentials and region in :attr:`bedrock`; ``"ollama"`` uses :attr:`ollama_url`."""
+
+    bedrock: BedrockProviderConfig | None = None
+    """AWS region and credentials for ``provider="bedrock"`` (its ``model`` field is
+    ignored; :attr:`model` names the embedding model). ``None`` means default region
+    and the default credential chain."""
 
     ollama_url: str = _DEFAULT_OLLAMA_URL
     """Base URL of the Ollama server (e.g. ``http://localhost:11434``)."""

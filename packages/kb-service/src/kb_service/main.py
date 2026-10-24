@@ -197,6 +197,48 @@ async def _open_kb() -> "KnowledgeBase":
     )
 
 
+async def _log_embedding_config(kb: "KnowledgeBase") -> None:
+    """Log the embedding provider; warn when stored vectors came from another model.
+
+    Log-only: never raises.
+    """
+    try:
+        cfg = kb.config.embedding
+    except Exception:
+        logger.debug("embedding config unavailable", exc_info=True)
+        return
+    if cfg is None:
+        logger.info("embedding provider=none (full-text search only)")
+        return
+    region = ""
+    if cfg.provider == "bedrock" and cfg.bedrock is not None:
+        region = f" region={cfg.bedrock.region}"
+    logger.info(
+        "embedding provider=%s model=%s dim=%d%s",
+        cfg.provider,
+        cfg.model,
+        cfg.dim,
+        region,
+    )
+    try:
+        cursor = await kb.db.execute(
+            "SELECT value FROM deployment_config WHERE key = 'embedding_model'"
+        )
+        row = await cursor.fetchone()
+    except Exception:
+        logger.debug("deployment_config embedding_model check failed", exc_info=True)
+        return
+    if row is not None and row["value"] != cfg.model:
+        logger.warning(
+            "embedding model mismatch: vectors were built with %s, "
+            "configured model is %s (provider=%s); vector search is unreliable "
+            "until kb-service reembed completes",
+            row["value"],
+            cfg.model,
+            cfg.provider,
+        )
+
+
 async def _reconcile_supersession(kb: "KnowledgeBase") -> None:
     """Best-effort startup supersession reconcile; never blocks startup.
 
@@ -234,6 +276,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
 
     app.state.kb = await _open_kb()
+    await _log_embedding_config(app.state.kb)
     await _reconcile_supersession(app.state.kb)
     app.state.surprise_drain_lock = asyncio.Lock()
     app.state.surprise_worker = None

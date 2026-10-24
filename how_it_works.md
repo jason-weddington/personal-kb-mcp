@@ -281,10 +281,14 @@ The age anchor is the later of `updated_at` (or `created_at`) and `last_accessed
 | `EmbeddingConfig` field | Default | Env var (kb-service) |
 |---|---|---|
 | `ollama_url` | `http://localhost:11434` | `KB_OLLAMA_URL` |
-| `model` | `qwen3-embedding:0.6b` | `KB_EMBEDDING_MODEL` |
+| `provider` | `ollama` | `KB_EMBEDDING_PROVIDER` |
+| `model` | `qwen3-embedding:0.6b` (`amazon.titan-embed-text-v2:0` when the provider is `bedrock`) | `KB_EMBEDDING_MODEL` |
 | `dim` | 1024 | `KB_EMBEDDING_DIM` |
 | `timeout` | 10.0 s | `KB_OLLAMA_TIMEOUT` |
 | `keep_alive` | `30m` | none (see below) |
+| `bedrock` | none (`BedrockProviderConfig`, set only when the provider is `bedrock`) | `KB_BEDROCK_REGION`, `KB_AWS_PROFILE`, `AWS_BEARER_TOKEN_BEDROCK` |
+
+**Bedrock provider.** With `KB_EMBEDDING_PROVIDER=bedrock`, `build_embedder` returns `kb_core/search/bedrock_embeddings.py` `BedrockEmbeddingClient`, a subclass of `EmbeddingClient` with the same graceful degradation. It calls `InvokeModel` with body `{inputText, dimensions, normalize: true}` for Amazon Titan Text Embeddings V2. Input is truncated to `TITAN_MAX_INPUT_CHARS = 50_000` characters, with an INFO log. `is_available` enforces the Titan V2 dimensions 256, 512 and 1024, and logs one INFO line when it first succeeds. A response whose vector length differs from `dim` returns None. `embed_batch` runs at `BEDROCK_EMBED_CONCURRENCY = 8`, one call per text, and returns None if any call fails. Credentials come through the shared `build_runtime_client`, the same signing as the Bedrock LLM provider, and each call is bounded by `KB_BEDROCK_TIMEOUT`. The vector table dimension is unchanged, so Titan at 1024 needs no schema change.
 
 `embedding=None` on `KbConfig` is a first-class FTS-only mode; there is no silent provider swap. A mismatch between `EmbeddingConfig.dim` and the storage dimension is not reconciled: the insert fails, is logged, and the entry is queued for retry. `KB_OLLAMA_KEEP_ALIVE` is inert on kb-service: `kb_service/config.build_embedding_config` does not pass `keep_alive`, so the engine's 30-minute default always applies, and the NOTE in that function claiming kb-core predates the field is stale.
 
@@ -299,7 +303,7 @@ The age anchor is the later of `updated_at` (or `created_at`) and `last_accessed
 - Success stores the vector, sets `has_embedding`, writes an `embedding_recovered` audit row and deletes the queue row. Failure applies `BACKOFF_SCHEDULE_SECONDS` (60, 300, 900, 3600, 10800) and flips the row to `exhausted` at attempt `MAX_ATTEMPTS = 6`, with an `embedding_exhausted` audit row and an ERROR `embedding-retry-exhausted` line. Inactive or missing entries are dropped.
 - A tripwire WARNING fires when active vectorless entries have no queue row.
 
-The worker is Postgres-only: `start_embedding_worker` returns immediately for a `SQLiteBackend`, and `main._open_kb` forces `EmbeddingRetryConfig(enabled=False)` on SQLite. Rows are still enqueued on SQLite and nothing drains them, and no HTTP path rebuilds embeddings. `GET /api/kb/embedding-queue` (admin) returns `pending`, `exhausted`, `oldest_pending_age_seconds`, `next_due_at`, `vectorless_unqueued` (should be 0), `worker_enabled` and `worker_running`. `KB_EMBED_WORKER_ENABLED`, `KB_EMBED_WORKER_BATCH_SIZE`, `KB_EMBED_WORKER_POLL_SECONDS` and `KB_EMBED_WORKER_TIMEOUT` configure it; the down backoff, backfill interval and lease have no env var.
+The worker is Postgres-only: `start_embedding_worker` returns immediately for a `SQLiteBackend`, and `main._open_kb` forces `EmbeddingRetryConfig(enabled=False)` on SQLite. Rows are still enqueued on SQLite and nothing drains them. `kb-service reembed [--missing]` (run on the service host) re-embeds every active entry, or only those without a vector, through `reembed_entries` in `kb_core/search/reembed.py` (`REEMBED_MISSING_LIMIT = 1_000_000` caps the `--missing` selection). Its preflight, before any write, checks that the `knowledge_vec` dimension equals `KB_EMBEDDING_DIM`, that the embedder is available, and that a probe embedding has the table's length; after a clean all-entries run it updates an existing `deployment_config` `embedding_model` row, and kb-service logs a mismatch WARNING at startup while that row differs from the configured model. The similarity thresholds `KB_NEAR_DUPLICATE_FLOOR` (0.88), `BELIEF_CHECK_THRESHOLD` (0.85), `POCKET_MIN_SIMILARITY` (0.55), the enricher dedup (0.85), the ingest dedup distance (0.06) and the agent fast path (0.030) are calibrated on qwen3-embedding:0.6b, and only `KB_NEAR_DUPLICATE_FLOOR` is env-overridable. `GET /api/kb/embedding-queue` (admin) returns `pending`, `exhausted`, `oldest_pending_age_seconds`, `next_due_at`, `vectorless_unqueued` (should be 0), `worker_enabled` and `worker_running`. `KB_EMBED_WORKER_ENABLED`, `KB_EMBED_WORKER_BATCH_SIZE`, `KB_EMBED_WORKER_POLL_SECONDS` and `KB_EMBED_WORKER_TIMEOUT` configure it; the down backoff, backfill interval and lease have no env var.
 
 ## 11. Reading
 
@@ -635,6 +639,7 @@ FastAPI dependencies: `get_current_principal` (stores the principal on `request.
 | `create-user --email --password` | A non-admin user, for example a machine account |
 | `make-admin --email` | Promote |
 | `serve [--host 127.0.0.1] [--port 8000]` | Run the service |
+| `reembed [--missing]` | Re-embed all active entries (or only those without a vector) with the configured embedding provider; see section 10 |
 | `metrics repeat-rate` | See [intelligent-kb.md §20](docs/intelligent-kb.md#20-measure-telling-whether-the-loop-works) |
 | `list-keys`, `set-key-surface` | API-key surfaces; see [intelligent-kb.md §7](docs/intelligent-kb.md#7-capture-c-the-write-policy-unattended-agents-propose-never-write) |
 | `set-machine-principal --email` | See [intelligent-kb.md §4](docs/intelligent-kb.md#4-the-lesson-record-hintsresolution-and-the-trust-model) |
@@ -904,7 +909,7 @@ See: `packages/kb-service/src/kb_service/mcp_server/`, `kb_service/auth.py`, `kb
 
 `KB_MANAGER=TRUE` in the serving process registers `kb_maintain` and `kb_bulk_update`.
 
-**kb_maintain** declares 14 actions, but only three run over HTTP: `deactivate` (needs `entry_id` and `change_reason`, optional `superseded_by` matching `kb-\d{5}`), `reactivate` (admin) and `reconcile_supersession` (admin; renders `Supersession reconcile: edges_added= set= cleared=` plus one `drift <target>: old -> new` line per change). Every other action (`stats`, `rebuild_embeddings`, `rebuild_graph`, `purge_inactive`, `vacuum`, `entry_versions`, `list_feedback`, `summarize_feedback`, `search_stats`, `list_contributors`, `list_audit`) returns `Error: action X is not supported in HTTP mode — run it on the KB service host.`, and an unknown action returns the sorted action list.
+**kb_maintain** declares 14 actions, but only three run over HTTP: `deactivate` (needs `entry_id` and `change_reason`, optional `superseded_by` matching `kb-\d{5}`), `reactivate` (admin) and `reconcile_supersession` (admin; renders `Supersession reconcile: edges_added= set= cleared=` plus one `drift <target>: old -> new` line per change). Every other action (`stats`, `rebuild_graph`, `purge_inactive`, `vacuum`, `entry_versions`, `list_feedback`, `summarize_feedback`, `search_stats`, `list_contributors`, `list_audit`) returns `Error: action X is not supported in HTTP mode — run it on the KB service host.`; `rebuild_embeddings` returns a pointer to `kb-service reembed`, and an unknown action returns the sorted action list.
 
 **kb_bulk_update** forwards to `POST /api/kb/bulk_update` (admin; `dry_run` defaults to true). Allowed filter keys: `contributor`, `team`, `project_ref` (null matches unset), `entry_type`, `tags`, `entry_ids`. Allowed update keys: `project_ref`, `entry_type`, `confidence_level`, `tags_add`, `tags_remove`, `team`. Empty or unknown keys are 422 (the tool also rejects empty filters or updates client-side). `KnowledgeStore.bulk_update` updates matching active rows, bumps `version` and `updated_at` (which resets decay), stamps `updated_by`, and writes a `Bulk metadata update` version row and audit event. It does not rebuild graph edges, so `has_tag` and `in_project` edges stay stale until each entry is next updated; only an `entry_type` change triggers `recompute_supersession`. A non-dry run from a non-interactive surface is a write-policy 403.
 
@@ -922,7 +927,8 @@ This table lists every core environment variable. Read-by values: **service** (k
 | `KB_SERVICE_PUBLIC_URL` | service | request scheme and host | Base for invite and reset links and the `/mcp` `kb_explore` URL |
 | `KB_SERVICE_CLIENT_INSTALL_SPEC` | service | `personal-kb @ git+https://github.com/jason-weddington/personal-kb-mcp` | Shown by `GET /api/settings` |
 | `KB_SERVICE_STATIC_DIR` | service | unset | First choice for the SPA directory |
-| `KB_EMBEDDING_MODEL` | service | `qwen3-embedding:0.6b` | Ollama embedding model |
+| `KB_EMBEDDING_PROVIDER` | service | `ollama` | `ollama` or `bedrock`; an invalid value is a startup error, empty means ollama |
+| `KB_EMBEDDING_MODEL` | service | `qwen3-embedding:0.6b` on ollama, `amazon.titan-embed-text-v2:0` on bedrock | Embedding model |
 | `KB_EMBEDDING_DIM` | service | `1024` | Vector size; must match the stored table |
 | `KB_OLLAMA_URL` | service | `http://localhost:11434` | Ollama for embeddings and the Ollama LLM role |
 | `KB_OLLAMA_TIMEOUT` | service | `10.0` | Embedding request timeout (s) |
@@ -946,7 +952,7 @@ This table lists every core environment variable. Read-by values: **service** (k
 | `KB_BEDROCK_MODEL` | service | `us.anthropic.claude-haiku-5-5` | Extraction and query model on Bedrock; thinking follows `KB_ANTHROPIC_THINKING` |
 | `KB_BEDROCK_SYNTHESIS_MODEL` | service | `us.anthropic.claude-sonnet-5-5` | Synthesis model on Bedrock; any non-empty value is used verbatim, whitespace stripped; effort follows `KB_SYNTHESIS_EFFORT` |
 | `KB_BEDROCK_REGION` | service | `us-east-1` | Bedrock region |
-| `KB_BEDROCK_TIMEOUT` | service | `60.0` | Per-attempt Converse timeout (s); a timed-out attempt is retried |
+| `KB_BEDROCK_TIMEOUT` | service | `60.0` | Per-attempt Converse timeout (s); a timed-out attempt is retried; also bounds each Bedrock embedding call |
 | `KB_AWS_PROFILE` | service | unset | Bedrock profile; else a profile named `personal_kb_bedrock`; else (after bearer and env keys) boto3's default credential chain |
 | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID` | service | unset | Further Bedrock credential sources |
 | `KB_AGENTIC_QUERY` | service | `TRUE` | Agent loop for `kb_ask`/`kb_summarize` retrieval |
