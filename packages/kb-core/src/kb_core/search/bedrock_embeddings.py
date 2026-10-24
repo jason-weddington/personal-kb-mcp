@@ -110,7 +110,9 @@ class BedrockEmbeddingClient(EmbeddingClient):
                 InvokeModelInput(
                     model_id=self._config.model,
                     body=json.dumps(body).encode(),
-                    content_type="application/json",
+                    # No content_type: aws-sdk-bedrock-runtime 0.4.0 then sends
+                    # Content-Type twice (ours plus its octet-stream default) and
+                    # Bedrock rejects the request with InvalidSignatureException.
                     accept="application/json",
                 )
             ),

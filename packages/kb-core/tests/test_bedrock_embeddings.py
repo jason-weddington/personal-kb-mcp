@@ -44,7 +44,9 @@ async def test_embed_sends_titan_request(monkeypatch) -> None:
     fake.invoke_model.assert_awaited_once()
     sent = fake.invoke_model.call_args.args[0]
     assert sent.model_id == "amazon.titan-embed-text-v2:0"
-    assert sent.content_type == sent.accept == "application/json"
+    assert sent.accept == "application/json"
+    # Setting content_type makes the SDK send two Content-Type values and break SigV4.
+    assert sent.content_type is None
     assert json.loads(sent.body) == {"inputText": "hello", "dimensions": 1024, "normalize": True}
 
 
