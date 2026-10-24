@@ -32,7 +32,6 @@ _ABSTENTION_QUERIES = [
 ]
 
 
-@pytest.mark.eval
 class TestAbstention:
     """Hard gate: abstention queries must return empty result sets."""
 

@@ -1,8 +1,8 @@
 {
   "aggregate": {
-    "mean_mrr": 0.9667,
+    "mean_mrr": 0.95,
     "mean_recall_at_k": 1.0,
-    "mean_ndcg_at_k": 0.9651
+    "mean_ndcg_at_k": 0.9528
   },
   "abstention": {
     "correct_rejection_rate": 1.0
@@ -142,9 +142,9 @@
       "result_count": 5
     },
     "q5x-embedding-model": {
-      "mrr": 1.0,
+      "mrr": 0.5,
       "recall_at_k": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.6309,
       "top_k": 5,
       "result_count": 3
     },

@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 RRF_K = 60
 # An id ranked this high in either leg survives the min_score_ratio filter.
 RRF_LEG_FLOOR_RANK = 3
+# Minimum ids fetched per leg, so ranking does not depend on the requested limit.
+# 30 is the pool a limit-10 search always used; every limit up to 10 now ranks alike.
+RRF_CANDIDATE_POOL = 30
 
 # Log-line prefix for supersession-aware read filtering
 SUPERSESSION_READ_MARKER = "supersession-read"
@@ -51,7 +54,7 @@ async def hybrid_search(
         # No query and no filters — nothing to search
         return [], 0
 
-    fetch_limit = query.limit * 3  # Over-fetch for re-ranking
+    fetch_limit = max(query.limit * 3, RRF_CANDIDATE_POOL)  # Over-fetch for re-ranking
 
     # Always run FTS
     fts_results = await fts_search(
@@ -253,7 +256,7 @@ async def _filter_only_search(
         params.append(query.team)
 
     sql += " ORDER BY created_at DESC LIMIT ?"
-    params.append(query.limit)
+    params.append(max(query.limit * 3, RRF_CANDIDATE_POOL))
 
     cursor = await db.execute(sql, tuple(params))
     rows = await cursor.fetchall()
@@ -261,6 +264,8 @@ async def _filter_only_search(
     now = datetime.now(UTC)
     results: list[SearchResult] = []
     for row in rows:
+        if len(results) >= query.limit:
+            break
         entry = await get_entry(db, row[0])
         if entry is None:
             continue

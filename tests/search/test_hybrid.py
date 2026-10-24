@@ -6,6 +6,7 @@ from personal_kb.db.queries import get_entry
 from personal_kb.models.entry import EntryType
 from personal_kb.models.search import SearchQuery
 from personal_kb.search.hybrid import hybrid_search
+from tests.conftest import FakeEmbedder
 
 
 @pytest.mark.asyncio
@@ -856,3 +857,124 @@ async def test_filter_only_hides_superseded(db, store):
         db, None, SearchQuery(project_ref="p", include_superseded=True)
     )
     assert {r.entry.id for r in results} == {a.id, b.id}
+
+
+# --- Result independence from the requested limit ---
+
+
+class _AxisEmbedder(FakeEmbedder):
+    """Embedder placing texts on named axes: RELEVANT/NEAR near axis 0, the rest on axis 1."""
+
+    async def embed(self, text: str) -> list[float] | None:
+        vec = [0.0] * self.dim
+        if "RELEVANT" in text or "probe query" in text:
+            vec[0] = 1.0
+        elif "NEAR" in text:
+            vec[0] = 0.9
+            vec[2] = 0.43
+        else:
+            vec[1] = 1.0
+        norm = sum(v * v for v in vec) ** 0.5
+        return [v / norm for v in vec]
+
+
+async def _add_embedded(store, embedder, **kwargs):
+    entry = await store.create_entry(entry_type=EntryType.FACTUAL_REFERENCE, **kwargs)
+    await embedder.store_embedding(entry.id, await embedder.embed(entry.embedding_text))
+    await store.mark_embedding(entry.id, True)
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_limit_is_prefix_of_larger_limit(db, store):
+    """A smaller limit returns the first N ids of a larger limit (constant candidate pool).
+
+    With the old limit * 3 pool, limit 5 fused only 15 ids per leg, so RELEVANT (FTS rank 19,
+    vector rank 1) lost its FTS contribution and fell out of the top 5 that limit 10 showed."""
+    embedder = _AxisEmbedder(db)
+    # 18 strong FTS matches, dissimilar by vector.
+    for i in range(18):
+        await _add_embedded(
+            store,
+            embedder,
+            short_title=f"filler {i}",
+            long_title="alpha beta gamma delta alpha beta gamma delta",
+            knowledge_details="alpha beta gamma delta " * 6,
+        )
+    # Vector-near entries with no FTS overlap.
+    for i in range(30):
+        await _add_embedded(
+            store,
+            embedder,
+            short_title=f"near {i}",
+            long_title="NEAR cluster member",
+            knowledge_details="NEAR unrelated words entirely",
+        )
+    relevant = await _add_embedded(
+        store,
+        embedder,
+        short_title="relevant entry",
+        long_title="RELEVANT mentions alpha once",
+        knowledge_details="RELEVANT " + "padding text " * 30 + "alpha beta gamma delta",
+    )
+
+    q = "alpha beta gamma delta probe query"
+    small, _ = await hybrid_search(db, embedder, SearchQuery(query=q, limit=5, min_score_ratio=0))
+    large, _ = await hybrid_search(db, embedder, SearchQuery(query=q, limit=10, min_score_ratio=0))
+    small_ids = [r.entry.id for r in small]
+    assert small_ids == [r.entry.id for r in large][:5]
+    assert relevant.id in small_ids
+
+
+@pytest.mark.asyncio
+async def test_stale_rows_keep_their_slot(db, store):
+    """A stale top candidate is dropped without backfill from deeper candidates.
+
+    The abstention gate depends on this: a no-answer query whose only matches are stale must
+    come back empty rather than filled with weaker, unrelated hits."""
+    for i in range(4):
+        await store.create_entry(
+            short_title=f"stale widget {i}",
+            long_title="widget widget widget widget",
+            knowledge_details="widget " * 20,
+            entry_type=EntryType.FACTUAL_REFERENCE,
+            confidence_level=0.1,
+        )
+    for i in range(6):
+        await store.create_entry(
+            short_title=f"fresh widget {i}",
+            long_title="widget notes",
+            knowledge_details="widget fresh note",
+            entry_type=EntryType.FACTUAL_REFERENCE,
+        )
+
+    results, _ = await hybrid_search(
+        db, None, SearchQuery(query="widget", limit=5, min_score_ratio=0)
+    )
+    assert [r.entry.short_title for r in results] == ["fresh widget 0"]
+
+
+@pytest.mark.asyncio
+async def test_filter_only_backfills_stale(db, store):
+    """Filter-only search skips stale newest rows and still returns `limit` rows."""
+    for i in range(8):
+        await store.create_entry(
+            short_title=f"fresh {i}",
+            long_title="fresh",
+            knowledge_details="fresh",
+            entry_type=EntryType.FACTUAL_REFERENCE,
+            project_ref="proj",
+        )
+    for i in range(3):
+        await store.create_entry(
+            short_title=f"stale {i}",
+            long_title="stale",
+            knowledge_details="stale",
+            entry_type=EntryType.FACTUAL_REFERENCE,
+            project_ref="proj",
+            confidence_level=0.1,
+        )
+
+    results, _ = await hybrid_search(db, None, SearchQuery(query="*", project_ref="proj", limit=5))
+    assert len(results) == 5
+    assert all("stale" not in r.entry.short_title for r in results)
