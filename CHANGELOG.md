@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.24.1 (2026-10-23)
+
+### Bug Fixes
+
+- **search**: The agent-default kb_search no longer ranks a smaller candidate pool than a limit-10
+  search
+  ([`15ec6be`](https://github.com/jason-weddington/personal-kb-mcp/commit/15ec6be4745c725826c6287026f4d6618fad61dd))
+
+
 ## v1.24.0 (2026-10-21)
 
 ### Chores
