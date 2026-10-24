@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v1.25.0 (2026-10-24)
+
+### Bug Fixes
+
+- **embeddings**: Bedrock Titan calls no longer fail with InvalidSignatureException
+  ([`f266b55`](https://github.com/jason-weddington/personal-kb-mcp/commit/f266b559f2605e98e339e0f4d1ea72a6885c594f))
+
+### Documentation
+
+- CLAUDE.md search baseline and eval corpus counts match the committed baseline
+  ([`59a79de`](https://github.com/jason-weddington/personal-kb-mcp/commit/59a79de95bb7bbd6eb4d9f9e873bfa7036b37d3d))
+
+### Features
+
+- **embeddings**: Bedrock Titan Text Embeddings V2 provider and a kb-service reembed command
+  ([`7f8e304`](https://github.com/jason-weddington/personal-kb-mcp/commit/7f8e3049d312a1d6f88dc4a4f1db49987f5932c2))
+
+
 ## v1.24.3 (2026-10-24)
 
 ### Bug Fixes
