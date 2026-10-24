@@ -52,7 +52,7 @@
 
 ## Search Quality Eval
 
-`tests/eval/` contains a regression framework with a controlled corpus (58 entries, 36 queries; the committed search baseline scores 28 of them and the agent baseline 13) and a `ControlledEmbedder` that makes vector search deterministic. Two baselines track quality at different layers:
+`tests/eval/` contains a regression framework with a controlled corpus (62 entries, 38 queries; the committed search baseline scores 30 of them plus an abstention check, and the agent baseline 28) and a `ControlledEmbedder` that makes vector search deterministic. Two baselines track quality at different layers:
 
 | Baseline | File | Deterministic? | What it measures |
 |----------|------|---------------|------------------|
@@ -63,7 +63,7 @@
 
 **Surprise detector eval** (precision/recall of the surprise-capture detector per shape on a private labelled set) lives in `scripts/surprise_eval/` — see `scripts/surprise_eval/README.md`. Its cases and outputs go to a private eval repo, never this one.
 
-**Search baseline** (MRR=0.91, NDCG=0.93 as of 2026-06-27) — run for any change to ranking, RRF weights, decay, or score normalization:
+**Search baseline** (MRR=0.95, NDCG=0.9528, abstention 1.0 as of 2026-10-23) — run for any change to ranking, RRF weights, decay, or score normalization:
 
 1. Branch off main
 2. Make your change
