@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.24.2 (2026-10-24)
+
+### Bug Fixes
+
+- **store**: A guarded store embeds the entry once, reusing the near-duplicate guard's vector
+  ([`501e43c`](https://github.com/jason-weddington/personal-kb-mcp/commit/501e43c59ca893aecc3b0f849dc90227843c7403))
+
+
 ## v1.24.1 (2026-10-23)
 
 ### Bug Fixes
