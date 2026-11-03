@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.26.0 (2026-11-03)
+
+### Features
+
+- **hook**: Antigravity (agy) output mode --format=agy-json
+  ([`d451b4c`](https://github.com/jason-weddington/personal-kb-mcp/commit/d451b4ceeeeca963ccd2588e88c81a8d54e38519))
+
+
 ## v1.25.0 (2026-10-24)
 
 ### Bug Fixes
