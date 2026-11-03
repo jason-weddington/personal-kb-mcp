@@ -46,11 +46,25 @@ SessionStart additionally appends a tool inventory of the personal script
 directories (``KB_TOOL_DIRS``, opt-in with no default; see
 :mod:`personal_kb_hook.tool_inventory`) after the directory text.
 
+Three output formats (``--format``):
+
+* ``text`` (default) — the bare directory string.
+* ``claude-json`` — the ``hookSpecificOutput`` envelope Claude Code reads.
+* ``agy-json`` — Antigravity (the ``agy`` CLI) mode. agy hands the hook one
+  camelCase JSON object with NO event name, so ``--event`` names the event
+  (``SessionStart``, ``PreInvocation``, ``PreToolUse``, ``PostToolUse``,
+  ``Stop``) and :func:`_run_agy` drives the same pipeline through the adapter
+  in :mod:`personal_kb_hook.agy`: the payload is translated into the Claude
+  Code shape, the pipeline's stdout is captured, and agy's reply object is
+  written exactly once (``{}`` on every quiet and error path, and
+  ``{"decision": "allow"}`` on every PreToolUse path).
+
 Tolerant by design: any error path — empty stdin, malformed JSON, an
 unsupported event, no ``.kb_project`` anywhere on the walk, no maps for the
 resolved project, the same maps already surfaced this session — results in
 ``exit 0`` with NO stdout, except that on SessionStart those quiet paths
-still emit the tool inventory alone when it is non-empty. The hook must
+still emit the tool inventory alone when it is non-empty, and except in
+``agy-json`` mode, which always writes exactly one JSON object. The hook must
 never raise into the harness.
 """
 
@@ -58,6 +72,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import os
 import socket
@@ -69,6 +84,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from personal_kb_hook import (
+    agy,
     events,
     http_index,
     listener,
@@ -104,20 +120,36 @@ _SUPPORTED_EVENTS = frozenset(
     }
 )
 _KB_GET_TOOL_NAMES = frozenset({"mcp__personal-kb__kb_get", "mcp__team-kb__team_kb_get"})
+_FORMATS: tuple[str, ...] = ("text", "claude-json", "agy-json")
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    """Parse CLI flags. The only supported flag is ``--format``."""
+    """Parse CLI flags: ``--format`` and ``--event``.
+
+    ``--format`` picks the output shape: ``text`` (default), ``claude-json``,
+    or ``agy-json`` for Antigravity. ``--event`` names the agy event, because
+    agy's stdin JSON carries no event field; it is validated by
+    :func:`_run_agy` (not by argparse) and ignored by the other formats.
+    """
     parser = argparse.ArgumentParser(
         prog="personal-kb-hook",
         description="Surface a project's mental_map directory into a Claude Code session.",
     )
     parser.add_argument(
         "--format",
-        choices=("text", "claude-json"),
+        choices=_FORMATS,
         default="text",
         help="Output format. 'text' prints the bare directory string; "
-        "'claude-json' wraps it in the hookSpecificOutput envelope.",
+        "'claude-json' wraps it in the hookSpecificOutput envelope; "
+        "'agy-json' renders Antigravity's reply object (needs --event).",
+    )
+    parser.add_argument(
+        "--event",
+        type=str,
+        default=None,
+        help="agy event name (SessionStart, PreInvocation, PreToolUse, "
+        "PostToolUse, Stop). Required with --format=agy-json; agy sends no "
+        "event name on stdin.",
     )
     return parser.parse_args(argv)
 
@@ -168,6 +200,46 @@ def _emit(args: argparse.Namespace, event_name: str, text: str) -> None:
         sys.stdout.write(text)
 
 
+def _write_agy(reply: dict[str, Any]) -> None:
+    """Write agy's single reply object, as one line and nothing else."""
+    sys.stdout.write(json.dumps(reply))
+
+
+def _run_agy(event: str | None, payload: dict[str, object] | None) -> None:
+    """Run the pipeline for one agy event and write agy's reply exactly once.
+
+    agy hands the hook one camelCase object with no event name and expects
+    exactly one JSON object back, so this is the whole of ``--format=agy-json``:
+    validate the event (:mod:`personal_kb_hook.agy` does that — argparse does
+    not), translate the payload into the Claude Code shape, run the SAME
+    :func:`_pipeline` with stdout captured, then render its output as agy's
+    reply. Unknown events, ``Stop`` (out of scope) and a payload with no
+    usable ``conversationId`` never enter the pipeline, so they cannot write
+    session state. Any error still produces one valid reply.
+    """
+    claude_event: str | None = None
+    reply: dict[str, Any]
+    try:
+        data: dict[str, Any] = payload if isinstance(payload, dict) else {}
+        claude_event = agy.claude_event_for(event, data)
+        if claude_event is None:
+            reply = {}
+        else:
+            adapted = agy.to_claude_payload(data, claude_event)
+            if "session_id" not in adapted:
+                # No session id: the pipeline would write ``injected-.json``
+                # and suppress that map set for every later invocation.
+                reply = agy.render_reply(claude_event, "")
+            else:
+                with contextlib.redirect_stdout(io.StringIO()) as buf:
+                    _pipeline(argparse.Namespace(format="claude-json"), adapted)
+                reply = agy.render_reply(claude_event, buf.getvalue())
+    except Exception:
+        # Intentional broad catch: agy must always get one parseable object.
+        reply = {"decision": "allow"} if claude_event == "PreToolUse" else {}
+    _write_agy(reply)
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entrypoint registered as ``personal-kb-hook = ...``.
 
@@ -181,6 +253,21 @@ def main(argv: list[str] | None = None) -> None:
         # and produce no stdout.
         return
 
+    payload = _read_payload()
+
+    # agy mode owns its own reply contract (exactly one JSON object), so it
+    # dispatches BEFORE the quiet ``payload is None`` return below.
+    if args.format == "agy-json":
+        _run_agy(args.event, payload)
+        return
+
+    if payload is None:
+        return
+    _pipeline(args, payload)
+
+
+def _pipeline(args: argparse.Namespace, payload: dict[str, object]) -> None:
+    """Branch on ``hook_event_name`` and run that event's whole body."""
     # SessionStart gotcha slice: once fetched it must reach stdout exactly once
     # on EVERY exit path of the directory pipeline (incl. an unexpected error).
     slice_state: dict[str, Any] = {"text": None, "emitted": False}
@@ -191,10 +278,6 @@ def main(argv: list[str] | None = None) -> None:
     inv_state: dict[str, Any] = {"text": None}
 
     try:
-        payload = _read_payload()
-        if payload is None:
-            return
-
         event_name = payload.get("hook_event_name")
         if not isinstance(event_name, str) or event_name not in _SUPPORTED_EVENTS:
             return

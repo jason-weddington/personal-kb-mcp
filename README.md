@@ -368,7 +368,7 @@ This repo's own `.kb_project` is just `personal-kb`.
 
 ### Wiring it into Claude Code
 
-Add the hook to `~/.claude/settings.json` (or your project-level `.claude/settings.json`). The hook accepts `--format=text` (default — bare directory string) or `--format=claude-json` (the `hookSpecificOutput` envelope Claude Code understands).
+Add the hook to `~/.claude/settings.json` (or your project-level `.claude/settings.json`). The hook accepts `--format=text` (default — bare directory string) or `--format=claude-json` (the `hookSpecificOutput` envelope Claude Code understands), and, for the Antigravity (`agy`) harness, `--format=agy-json --event <Event>` (Antigravity's reply object; see section 3 of [docs/intelligent-kb.md](docs/intelligent-kb.md) for the `~/.gemini` `hooks.json` sample and the tool-name mapping).
 
 ```jsonc
 {

@@ -116,7 +116,7 @@ flowchart TD
 
 **Never-raise contract.** Empty stdin, malformed JSON or an unsupported event produce no output and exit 0, and a top-level `try`/`except` in `cli.main` turns any unexpected exception into a silent exit 0. If SessionStart has already fetched a slice or built an inventory and then fails, it still emits them once.
 
-**Output formats.** `--format text` (the default) prints bare text for SessionStart and UserPromptSubmit; `--format claude-json` wraps it as `{"hookSpecificOutput": {"hookEventName", "additionalContext"}}` (`render.render_claude_json`). The PreToolUse deny envelope and the PostToolUseFailure `additionalContext` envelope are always JSON, whatever `--format` says.
+**Output formats.** `--format text` (the default) prints bare text for SessionStart and UserPromptSubmit; `--format claude-json` wraps it as `{"hookSpecificOutput": {"hookEventName", "additionalContext"}}` (`render.render_claude_json`); `--format agy-json --event <Event>` renders Antigravity's reply object (see [Antigravity (agy) mode](#antigravity-agy-mode)), always writes exactly one JSON object, and always replies `{"decision": "allow"}` to a PreToolUse. The PreToolUse deny envelope and the PostToolUseFailure `additionalContext` envelope are always JSON, whatever `--format` says.
 
 **Wiring.** The full settings snippet, including the `PostToolUse` entry that whisper-consumption telemetry needs and the root README omits:
 
@@ -175,6 +175,60 @@ PreToolUse matches `Bash` only because only Bash cues are gated, and it must be 
 | `tool-inventory.jsonl` | tool-inventory decisions | rotated to `.1` at 1 MiB |
 
 **Stdlib only, versioned with the repo.** The runtime package imports only the standard library, so it installs with zero third-party dependencies and can never break on a dependency conflict; `packages/personal-kb-hook/tests/test_hook_cli.py` parses every module's AST and fails on any other import. `scripts/stamp_hook_version.py`, run by `release.sh`, stamps the hook's `pyproject.toml` to the repo version. The failure-event body (`events.py`), the gate-decision rows (`prevention.py`) and the turn digest (`turn_digest.py`) carry that version as `hook_version` (read from `importlib.metadata`); whisper-telemetry rows (roster and listener) and the listener request body do not, and the server's `WhisperTelemetryRow` has no such field.
+
+### Antigravity (agy) mode
+
+`agy` (the Antigravity CLI, Google's Gemini agent harness) runs its hooks through `sh -c` with one camelCase JSON object on stdin and one JSON object expected on stdout, and its stdin carries no event name, so the event arrives on the command line: `personal-kb-hook --format=agy-json --event <Event>`, with `--event` one of `SessionStart`, `PreInvocation`, `PreToolUse`, `PostToolUse` or `Stop` and validated by the hook rather than by argparse. `agy.py` translates agy's payload into the Claude Code payload the pipeline already handles and renders the pipeline's result as agy's reply, so nothing is duplicated; `--event` is ignored by `--format text` and `--format claude-json`, and a missing or unknown event simply writes `{}`.
+
+| agy event | Claude event | reply |
+|---|---|---|
+| `SessionStart` | `SessionStart` | `injectSteps[0].systemMessage.systemMessage` |
+| `PreInvocation` | `UserPromptSubmit` | `injectSteps[0].ephemeralMessage` |
+| `PreToolUse` | `PreToolUse` | `{"decision": "allow"}`, with `reason` when the soft gate would have denied |
+| `PostToolUse` | `PostToolUse`, or `PostToolUseFailure` when `error` is a non-empty string | `{}` |
+| `Stop` | nothing (the pipeline is never entered) | `{}` |
+
+Tool names are translated to the canonical Claude Code names before any call, so the soft gate, the failure feed and the whisper telemetry keep working unchanged:
+
+| agy tool name | canonical tool name |
+|---|---|
+| `run_command` | `Bash` |
+| `read_file` | `Read` |
+| `view_file` | `Read` |
+| `write_to_file` | `Write` |
+| `call_mcp_tool` | `mcp__<ServerName>__<ToolName>` |
+| any other name | unchanged |
+
+The argument renames are `CommandLine` to `command`, `Path` or `TargetFile` to `file_path` (with `TargetFile` winning and both aliases dropped when both are present), and `Arguments` to the tool input itself for `call_mcp_tool`; an unknown tool keeps its arguments verbatim, and no key is ever synthesized from an absent alias. `tool_use_id`, which agy does not send, is synthesized as `agy-<stepIdx>` when agy supplies an integer step index, else as `agy-` plus twelve hex digits of a sha256 over the canonical name and the mapped input — the server drops a duplicate `event_id` (`cc:<session>:<tool_use_id>`), so a constant id would silently discard every later failure in the session. A payload with no usable `conversationId` answers in the same shape but never enters the pipeline, so it cannot write the session's suppression scratch file or gate cache.
+
+Three gaps are deliberate. (a) `Stop` answers `{}` and does nothing else: agy ships no turn digest, spawns no listener worker, does not flush the gate log and does not refresh the prevention cache, so a server switch flip reaches an agy session at its next `SessionStart`. (b) Failure context cannot be injected, because an agy `PostToolUse` reply carries no context: the failure is still recorded and posted to `/api/kb/event`, and the envelope the Claude Code path would have printed is discarded. (c) Every `PreInvocation` replays the whole UserPromptSubmit path, so it pays the maps-index fetch and resets the per-turn deny counter through `prevention.new_turn` (`cli.py`) once per model call, where Claude Code does it once per user turn — the maps directory itself is suppressed after its first emission, so only a genuine new-map delta is injected again.
+
+The hooks configuration lives in `~/.gemini` (agy's documented location for its `hooks.json`), and every command names its event because agy's stdin does not:
+
+```json
+{
+  "personal-kb": {
+    "enabled": true,
+    "SessionStart": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "personal-kb-hook --format=agy-json --event=SessionStart"}]}
+    ],
+    "PreInvocation": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "personal-kb-hook --format=agy-json --event=PreInvocation", "timeout": 5}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "personal-kb-hook --format=agy-json --event=PreToolUse", "timeout": 5}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "personal-kb-hook --format=agy-json --event=PostToolUse", "timeout": 5}]}
+    ],
+    "Stop": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "personal-kb-hook --format=agy-json --event=Stop"}]}
+    ]
+  }
+}
+```
+
+Nothing in this mode adds an environment variable: `KB_FAILURE_CONTEXT`, `KB_TOOL_DIRS` and the rest keep exactly the meanings the Claude Code wiring gives them.
 
 ## 4. The lesson record: hints.resolution and the trust model
 
@@ -670,6 +724,8 @@ The KB learns from and warns more than one harness with the same cue keys. Talos
 **Where canonicalization happens.** `/api/kb/event` canonicalizes the tool name and argument names before `build_cue`; `/api/kb/turn` rewrites each tool call's name and recomputes `target_class` from the posted target (`normalize_turn_tools`), counting unmapped names in the heartbeat's `unmapped_tools`; `/api/kb/prevention/decisions` canonicalizes the tool.
 
 **Prevention for a mapped harness.** `/api/kb/prevention` returns `tool_map` (native to canonical) while the index stays canonical, so the harness translates its native call name before matching. A mapped harness receives the index even when the Claude Code gate switch is off (unless the project is disabled) and applies its own mode, since `gate.enabled` and `gate.shadow` describe only the Claude Code gate. An absent `tool_map` key means a server older than normalization, so the harness must not post native-named digests to it.
+
+**Antigravity (agy) is normalized harness-side.** The agy adapter translates agy's tool and argument names to the canonical Claude Code names inside the hook (`agy.py`) before any call reaches the service, so `kb_service/harness_tools.py` `HARNESS_TOOL_MAPS` has no `antigravity` key and `GET /api/kb/prevention` returns `tool_map` as an EMPTY object `{}` for it: the key is always present (`PreventionResponse.tool_map` is a non-Optional dict with `default_factory=dict`, `models.py`), and only a server older than normalization omits it (`contracts/README.md`). Because the harness is not a mapped one, the gate index is served only while `gate.enabled` is true (`routes/prevention_routes.py`), so an agy session sees the gate exactly when a Claude Code session would. Failure events post `harness` `antigravity` on `/api/kb/event`, which the event writer already sanitizes; `contracts/` and kb-service are unchanged.
 
 **Same mistake, same key.** `normalize_error` handles talos's `exit N (1.2s)` header and stdout/stderr markers, and `cue_key` excludes harness and host, so a failure keys identically from either harness.
 

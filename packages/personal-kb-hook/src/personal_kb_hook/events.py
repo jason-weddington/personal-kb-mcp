@@ -86,11 +86,14 @@ def _build_body(payload: dict[str, Any]) -> dict[str, Any]:
     duration_ms = payload.get("duration_ms")
     agent_id = payload.get("agent_id")
     agent_type = payload.get("agent_type")
+    # The harness that sent the event: Claude Code never sets ``harness``, so
+    # its body stays byte-identical; the agy adapter stamps ``antigravity``.
+    harness = payload.get("harness")
     return {
         "type": "post_tool",
         "event_id": f"cc:{session_id}:{tool_use_id}",
         "session_id": session_id,
-        "harness": "claude-code",
+        "harness": harness if isinstance(harness, str) and harness else "claude-code",
         "mode": "headless" if engine else "interactive",
         "engine": engine,
         "host": socket.gethostname(),

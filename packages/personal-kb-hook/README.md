@@ -72,6 +72,51 @@ A switch flip reaches a live session at its next `Stop`, when the hook re-fetche
 
 The gate is inert until resolutions exist in the KB in the `hints.resolution` format documented in `packages/kb-service/src/kb_service/prevention.py`. Until then the slice is fed only by supersedes corrections.
 
+## Antigravity (agy) mode
+
+Antigravity (the `agy` CLI, Google's Gemini agent harness) has its own hook contract: one camelCase JSON object on stdin, one JSON object expected on stdout, and no event name anywhere in the payload. So the event is passed on the command line:
+
+```text
+personal-kb-hook --format=agy-json --event <Event>
+```
+
+`--event` is one of `SessionStart`, `PreInvocation`, `PreToolUse`, `PostToolUse` or `Stop` and is validated by the hook, not by argparse: a missing or unknown event prints `{}` and exits 0. The Claude Code formats ignore `--event` entirely, and `text` and `claude-json` behave exactly as before.
+
+The hook translates the agy payload into the Claude Code payload the existing pipeline handles, runs that pipeline, and renders its result as agy's reply:
+
+| agy event | Claude Code event | reply |
+|---|---|---|
+| `SessionStart` | `SessionStart` | `{"injectSteps": [{"systemMessage": {"systemMessage": "<directory + slice>"}}]}` |
+| `PreInvocation` | `UserPromptSubmit` | `{"injectSteps": [{"ephemeralMessage": "<directory + whisper>"}]}` |
+| `PreToolUse` | `PreToolUse` | `{"decision": "allow"}`, or `{"decision": "allow", "reason": "<gate text>"}` when the soft gate would have denied |
+| `PostToolUse` | `PostToolUse`, or `PostToolUseFailure` when `error` is a non-empty string | `{}` |
+| `Stop` | nothing | `{}` |
+
+Nothing to inject (no `.kb_project`, no maps for the resolved project, the same maps already surfaced this session) still prints `{}`, never an empty envelope. **PreToolUse always answers with `allow`**: agy's first version never denies, so a gate match arrives as the same corrected fact in the `reason` field, and the deny-once state machine (retry, overridden, rate limits, shadow mode) runs exactly as it does for Claude Code.
+
+Tool names are canonicalized before anything else sees them, so the soft gate, the failure feed and the whisper telemetry work unchanged:
+
+| agy tool name | canonical tool name |
+|---|---|
+| `run_command` | `Bash` |
+| `read_file` | `Read` |
+| `view_file` | `Read` |
+| `write_to_file` | `Write` |
+| `call_mcp_tool` | `mcp__<ServerName>__<ToolName>` |
+| any other name | unchanged |
+
+| agy argument | canonical argument |
+|---|---|
+| `CommandLine` | `command` |
+| `Path`, `TargetFile` | `file_path` (`TargetFile` wins; both aliases are dropped) |
+| `Arguments` | the tool input itself (`call_mcp_tool` only) |
+
+An unknown tool keeps its arguments verbatim, and no key is invented for an absent alias. agy sends no `tool_use_id`, so the hook synthesizes one: `agy-<stepIdx>` when agy supplies an integer step index, otherwise `agy-` plus twelve hex digits of a sha256 over the tool name and mapped input — a constant id would make the server drop every later failure in the session as a duplicate `event_id`.
+
+**The Stop gap.** agy's `Stop` only answers `{}`. No turn digest is shipped, no listener worker is spawned, the gate log is not flushed and the prevention cache is not refreshed, so a server-side switch flip reaches an agy session at its next `SessionStart` rather than at its next `Stop`. A `PostToolUse`/`PostToolUseFailure` reply also cannot carry context in agy, so the opt-in failure context is recorded and posted but never injected.
+
+A payload with no usable `conversationId` is answered in the same shape but never enters the pipeline, so it cannot write the session's suppression or gate state.
+
 ## Surprise capture (`Stop` and `SubagentStop` turn digests)
 
 The switch is read from the top-level `surprise_capture` of `GET /api/kb/prevention` and cached per session, so a flip lands at the next `Stop`. The cached value is the only gate on the send, independent of `PERSONAL_KB_LISTENER` and `KB_LISTENER_HEADLESS`. It only decides whether a digest is sent: whether the service just detects (`shadow`) or also distills (`on`) is decided by its own `KB_SURPRISE_CAPTURE` at processing time.
