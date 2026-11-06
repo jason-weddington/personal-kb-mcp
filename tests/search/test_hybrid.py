@@ -1,6 +1,11 @@
 """Tests for hybrid search."""
 
+import logging
+import math
+
+import kb_core.db.sqlite_backend as sqlite_backend
 import pytest
+from kb_core.near_duplicates import find_near_duplicates
 
 from personal_kb.db.queries import get_entry
 from personal_kb.models.entry import EntryType
@@ -742,6 +747,260 @@ async def test_vector_search_backend_applies_entry_type_filter(db, store, fake_e
     filtered_ids = {row[0] for row in filtered}
     assert target.id in filtered_ids
     assert other.id not in filtered_ids
+
+
+# --- Filtered vector search: the widening probe ------------------------------
+#
+# vec0 scores the global top-K nearest rows *before* the JOIN can filter them,
+# so a single fixed over-fetch window silently loses in-filter matches once
+# enough out-of-filter rows sit closer. The corpora below bury the only
+# in-filter match behind 270 closer out-of-filter rows — far beyond the old
+# single probe of 100 — and pin the widening loop that replaced it.
+
+
+def _unit(offset: float) -> list[float]:
+    """Unit vector at cosine distance ``_offset_distance(offset)`` from e0."""
+    v = [0.0] * 1024
+    v[0] = 1.0
+    v[1] = offset
+    return [x / math.sqrt(sum(x * x for x in v)) for x in v]
+
+
+def _offset_distance(o: float) -> float:
+    """Cosine distance between ``_unit(0.0)`` and ``_unit(o)``."""
+    return 1 - 1 / math.sqrt(1 + o * o)
+
+
+async def _crowded_project_corpus(store, db) -> tuple[str, list[str]]:
+    """271 vec rows: 270 closer out-of-filter rows, then one alpha target.
+
+    * 250 active ``beta`` rows at offsets 0.005 .. 0.254 (distance up to
+      0.030777) — every one strictly closer than the target;
+    * 20 ``alpha`` rows at offsets 0.001 .. 0.020, deactivated below, so they
+      occupy the nearest slots but cannot match ``is_active = 1``;
+    * one active ``alpha`` target at offset 0.33 (distance 0.050371), i.e.
+      rank 271 of 271 — behind the whole old 100-row window.
+
+    Returns ``(alpha_active_id, inactive_ids)``.
+    """
+    # Ordering that buries the target: the inactive alpha rows are nearest,
+    # then every beta row, then the target.
+    assert _offset_distance(0.020) < _offset_distance(0.254) < _offset_distance(0.33)
+
+    for i in range(250):
+        closer = await store.create_entry(
+            short_title=f"Beta {i}",
+            long_title=f"Beta pattern {i}",
+            knowledge_details=f"Beta project pattern {i}.",
+            entry_type=EntryType.PATTERN_CONVENTION,
+            project_ref="beta",
+            tags=["other"],
+        )
+        await db.vector_store(closer.id, _unit(0.005 + 0.001 * i))
+        await db.commit()
+
+    inactive_ids: list[str] = []
+    for i in range(20):
+        hidden = await store.create_entry(
+            short_title=f"Alpha inactive {i}",
+            long_title=f"Alpha inactive pattern {i}",
+            knowledge_details=f"Alpha inactive pattern {i}.",
+            entry_type=EntryType.PATTERN_CONVENTION,
+            project_ref="alpha",
+            tags=["other"],
+        )
+        await db.vector_store(hidden.id, _unit(0.001 + 0.001 * i))
+        await db.commit()
+        inactive_ids.append(hidden.id)
+
+    alpha_active = await store.create_entry(
+        short_title="Alpha target",
+        long_title="Alpha target pattern",
+        knowledge_details="The only active alpha row.",
+        entry_type=EntryType.PATTERN_CONVENTION,
+        project_ref="alpha",
+        tags=["other"],
+    )
+    await db.vector_store(alpha_active.id, _unit(0.33))
+    await db.commit()
+
+    placeholders = ", ".join("?" for _ in inactive_ids)
+    await db.execute(
+        f"UPDATE knowledge_entries SET is_active = 0 WHERE id IN ({placeholders})",  # noqa: S608
+        tuple(inactive_ids),
+    )
+    await db.commit()
+
+    # Corpus shape: the target is rank 271 of 271 and the only in-filter live row.
+    vec_cursor = await db.execute("SELECT COUNT(*) FROM knowledge_vec")
+    vec_row = await vec_cursor.fetchone()
+    assert vec_row is not None
+    assert vec_row[0] == 271
+    alpha_cursor = await db.execute(
+        "SELECT COUNT(*) FROM knowledge_entries WHERE is_active = 1 AND project_ref = 'alpha'"
+    )
+    alpha_row = await alpha_cursor.fetchone()
+    assert alpha_row is not None
+    assert alpha_row[0] == 1
+    return alpha_active.id, inactive_ids
+
+
+class _RecordingConn:
+    """Pass-through aiosqlite connection that records every ``execute``."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.calls: list[tuple[str, list]] = []
+
+    async def execute(self, sql, params=()):
+        self.calls.append((sql, list(params)))
+        return await self._inner.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+@pytest.mark.asyncio
+async def test_vector_search_backend_finds_in_filter_match_beyond_overfetch_window(db, store):
+    """A project-scoped KNN must find a match ranked 271st globally."""
+    alpha_active_id, _inactive_ids = await _crowded_project_corpus(store, db)
+
+    rows = await db.vector_search(_unit(0.0), limit=5, project_ref="alpha")
+
+    assert len(rows) == 1
+    assert rows == [(alpha_active_id, pytest.approx(0.050371, abs=1e-4))]
+
+
+@pytest.mark.asyncio
+async def test_vector_search_backend_widens_with_tag_filter(db, store):
+    """The widening loop is filter-agnostic: tags widen too, appended once."""
+    for i in range(250):
+        other = await store.create_entry(
+            short_title=f"Untagged {i}",
+            long_title=f"Untagged pattern {i}",
+            knowledge_details=f"Untagged pattern {i}.",
+            entry_type=EntryType.PATTERN_CONVENTION,
+            tags=["other"],
+        )
+        await db.vector_store(other.id, _unit(0.005 + 0.001 * i))
+        await db.commit()
+
+    target = await store.create_entry(
+        short_title="Tagged target",
+        long_title="Tagged target pattern",
+        knowledge_details="The only row carrying the target tag.",
+        entry_type=EntryType.PATTERN_CONVENTION,
+        tags=["target"],
+    )
+    await db.vector_store(target.id, _unit(0.33))
+    await db.commit()
+
+    rows = await db.vector_search(_unit(0.0), limit=5, tags=["target"])
+
+    assert len(rows) == 1
+    assert rows == [(target.id, pytest.approx(0.050371, abs=1e-4))]
+
+
+@pytest.mark.asyncio
+async def test_vector_search_backend_respects_vec0_knn_depth_cap(db, store):
+    """A huge limit clamps to 4096: sqlite-vec rejects any KNN LIMIT above it."""
+    alpha_active_id, _inactive_ids = await _crowded_project_corpus(store, db)
+
+    rows = await db.vector_search(_unit(0.0), limit=1000, project_ref="alpha")
+
+    assert rows == [(alpha_active_id, pytest.approx(0.050371, abs=1e-4))]
+
+
+@pytest.mark.asyncio
+async def test_near_duplicate_guard_finds_crowded_out_project_neighbour(db, store):
+    """The guard's 20-neighbour probe must widen until the project is covered."""
+    alpha_active_id, _inactive_ids = await _crowded_project_corpus(store, db)
+
+    check = await find_near_duplicates(db, _unit(0.0), project_ref="alpha", floor=0.88, limit=5)
+
+    assert check.status == "checked"
+    assert check.raw_hits == 1
+    assert check.eligible_count == 1
+    assert [c.id for c in check.candidates] == [alpha_active_id]
+    assert check.candidates[0].similarity == pytest.approx(0.9496, abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_vector_search_backend_probe_sequence_widens_then_clamps(db, store):
+    """The probe doubles 100 -> 200 -> 271, and a huge limit clamps to 4096."""
+    await _crowded_project_corpus(store, db)
+    rec = _RecordingConn(db._conn)
+    db._conn = rec  # type: ignore[misc]
+
+    await db.vector_search(_unit(0.0), limit=5, project_ref="alpha")
+
+    probes = [c for c in rec.calls if "MATCH ?" in c[0]]
+    assert [p[1][1] for p in probes] == [100, 200, 271]
+    assert len({p[0] for p in probes}) == 1  # joined SQL built once
+    assert len({len(p[1]) for p in probes}) == 1  # filter binds appended once
+    assert len({p[1][0] for p in probes}) == 1  # query blob identical
+    assert len({p[1][-1] for p in probes}) == 1  # trailing limit bind reused
+    assert all(p[1][1] <= 4096 for p in probes)
+    assert sum(1 for c in rec.calls if "SELECT COUNT(*) FROM knowledge_vec" in c[0]) == 1
+
+    rec.calls.clear()
+    await db.vector_search(_unit(0.0), limit=1000, project_ref="alpha")
+
+    probes = [c for c in rec.calls if "MATCH ?" in c[0]]
+    assert [p[1][1] for p in probes] == [4096]
+
+
+@pytest.mark.asyncio
+async def test_vector_search_backend_logs_widen_decision(db, store, caplog):
+    """One INFO widening line per filtered call, with the round accounting."""
+    await _crowded_project_corpus(store, db)
+
+    with caplog.at_level("INFO", logger="kb_core.db.sqlite_backend"):
+        await db.vector_search(_unit(0.0), limit=5, project_ref="alpha")
+
+    assert (
+        "vector-search-widen op=filtered limit=5 rounds=3 inner=271 cap=271 "
+        "stop=table_exhausted rows=1 project_ref='alpha'" in caplog.text
+    )
+    assert "vector-search-truncated" not in caplog.text
+    assert sum(1 for r in caplog.records if r.getMessage().startswith("vector-search-widen")) == 1
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="kb_core.db.sqlite_backend"):
+        await db.vector_search(_unit(0.0), limit=1000, project_ref="alpha")
+
+    # The ceiling clamp fires on the first probe: one execution, no WARNING,
+    # because the table holds fewer rows than the 4096 ceiling.
+    assert (
+        "vector-search-widen op=filtered limit=1000 rounds=1 inner=4096 cap=271 "
+        "stop=table_exhausted rows=1" in caplog.text
+    )
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_vector_search_backend_logs_truncation_warning(db, store, caplog, monkeypatch):
+    """Stopping at the ceiling with rows missing is a WARNING, not an INFO."""
+    await _crowded_project_corpus(store, db)
+    monkeypatch.setattr(sqlite_backend, "VECTOR_SEARCH_MAX_INNER_LIMIT", 120)
+
+    with caplog.at_level("INFO", logger="kb_core.db.sqlite_backend"):
+        rows = await db.vector_search(_unit(0.0), limit=5, project_ref="alpha")
+
+    assert rows == []
+    assert (
+        "vector-search-widen op=filtered limit=5 rounds=2 inner=120 cap=120 stop=cap rows=0"
+        in caplog.text
+    )
+    truncation = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.getMessage().startswith(
+            "vector-search-truncated op=filtered_truncated limit=5 cap=120 rows=0"
+        )
+    ]
+    assert len(truncation) == 1
 
 
 @pytest.mark.asyncio

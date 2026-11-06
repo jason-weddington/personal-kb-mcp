@@ -143,7 +143,9 @@ class Database(Protocol):
         (and only ``is_active = 1`` entries). Filters are applied at
         the SQL level so that hybrid RRF callers can trust the vector
         leg honors the same scoping as the FTS leg — see
-        ``kb_core.search.hybrid``.
+        ``kb_core.search.hybrid``. With filters the SQLite backend widens
+        its vec0 probe until it collects ``limit`` in-filter rows or
+        exhausts the table (cap 4096), while Postgres is an exact scan.
         """
         ...
 

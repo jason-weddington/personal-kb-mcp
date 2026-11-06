@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import struct
+import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
@@ -92,6 +93,19 @@ ORDER BY p.project_ref
 _MAP_ELIGIBILITY_COUNTS_SQL = _MAP_ELIGIBILITY_COUNTS_TEMPLATE.format(
     mappable_where=MAPPABLE_ENTRY_WHERE_SQL
 )
+
+# Filtered vector search (see SQLiteBackend.vector_search). vec0 scores the
+# global top-K nearest rows before the JOIN with knowledge_entries can filter
+# them, so a single fixed window loses in-filter matches once enough
+# out-of-filter rows sit closer. The probe therefore starts at
+# VECTOR_FILTER_OVERFETCH_FLOOR rows (never fewer than 10x ``limit``) and
+# doubles until ``limit`` in-filter rows are collected or the table is
+# exhausted, hard-capped at VECTOR_SEARCH_MAX_INNER_LIMIT because sqlite-vec
+# 0.1.9 rejects any KNN LIMIT above 4096 ("k value in knn query too large").
+VECTOR_FILTER_OVERFETCH_FLOOR = 100
+VECTOR_SEARCH_MAX_INNER_LIMIT = 4096
+VECTOR_SEARCH_WIDEN_MARKER = "vector-search-widen"
+VECTOR_SEARCH_TRUNCATED_MARKER = "vector-search-truncated"
 
 
 class SQLiteCursor:
@@ -280,12 +294,18 @@ class SQLiteBackend:
     ) -> list[tuple[str, float]]:
         """KNN search via sqlite-vec cosine distance.
 
-        Returns (entry_id, distance) pairs. When any metadata filter is
-        provided, results are restricted to entries matching those
-        filters via a JOIN with ``knowledge_entries``. Because vec0
-        scores only the top-K nearest neighbors before the JOIN can
-        filter them, we over-fetch from vec0 (10x) when filters are
-        active so the post-JOIN result set can still reach ``limit``.
+        Returns (entry_id, distance) pairs. Without filters this is a plain
+        vec0 ``LIMIT`` with no join. With filters it becomes a JOIN against
+        ``knowledge_entries`` on ``is_active = 1`` plus the filter predicates,
+        which vec0 cannot see: it scores the global top-K nearest rows before
+        the JOIN runs, so the window starts at
+        ``min(max(limit * 10, VECTOR_FILTER_OVERFETCH_FLOOR),
+        VECTOR_SEARCH_MAX_INNER_LIMIT)`` and doubles until ``limit`` in-filter
+        rows are collected or the table is exhausted. The window stops hard at
+        the vec0 4096-row KNN depth (``VECTOR_SEARCH_MAX_INNER_LIMIT``), so a
+        match buried deeper than that many closer out-of-filter rows is still
+        out of reach: every filtered call logs ``vector-search-widen`` and a
+        residual loss logs ``vector-search-truncated``.
         """
         blob = _serialize_f32(embedding)
         has_filters = bool(project_ref or entry_type or tags or contributor or team)
@@ -302,8 +322,8 @@ class SQLiteBackend:
             rows = await cursor.fetchall()
             return [(row[0], row[1]) for row in rows]
 
-        # Over-fetch from vec0 so post-JOIN filtering still yields `limit`
-        inner_limit = max(limit * 10, 100)
+        t0 = time.perf_counter()
+        inner = min(max(limit * 10, VECTOR_FILTER_OVERFETCH_FLOOR), VECTOR_SEARCH_MAX_INNER_LIMIT)
         sql = """
             SELECT v.entry_id, v.distance
             FROM (
@@ -316,7 +336,7 @@ class SQLiteBackend:
             JOIN knowledge_entries e ON e.id = v.entry_id
             WHERE e.is_active = 1
         """
-        params: list[Any] = [blob, inner_limit]
+        params: list[Any] = [blob, inner]
 
         if project_ref:
             sql += " AND e.project_ref = ?"
@@ -338,8 +358,66 @@ class SQLiteBackend:
         sql += " ORDER BY v.distance LIMIT ?"
         params.append(limit)
 
-        cursor = await self._conn.execute(sql, params)
-        rows = await cursor.fetchall()
+        # Widen the vec0 window until the JOIN yields ``limit`` rows. The SQL
+        # and its filter binds are built once; only params[1] (the inner
+        # LIMIT) is rewritten, and the widen step only runs when the window
+        # can actually grow, so ``inner`` strictly increases and the loop is
+        # bounded by the 100 -> 200 -> ... -> 4096 doubling (7 executions).
+        cap = -1
+        rounds = 0
+        stop = "satisfied"
+        while True:
+            rounds += 1
+            params[1] = inner
+            rows = list(await (await self._conn.execute(sql, params)).fetchall())
+            if len(rows) >= limit:
+                stop = "satisfied"
+                break
+            if cap < 0:
+                count_cursor = await self._conn.execute("SELECT COUNT(*) FROM knowledge_vec")
+                count_row = await count_cursor.fetchone()
+                cap = min(VECTOR_SEARCH_MAX_INNER_LIMIT, int(count_row[0]) if count_row else 0)
+            if inner >= cap:
+                ceiling_hit = inner >= VECTOR_SEARCH_MAX_INNER_LIMIT and (
+                    cap == VECTOR_SEARCH_MAX_INNER_LIMIT
+                )
+                stop = "cap" if ceiling_hit else "table_exhausted"
+                break
+            inner = min(inner * 2, cap)
+
+        logger.info(
+            "%s op=filtered limit=%d rounds=%d inner=%d cap=%d stop=%s rows=%d "
+            "project_ref=%r entry_type=%r tags=%r contributor=%r team=%r ms=%d",
+            VECTOR_SEARCH_WIDEN_MARKER,
+            limit,
+            rounds,
+            inner,
+            cap,
+            stop,
+            len(rows),
+            project_ref,
+            entry_type,
+            tags,
+            contributor,
+            team,
+            int((time.perf_counter() - t0) * 1000),
+        )
+        if stop == "cap":
+            # Residual recall loss: more embedded rows exist than the vec0
+            # KNN depth can score, so a deeper in-filter match is out of
+            # reach until distance-cursor paging lands. Non-zero here is the
+            # signal to schedule that work.
+            logger.warning(
+                "%s op=filtered_truncated limit=%d cap=%d rows=%d project_ref=%r "
+                "entry_type=%r tags=%r",
+                VECTOR_SEARCH_TRUNCATED_MARKER,
+                limit,
+                cap,
+                len(rows),
+                project_ref,
+                entry_type,
+                tags,
+            )
         return [(row[0], row[1]) for row in rows]
 
     async def vector_delete(self, entry_id: str) -> None:
