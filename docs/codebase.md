@@ -149,8 +149,7 @@ async with db.transaction():
     await db.execute("INSERT INTO graph_edges ...", edge_params)
 ```
 
-Note: Postgres transaction wrapper is not yet implemented (see ROADMAP.md M4). Multi-step ops
-on Postgres are currently non-atomic.
+Both backends implement `transaction()`: Postgres pins one pooled connection in a `ContextVar` for the whole block (nested calls become savepoints), so multi-step ops are atomic on Postgres as well as SQLite (audit M4, done).
 
 ### Entry ID generation
 
@@ -274,10 +273,7 @@ file types, but there is no base-directory constraint. A path like `/etc/passwd`
 rejected by extension but a `.py` file anywhere on the filesystem is ingestible. For shared
 deployments, add an explicit base-directory allowlist.
 
-**M4 — Non-atomic multi-step ops on Postgres (open)**: `asyncpg` auto-commits each `execute()`
-on separate pool connections. Operations that should be atomic (create entry + delete predecessor)
-are not. Use the `db.transaction()` context manager when it becomes available; avoid relying on
-multi-step atomicity until the wrapper is implemented.
+**M4 — Non-atomic multi-step ops on Postgres (resolved)**: `db.transaction()` now pins one pooled `asyncpg` connection per transaction, so create-entry-plus-deactivate-predecessor and other multi-step writes are atomic on Postgres.
 
 **Avoid blocking the event loop**: All I/O must be async. Synchronous file reads, HTTP calls,
 or database operations block the entire MCP server. Use `aiosqlite`, `asyncpg`, `httpx.AsyncClient`.

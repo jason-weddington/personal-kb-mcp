@@ -103,8 +103,7 @@ and graph neighbors (two-phase retrieval: fetch entry then fetch neighbors).
   rejected unless `KB_SKIP_SAFETY=TRUE`.
 - When `update_entry_id` is set, only the provided fields are updated. Fields not passed are
   preserved. `entry_type` defaults to `None` to prevent accidental type overwrite.
-- `deactivate_entry_id` and the create/update happen in the same call — atomically in intent
-  (non-atomic on Postgres until M4 is resolved).
+- `deactivate_entry_id` deactivates an entry (naming the active entry that replaces it); the deactivation and its edge cleanup run in one transaction on both SQLite and Postgres.
 - Graph enrichment (entity extraction) runs after storing if an extraction LLM is available.
 
 **Returns**: Formatted confirmation with the new/updated entry ID, type, and title.
