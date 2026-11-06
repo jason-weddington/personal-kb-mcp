@@ -145,7 +145,7 @@ export them in your shell. No config files required.
 | `KB_INGEST_CHUNK_SIZE` | `16000` | Chunk size in characters for large file processing |
 | `KB_INGEST_CHUNK_OVERLAP` | `600` | Overlap in characters between adjacent chunks |
 | `KB_AGENTIC_INGEST` | `TRUE` | Enable KB-aware deduplication during ingestion. Set `FALSE` to skip dedup. |
-| `KB_INGEST_DEDUP_THRESHOLD` | `0.06` | RRF score threshold for near-duplicate detection |
+| `KB_INGEST_DEDUP_SIMILARITY_FLOOR` | `0.85` | Cosine-similarity floor (1 - cosine distance, 0..1) at or above which an incoming chunk is a dedup candidate |
 
 ### Agentic features
 

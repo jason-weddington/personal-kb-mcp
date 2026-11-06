@@ -168,7 +168,7 @@ class FileIngester:
         """Initialize with all required dependencies.
 
         ``config`` carries the env-free ingest tunables (max file size,
-        chunk size, chunk overlap, dedup threshold, agentic-ingest
+        chunk size, chunk overlap, dedup similarity floor, agentic-ingest
         flag). Construction sites build it from ``personal_kb.config``
         env getters and pass it in. ``None`` falls back to defaults that
         mirror today's behavior.

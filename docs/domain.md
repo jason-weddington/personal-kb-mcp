@@ -76,8 +76,9 @@ Currently informational only — no access controls are enforced based on this f
 
 5. **Deduplication before store during ingestion**: When `KB_AGENTIC_INGEST=TRUE`, `DedupAgent`
    hybrid-searches the KB and asks the LLM to confirm whether the new content duplicates an
-   existing entry. Confirmed duplicates are skipped. The threshold is configurable via
-   `KB_INGEST_DEDUP_THRESHOLD` (default 0.06 RRF score).
+   existing entry. Confirmed duplicates are skipped. A chunk becomes a dedup candidate only
+   when the best vector similarity (1 - cosine distance) reaches
+   `KB_INGEST_DEDUP_SIMILARITY_FLOOR` (default 0.85).
 
 6. **Embedding text is deterministic**: The text sent to the embedder is always
    `f"{short_title} {long_title} {knowledge_details}"` (the `embedding_text` property on

@@ -10,11 +10,13 @@ from kb_core.llm.provider import LLMProvider
 from kb_core.search.embedder_protocol import Embedder
 
 logger = logging.getLogger(__name__)
+# Log marker for the dedup similarity gate (mirrors the ``op=`` log convention in ``kb_core.search.hybrid``).  # noqa: E501
+DEDUP_GATE_MARKER = "dedup-gate"
 
-# Default mirrors ``personal_kb.config.get_ingest_dedup_threshold`` /
-# ``IngestConfig.dedup_threshold``. Used only when the construction
-# site does not pass an explicit threshold.
-_DEFAULT_DEDUP_THRESHOLD = 0.06
+# Default mirrors ``personal_kb.config.get_ingest_dedup_similarity_floor`` /
+# ``IngestConfig.dedup_similarity_floor``. Used only when the construction
+# site does not pass an explicit floor.
+_DEFAULT_DEDUP_SIMILARITY_FLOOR = 0.85
 
 _DEDUP_SYSTEM_PROMPT = """\
 You are a dedup checker for a knowledge base ingestion pipeline.
@@ -58,20 +60,28 @@ class DedupAgent:
         db: Database,
         embedder: Embedder,
         llm: LLMProvider,
-        threshold: float | None = None,
+        similarity_floor: float | None = None,
     ) -> None:
         """Initialize with DB, embedder, and LLM for search + dedup.
 
-        ``threshold`` is the hybrid-search score above which a chunk is
-        treated as a potential duplicate (and the LLM is asked to
-        confirm). The construction site passes
-        ``IngestConfig.dedup_threshold``; ``None`` falls back to the
-        kb_core default that mirrors today's env-driven default.
+        ``similarity_floor`` is the minimum cosine similarity (1 - cosine
+        distance, 0..1) between the chunk and an existing entry for the
+        chunk to be a dedup candidate. The construction site passes
+        ``IngestConfig.dedup_similarity_floor``; ``None`` falls back to the
+        kb_core default that mirrors the env-driven default.
         """
         self._db = db
         self._embedder = embedder
         self._llm = llm
-        self._threshold = threshold if threshold is not None else _DEFAULT_DEDUP_THRESHOLD
+        self._similarity_floor = (
+            similarity_floor if similarity_floor is not None else _DEFAULT_DEDUP_SIMILARITY_FLOOR
+        )
+        if self._similarity_floor > 1.0:
+            logger.warning(
+                "%s tripwire=floor_unreachable floor=%.4f",
+                DEDUP_GATE_MARKER,
+                self._similarity_floor,
+            )
 
     async def check_chunk(
         self,
@@ -82,8 +92,9 @@ class DedupAgent:
 
         1. Build search query from chunk heading + first ~500 chars
         2. Search KB via hybrid_search
-        3. If no results or low score → extract
-        4. If above threshold → ask LLM to confirm
+        3. If no results, no result carries a vector similarity, or the best similarity is below
+        the floor → extract
+        4. If at or above the floor → ask LLM to confirm
         5. On any failure → extract (graceful degradation)
         """
         try:
@@ -120,14 +131,38 @@ class DedupAgent:
         if not results:
             return DedupResult(action="extract", reason="no existing entries found")
 
-        top_score = results[0].score
-        if top_score < self._threshold:
+        similarities = [r.vector_similarity for r in results if r.vector_similarity is not None]
+        if not similarities:
+            logger.warning(
+                "%s op=gate tripwire=vector_leg_unavailable query=%r results=%d floor=%.4f",
+                DEDUP_GATE_MARKER,
+                query_text[:80],
+                len(results),
+                self._similarity_floor,
+            )
+            return DedupResult(action="extract", reason="vector leg unavailable")
+
+        top_similarity = max(similarities)
+        logger.info(
+            "%s op=gate query=%r results=%d with_similarity=%d top_similarity=%.4f floor=%.4f "
+            "above_floor=%s",
+            DEDUP_GATE_MARKER,
+            query_text[:80],
+            len(results),
+            len(similarities),
+            top_similarity,
+            self._similarity_floor,
+            top_similarity >= self._similarity_floor,
+        )
+        if top_similarity < self._similarity_floor:
             return DedupResult(
                 action="extract",
-                reason=f"top score {top_score:.4f} below threshold {self._threshold}",
+                reason=(
+                    f"top similarity {top_similarity:.4f} below floor {self._similarity_floor}"
+                ),
             )
 
-        # Above threshold — ask LLM to confirm
+        # At or above the floor — ask the LLM to confirm
         if not await self._llm.is_available():
             return DedupResult(action="extract", reason="LLM unavailable for dedup")
 

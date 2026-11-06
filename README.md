@@ -244,7 +244,7 @@ Ingest files from disk into the knowledge base (only available when `KB_MANAGER=
 kb_ingest(file_path="/path/to/notes", project_ref="my-project", dry_run=True)
 ```
 
-**Pipeline:** deny-list check → extension filter → size limit → SHA-256 dedup → secret detection → PII redaction → LLM summarize → LLM extract → store entries → build graph
+**Pipeline:** deny-list check → extension filter → size limit → SHA-256 dedup → secret detection → PII redaction → LLM summarize → chunking → dedup gate → LLM extract → store entries → build graph
 
 - Supports single files or entire directories (recursive by default)
 - Files become `note:` nodes in the graph, with `extracted_from` edges linking entries to sources

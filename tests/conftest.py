@@ -23,6 +23,63 @@ async def store(db):
     return KnowledgeStore(db)
 
 
+class ScriptedEmbedder:
+    """Embedder whose vector leg is pre-scripted, for gate/threshold tests.
+
+    Modelled on ``ControlledEmbedder`` in
+    ``packages/kb-core/tests/test_hybrid_signals.py:28-64``: the caller
+    supplies the exact ``(entry_id, cosine_distance)`` pairs the vector
+    leg returns, so a test controls which entries appear and at what
+    similarity, independently of what the FTS leg finds.
+
+    ``embed_batch`` always returns ``None`` (the unavailable path), so an
+    ingester using this embedder stores no vectors and never marks an
+    entry ``has_embedding``.
+    """
+
+    def __init__(self, results: list[tuple[str, float]] | None = None, *, available: bool = True):
+        self._results = list(results or [])
+        self._available = available
+
+    async def is_available(self) -> bool:
+        return self._available
+
+    async def embed(self, text: str) -> list[float] | None:
+        """Return a 1024-dim one-hot unit vector, or ``None`` when unavailable."""
+        if not self._available:
+            return None
+        # 1-hot on dimension 0, rest zero — already unit-norm.
+        vec = [0.0] * 1024
+        vec[0] = 1.0
+        return vec
+
+    async def search_similar(
+        self,
+        query_embedding: list[float],
+        limit: int = 20,
+        *,
+        project_ref: str | None = None,
+        entry_type: str | None = None,
+        tags: list[str] | None = None,
+        contributor: str | None = None,
+        team: str | None = None,
+    ) -> list[tuple[str, float]]:
+        """Return the pre-scripted (entry_id, distance) pairs (respects limit)."""
+        return self._results[:limit]
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]] | None:
+        return None
+
+    async def store_embeddings(self, entries: list[tuple[str, list[float]]]) -> None:
+        pass
+
+    async def store_embedding(self, entry_id: str, embedding: list[float]) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+
 class FakeEmbedder:
     """Deterministic fake embedder for testing.
 

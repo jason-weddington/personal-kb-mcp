@@ -85,7 +85,7 @@ _DEFAULT_PG_REGION = "us-east-1"
 _DEFAULT_INGEST_MAX_FILE_SIZE = 10 * 1024 * 1024
 _DEFAULT_INGEST_CHUNK_SIZE = 16000
 _DEFAULT_INGEST_CHUNK_OVERLAP = 600
-_DEFAULT_INGEST_DEDUP_THRESHOLD = 0.06
+_DEFAULT_INGEST_DEDUP_SIMILARITY_FLOOR = 0.85
 _DEFAULT_AGENTIC_MAX_CALLS = 4
 
 
@@ -404,8 +404,9 @@ class IngestConfig:
     chunk_overlap: int = _DEFAULT_INGEST_CHUNK_OVERLAP
     """Overlap in characters between adjacent chunks."""
 
-    dedup_threshold: float = _DEFAULT_INGEST_DEDUP_THRESHOLD
-    """Hybrid-search score above which an incoming chunk is treated as a duplicate."""
+    dedup_similarity_floor: float = _DEFAULT_INGEST_DEDUP_SIMILARITY_FLOOR
+    """Cosine similarity (1 - cosine distance, 0..1) at or above which an incoming
+    chunk is a candidate duplicate."""
 
     agentic_ingest: bool = True
     """If ``True``, run KB-aware dedup during ingestion."""

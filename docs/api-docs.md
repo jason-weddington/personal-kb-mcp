@@ -219,7 +219,7 @@ multiple properly structured KB entries. Deduplicates against existing entries.
 - Files over 10MB (configurable via `KB_INGEST_MAX_FILE_SIZE`) are rejected.
 - Symlinks are rejected.
 - Chunks processed sequentially; secret scanning runs per-chunk before LLM extraction.
-- Dedup threshold configurable via `KB_INGEST_DEDUP_THRESHOLD` (default 0.06 RRF score).
+- Dedup similarity floor configurable via `KB_INGEST_DEDUP_SIMILARITY_FLOOR` (default 0.85 cosine similarity; the best vector similarity among the search results must reach it).
 - No base-directory restriction (open issue M1 — see ROADMAP.md).
 
 **Returns**: Summary: total files, ingested, skipped (duplicate/flagged), errors, entries created.

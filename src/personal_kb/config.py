@@ -292,9 +292,9 @@ def is_agentic_ingest() -> bool:
     return os.environ.get("KB_AGENTIC_INGEST", "TRUE").upper() == "TRUE"
 
 
-def get_ingest_dedup_threshold() -> float:
-    """Return the hybrid search score threshold for dedup from KB_INGEST_DEDUP_THRESHOLD."""
-    return _parse_float("KB_INGEST_DEDUP_THRESHOLD", "0.06")
+def get_ingest_dedup_similarity_floor() -> float:
+    """Return the cosine-similarity floor for dedup from KB_INGEST_DEDUP_SIMILARITY_FLOOR."""
+    return _parse_float("KB_INGEST_DEDUP_SIMILARITY_FLOOR", "0.85")
 
 
 def build_ingest_config() -> "IngestConfig":
@@ -314,7 +314,7 @@ def build_ingest_config() -> "IngestConfig":
         max_file_size=get_ingest_max_file_size(),
         chunk_size=get_ingest_chunk_size(),
         chunk_overlap=get_ingest_chunk_overlap(),
-        dedup_threshold=get_ingest_dedup_threshold(),
+        dedup_similarity_floor=get_ingest_dedup_similarity_floor(),
         agentic_ingest=is_agentic_ingest(),
         skip_safety=is_safety_skip(),
     )

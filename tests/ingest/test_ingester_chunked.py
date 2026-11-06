@@ -8,9 +8,11 @@ from personal_kb.config import build_ingest_config
 from personal_kb.db.connection import create_connection
 from personal_kb.graph.builder import GraphBuilder
 from personal_kb.graph.enricher import GraphEnricher
+from personal_kb.ingest.dedup_agent import DedupAgent
 from personal_kb.ingest.ingester import FileIngester
+from personal_kb.models.entry import EntryType
 from personal_kb.store.knowledge_store import KnowledgeStore
-from tests.conftest import FakeEmbedder, FakeLLM
+from tests.conftest import FakeEmbedder, FakeLLM, ScriptedEmbedder, ScriptedLLM
 
 
 @pytest_asyncio.fixture
@@ -212,3 +214,132 @@ class TestChunkedIngestion:
         assert result.action == "dry_run"
         assert result.entry_count == 2
         assert result.chunks_processed >= 2
+
+
+async def _seed_overlapping_concept(deps) -> str:
+    """Seed one real entry the note's chunk overlaps with; return its id."""
+    seeded = await deps["store"].create_entry(
+        short_title="overlapping concept",
+        long_title="Overlapping concept",
+        knowledge_details="Covers the chunk.",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["test"],
+    )
+    return seeded.id
+
+
+def _write_note(tmp_path):
+    """Write the one-chunk note the dedup gate is exercised on."""
+    note = tmp_path / "note.md"
+    note.write_text("# Doc\n\nOverlapping concept chunk.")
+    return note
+
+
+class TestDedupGateInPipeline:
+    """The dedup gate decides per chunk, before extraction.
+
+    ``ScriptedEmbedder`` sets the vector leg's cosine distance, so each test
+    places the chunk above or below the 0.85 similarity floor and the scripted
+    LLM answers the dedup call that only an above-floor chunk triggers.
+    """
+
+    async def test_skip_drops_the_chunk(self, ingester_deps, tmp_path):
+        """Skip at distance 0.07 (similarity 0.93): no extraction, 1 chunk deduped."""
+        deps = ingester_deps
+        seeded_id = await _seed_overlapping_concept(deps)
+        note = _write_note(tmp_path)
+        scripted = ScriptedEmbedder([(seeded_id, 0.07)])
+        llm = ScriptedLLM(
+            [
+                "Summary.",
+                json.dumps({"verdict": "skip", "reason": "covered", "existing_titles": []}),
+            ]
+        )
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            scripted,
+            GraphBuilder(deps["db"]),
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+            dedup_agent=DedupAgent(deps["db"], scripted, llm),
+            config=build_ingest_config(),
+        )
+
+        result = await ingester.ingest_file(note, base_dir=tmp_path)
+
+        assert result.action == "ingested"
+        assert result.chunks_skipped == 1
+        assert result.chunks_processed == 0
+        assert result.entry_count == 0
+        assert len(llm.calls) == 2  # summarize + dedup, no ingest_extract
+
+    async def test_partial_feeds_titles_to_the_extractor(self, ingester_deps, tmp_path):
+        """Partial at distance 0.12 (similarity 0.88): extractor sees the titles."""
+        deps = ingester_deps
+        seeded_id = await _seed_overlapping_concept(deps)
+        note = _write_note(tmp_path)
+        scripted = ScriptedEmbedder([(seeded_id, 0.12)])
+        llm = ScriptedLLM(
+            [
+                "Summary.",
+                json.dumps(
+                    {
+                        "verdict": "partial",
+                        "reason": "some overlap",
+                        "existing_titles": ["overlapping concept"],
+                    }
+                ),
+                json.dumps([_make_entry_json("new concept")]),
+            ]
+        )
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            scripted,
+            GraphBuilder(deps["db"]),
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+            dedup_agent=DedupAgent(deps["db"], scripted, llm),
+            config=build_ingest_config(),
+        )
+
+        result = await ingester.ingest_file(note, base_dir=tmp_path)
+
+        assert result.action == "ingested"
+        assert result.chunks_skipped == 0
+        assert result.chunks_processed == 1
+        assert result.entry_count == 1
+        assert len(llm.calls) == 3  # summarize + dedup + ingest_extract
+        assert "- overlapping concept" in (llm.calls[-1]["system"] or "")
+
+    async def test_extract_below_the_floor_skips_the_dedup_call(self, ingester_deps, tmp_path):
+        """Below the floor at distance 0.50 (similarity 0.50): no dedup LLM call."""
+        deps = ingester_deps
+        seeded_id = await _seed_overlapping_concept(deps)
+        note = _write_note(tmp_path)
+        scripted = ScriptedEmbedder([(seeded_id, 0.50)])
+        llm = ScriptedLLM(
+            [
+                "Summary.",
+                json.dumps([_make_entry_json("new concept")]),
+            ]
+        )
+        ingester = FileIngester(
+            deps["db"],
+            deps["store"],
+            scripted,
+            GraphBuilder(deps["db"]),
+            GraphEnricher(deps["db"], FakeLLM()),
+            llm,
+            dedup_agent=DedupAgent(deps["db"], scripted, llm),
+            config=build_ingest_config(),
+        )
+
+        result = await ingester.ingest_file(note, base_dir=tmp_path)
+
+        assert result.action == "ingested"
+        assert result.chunks_skipped == 0
+        assert result.chunks_processed == 1
+        assert result.entry_count == 1
+        assert len(llm.calls) == 2  # summarize + ingest_extract, no dedup call

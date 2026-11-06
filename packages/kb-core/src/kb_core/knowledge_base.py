@@ -1034,7 +1034,7 @@ class KnowledgeBase:
                 self._db,
                 self._embedder,
                 self._extraction_llm,
-                threshold=self._config.ingest.dedup_threshold,
+                similarity_floor=self._config.ingest.dedup_similarity_floor,
             )
         return FileIngester(
             db=self._db,
