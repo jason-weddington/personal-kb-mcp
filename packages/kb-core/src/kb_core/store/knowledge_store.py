@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Literal, cast
 
-from kb_core.db.backend import Database
+from kb_core.db.backend import ENTRY_ID_ALLOC_MARKER, Database
 from kb_core.db.queries import (
     deactivate_entry_db,
     get_entry,
@@ -95,7 +95,16 @@ class KnowledgeStore:
                 expires_at=expires_at,
                 version=1,
             )
-            await insert_entry(self.db, entry)
+            try:
+                await insert_entry(self.db, entry)
+            except Exception as exc:
+                logger.error(
+                    "%s op=insert_failed id=%s error=%s",
+                    ENTRY_ID_ALLOC_MARKER,
+                    entry_id,
+                    type(exc).__name__,
+                )
+                raise
 
             version = EntryVersion(
                 entry_id=entry_id,

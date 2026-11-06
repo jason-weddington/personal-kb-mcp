@@ -12,7 +12,11 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from kb_core.db.backend import MAPPABLE_ENTRY_WHERE_SQL, MapEligibilityCounts
+from kb_core.db.backend import (
+    ENTRY_ID_ALLOC_MARKER,
+    MAPPABLE_ENTRY_WHERE_SQL,
+    MapEligibilityCounts,
+)
 from kb_core.db.fts_query import fts_min_coverage, fts_query_tokens
 
 if TYPE_CHECKING:
@@ -501,15 +505,46 @@ class PostgresBackend:
     # -- Sequence --
 
     async def next_sequence_value(self) -> int:
-        """Atomically get and increment the entry ID sequence."""
+        """Atomically allocate the next entry id, skipping existing ids.
+
+        One ``UPDATE ... RETURNING`` statement computes the new value as the
+        greater of the counter and the highest numeric ``kb-<digits>`` suffix
+        in ``knowledge_entries`` plus one, so the returned id never collides
+        with an existing row and a rolled-back allocation self-heals. The
+        ``UPDATE`` holds the ``entry_id_seq`` row lock for the rest of the
+        caller's transaction, which serializes concurrent allocators. The
+        separate read-only pre-read feeds the telemetry fields only. ``BIGINT``
+        and the ``{1,18}`` suffix bound keep an over-long id from raising
+        ``value out of range for type integer``.
+        """
         async with self._conn() as conn:
+            pre_row = await conn.fetchrow(
+                "SELECT next_id, COALESCE((SELECT MAX(CAST(substring(id from 4) AS BIGINT))"
+                " FROM knowledge_entries WHERE id ~ '^kb-[0-9]{1,18}$'), 0) + 1"
+                " FROM entry_id_seq"
+            )
+
             row = await conn.fetchrow(
-                "UPDATE entry_id_seq SET next_id = next_id + 1 RETURNING next_id - 1 AS val"
+                "UPDATE entry_id_seq SET next_id = GREATEST(next_id,"
+                " COALESCE((SELECT MAX(CAST(substring(id from 4) AS BIGINT))"
+                " FROM knowledge_entries WHERE id ~ '^kb-[0-9]{1,18}$'), 0) + 1) + 1"
+                " RETURNING next_id - 1 AS val"
             )
             if row is None:
                 raise RuntimeError("entry_id_seq table is empty")
-            val: int = row["val"]
-            return val
+            allocated: int = row["val"]
+
+            if pre_row is not None and allocated > int(pre_row[0]):
+                logger.warning(
+                    "%s tripwire=counter_behind backend=postgres counter=%d floor=%d"
+                    " allocated=%d behind=%d",
+                    ENTRY_ID_ALLOC_MARKER,
+                    pre_row[0],
+                    pre_row[1],
+                    allocated,
+                    allocated - int(pre_row[0]),
+                )
+            return allocated
 
     # -- Maintenance --
 

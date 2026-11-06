@@ -46,6 +46,7 @@ proves it selectively deletes the non-LLM edge and preserves the LLM one.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -89,6 +90,7 @@ from kb_core.embedding_retry import (
 )
 from kb_core.map_caps import count_maps_created_since, map_write_summary
 from kb_core.map_delete import delete_map
+from kb_core.models.entry import EntryType
 from kb_core.near_duplicates import find_near_duplicates
 from kb_core.store.knowledge_store import KnowledgeStore
 from kb_core.supersession import reconcile_supersession
@@ -408,6 +410,101 @@ async def test_next_sequence_value_increments_atomically(pg_kb: PostgresBackend)
     assert isinstance(first, int)
     assert isinstance(second, int)
     assert second == first + 1
+
+
+# 7 NOT-NULL-no-default columns; everything else has a default. Written as
+# adjacent literals so no physical line exceeds the 100-column limit.
+_SEED_ENTRY_SQL = (
+    "INSERT INTO knowledge_entries (id, short_title, long_title, knowledge_details,"
+    " entry_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+)
+
+
+async def test_next_sequence_value_skips_existing_ids(pg_kb: PostgresBackend) -> None:
+    """A counter behind explicit-id rows allocates past them (never collides).
+
+    The team-KB shape: ``entry_id_seq.next_id`` sits below ids already
+    present in ``knowledge_entries``. The allocation derives the id from
+    the table, so the next two calls skip over ``kb-05000``/``kb-05001``
+    instead of returning them and raising a unique violation.
+    """
+    ts = "2026-01-01T00:00:00Z"
+    try:
+        for eid in ("kb-05000", "kb-05001"):
+            await pg_kb.execute(_SEED_ENTRY_SQL, (eid, eid, eid, "seed body", "note", ts, ts))
+        await pg_kb.execute("UPDATE entry_id_seq SET next_id = ?", (5000,))
+
+        assert await pg_kb.next_sequence_value() == 5002
+        assert await pg_kb.next_sequence_value() == 5003
+    finally:
+        # The fixture keeps ``entry_id_seq`` on purpose — restore it explicitly.
+        await pg_kb.execute("UPDATE entry_id_seq SET next_id = ?", (1,))
+
+
+async def test_create_entry_allocations_are_distinct_under_concurrency(
+    pg_kb: PostgresBackend,
+) -> None:
+    """Five concurrent stores serialize on the row lock and get distinct ids."""
+    pre_cursor = await pg_kb.execute("SELECT next_id FROM entry_id_seq")
+    pre_row = await pre_cursor.fetchone()
+    assert pre_row is not None
+    before = pre_row[0]
+
+    try:
+        entries = await asyncio.gather(
+            *[
+                KnowledgeStore(pg_kb).create_entry(
+                    short_title=f"race {i}",
+                    long_title=f"race {i}",
+                    knowledge_details="race body",
+                    entry_type=EntryType.FACTUAL_REFERENCE,
+                )
+                for i in range(5)
+            ]
+        )
+
+        assert len({e.id for e in entries}) == 5
+
+        after_cursor = await pg_kb.execute("SELECT next_id FROM entry_id_seq")
+        after_row = await after_cursor.fetchone()
+        assert after_row is not None
+        after = after_row[0]
+        assert after == before + 5
+    finally:
+        await pg_kb.execute("UPDATE entry_id_seq SET next_id = ?", (1,))
+
+
+async def test_next_sequence_value_ignores_non_kb_and_deleted_ids(
+    pg_kb: PostgresBackend,
+) -> None:
+    """Only ``kb-<1-18 digits>`` ids count, and soft-deleted rows still count.
+
+    The 20-digit id pins the ``{1,18}`` suffix bound: without it
+    ``CAST(substring(id from 4) AS BIGINT)`` raises ``value out of range``
+    and aborts the allocation (the wedge, Postgres-only). ``is_active`` is
+    deliberately not filtered because a soft-deleted row keeps its id.
+    """
+    ts = "2026-01-01T00:00:00Z"
+    try:
+        for eid in ("e1", "not-an-entry", "kb-0a123", "kb-99999999999999999999"):
+            await pg_kb.execute(_SEED_ENTRY_SQL, (eid, eid, eid, "seed body", "note", ts, ts))
+        await pg_kb.execute("UPDATE entry_id_seq SET next_id = ?", (1,))
+
+        assert await pg_kb.next_sequence_value() == 1
+        assert await pg_kb.next_sequence_value() == 2
+
+        await pg_kb.execute("DELETE FROM knowledge_entries")
+        await pg_kb.execute(
+            "INSERT INTO knowledge_entries (id, short_title, long_title,"
+            " knowledge_details, entry_type, created_at, updated_at, is_active)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("kb-05000", "deleted seed", "deleted seed", "seed body", "note", ts, ts, 0),
+        )
+        await pg_kb.execute("UPDATE entry_id_seq SET next_id = ?", (5000,))
+
+        assert await pg_kb.next_sequence_value() == 5001
+    finally:
+        await pg_kb.execute("UPDATE entry_id_seq SET next_id = ?", (1,))
 
 
 async def test_vacuum_returns_pinned_status_string(pg_kb: PostgresBackend) -> None:

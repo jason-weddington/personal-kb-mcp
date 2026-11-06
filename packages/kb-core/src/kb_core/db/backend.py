@@ -25,6 +25,10 @@ MAPPABLE_ENTRY_WHERE_SQL = (
     "is_active = 1 AND entry_type <> 'mental_map' AND project_ref IS NOT NULL"
 )
 
+# Log marker for entry-id allocation telemetry (a derivation that overrode the
+# counter, or a failed insert that a unique-id collision could explain).
+ENTRY_ID_ALLOC_MARKER = "entry-id-alloc"
+
 
 class MapEligibilityCounts(NamedTuple):
     """Per-project counts feeding the map-eligibility classifier.
@@ -191,7 +195,17 @@ class Database(Protocol):
         ...
 
     async def next_sequence_value(self) -> int:
-        """Atomically get and increment the entry ID sequence. Returns the current value."""
+        """Atomically get and increment the entry ID sequence. Returns the current value.
+
+        Returns ``max(entry_id_seq.next_id, highest numeric suffix among the
+        ``kb-<digits>`` ids in ``knowledge_entries`` + 1)``, computed in one
+        atomic statement, so the returned value is never an id that already
+        exists. Ids that are not ``kb-<1-18 digits>`` are ignored, and
+        ``is_active`` is not filtered (a soft-deleted row keeps its primary
+        key). Because the value is derived from ``knowledge_entries``, an
+        allocation lost to a rolled-back transaction self-heals on the next
+        call instead of wedging at a colliding value.
+        """
         ...
 
     @asynccontextmanager

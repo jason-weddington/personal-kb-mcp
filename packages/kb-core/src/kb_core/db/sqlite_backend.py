@@ -15,7 +15,11 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from kb_core.db.backend import MAPPABLE_ENTRY_WHERE_SQL, MapEligibilityCounts
+from kb_core.db.backend import (
+    ENTRY_ID_ALLOC_MARKER,
+    MAPPABLE_ENTRY_WHERE_SQL,
+    MapEligibilityCounts,
+)
 from kb_core.db.fts_query import fts_min_coverage, fts_query_tokens
 
 if TYPE_CHECKING:
@@ -552,14 +556,47 @@ class SQLiteBackend:
     # -- Sequence --
 
     async def next_sequence_value(self) -> int:
-        """Get and increment the entry ID sequence. Safe for SQLite (single-writer)."""
-        cursor = await self._conn.execute("SELECT next_id FROM entry_id_seq")
+        """Atomically allocate the next entry id, skipping existing ids.
+
+        The allocation is ONE ``UPDATE ... RETURNING`` statement whose new
+        value is the greater of the counter and the highest numeric
+        ``kb-<digits>`` suffix already in ``knowledge_entries`` plus one, so
+        the returned id can never collide with an existing row and a lost
+        (rolled-back) allocation self-heals instead of wedging. The separate
+        read-only pre-read feeds the telemetry fields only — it never
+        influences the returned value.
+        """
+        pre_cursor = await self._conn.execute(
+            "SELECT next_id, COALESCE((SELECT MAX(CAST(substr(id, 4) AS INTEGER))"
+            " FROM knowledge_entries WHERE id GLOB 'kb-[0-9]*'"
+            " AND length(substr(id, 4)) <= 18"
+            " AND substr(id, 4) NOT GLOB '*[^0-9]*'), 0) + 1 FROM entry_id_seq"
+        )
+        pre_row = await pre_cursor.fetchone()
+
+        cursor = await self._conn.execute(
+            "UPDATE entry_id_seq SET next_id = MAX(next_id, COALESCE((SELECT"
+            " MAX(CAST(substr(id, 4) AS INTEGER)) FROM knowledge_entries"
+            " WHERE id GLOB 'kb-[0-9]*' AND length(substr(id, 4)) <= 18"
+            " AND substr(id, 4) NOT GLOB '*[^0-9]*'), 0) + 1) + 1"
+            " RETURNING next_id - 1"
+        )
         row = await cursor.fetchone()
         if row is None:
             raise RuntimeError("entry_id_seq table is empty")
-        next_id: int = row[0]
-        await self._conn.execute("UPDATE entry_id_seq SET next_id = ?", (next_id + 1,))
-        return next_id
+        allocated = int(row[0])
+
+        if pre_row is not None and allocated > pre_row[0]:
+            logger.warning(
+                "%s tripwire=counter_behind backend=sqlite counter=%d floor=%d"
+                " allocated=%d behind=%d",
+                ENTRY_ID_ALLOC_MARKER,
+                pre_row[0],
+                pre_row[1],
+                allocated,
+                allocated - pre_row[0],
+            )
+        return allocated
 
     # -- Schema --
 

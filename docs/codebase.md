@@ -153,11 +153,17 @@ Both backends implement `transaction()`: Postgres pins one pooled connection in 
 
 ### Entry ID generation
 
-Entry IDs are generated atomically via `db.next_sequence_value()`. This returns the next
-integer from a monotonic sequence and is safe under concurrency. The integer is formatted as
+Entry IDs are generated atomically via `db.next_sequence_value()`. The returned integer is
+the greater of `entry_id_seq.next_id` and the highest numeric suffix among the `kb-<digits>`
+ids already in `knowledge_entries`, plus one — computed in one atomic statement per backend
+(SQLite an `UPDATE ... RETURNING` with the scalar `MAX`, Postgres `GREATEST`). It therefore
+never returns an id that already exists, and a rolled-back allocation self-heals instead of
+wedging at a colliding value. Ids that are not `kb-<1-18 digits>` are ignored, and `is_active`
+is not filtered because a soft-deleted row keeps its primary key. The integer is formatted as
 `f"kb-{n:05d}"` producing the `kb-XXXXX` format.
 
-Advisory locks ensure atomicity on Postgres multi-instance deployments.
+On Postgres the single `UPDATE` holds the `entry_id_seq` row lock for the rest of the caller's
+transaction, which serializes concurrent allocators (the allocator takes no advisory lock).
 
 ### Graceful LLM degradation
 
