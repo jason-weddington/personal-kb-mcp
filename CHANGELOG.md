@@ -2,6 +2,33 @@
 
 <!-- version list -->
 
+## v1.27.0 (2026-11-06)
+
+### Bug Fixes
+
+- **28fc8fec**: Entry id allocator skips ids that already exist instead of wedging every store
+  ([`465f118`](https://github.com/jason-weddington/personal-kb-mcp/commit/465f118d84c3ec9086725408c86b0d4d58f3d847))
+
+- **39877a42**: Tags containing spaces are no longer split on write
+  ([`ccb88fa`](https://github.com/jason-weddington/personal-kb-mcp/commit/ccb88fae7c7a0485ed09e6e3590d0637f58b8649))
+
+- **b98241fe**: Dedup gate compares an RRF score to a threshold it can never reach
+  ([`00381c5`](https://github.com/jason-weddington/personal-kb-mcp/commit/00381c5e2783fa01f64a74362e02fb30061affee))
+
+- **eb604553**: SQLite filtered vector search truncates before filtering and loses recall
+  ([`58fbaf5`](https://github.com/jason-weddington/personal-kb-mcp/commit/58fbaf57e2678b504458e23bdfba3862f4ab7c9d))
+
+### Documentation
+
+- Postgres multi-step writes are atomic (audit M4 done); drop stale non-atomic notes
+  ([`0b8d079`](https://github.com/jason-weddington/personal-kb-mcp/commit/0b8d079fcacf10dc428d6bfc710484e08d618fc8))
+
+### Features
+
+- **5f8f3cc5**: Kb-service read-only mode (KB_READ_ONLY) refuses every data write with a 403
+  ([`efd613b`](https://github.com/jason-weddington/personal-kb-mcp/commit/efd613b99f01d71b95beaf1abd3f4a6f9a4c71ba))
+
+
 ## v1.26.0 (2026-11-03)
 
 ### Features
