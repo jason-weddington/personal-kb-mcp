@@ -1,10 +1,21 @@
 """Knowledge entry models."""
 
+from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def normalize_tags(tags: Iterable[str]) -> list[str]:
+    """Collapse whitespace runs in each tag to "-", drop empties, de-duplicate in order."""
+    seen: dict[str, None] = {}
+    for tag in tags:
+        norm = "-".join(tag.split())
+        if norm:
+            seen.setdefault(norm, None)
+    return list(seen)
 
 
 class EntryType(StrEnum):
@@ -38,6 +49,12 @@ class KnowledgeEntry(BaseModel):
     updated_at: datetime | None = None
     last_accessed: datetime | None = None
     expires_at: datetime | None = None
+
+    @field_validator("tags", mode="after")
+    @classmethod
+    def _normalize_tags(cls, value: list[str]) -> list[str]:
+        return normalize_tags(value)
+
     superseded_by: str | None = None
     is_active: bool = True
     has_embedding: bool = False

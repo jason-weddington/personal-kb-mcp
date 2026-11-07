@@ -1298,3 +1298,15 @@ async def test_fts_coverage_cases_on_postgres(pg_kb: PostgresBackend) -> None:
     query, entry_type, expected = FTS_COVERAGE_FILTER_CASE
     got = [eid for eid, _ in await pg_kb.fts_search(query, entry_type=entry_type, limit=10)]
     assert got == expected
+
+
+async def test_multiword_tag_normalized_on_postgres(pg_kb: PostgresBackend) -> None:
+    store = KnowledgeStore(pg_kb)
+    e = await store.create_entry(
+        short_title="tag",
+        long_title="tag",
+        knowledge_details="body",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["archival evidence"],
+    )
+    assert (await store.get_entry(e.id)).tags == ["archival-evidence"]

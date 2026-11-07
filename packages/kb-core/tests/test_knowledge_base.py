@@ -41,7 +41,7 @@ from kb_core import (
     create_sqlite,
 )
 from kb_core.config import KbConfig
-from kb_core.models.entry import EntryType
+from kb_core.models.entry import EntryType, KnowledgeEntry
 from kb_core.models.search import SearchQuery
 from kb_core.search.hybrid import hybrid_search
 
@@ -1098,3 +1098,153 @@ async def test_create_sqlite_forwards_llm_recorder(tmp_path: Any) -> None:
         assert kb.query_llm._recorder is _recorder  # type: ignore[union-attr]
     finally:
         await kb.close()
+
+
+# ---------------------------------------------------------------------------
+# Tag normalization
+# ---------------------------------------------------------------------------
+
+
+async def _has_tag_ids(kb: Any, entry_id: str) -> set[str]:
+    rows = await kb.graph.neighbors(entry_id, edge_types=["has_tag"], direction="outgoing")
+    return {nid for nid, _et, _ in rows}
+
+
+async def _store_tagged(kb: Any, tags: list[str]) -> Any:
+    return await kb.store(
+        short_title="t",
+        long_title="Tagged",
+        knowledge_details="details",
+        tags=tags,
+        enrich=False,
+    )
+
+
+async def test_multiword_tag_round_trips_and_graph_agrees(kb_fts_only: Any) -> None:
+    kb = kb_fts_only
+    entry = await _store_tagged(kb, ["archival evidence", "x"])
+    got = await kb.get(entry.id)
+    assert got.tags == ["archival-evidence", "x"]
+    cur = await kb.db.execute("SELECT tags FROM knowledge_entries WHERE id = ?", (entry.id,))
+    row = await cur.fetchone()
+    assert row["tags"] == "archival-evidence x"
+    assert await _has_tag_ids(kb, entry.id) == {"tag:archival-evidence", "tag:x"}
+
+
+async def test_store_batch_normalizes_tags(kb_fts_only: Any) -> None:
+    kb = kb_fts_only
+    entries = await kb.store_batch(
+        [
+            {
+                "short_title": "s",
+                "long_title": "l",
+                "knowledge_details": "d",
+                "tags": ["archival evidence"],
+            }
+        ],
+        enrich=False,
+    )
+    assert entries[0].tags == ["archival-evidence"]
+    assert (await kb.get(entries[0].id)).tags == ["archival-evidence"]
+
+
+async def test_update_normalizes_tags(kb_fts_only: Any) -> None:
+    from kb_core.store.knowledge_store import KnowledgeStore
+
+    kb = kb_fts_only
+    entry = await _store_tagged(kb, ["a"])
+    updated = await KnowledgeStore(kb.db).update_entry(
+        entry.id, tags=["archival evidence"], change_reason="t"
+    )
+    assert updated.tags == ["archival-evidence"]
+    assert (await kb.get(entry.id)).tags == ["archival-evidence"]
+
+
+async def test_kb_update_normalizes_tags_and_graph(kb_fts_only: Any) -> None:
+    kb = kb_fts_only
+    entry = await _store_tagged(kb, ["a"])
+    updated = await kb.update(entry.id, tags=["archival evidence"], change_reason="t", enrich=False)
+    assert updated.tags == ["archival-evidence"]
+    assert await _has_tag_ids(kb, entry.id) == {"tag:archival-evidence"}
+
+
+async def test_bulk_update_normalizes_tags(kb_fts_only: Any) -> None:
+    kb = kb_fts_only
+    entry = await _store_tagged(kb, ["k"])
+    [(_, after)] = await kb.bulk_update(
+        {"entry_ids": [entry.id]}, {"tags_add": ["archival evidence"]}
+    )
+    assert "archival-evidence" in after.tags
+    assert not any(" " in t for t in after.tags)
+
+    [(_, after)] = await kb.bulk_update({"entry_ids": [entry.id]}, {"tags_add": ["a b", "a-b"]})
+    assert after.tags == ["k", "archival-evidence", "a-b"]
+
+    [(_, after)] = await kb.bulk_update(
+        {"entry_ids": [entry.id]}, {"tags_remove": ["archival evidence"]}
+    )
+    assert "archival-evidence" not in after.tags
+
+    assert await kb.bulk_update({"entry_ids": [entry.id]}, {"tags_remove": ["  "]}) == []
+
+
+async def test_create_entry_normalizes_tags(kb_fts_only: Any) -> None:
+    from kb_core.store.knowledge_store import KnowledgeStore
+
+    kb = kb_fts_only
+    e = await KnowledgeStore(kb.db).create_entry(
+        short_title="s",
+        long_title="l",
+        knowledge_details="d",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        tags=["two words"],
+    )
+    assert e.tags == ["two-words"]
+
+
+async def test_bypass_warns_and_normalizes(kb_fts_only: Any, caplog: Any) -> None:
+    from kb_core.db.queries import insert_entry
+
+    kb = kb_fts_only
+    entry = KnowledgeEntry.model_construct(
+        id="kb-77777",
+        project_ref=None,
+        short_title="s",
+        long_title="l",
+        knowledge_details="d",
+        entry_type=EntryType.FACTUAL_REFERENCE,
+        source_context=None,
+        contributor=None,
+        team=None,
+        updated_by=None,
+        sensitivity=None,
+        confidence_level=0.9,
+        tags=["a b"],
+        hints={},
+        created_at=None,
+        updated_at=None,
+        last_accessed=None,
+        expires_at=None,
+    )
+    with caplog.at_level(logging.WARNING):
+        await insert_entry(kb.db, entry)
+    events = [
+        r for r in caplog.records if getattr(r, "event", "") == "kb.tags_normalization_bypass"
+    ]
+    assert len(events) == 1
+    cur = await kb.db.execute("SELECT tags FROM knowledge_entries WHERE id = ?", ("kb-77777",))
+    assert (await cur.fetchone())["tags"] == "a-b"
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        await _store_tagged(kb, ["a b"])
+    assert not [
+        r for r in caplog.records if getattr(r, "event", "") == "kb.tags_normalization_bypass"
+    ]
+
+
+async def test_legacy_repeated_tokens_collapse_on_read(kb_fts_only: Any) -> None:
+    kb = kb_fts_only
+    entry = await _store_tagged(kb, ["a"])
+    await kb.db.execute("UPDATE knowledge_entries SET tags=? WHERE id=?", ("x x y", entry.id))
+    assert (await kb.get(entry.id)).tags == ["x", "y"]

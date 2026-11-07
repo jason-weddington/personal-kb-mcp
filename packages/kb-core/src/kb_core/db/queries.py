@@ -1,12 +1,30 @@
 """Query helpers for common database operations."""
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
 from kb_core.db.backend import Database, Row
-from kb_core.models.entry import EntryType, KnowledgeEntry
+from kb_core.models.entry import EntryType, KnowledgeEntry, normalize_tags
 from kb_core.models.version import EntryVersion
+
+logger = logging.getLogger(__name__)
+
+
+def _tags_column(entry: KnowledgeEntry) -> str:
+    """Build the stored tags column, normalizing even if the model was bypassed."""
+    normalized = normalize_tags(entry.tags)
+    if normalized != list(entry.tags):
+        logger.warning(
+            "un-normalized tags reached storage",
+            extra={
+                "event": "kb.tags_normalization_bypass",
+                "entry_id": entry.id,
+                "raw": entry.tags,
+            },
+        )
+    return " ".join(normalized)
 
 
 async def next_entry_id(db: Database) -> str:
@@ -48,7 +66,7 @@ def row_to_entry(row: Row) -> KnowledgeEntry:
 
 async def insert_entry(db: Database, entry: KnowledgeEntry) -> None:
     """Insert a new knowledge entry. FTS is auto-synced via triggers."""
-    tags_text = " ".join(entry.tags)
+    tags_text = _tags_column(entry)
     await db.execute(
         """INSERT INTO knowledge_entries
         (id, project_ref, short_title, long_title, knowledge_details, entry_type,
@@ -89,7 +107,7 @@ async def update_entry(db: Database, entry: KnowledgeEntry) -> None:
     by :mod:`kb_core.supersession`, and writing it from a possibly-stale
     entry snapshot would be a lost update.
     """
-    tags_text = " ".join(entry.tags)
+    tags_text = _tags_column(entry)
     await db.execute(
         """UPDATE knowledge_entries SET
         project_ref=?, short_title=?, long_title=?, knowledge_details=?, entry_type=?,

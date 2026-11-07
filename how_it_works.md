@@ -60,7 +60,7 @@ Every piece of knowledge is a `KnowledgeEntry` (`kb_core/models/entry.py`). `Ent
 | `contributor`, `team`, `updated_by` | Attribution, injected by the server |
 | `sensitivity` | `internal`, `restricted`, `public` or None. A label only: a non-public value renders as `[RESTRICTED]` or `[INTERNAL]`, and nothing enforces it |
 | `confidence_level` | 0.0 to 1.0, default 0.9; the base for decay (section 8) |
-| `tags` | List of strings |
+| `tags` | List of strings, normalized by `normalize_tags` (no whitespace inside a tag; see Tags below) |
 | `hints` | Free-form dict that drives graph building and several guards |
 | `created_at`, `updated_at`, `last_accessed`, `expires_at` | Lifecycle timestamps |
 | `superseded_by` | Derived from `supersedes` edges, never written by hand (section 6) |
@@ -70,7 +70,7 @@ Every piece of knowledge is a `KnowledgeEntry` (`kb_core/models/entry.py`). `Ent
 
 `KnowledgeEntry.compose_embedding_text` is the single definition of embedded text: `short_title`, `long_title` and `knowledge_details` joined by single spaces. Tags, hints and `source_context` are not embedded.
 
-**Tags** are stored as one space-joined TEXT column, not a JSON array, and filtered with `(' ' || tags || ' ') LIKE '% tag %'`; `_parse_tags` in `kb_core/db/queries.py` splits on whitespace, so a tag containing a space comes back as two tags. The `'[]'` DDL default on the column is vestigial, because `insert_entry` always writes the joined text.
+**Tags** are stored as one space-joined TEXT column, not a JSON array, and filtered with `(' ' || tags || ' ') LIKE '% tag %'`; `_parse_tags` in `kb_core/db/queries.py` splits on whitespace. To keep that lossless, tags are normalized at the model boundary by `normalize_tags` in `kb_core/models/entry.py`: each run of whitespace inside a tag becomes a single `-`, the ends are stripped, empty results are dropped, and exact (case-sensitive) duplicates are removed in first-seen order, with case preserved, so `archival evidence` is stored as `archival-evidence`. This applies to store, update, store_batch, bulk_update `tags_add` and `tags_remove`, and ingest, and the graph's `tag:<tag>` node uses the same normalized tag, so the column and the graph agree for writes made after this change. `insert_entry` and `update_entry` normalize again as a fail-closed choke point and log a warning with event `kb.tags_normalization_bypass` if a caller bypassed the model. Rows and graph tag nodes written earlier are not rewritten: a legacy entry may have a column split into separate words and an orphaned graph node `tag:<words with spaces>`, and a legacy column with a repeated token reads back de-duplicated. Search tag filters and graph scope `tag:Y` are not normalized, so callers pass the hyphenated tag. The `'[]'` DDL default on the column is vestigial, because `insert_entry` always writes the joined text.
 
 **Known `hints` keys:**
 

@@ -15,7 +15,7 @@ from kb_core.db.queries import (
     row_to_entry,
     update_entry,
 )
-from kb_core.models.entry import EntryType, KnowledgeEntry
+from kb_core.models.entry import EntryType, KnowledgeEntry, normalize_tags
 from kb_core.models.version import EntryVersion
 from kb_core.supersession import outgoing_supersedes_targets, recompute_superseded_by
 
@@ -172,7 +172,7 @@ class KnowledgeStore:
             update_fields: dict[str, object] = {
                 "knowledge_details": effective_details,
                 "confidence_level": new_confidence,
-                "tags": tags if tags is not None else existing.tags,
+                "tags": normalize_tags(tags) if tags is not None else existing.tags,
                 "hints": merged_hints,
                 "updated_at": now,
                 "version": new_version,
@@ -360,12 +360,12 @@ class KnowledgeStore:
             # Tag operations
             new_tags = list(entry.tags)
             if "tags_add" in updates:
-                add_tags = cast("list[str]", updates["tags_add"])
+                add_tags = normalize_tags(cast("list[str]", updates["tags_add"]))
                 for t in add_tags:
                     if t not in new_tags:
                         new_tags.append(t)
             if "tags_remove" in updates:
-                remove_set = set(cast("list[str]", updates["tags_remove"]))
+                remove_set = set(normalize_tags(cast("list[str]", updates["tags_remove"])))
                 new_tags = [t for t in new_tags if t not in remove_set]
             if new_tags != list(entry.tags):
                 update_fields["tags"] = new_tags

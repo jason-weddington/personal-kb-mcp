@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from kb_core.db.backend import Database
-from kb_core.models.entry import KnowledgeEntry
+from kb_core.models.entry import KnowledgeEntry, normalize_tags
 from kb_core.supersession import outgoing_supersedes_targets, recompute_superseded_by
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ class GraphBuilder:
             await self._ensure_node(entry.id, "entry", props)
 
             # 2. Tags → tag nodes + has_tag edges
-            for tag in entry.tags:
+            for tag in normalize_tags(entry.tags):
                 node_id = f"tag:{tag}"
                 await self._ensure_node(node_id, "tag")
                 await self._add_edge(entry.id, node_id, "has_tag")
