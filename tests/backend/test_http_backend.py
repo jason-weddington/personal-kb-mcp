@@ -611,6 +611,12 @@ def test_map_error_403():
     assert "Admin only" in msg
 
 
+def test_map_error_403_read_only():
+    exc = BackendHttpError(403, "read-only: this KB is read-only; writes are refused.")
+    msg = _map_error(exc, "https://kb.example.com")
+    assert msg == "Error: read-only: this KB is read-only; writes are refused."
+
+
 def test_map_error_404():
     exc = BackendHttpError(404, "Entry not found")
     msg = _map_error(exc, "http://kb.test")

@@ -41,6 +41,7 @@ from kb_service.config import (
     build_anthropic_config,
     build_bedrock_config,
     get_near_duplicate_floor,
+    is_read_only,
 )
 from kb_service.database import get_db
 from kb_service.db_types import DbPool
@@ -2117,7 +2118,13 @@ async def drain_once(pool: DbPool, kb: Any) -> DrainResult:
 
     distilled_ids: list[int] = []
     dres = DistillResult()
-    if mode == "on":
+    if mode == "on" and is_read_only():
+        pending_rows = await pool.fetch(
+            "SELECT count(*) AS n FROM surprise_candidates WHERE status = 'pending'"
+        )
+        n_pending = int(pending_rows[0]["n"]) if pending_rows else 0
+        logger.info("surprise_distill skipped reason=read_only pending=%s", n_pending)
+    elif mode == "on":
         rows = await pool.fetch(
             f"SELECT {_CANDIDATE_COLUMNS} FROM surprise_candidates"  # noqa: S608
             " WHERE status = 'pending' ORDER BY id"

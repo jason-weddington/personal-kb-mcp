@@ -324,6 +324,16 @@ def is_manager_mode() -> bool:
     return os.environ.get("KB_MANAGER", "").upper() == "TRUE"
 
 
+def is_read_only() -> bool:
+    """Return True if KB_READ_ONLY is TRUE (refuse knowledge-content writes)."""
+    return os.environ.get("KB_READ_ONLY", "").upper() == "TRUE"
+
+
+def read_only_message() -> str:
+    """Return the operator pointer from KB_READ_ONLY_MESSAGE (may be empty)."""
+    return os.environ.get("KB_READ_ONLY_MESSAGE", "").strip()
+
+
 def get_contributor() -> str | None:
     """Return KB_CONTRIBUTOR, or None when unset/empty."""
     return os.environ.get("KB_CONTRIBUTOR") or None

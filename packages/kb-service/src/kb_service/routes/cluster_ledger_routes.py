@@ -59,6 +59,7 @@ from kb_service.models import (
     ClusterLedgerMatchResponse,
     User,
 )
+from kb_service.read_only import require_kb_writable
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,11 @@ async def _admission_gate(kb: Any, project_ref: str) -> None:
         raise HTTPException(status_code=409, detail="project_ref not map-eligible")
 
 
-@router.post("/cluster-ledger/match", response_model=ClusterLedgerMatchResponse)
+@router.post(
+    "/cluster-ledger/match",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=ClusterLedgerMatchResponse,
+)
 async def cluster_ledger_match(
     body: ClusterLedgerMatchRequest,
     request: Request,
@@ -161,6 +166,7 @@ async def cluster_ledger_match(
 
 @router.post(
     "/cluster-ledger/decline",
+    dependencies=[Depends(require_kb_writable)],
     status_code=201,
     response_model=ClusterLedgerDeclineResponse,
 )

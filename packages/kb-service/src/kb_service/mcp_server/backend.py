@@ -29,6 +29,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
 from kb_service.auth import AuthPrincipal
+from kb_service.config import is_read_only
 from kb_service.mcp_server.errors import BackendHttpError
 from kb_service.mcp_server.observability import (
     MCP_BACKEND_MARKER,
@@ -50,6 +51,7 @@ from kb_service.models_kb import (
     StoreBatchRequest,
     StoreRequest,
 )
+from kb_service.read_only import log_refusal, read_only_detail
 from kb_service.routes import (
     ingest_routes,
     kb_read_routes,
@@ -69,6 +71,36 @@ ADMIN_ONLY_METHODS: frozenset[str] = frozenset(
         "map_eligibility",
         "set_map_eligibility_override",
         "clear_map_eligibility_override",
+    }
+)
+
+WRITE_METHODS: frozenset[str] = frozenset(
+    {
+        "store",
+        "deactivate",
+        "reactivate",
+        "store_batch",
+        "bulk_update",
+        "reconcile_supersession",
+        "ingest_url",
+        "set_map_eligibility_override",
+        "clear_map_eligibility_override",
+    }
+)
+
+READ_METHODS: frozenset[str] = frozenset(
+    {
+        "search",
+        "get_entries",
+        "neighbors",
+        "feedback",
+        "ask_auto",
+        "summarize",
+        "preflight",
+        "list_projects",
+        "list_contributors",
+        "list_teams",
+        "map_eligibility",
     }
 )
 
@@ -176,6 +208,10 @@ class InProcessBackend:
                     key_id,
                 )
                 raise BackendHttpError(403, "Admin only")
+            if op in WRITE_METHODS and is_read_only():
+                user_id, key_id = self._log_ids()
+                log_refusal("mcp", op, user_id, key_id)
+                raise BackendHttpError(403, read_only_detail())
             try:
                 result = await build()
             except BackendHttpError:

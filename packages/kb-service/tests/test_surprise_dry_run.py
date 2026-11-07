@@ -194,7 +194,7 @@ async def _distillations(pool: SqlitePool) -> list[dict[str, Any]]:
     return await pool.fetch("SELECT * FROM surprise_distillations ORDER BY id")
 
 
-# --- dry_run_candidates -------------------------------------------------------
+# --- dry_run_candidates ---
 
 
 async def test_shadow_would_write_records_and_writes_nothing(
@@ -336,10 +336,10 @@ async def test_mode_on_merge_is_unchanged(
     assert await _dry_runs(pool) == []
 
 
-# --- drain_once wiring --------------------------------------------------------
+# --- drain_once wiring ---
 
 
-# --- llm_calls candidate attribution -------------------------------------------
+# --- llm_calls candidate attribution ---
 
 
 async def _attributed_drain(
@@ -477,7 +477,7 @@ async def test_drain_survives_llm_calls_prune_failure(
     assert isinstance(res, surprise_worker.DrainResult)
 
 
-# --- schema -------------------------------------------------------------------
+# --- schema ---
 
 _DRY_RUN_PREFIX = "CREATE TABLE IF NOT EXISTS surprise_dry_runs ("
 
@@ -686,7 +686,7 @@ def test_candidates_endpoint_rejects_bad_params(
     assert resp.status_code == 422
 
 
-# --- critic pass in the dry run ---------------------------------------------------
+# --- critic pass in the dry run ---
 
 
 async def test_shadow_critic_rejection_records_critic_rejected(
@@ -745,3 +745,32 @@ async def test_shadow_shape4_would_write(
 def test_candidates_endpoint_shape4(client: TestClient) -> None:
     e = _seed_candidate("e", shape=4, created_at=_now_iso(hours=1))
     assert [(c["id"], c["shape"]) for c in _get(client, shape=4)] == [(e, 4)]
+
+
+# --- read-only mode (KB_READ_ONLY) ----------------------------------------------
+
+
+async def test_drain_read_only_skips_distill_and_resumes(
+    pool: SqlitePool,
+    kb: Any,
+    llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(surprise_worker, "get_detector_llm", lambda: None)
+    monkeypatch.setenv("KB_SURPRISE_CAPTURE", "on")
+    monkeypatch.setenv("KB_READ_ONLY", "TRUE")
+    c = await _cand(pool, "s1", status="pending")
+    llm.enqueue(D)
+    with caplog.at_level("INFO"):
+        res = await drain_once(pool, kb)
+    assert res.entries_written == [] and res.entries_merged == []
+    assert await _cand_row(pool, c.id) == {"status": "pending", "entry_id": None}
+    assert await _distillations(pool) == []
+    assert await _lessons(kb) == 0
+    assert "surprise_distill skipped reason=read_only pending=1" in caplog.text
+
+    monkeypatch.delenv("KB_READ_ONLY")
+    await drain_once(pool, kb)
+    row = await _cand_row(pool, c.id)
+    assert row["status"] != "pending"

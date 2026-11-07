@@ -58,6 +58,7 @@ from kb_core.map_delete import MAP_DELETE_MARKER, DeletedMapRecord
 from kb_service.attribution import is_machine_principal, resolve_attribution
 from kb_service.auth import get_current_user
 from kb_service.models import MapDeleteRequest, MapDeleteResponse, User
+from kb_service.read_only import require_kb_writable
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,11 @@ async def _write_audit_event(
         )
 
 
-@router.delete("/maps/{map_id}", response_model=MapDeleteResponse)
+@router.delete(
+    "/maps/{map_id}",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=MapDeleteResponse,
+)
 async def delete_map(
     map_id: str,
     request: Request,

@@ -79,6 +79,7 @@ from kb_service.models import (
     MapOpStrikeGapRequest,
     User,
 )
+from kb_service.read_only import require_kb_writable
 from kb_service.routes.map_write_guards import (
     _check_machine_principal_map_lint,
     _check_orphan_mental_map,
@@ -583,7 +584,9 @@ async def _propose_gap(
     return _envelope(op_req.body, entry)
 
 
-@router.post("/map-op", response_model=MapOpResponse)
+@router.post(
+    "/map-op", dependencies=[Depends(require_kb_writable)], response_model=MapOpResponse
+)
 async def map_op(
     body: MapOpRequest,
     request: Request,

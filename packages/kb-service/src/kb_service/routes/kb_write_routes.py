@@ -49,6 +49,7 @@ from kb_service.models_kb import (
     StoreRequest,
     StoreResponse,
 )
+from kb_service.read_only import require_kb_writable
 from kb_service.resolution_hint import (
     ResolutionHintError,
     validate_and_stamp_resolution,
@@ -401,7 +402,11 @@ async def _warn_resolution_dropped(
 # ─── endpoints ───────────────────────────────────────────────────────────────
 
 
-@router.post("/store", response_model=StoreResponse | StoreQueuedResponse)
+@router.post(
+    "/store",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=StoreResponse | StoreQueuedResponse,
+)
 async def store(
     body: StoreRequest,
     request: Request,
@@ -773,7 +778,9 @@ def _match_created_to_inputs(
 
 
 @router.post(
-    "/store_batch", response_model=StoreBatchResponse | StoreBatchQueuedResponse
+    "/store_batch",
+    response_model=StoreBatchResponse | StoreBatchQueuedResponse,
+    dependencies=[Depends(require_kb_writable)],
 )
 async def store_batch(
     body: StoreBatchRequest,
@@ -950,7 +957,11 @@ async def store_batch(
     )
 
 
-@router.post("/entries/{entry_id}/deactivate", response_model=EntryActionResponse)
+@router.post(
+    "/entries/{entry_id}/deactivate",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=EntryActionResponse,
+)
 async def deactivate(
     entry_id: str,
     request: Request,
@@ -1030,7 +1041,11 @@ async def deactivate(
     return EntryActionResponse(entry=entry)
 
 
-@router.post("/entries/{entry_id}/reactivate", response_model=EntryActionResponse)
+@router.post(
+    "/entries/{entry_id}/reactivate",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=EntryActionResponse,
+)
 async def reactivate(
     entry_id: str,
     request: Request,
@@ -1064,7 +1079,11 @@ async def reactivate(
     return EntryActionResponse(entry=entry)
 
 
-@router.post("/bulk_update", response_model=BulkUpdateResponse)
+@router.post(
+    "/bulk_update",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=BulkUpdateResponse,
+)
 async def bulk_update(
     body: BulkUpdateRequest,
     request: Request,
@@ -1125,7 +1144,9 @@ async def bulk_update(
     return BulkUpdateResponse(dry_run=body.dry_run, count=len(results), results=results)
 
 
-@router.post("/admin/reconcile-supersession")
+@router.post(
+    "/admin/reconcile-supersession", dependencies=[Depends(require_kb_writable)]
+)
 async def reconcile_supersession(
     request: Request,
     user: Annotated[User, Depends(require_admin)],

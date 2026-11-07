@@ -447,6 +447,56 @@ async def test_write_policy_parity(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert a == b == WRITE_POLICY_EXPECTED
 
 
+READ_ONLY_POINTER = "see https://kb.example.com"
+READ_ONLY_EXPECTED = (
+    "Error: read-only: this KB is read-only; writes are refused. " + READ_ONLY_POINTER
+)
+
+READ_ONLY_CALLS: list[tuple[str, dict[str, Any]]] = [
+    ("kb_store", {"short_title": "Frozen one", **F, "supersedes": "none"}),
+    (
+        "kb_store",
+        {
+            "update_entry_id": "kb-00001",
+            "knowledge_details": "x",
+            "change_reason": "parity",
+            "supersedes": "none",
+        },
+    ),
+    (
+        "kb_store_batch",
+        {"entries": [{"short_title": "Frozen two", **F, "supersedes": "none"}]},
+    ),
+    (
+        "kb_ingest_url",
+        {"url": "file:///frozen.md", "content": "# Frozen\n\nFrozen content."},
+    ),
+]
+
+
+async def test_read_only_parity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from kb_service.main import app
+
+    def _env(db_dir: Path) -> None:
+        _parity_env(monkeypatch, db_dir)
+        monkeypatch.setenv("KB_READ_ONLY", "TRUE")
+        monkeypatch.setenv("KB_READ_ONLY_MESSAGE", READ_ONLY_POINTER)
+
+    _env(tmp_path / "a")
+    async with app.router.lifespan_context(app):
+        a = await _channel_a(
+            app,
+            READ_ONLY_CALLS,
+            httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        )
+
+    _env(tmp_path / "b")
+    async with app.router.lifespan_context(app):
+        b = await _channel_b(app, READ_ONLY_CALLS)
+
+    assert a == b == [READ_ONLY_EXPECTED] * len(READ_ONLY_CALLS)
+
+
 # ─── client-side rejection table ─────────────────────────────────────────────
 #
 # One row per client-side rejection branch reachable without any backend call.

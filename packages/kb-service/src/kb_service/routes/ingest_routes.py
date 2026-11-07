@@ -36,6 +36,7 @@ from kb_service.models import (
     IngestUrlRequest,
     User,
 )
+from kb_service.read_only import require_kb_writable
 from kb_service.write_policy import require_interactive, resolve_write_context
 
 router = APIRouter(prefix="/api/kb/ingest", tags=["kb"])
@@ -77,7 +78,11 @@ def _check_safety() -> None:
         )
 
 
-@router.post("/text", response_model=IngestFileResult)
+@router.post(
+    "/text",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=IngestFileResult,
+)
 async def ingest_text(
     body: IngestTextRequest,
     request: Request,
@@ -114,7 +119,9 @@ async def ingest_text(
     return IngestFileResult.model_validate(dataclasses.asdict(result))
 
 
-@router.post("/url", response_model=IngestFileResult)
+@router.post(
+    "/url", dependencies=[Depends(require_kb_writable)], response_model=IngestFileResult
+)
 async def ingest_url(
     body: IngestUrlRequest,
     request: Request,
@@ -165,7 +172,11 @@ async def ingest_url(
     return IngestFileResult.model_validate(dataclasses.asdict(result))
 
 
-@router.post("/file", response_model=IngestFileResult)
+@router.post(
+    "/file",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=IngestFileResult,
+)
 async def ingest_file(
     request: Request,
     user: Annotated[User, Depends(get_current_user)],

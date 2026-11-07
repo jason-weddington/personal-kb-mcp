@@ -2,7 +2,9 @@
 
 import inspect
 import logging
+import re
 from collections.abc import Callable
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -14,10 +16,13 @@ from starlette.requests import Request
 
 import kb_service.auth as auth_module
 import kb_service.mcp_server.context as context_module
+import kb_service.read_only as read_only_module
 from kb_service.auth import AuthPrincipal
 from kb_service.main import app
 from kb_service.mcp_server.backend import (
     ADMIN_ONLY_METHODS,
+    READ_METHODS,
+    WRITE_METHODS,
     InProcessBackend,
     QueuedBatch,
     QueuedStore,
@@ -223,6 +228,23 @@ def test_admin_drift_guard() -> None:
     assert gated == ADMIN_ONLY_METHODS
 
 
+def test_read_only_drift_guard() -> None:
+    guarded = {
+        method
+        for method, (module, attr, *_rest) in METHODS.items()
+        if read_only_module.require_kb_writable
+        in _dependency_calls(getattr(module, attr))
+    }
+    assert guarded == WRITE_METHODS
+
+
+def test_backend_ops_classified() -> None:
+    src = Path(inspect.getsourcefile(InProcessBackend) or "").read_text()
+    ops = set(re.findall(r'self\._call\(\s*"([a-z_]+)"', src))
+    assert ops == WRITE_METHODS | READ_METHODS
+    assert not WRITE_METHODS & READ_METHODS
+
+
 @pytest.mark.parametrize("method", sorted(METHODS))
 def test_dependency_drift_guard(method: str) -> None:
     module, attr, *_rest = METHODS[method]
@@ -234,6 +256,8 @@ def test_dependency_drift_guard(method: str) -> None:
     }
     if method in ADMIN_ONLY_METHODS:
         expected.add(auth_module.require_admin)
+    if method in WRITE_METHODS:
+        expected.add(read_only_module.require_kb_writable)
     for call in calls - expected:
         name = getattr(call, "__name__", repr(call))
         pytest.fail(f"InProcessBackend must replicate new dependency {name} for {attr}")
@@ -393,6 +417,11 @@ _WP_DETAIL = (
             "Error: KB service authentication failed (401). Check PERSONAL_KB_API_KEY.",
         ),
         (403, _WP_DETAIL, f"Error: {_WP_DETAIL}"),
+        (
+            403,
+            "read-only: this KB is read-only; writes are refused.",
+            "Error: read-only: this KB is read-only; writes are refused.",
+        ),
         (403, "Admin only", "Error: admin privileges required (403): Admin only"),
         (404, "x", "Error: x"),
         (409, "x", "Error: x"),

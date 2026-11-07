@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from kb_core import Attribution
     from kb_core.llm.provider import LLMProvider
 
+from kb_service.config import is_read_only
+from kb_service.read_only import log_refusal, read_only_detail
+
 logger = logging.getLogger(__name__)
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -318,6 +321,11 @@ class ChatSession:
 
     async def _tool_update_entry(self, args: dict[str, Any]) -> _ToolResult:
         """Update an existing KB entry."""
+        if is_read_only():
+            log_refusal("chat", "update_entry")
+            return _ToolResult(
+                tool="update_entry", success=False, message=read_only_detail()
+            )
         entry_id = args.get("entry_id")
         if not entry_id:
             return _ToolResult(
@@ -399,6 +407,11 @@ class ChatSession:
 
     async def _tool_ingest_url(self, args: dict[str, Any]) -> _ToolResult:
         """Ingest a URL into the KB."""
+        if is_read_only():
+            log_refusal("chat", "ingest_url")
+            return _ToolResult(
+                tool="ingest_url", success=False, message=read_only_detail()
+            )
         url = args.get("url")
         if not url:
             return _ToolResult(

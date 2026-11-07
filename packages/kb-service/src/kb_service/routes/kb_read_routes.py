@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
 from kb_service.auth import get_current_user
+from kb_service.config import is_read_only
 from kb_service.graph_export import extract_graph_data
 from kb_service.models import (
     GetEntryResult,
@@ -120,7 +121,7 @@ async def get_entries(
             )
         )
 
-    if found_ids and body.touch:
+    if found_ids and body.touch and not is_read_only():
         await touch_accessed(kb.db, found_ids)
 
     return GetResponse(results=results)

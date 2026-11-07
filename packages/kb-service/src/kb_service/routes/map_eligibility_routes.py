@@ -24,6 +24,7 @@ from kb_service.models import (
     MapEligibilityVerdictModel,
     User,
 )
+from kb_service.read_only import require_kb_writable
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,11 @@ async def map_eligibility(
     )
 
 
-@router.post("/map-eligibility/override", response_model=MapEligibilityOverrideResponse)
+@router.post(
+    "/map-eligibility/override",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=MapEligibilityOverrideResponse,
+)
 async def set_override(
     body: MapEligibilityOverrideSetRequest,
     request: Request,
@@ -88,7 +93,9 @@ async def set_override(
 
 
 @router.post(
-    "/map-eligibility/override/clear", response_model=MapEligibilityOverrideResponse
+    "/map-eligibility/override/clear",
+    response_model=MapEligibilityOverrideResponse,
+    dependencies=[Depends(require_kb_writable)],
 )
 async def clear_override(
     body: MapEligibilityOverrideClearRequest,

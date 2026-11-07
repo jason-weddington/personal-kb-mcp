@@ -23,6 +23,8 @@ def map_error(exc: BackendHttpError) -> str:
             "Error: KB service authentication failed (401). Check PERSONAL_KB_API_KEY."
         )
     if exc.status == 403:
+        if exc.detail.startswith("read-only: "):
+            return f"Error: {exc.detail}"
         if exc.detail.startswith("write policy: "):
             return f"Error: {exc.detail}"
         return f"Error: admin privileges required (403): {exc.detail}"

@@ -33,6 +33,7 @@ from kb_service.models import (
     SurpriseDryRunOut,
     User,
 )
+from kb_service.read_only import require_kb_writable
 
 CANDIDATES_DEFAULT_LIMIT = 200
 CANDIDATES_MAX_LIMIT = 1000
@@ -51,7 +52,11 @@ _CANDIDATES_SQL = (
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
 
-@router.post("/surprise/drain", response_model=SurpriseDrainResponse)
+@router.post(
+    "/surprise/drain",
+    dependencies=[Depends(require_kb_writable)],
+    response_model=SurpriseDrainResponse,
+)
 async def drain_surprise(
     request: Request,
     user: Annotated[User, Depends(get_current_user)],

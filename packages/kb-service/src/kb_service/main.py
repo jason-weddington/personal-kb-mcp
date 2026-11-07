@@ -27,6 +27,8 @@ from kb_service.config import (
     build_embedding_retry_config,
     build_ingest_config,
     build_provider_config,
+    is_read_only,
+    read_only_message,
 )
 from kb_service.database import check_database_config, close_db, init_db
 from kb_service.llm_calls import drain_pending_llm_calls, record_llm_call
@@ -254,6 +256,19 @@ async def _reconcile_supersession(kb: "KnowledgeBase") -> None:
         logger.warning("supersession-reconcile failed: %s", exc)
 
 
+def _log_read_only_startup() -> None:
+    """Log the read-only switch state; warn on an unrecognised value."""
+    raw = os.environ.get("KB_READ_ONLY", "")
+    if raw and raw.upper() not in ("TRUE", "FALSE"):
+        logger.warning("read-only unrecognised value=%s", raw)
+    logger.info(
+        "read-only mode=%s message_set=%s"
+        " background_writers=embedding_worker,supersession_reconcile",
+        "on" if is_read_only() else "off",
+        "true" if read_only_message() else "false",
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage application lifecycle.
@@ -304,6 +319,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "listener vote-text prune loop started poll=%ss",
                 SURPRISE_WORKER_POLL_SECONDS,
             )
+        _log_read_only_startup()
         await write_policy.log_startup(
             mode, worker_started=app.state.surprise_worker is not None
         )
